@@ -1,0 +1,178 @@
+from __future__ import annotations
+
+import asyncio
+import json
+
+from agents.data_agent import DataAgent
+from agents.rag_agent import RagAgent
+from agents.tool_agent import ToolAgent
+from agents.web_agent import WebAgent
+from agents.base import TaskMessage
+from infra.config.settings import settings
+from infra.message_bus.agent_bus import AgentMessageBus
+
+
+class AgentWorker:
+    def __init__(self) -> None:
+        self.bus = AgentMessageBus(namespace=str(settings.kernel_agent_bus_namespace))
+        self.agents = {
+            "data": DataAgent(),
+            "rag": RagAgent(),
+            "web": WebAgent(),
+            "tool": ToolAgent(),
+        }
+
+    async def _execute_payload(self, agent_type: str, payload: dict, attempt: int = 0) -> None:
+        task = TaskMessage(
+            task_id=str(payload.get("task_id", "")),
+            agent_type=agent_type,
+            query=str(payload.get("query", "")),
+            params=payload.get("params") or {},
+            session_id=payload.get("session_id"),
+            user_id=payload.get("user_id"),
+        )
+        agent = self.agents[agent_type]
+        res = await agent.execute(task)
+
+        max_retry = int(getattr(settings, "kernel_agent_bus_max_retry", 2))
+        if res.status in {"error", "timeout"} and attempt < max_retry:
+            retry_payload = {**payload, "attempt": attempt + 1, "last_error": res.error}
+            from infra.message_bus.agent_bus import AgentTaskEnvelope
+
+            await self.bus.publish_task(
+                AgentTaskEnvelope(
+                    task_id=task.task_id,
+                    agent_type=agent_type,
+                    query=task.query,
+                    params=retry_payload.get("params") or {},
+                    session_id=task.session_id,
+                    user_id=task.user_id,
+                    attempt=attempt + 1,
+                )
+            )
+            return
+
+        if res.status in {"error", "timeout"} and attempt >= max_retry:
+            from infra.cache.redis_client import get_pubsub_redis
+
+            r = await get_pubsub_redis()
+            await r.xadd(
+                self.bus.dlq_stream(),
+                {
+                    "data": json.dumps(
+                        {
+                            "task_id": task.task_id,
+                            "agent_type": agent_type,
+                            "query": task.query,
+                            "params": payload.get("params") or {},
+                            "session_id": task.session_id,
+                            "user_id": task.user_id,
+                            "attempt": attempt,
+                            "error": res.error,
+                        },
+                        ensure_ascii=False,
+                    )
+                },
+                maxlen=20000,
+            )
+
+        await self.bus.publish_result(task.task_id, res.model_dump(mode="json"))
+
+    async def _consume_pubsub(self, agent_type: str) -> None:
+        r = await __import__("infra.cache.redis_client", fromlist=["get_pubsub_redis"]).get_pubsub_redis()
+        ps = r.pubsub()
+        ch = self.bus.task_channel(agent_type)
+        await ps.subscribe(ch)
+        async for msg in ps.listen():
+            if msg.get("type") != "message":
+                continue
+            data = msg.get("data")
+            if not isinstance(data, str):
+                continue
+            payload = json.loads(data)
+            attempt = int(payload.get("attempt", 0) or 0)
+            await self._execute_payload(agent_type, payload, attempt=attempt)
+
+    async def _reclaim_pending(self, r, stream: str, agent_type: str) -> None:
+        idle_ms = int(getattr(settings, "kernel_agent_bus_reclaim_idle_ms", 30000))
+        reclaim_count = int(getattr(settings, "kernel_agent_bus_reclaim_count", 20))
+        pending = await r.xpending_range(stream, self.bus.group, min='-', max='+', count=reclaim_count)
+        if not pending:
+            return
+        ids = []
+        for p in pending:
+            msg_id = p.get("message_id") or p.get("message_id")
+            idle = int(p.get("time_since_delivered", 0) or 0)
+            if msg_id and idle >= idle_ms:
+                ids.append(msg_id)
+        if not ids:
+            return
+        claimed = await r.xclaim(stream, self.bus.group, self.bus.consumer, min_idle_time=idle_ms, message_ids=ids)
+        for msg_id, fields in claimed:
+            data = fields.get("data")
+            if not isinstance(data, str):
+                await r.xack(stream, self.bus.group, msg_id)
+                continue
+            payload = json.loads(data)
+            attempt = int(payload.get("attempt", 0) or 0)
+            await self._execute_payload(agent_type, payload, attempt=attempt)
+            await r.xack(stream, self.bus.group, msg_id)
+
+    async def _consume_stream(self, agent_type: str) -> None:
+        from infra.cache.redis_client import get_pubsub_redis
+
+        await self.bus.ensure_stream_group(agent_type)
+        r = await get_pubsub_redis()
+        stream = self.bus.task_stream(agent_type)
+        while True:
+            rows = await r.xreadgroup(
+                self.bus.group,
+                self.bus.consumer,
+                streams={stream: ">"},
+                count=10,
+                block=1000,
+            )
+            if rows:
+                for _, entries in rows:
+                    for msg_id, fields in entries:
+                        data = fields.get("data")
+                        if not isinstance(data, str):
+                            await r.xack(stream, self.bus.group, msg_id)
+                            continue
+                        payload = json.loads(data)
+                        attempt = int(payload.get("attempt", 0) or 0)
+                        await self._execute_payload(agent_type, payload, attempt=attempt)
+                        await r.xack(stream, self.bus.group, msg_id)
+            await self._reclaim_pending(r, stream, agent_type)
+
+    async def _consume(self, agent_type: str) -> None:
+        if self.bus.mode == "stream":
+            await self._consume_stream(agent_type)
+            return
+        await self._consume_pubsub(agent_type)
+
+    async def _heartbeat(self) -> None:
+        from infra.cache.redis_client import get_pubsub_redis
+        import time
+
+        ns = str(getattr(settings, "kernel_agent_bus_namespace", "opentrace:agent"))
+        key = f"{ns}:worker:heartbeat"
+        while True:
+            try:
+                r = await get_pubsub_redis()
+                await r.setex(key, 60, str(int(time.time())))
+            except Exception:
+                pass
+            await asyncio.sleep(10)
+
+    async def run_forever(self) -> None:
+        await asyncio.gather(self._heartbeat(), *(self._consume(k) for k in self.agents.keys()))
+
+
+async def main() -> None:
+    worker = AgentWorker()
+    await worker.run_forever()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
