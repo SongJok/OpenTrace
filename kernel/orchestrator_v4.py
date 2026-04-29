@@ -1,19 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import ast
+import contextlib
 import json
 import logging
 from dataclasses import dataclass, field
 from time import monotonic
-from typing import Any
+from typing import Any, AsyncIterator
 
 logger = logging.getLogger(__name__)
 
-VALID_FORCE_MODES = frozenset({"rag", "data_query", "data_analysis", "anomaly_tracking"})
+VALID_FORCE_MODES = frozenset({"rag", "data_query", "data_analysis", "anomaly_tracking", "product", "rule_engine", "tool", "skills", "web"})
 
 from agents.data_agent import DataAgent
 from agents.rag_agent import RagAgent
 from agents.registry import AgentRegistry
+from agents.rule_engine_agent import RuleEngineAgent
 from agents.skills_agent import SkillsAgent
 from agents.web_agent import WebAgent
 from execution.tool_router.router import ToolRouter
@@ -23,6 +26,8 @@ from kernel.critic_engine.models import CriticInput
 from kernel.dispatcher import Dispatcher
 from kernel.fusion_engine.engine import FusionEngine
 from kernel.fusion_engine.models import FusionInput, ToolResult
+from kernel.fusion_engine.sequence_fusion import SequenceFusionEngine
+from kernel.fusion_engine.sequence_models import SequenceFusionInput
 from infra.config.settings import settings
 from infra.message_bus.cognitive_event_bus import cognitive_event_bus
 from infra.observability.runtime_metrics import runtime_metrics_store
@@ -171,16 +176,327 @@ class CognitiveOrchestratorV4:
 
         content = re.sub(r"\n{3,}", "\n\n", content).strip()
         if not content:
-            return "我可以帮助你回答问题、检索信息、分析数据，并以清晰文本给出结论。"
+            return "抱歉，我暂时无法生成有效的回答。请尝试换个方式提问，或提供更多背景信息，我会尽力帮你解答。"
         return content
+
+    # ── Multi-question handling ─────────────────────────────────────────
+    _MULTI_Q_SEPARATORS_RE = r"[；;]|[，,]\s*(?:并|同时|另外|此外|还有|再分析|再查询|再告诉)"
+    _MULTI_Q_HINTS = [
+        "第一个", "第二个", "第三个", "第一", "第二", "第三",
+        "并告诉我", "同时告诉我", "另外", "此外", "还有",
+        "再分析", "再查询", "再告诉我",
+    ]
+    _MAX_MULTI_QUESTIONS = 5
+
+    # Domain classification keywords for sub-questions
+    _DOMAIN_DATA_KW = ["查询", "统计", "报表", "销量", "订单", "数据库", "sql", "表", "字段", "列", "聚合", "分组", "金额", "收入", "分布", "图表", "饼图", "柱状图", "排名", "top", "总数", "条数"]
+    _DOMAIN_RAG_KW = ["文档", "手册", "知识库", "总结", "归纳", "pdf", "doc", "附件", "政策", "规范", "记忆", "读取", "读一下", "上传文档", ".pdf", ".doc", ".docx", ".txt", ".md", "提炼", "根据文档", "从文档"]
+    _DOMAIN_WEB_KW = ["最新", "新闻", "今天", "实时", "联网", "搜索", "weather", "气温", "降雨", "热搜", "资讯", "发生", "事件", "动态"]
+    _DOMAIN_TOOL_KW = ["时间", "几点", "天气", "计算", "代码", "执行", "画图", "生成图片", "翻译", "单位换算", "倒计时"]
+    # Factual/trivia patterns — these should NOT go to RAG, prefer web or tool
+    _FACTUAL_Q_PATTERNS = ["首都", "国家", "哪里", "是谁", "哪个", "什么时候", "多少", "多大", "多远", "什么", "位于", "属于"]
+
+    def _classify_sub_question_domain(self, text: str) -> str:
+        """Classify a single sub-question into a domain."""
+        t = (text or "").lower()
+        scores: dict[str, int] = {"data_query": 0, "document_retrieval": 0, "web_search": 0, "tool_execution": 0, "general_qa": 0}
+        for kw in self._DOMAIN_DATA_KW:
+            if kw in t:
+                scores["data_query"] += 1
+        for kw in self._DOMAIN_RAG_KW:
+            if kw in t:
+                scores["document_retrieval"] += 1
+        for kw in self._DOMAIN_WEB_KW:
+            if kw in t:
+                scores["web_search"] += 1
+        for kw in self._DOMAIN_TOOL_KW:
+            if kw in t:
+                scores["tool_execution"] += 1
+        # Factual/trivia patterns: if the question looks like a factual query
+        # AND no document/data signals are present, boost web_search so it
+        # doesn't fall through to general_qa or get misrouted to RAG.
+        has_factual = any(p in t for p in self._FACTUAL_Q_PATTERNS)
+        if has_factual and scores["document_retrieval"] == 0 and scores["data_query"] == 0:
+            scores["web_search"] = max(scores["web_search"], 2)
+        best = max(scores, key=scores.get)
+        return best if scores[best] > 0 else "general_qa"
+
+    async def _detect_and_split_multi_question(self, query: str) -> list[dict[str, str]] | None:
+        """Detect multi-question and return sub-questions, or None for single question."""
+        q = (query or "").strip()
+
+        # Strongest signal: multiple question marks — check before length filter
+        qm_count = q.count("？") + q.count("?")
+        if qm_count >= 2:
+            return await self._split_multi_question(q)
+
+        # Length filter
+        if len(q) < 15:
+            return None
+
+        # Check multi-question hints
+        if any(hint in q for hint in self._MULTI_Q_HINTS):
+            return await self._split_multi_question(q)
+
+        # Use IntentEngine multi_step as secondary signal
+        try:
+            from kernel.intent_engine.engine import IntentEngine
+            intent = await IntentEngine().parse(q)
+            if intent.multi_step:
+                return await self._split_multi_question(q)
+        except Exception:
+            pass
+
+        return None
+
+    async def _split_multi_question(self, query: str) -> list[dict[str, str]] | None:
+        """Split a query into sub-questions with domain classification."""
+        import re
+
+        def _make_result(texts: list[str]) -> list[dict[str, str]]:
+            return [
+                {
+                    "id": f"q{i+1}",
+                    "text": t,
+                    "display_order": i + 1,
+                    "domain": self._classify_sub_question_domain(t),
+                }
+                for i, t in enumerate(texts[:self._MAX_MULTI_QUESTIONS])
+            ]
+
+        # Try question marks first — the most explicit delimiter
+        qm_parts = re.split(r"[？?]\s*", query)
+        qm_parts = [s.strip() for s in qm_parts if s.strip() and len(s.strip()) > 2]
+        if len(qm_parts) >= 2:
+            return _make_result(qm_parts)
+
+        # Try numbered patterns
+        numbered = re.split(r"(?:^|\n)\s*(?:\d+[\.\、\)]|第[一二三四五六七八九])", query)
+        numbered = [s.strip() for s in numbered if s.strip() and len(s.strip()) > 5]
+        if len(numbered) >= 2:
+            return _make_result(numbered)
+
+        # Try Chinese semicolons
+        if "；" in query:
+            parts = [s.strip() for s in query.split("；") if s.strip() and len(s.strip()) > 5]
+            if len(parts) >= 2:
+                return _make_result(parts)
+
+        # Try logical connectors
+        logical_split = re.split(r"[，,]\s*(?:并|同时|另外|此外|还有|再分析|再查询|再告诉)\s*", query)
+        logical_split = [s.strip() for s in logical_split if s.strip() and len(s.strip()) > 8]
+        if len(logical_split) >= 2:
+            return _make_result(logical_split)
+
+        # Fall back to LLM splitting
+        return await self._split_by_llm(query)
+
+    async def _split_by_llm(self, query: str) -> list[dict[str, str]] | None:
+        """Use PLANNING LLM to split a complex query into sub-questions."""
+        prompt = (
+            "你是一个问题分解器。将用户的复合问题拆分为独立的子问题列表，输出 JSON。\n"
+            "规则：\n"
+            "- 每个子问题应是一个独立、可单独回答的完整问题。\n"
+            "- domain 必须从以下选项中选择：\n"
+            "  · data_query — 查询数据库、统计报表、销量、订单等结构化数据\n"
+            "  · document_retrieval — 检索文档、知识库、手册、总结归纳等\n"
+            "  · web_search — 搜索最新新闻、实时信息、天气资讯等\n"
+            "  · tool_execution — 时间查询、天气、计算、代码执行、翻译等工具操作\n"
+            "  · general_qa — 通用问答、分析、建议等\n"
+            "- 如果用户只提了一个问题，返回包含该问题的单元素数组。\n"
+            '- 输出格式：{"questions": [{"id": "q1", "text": "...", "domain": "..."}]}\n'
+            f"用户输入：{query}"
+        )
+        try:
+            gw = get_model_gateway()
+            resp = await gw.complete(
+                [LLMMessage(role="user", content=prompt)],
+                role=LLMRole.PLANNING,
+                temperature=0.0,
+                max_tokens=400,
+            )
+            text = (resp.content or "").strip()
+            import re
+            m = re.search(r"\{.*\}", text, re.DOTALL)
+            if not m:
+                return None
+            data = json.loads(m.group(0))
+            questions = data.get("questions", [])
+            if isinstance(questions, list) and len(questions) >= 2:
+                result = []
+                for i, q_data in enumerate(questions[:self._MAX_MULTI_QUESTIONS]):
+                    if isinstance(q_data, dict):
+                        result.append({
+                            "id": q_data.get("id", f"q{i+1}"),
+                            "text": q_data.get("text", ""),
+                            "display_order": i + 1,
+                            "domain": q_data.get("domain", "general_qa"),
+                        })
+                if len(result) >= 2:
+                    return result
+        except Exception:
+            pass
+        return None
+
+    async def _process_multi_question(
+        self,
+        req: OrchestratorV4Request,
+        sub_questions: list[dict[str, str]],
+        data_source_context: dict[str, Any],
+        adaptive_profile: dict[str, Any],
+        t0: float,
+        trace_id: str,
+        event_cb=None,
+    ) -> OrchestratorV4Response:
+        """Full pipeline for multi-question queries."""
+        if trace_id:
+            await cognitive_event_bus.publish(
+                cognitive_event_bus.emit_planning(
+                    trace_id=trace_id,
+                    payload={
+                        "action": "orchestrator.multi_question.start",
+                        "query": req.query,
+                        "sub_question_count": len(sub_questions),
+                    },
+                    session_id=req.session_id,
+                    user_id=req.user_id,
+                    source="orchestrator_v4",
+                )
+            )
+
+        # Step 1: Generate multi-plan
+        plan = await self.plan_agent.generate_multi_plan(
+            sub_questions,
+            context={
+                "metadata": req.metadata,
+                "adaptive_profile": adaptive_profile,
+                "data_source_context": data_source_context,
+            },
+        )
+
+        # Patch session/user into subtask params
+        for s in plan.subtasks:
+            if s.params is None:
+                s.params = {}
+            s.params["session_id"] = req.session_id
+            s.params["user_id"] = req.user_id
+            if s.sub_question_id:
+                s.params["sub_question_id"] = s.sub_question_id
+                s.params["display_order"] = s.display_order
+
+        # Step 2: Dispatch agents
+        agent_results = await self.dispatcher.dispatch(plan, event_cb=event_cb)
+
+        # Step 3: Enrich agent_results with sub_question_id from the plan
+        for i, r in enumerate(agent_results):
+            if i < len(plan.subtasks):
+                sq_id = plan.subtasks[i].sub_question_id
+                disp_order = plan.subtasks[i].display_order
+                if sq_id:
+                    md = dict(r.metadata or {})
+                    md["sub_question_id"] = sq_id
+                    md["display_order"] = disp_order
+                    r.metadata = md
+
+        # Step 4: Sequence fusion
+        fusion_engine = SequenceFusionEngine()
+        fusion_output = await fusion_engine.run(
+            SequenceFusionInput(
+                query=req.query,
+                sub_questions=sub_questions,
+                agent_results=agent_results,
+            )
+        )
+
+        answer = fusion_output.content
+        if not (answer or "").strip():
+            answer = "抱歉，暂时无法生成完整的回答。请尝试逐个提问，或提供更详细的信息。"
+
+        total_latency_ms = int((monotonic() - t0) * 1000)
+        metrics = {
+            "first_token_ms": total_latency_ms,
+            "orchestrator_latency_ms": total_latency_ms,
+            "supervisor_retry_count": 0,
+            "agent_count": len(agent_results),
+            "avg_agent_latency_ms": int(total_latency_ms / max(1, len(agent_results))),
+        }
+        runtime_metrics_store.record(metrics)
+
+        if trace_id:
+            await cognitive_event_bus.publish(
+                cognitive_event_bus.emit_learning(
+                    trace_id=trace_id,
+                    payload={
+                        "action": "orchestrator.process.completed",
+                        "route": "multi_question",
+                        "validation_score": fusion_output.confidence,
+                        "passed_validation": True,
+                        "agent_count": len(agent_results),
+                        "sub_question_count": len(sub_questions),
+                    },
+                    session_id=req.session_id,
+                    user_id=req.user_id,
+                    source="orchestrator_v4",
+                )
+            )
+
+        return OrchestratorV4Response(
+            content=answer,
+            route="multi_question",
+            strategy="sequence_fusion",
+            passed_validation=True,
+            validation_score=fusion_output.confidence,
+            hallucination_risk=0.0,
+            intent_category="multi_question",
+            metadata={
+                "orchestrator_version": "v4",
+                "adaptive_profile": adaptive_profile,
+                "plan": {
+                    "subtasks": [
+                        {
+                            "agent_type": s.agent_type,
+                            "query": s.query,
+                            "sub_question_id": s.sub_question_id,
+                            "display_order": s.display_order,
+                        }
+                        for s in plan.subtasks
+                    ],
+                    "merge_strategy": plan.merge_strategy,
+                    "max_parallel": plan.max_parallel,
+                    "is_multi_question": True,
+                },
+                "agent_results": [r.model_dump(mode="json") for r in agent_results],
+                "fusion": {
+                    "type": "sequence",
+                    "confidence": fusion_output.confidence,
+                    "context": fusion_output.content,
+                },
+                "per_question_results": [
+                    {
+                        "sub_question_id": pq.sub_question_id,
+                        "question_text": pq.question_text,
+                        "display_order": pq.display_order,
+                        "status": pq.status,
+                        "error_reason": pq.error_reason,
+                    }
+                    for pq in fusion_output.per_question_results
+                ],
+                "sub_questions": sub_questions,
+                "metrics": metrics,
+            },
+        )
 
     async def _llm_fallback_answer(self, req: OrchestratorV4Request) -> str:
         gw = get_model_gateway()
         system = (
-            "你是一个智能助手。请直接回答用户问题，避免提及自身身份或底层模型。"
-            "不要自称 OpenTrace、Qwen、ChatGPT 等。"
+            "你是一个热情、可靠的智能助手。请用自然、亲切的中文直接回答用户问题，语气像一位乐于助人的同事。"
+            "避免提及自身身份或底层模型，不要自称 OpenTrace、Qwen、ChatGPT 等。"
+            "回答时尽量饱满完整：先给出核心结论，再补充必要的细节、依据或操作建议，让用户看完就能用上。"
             "如果涉及数据库操作但无法执行，请说明原因并给出建议的 SQL 语句。"
-            "回答清晰简洁，不要以「我是…」开头。"
+            "不要以「我是…」开头，直接切入正题。"
+            "如果用户要求编写演示性代码（如游戏、可视化、交互效果），优先输出自包含的 HTML+JavaScript 代码，"
+            "使其可直接在浏览器中运行展示，不要使用 Python/pygame 等需要额外安装依赖的方案。"
+            "代码应完整可用，不要省略关键部分。"
         )
         msgs = [LLMMessage(role="system", content=system)]
         for h in (req.history or [])[-6:]:
@@ -190,48 +506,59 @@ class CognitiveOrchestratorV4:
                 msgs.append(LLMMessage(role=role, content=content))
         msgs.append(LLMMessage(role="user", content=req.query))
         resp = await gw.complete(msgs, role=LLMRole.QUERY, temperature=0.2, max_tokens=4096)
-        return (resp.content or "").strip() or "我可以回答问题、检索信息、分析数据并调用工具协助完成任务。"
+        return (resp.content or "").strip() or "很抱歉，我暂时无法处理这个请求。请尝试补充更多细节或换一种方式描述你的问题，我会继续帮你。"
 
     def _grounded_answer_style(self, query: str, evidence_count: int = 0) -> tuple[str, int]:
         q = (query or "").strip()
         is_complex = any(k in q.lower() for k in ["步骤", "如何", "怎么", "流程", "原因", "总结", "归纳", "说明", "对比", "区别", "为什么", "分析", "解释"])
         if evidence_count <= 1:
             base = (
-                "请输出简洁但完整的中文回答：先给结论，再补充必要解释。"
-                "如果证据较少，请明确说明可确认的部分与不确定的部分，并给出下一步建议。"
+                "请输出简洁但完整的中文回答：先给结论，再补充必要解释。语气要亲切自然，像在跟朋友聊天。"
+                "如果证据较少，请坦诚说明可确认的部分与不确定的部分，并给出下一步建议，让用户感到你在真诚地帮他。"
             )
             return (base, 2048 if not is_complex else 3072)
         if evidence_count <= 3 and not is_complex:
             return (
-                "请输出自然、完整的中文回答：先给结论，再展开说明关键依据。"
-                "回答应适度分段，必要时补充注意事项和建议，不要只做摘要。",
+                "请输出自然、完整、有温度的中文回答：先给结论，再展开说明关键依据。"
+                "回答应适度分段，必要时补充注意事项和建议，不要只做干巴巴的摘要。语气可以亲切一些，像一位知识丰富的同事在耐心解答。",
                 3072,
             )
         if is_complex or evidence_count >= 4:
             return (
-                "请输出结构化、较为饱满的中文回答：先给结论，再分段展开说明。"
+                "请输出结构化、饱满、可交付的中文回答：先给结论，再分段展开说明。"
                 "建议包含背景、关键依据、步骤/条件、注意事项、边界和可执行建议。"
-                "语言要自然顺滑，段落之间要有衔接，不要重复堆砌证据，回答应可直接交付给用户阅读。",
+                "语言要自然顺滑，段落之间要有顺畅的衔接，不要重复堆砌证据。"
+                "语气保持专业但不生硬，让回答读起来像一篇经过人工精心整理的高质量文档，可直接交付给用户阅读。",
                 4096,
             )
         return (
             "请输出自然、完整、饱满的中文回答：先给结论，再展开说明关键依据和细节。"
-            "必要时补充步骤、条件、注意事项和边界。语言要自然、连贯、像人工整理后的最终稿。"
-            "不要过于简短，尽量做到可直接使用。",
+            "必要时补充步骤、条件、注意事项和边界。语言要自然、连贯、有温度，像人工精心整理后的最终稿。"
+            "不要过于简短，尽量做到可直接使用，读完让人觉得你真正帮到了他。",
             3072,
         )
 
-    async def _llm_grounded_answer(self, query: str, evidence_text: str) -> str:
+    async def _llm_grounded_answer(
+        self, query: str, evidence_text: str, history: list[dict[str, str]] | None = None,
+    ) -> str:
         gw = get_model_gateway()
         style_hint, max_tokens = self._grounded_answer_style(query, evidence_count=max(0, evidence_text.count("[")))
         system = (
-            "你是文档问答助手。你的目标是把检索到的证据整理成一段自然、完整、饱满的中文回答。"
+            "你是文档问答助手。你的目标是把检索到的证据整理成一段自然、完整、有温度的中文回答。"
             "请先直接给出结论，再展开说明关键依据和细节，必要时补充步骤、条件、注意事项和边界。"
-            "语言要顺滑、专业、像人工整理后的最终稿，段落之间要有自然衔接，避免重复和机械感。"
+            "语言要顺滑、专业但不生硬，像一位知识丰富的同事在认真回答——亲切、靠谱、不端着。"
+            "段落之间要有自然衔接，避免重复和机械感，让回答读起来像是人工精心整理后的最终稿。"
             "不要只复述证据，也不要过度简短；在证据充分时，回答应当完整、清晰、可直接给用户使用。"
-            "如果证据不足，必须明确说明缺失点，并告诉用户还需要补充什么信息。"
+            "如果证据不足，必须明确说明缺失点，并告诉用户还需要补充什么信息，语气要让人感到你是真心在帮他。"
             "禁止输出内部字段名、JSON 结构、检索分数、agent 名称或原始工具内容。"
+            "如果用户提到之前对话的内容，请结合上下文给出连贯回答。"
         )
+        msgs = [LLMMessage(role="system", content=system)]
+        for h in (history or [])[-6:]:
+            role = "assistant" if str(h.get("role", "")).lower() == "assistant" else "user"
+            content = str(h.get("content", "")).strip()
+            if content:
+                msgs.append(LLMMessage(role=role, content=content))
         user = (
             f"用户问题：{query}\n\n"
             f"检索证据：\n{evidence_text[:7000]}\n\n"
@@ -242,8 +569,9 @@ class CognitiveOrchestratorV4:
             "3. 关键依据或要点\n"
             "4. 注意事项/下一步（如适用）"
         )
+        msgs.append(LLMMessage(role="user", content=user))
         resp = await gw.complete(
-            [LLMMessage(role="system", content=system), LLMMessage(role="user", content=user)],
+            msgs,
             role=LLMRole.QUERY,
             temperature=0.15,
             max_tokens=max_tokens,
@@ -297,24 +625,24 @@ class CognitiveOrchestratorV4:
                     col_name = list(first_row.keys())[0]
                     col_val = first_row[col_name]
                     if "count" in col_name.lower():
-                        return f"查询结果：{col_val} 条记录。"
+                        return f"根据查询结果，共有 {col_val} 条记录。"
                 # Generic row display
                 row_text = json.dumps(rows[:5], ensure_ascii=False)
-                return f"查询已执行，共返回 {row_count} 行数据。\n\n结果预览：\n{row_text}"
+                return f"查询已执行，共返回 {row_count} 行数据，以下是结果预览：\n\n{row_text}"
 
             if row_count == 0:
                 return (
-                    f"查询已执行，但未返回任何数据。\n"
-                    f"可能原因：数据源中不存在与「{query}」相关的表或字段，或查询条件未匹配到数据。\n"
-                    "建议：\n"
-                    "- 在「数据源」页面检查已连接的表和结构。\n"
-                    "- 尝试使用更通用的查询条件，或指定具体的表名。"
+                    f"查询已执行完成，但没有找到匹配的数据。\n"
+                    f"这通常是因为数据源中没有与「{query}」相关的表或字段，或者查询条件未能匹配到任何记录。\n\n"
+                    "你可以试试：\n"
+                    "- 在「数据源」页面确认一下已连接的表和字段结构是否正确\n"
+                    "- 换一个更宽泛的查询条件，或者直接指定具体的表名"
                 )
 
             if sql:
-                return f"SQL 查询已执行。如需查看详细结果，请前往数据查询面板。\n```sql\n{sql}\n```"
+                return f"SQL 查询已成功执行。可以在数据查询面板中查看详细结果，执行的 SQL 如下：\n```sql\n{sql}\n```"
 
-            return "数据查询已完成。"
+            return "数据查询已完成，如需查看更多细节，可以前往数据查询面板。"
         return ""
 
     def _format_rag_answer(self, answer: str, rag_chunks_count: int, rag_citations: list[dict[str, Any]]) -> str:
@@ -342,8 +670,8 @@ class CognitiveOrchestratorV4:
                 lines.extend(insight_lines)
         if rag_chunks_count <= 1:
             lines.append(
-                "补充说明：当前检索到的可用证据较少，因此以上结论是基于现有内容整理得到的。"
-                "如果你愿意，我也可以继续帮你从更多文档或相关上下文中补充细节。"
+                "补充说明：当前检索到的相关证据比较少，以上结论是基于现有内容整理而成的。"
+                "如果需要的话，我也可以帮你从更多文档或相关材料中补充细节。"
             )
         return "\n\n".join(lines).strip()
 
@@ -356,6 +684,7 @@ class CognitiveOrchestratorV4:
             self.registry.register(RagAgent())
         self.registry.register(ToolAgent())
         self.registry.register(SkillsAgent())
+        self.registry.register(RuleEngineAgent())
         self.dispatcher = Dispatcher(
             self.registry,
             timeout_sec=timeout_sec,
@@ -387,7 +716,11 @@ class CognitiveOrchestratorV4:
                     source="orchestrator_v4",
                 )
             )
-        if is_identity_user_query(req.query):
+        # Identity shortcut: only for pure identity queries, not multi-question
+        _maybe_multi = (req.query or "").count("？") + (req.query or "").count("?") >= 2 or any(
+            hint in (req.query or "") for hint in self._MULTI_Q_HINTS
+        )
+        if is_identity_user_query(req.query) and not _maybe_multi:
             if trace_id:
                 await cognitive_event_bus.publish(
                     cognitive_event_bus.emit_learning(
@@ -463,6 +796,12 @@ class CognitiveOrchestratorV4:
             logger.warning("ignoring unknown force_mode=%r, falling back to PlanAgent", force_mode)
             force_mode = None
 
+        # Multi-question detection (only when not in force_mode)
+        if not force_mode:
+            multi_q_result = await self._detect_and_split_multi_question(req.query)
+            if multi_q_result:
+                return await self._process_multi_question(req, multi_q_result, data_source_context, adaptive_profile, t0, trace_id, event_cb)
+
         # Build plan: either force-route directly, or let PlanAgent decide
         if force_mode:
             from kernel.plan_agent import SubTask, TaskPlan
@@ -472,6 +811,11 @@ class CognitiveOrchestratorV4:
                 "data_query": "data",
                 "data_analysis": "data",
                 "anomaly_tracking": "skills",
+                "product": "rule_engine",
+                "rule_engine": "rule_engine",
+                "tool": "tool",
+                "skills": "skills",
+                "web": "web",
             }
             agent_type = agent_map.get(force_mode, "rag")
 
@@ -752,6 +1096,11 @@ class CognitiveOrchestratorV4:
                 fallback = (
                     "当前没有可用的技能。请在「技能」页面创建或安装技能后重试。"
                 )
+            elif force_mode in ("product", "rule_engine"):
+                fallback = (
+                    f"未找到与「{req.query}」匹配的产品规则。\n"
+                    "请确认查询内容是否在已配置的产品规则范围内，或在 rules/ 目录下添加新规则。"
+                )
             else:
                 fallback = await self._llm_fallback_answer(req)
 
@@ -867,7 +1216,9 @@ class CognitiveOrchestratorV4:
         draft_threshold = float(adaptive_profile["draft_threshold"])
         draft_max_chars = max(60, int(adaptive_profile["draft_max_chars"]))
         if fusion.confidence >= draft_threshold and (fusion.merged_context or "").strip():
-            answer_draft = self._sanitize_user_output((fusion.merged_context or "")[:draft_max_chars])
+            raw_draft = self._sanitize_user_output((fusion.merged_context or "")[:draft_max_chars])
+            if raw_draft:
+                answer_draft = f"以下是目前梳理出的关键信息：\n\n{raw_draft}"
             first_token_ms = int((monotonic() - t0) * 1000)
 
         annotated_results = []
@@ -899,13 +1250,13 @@ class CognitiveOrchestratorV4:
 
         # Only enter RAG answer path when we actually have document evidence
         if has_document and rag_chunks_count > 0:
-            grounded = await self._llm_grounded_answer(req.query, fusion.merged_context or "")
+            grounded = await self._llm_grounded_answer(req.query, fusion.merged_context or "", history=req.history)
             answer = self._sanitize_user_output(grounded or (fusion.merged_context or ""))
 
             answer = self._format_rag_answer(answer, rag_chunks_count, rag_citations)
         elif has_document and rag_chunks_count == 0 and force_mode == "rag":
             # Explicit force_mode="rag" but no documents found — tell the user directly
-            answer = f"未在知识库中找到与「{req.query}」相关的文档。请尝试上传相关文档或使用其他模式查询。"
+            answer = f"我在知识库中仔细搜索了一下，但没有找到与「{req.query}」直接相关的文档。建议试试上传相关文档，或者切换到其他查询模式再试。"
         else:
             answer = ""
             has_data = any(r.agent_type == "data" and r.status == "success" for r in agent_results)
@@ -920,10 +1271,10 @@ class CognitiveOrchestratorV4:
                         error_detail = f"\n\n错误详情：{r.error}"
                         break
                 answer = (
-                    "数据查询执行失败。可能原因：\n"
-                    "- 数据源未配置或连接失败，请在「数据源」页面检查连接状态。\n"
-                    "- 查询中涉及的表或字段不存在，请检查数据源架构。"
-                    "- 查询条件过于复杂，请尝试简化或提供更具体的表名/字段名。"
+                    "数据查询没能成功执行，可能的原因是：\n"
+                    "- 数据源还没有配置好或者连接断开了，可以先在「数据源」页面确认一下连接状态\n"
+                    "- 查询用到的表或字段在数据源中不存在，检查一下数据源的表结构是否正确\n"
+                    "- 查询条件比较复杂，试试简化条件或直接指定表名和字段名"
                     f"{error_detail}"
                 )
             if not answer:
@@ -953,7 +1304,7 @@ class CognitiveOrchestratorV4:
         if not validated_text:
             validated_text = self._sanitize_user_output(answer or fusion.merged_context or answer_draft)
         if not validated_text:
-            validated_text = "我已经完成了分析，但当前没有可直接展示的最终答案。请补充更多信息后再试。"
+            validated_text = "我已经完成了分析，但手头的信息还不足以给出一个完整回答。方便的话，补充一些细节或换个角度描述问题，我能帮得更到位。"
         answer = validated_text
 
         graph_nodes = []
@@ -1010,7 +1361,7 @@ class CognitiveOrchestratorV4:
         if not (answer or "").strip():
             answer = self._sanitize_user_output(fusion.merged_context or answer_draft)
         if not (answer or "").strip():
-            answer = "我已经完成了分析，但当前没有可直接展示的最终答案。请补充更多信息后再试。"
+            answer = "我已经完成了分析，但手头的信息还不足以给出一个完整回答。方便的话，补充一些细节或换个角度描述问题，我能帮得更到位。"
 
         bus_used = [
             {"agent_type": s.agent_type, "query": s.query}
@@ -1146,3 +1497,79 @@ class CognitiveOrchestratorV4:
                 },
             },
         )
+
+    async def stream(self, req: OrchestratorV4Request) -> AsyncIterator[dict[str, Any]]:
+        """Streaming variant of process() — yields events as the pipeline progresses."""
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+        async def emit(event: dict[str, Any]) -> None:
+            await queue.put(event)
+
+        async def _run() -> None:
+            try:
+                resp = await self.process(req, event_cb=emit)
+                # Emit structural metadata events
+                adaptive_profile = (resp.metadata or {}).get("adaptive_profile")
+                if adaptive_profile:
+                    await queue.put({"type": "adaptive_profile", "data": adaptive_profile})
+                force_mode = (resp.metadata or {}).get("force_mode")
+                if force_mode:
+                    await queue.put({"type": "force_mode", "data": {"mode": force_mode}})
+                # Emit agent_start / agent_complete events from plan metadata
+                for st in (resp.metadata or {}).get("plan", {}).get("subtasks", []):
+                    agent_type = str(st.get("agent_type", "agent"))
+                    q = str(st.get("query", ""))
+                    task_id = f"{agent_type}_{abs(hash(q)) % 100000}"
+                    await queue.put({"type": "agent_start", "data": {"agent_type": agent_type, "task_id": task_id, "query": q}})
+                for ar in (resp.metadata or {}).get("agent_results", []):
+                    agent_type = str(ar.get("agent_type", "agent"))
+                    task_id = str(ar.get("task_id", ""))
+                    await queue.put({"type": "agent_complete", "data": {"agent_type": agent_type, "task_id": task_id, "status": str(ar.get("status", "success")), "preview": str(ar.get("content", ""))[:200]}})
+                # Emit conflict summary if present
+                for ann in (resp.metadata or {}).get("annotations", []):
+                    if isinstance(ann, dict) and ann.get("id") == "conflict_summary":
+                        await queue.put({"type": "conflict_summary", "data": ann})
+                        break
+                # Emit pipeline reasoning completion event
+                plan_subtasks = (resp.metadata or {}).get("plan", {}).get("subtasks", [])
+                await queue.put({"type": "reasoning_step", "data": {"id": "v4_pipeline", "stage": "STEP", "content": f"已完成 {len(plan_subtasks)} 个子任务", "node_id": None, "status": "done"}})
+                # Emit answer draft if available
+                answer_draft = str((resp.metadata or {}).get("answer_draft", "")).strip()
+                if answer_draft:
+                    await queue.put({"type": "answer_draft", "data": {"content": answer_draft}})
+                # Emit final answer chunks
+                content = (resp.content or answer_draft or "").strip()
+                if not content:
+                    content = "我已经完成了分析，但当前没有可直接展示的最终答案。请补充更多信息后再试。"
+                if content:
+                    step = 24
+                    for i in range(0, len(content), step):
+                        await queue.put({"type": "delta", "data": {"text": content[i : i + step]}})
+                final_data: dict[str, Any] = {
+                    "content": content,
+                    "execution_graph": (resp.metadata or {}).get("execution_graph"),
+                    "citations": (resp.metadata or {}).get("citations", []),
+                    "annotations": (resp.metadata or {}).get("annotations", []),
+                    "metadata": resp.metadata,
+                }
+                await queue.put({"type": "final_answer", "data": final_data})
+            except Exception as exc:
+                await queue.put({"type": "error", "data": {"message": str(exc)}})
+            finally:
+                await queue.put(None)
+
+        task = asyncio.create_task(_run())
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield event
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        finally:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(Exception):
+                    await task

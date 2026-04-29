@@ -5,6 +5,8 @@ import { getTraceVisibility } from '../store/theme'
 import { apiBranchConversation, apiGetMessages, apiPatchMessage, type ReasoningStep } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import MarkdownMessage from './MarkdownMessage'
+import MultiQuestionCards from './MultiQuestionCards'
+import { parseMultiQuestionCards } from '../utils/parseMultiQuestion'
 import ReasoningChain from './ReasoningChain'
 import ExecutionGraphPanel from './ExecutionGraphPanel'
 import DagTimeline, { type DagTimelineItem } from './DagTimeline'
@@ -506,6 +508,7 @@ function FinalMessage({
 
   const streamingDoneEvent = typeof window !== 'undefined' ? `opentrace:assistant-stream-done:${messageId}` : ''
   const toolCard = tryParseToolCard(content)
+  const multiQuestionCards = parseMultiQuestionCards(content)
 
   const dagTimeline = useMemo<DagTimelineItem[]>(() => {
     const nodes = Array.isArray(executionGraph?.nodes) ? executionGraph.nodes : []
@@ -600,6 +603,8 @@ function FinalMessage({
             <button onClick={() => void saveAssistantEdit()} className="px-2 py-1 rounded bg-[var(--accent)] text-white">保存答案</button>
           </div>
         </div>
+      ) : multiQuestionCards ? (
+        <MultiQuestionCards cards={multiQuestionCards} />
       ) : toolCard?.type === 'time' ? (
         <TimeCard data={toolCard.data} />
       ) : toolCard?.type === 'weather' ? (

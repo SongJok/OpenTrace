@@ -10,25 +10,25 @@ from infra.config.settings import settings
 DEFAULT_PROFILES: dict[str, dict[str, Any]] = {
     "speed": {
         "draft_threshold": 0.65,
-        "draft_max_chars": 280,
+        "draft_max_chars": 400,
         "rag_min_score": 0.30,
         "max_parallel": 2,
     },
     "balanced": {
         "draft_threshold": 0.75,
-        "draft_max_chars": 220,
+        "draft_max_chars": 340,
         "rag_min_score": 0.35,
         "max_parallel": 3,
     },
     "quality": {
         "draft_threshold": 0.80,
-        "draft_max_chars": 180,
+        "draft_max_chars": 260,
         "rag_min_score": 0.40,
         "max_parallel": 2,
     },
     "identity": {
         "draft_threshold": 1.0,
-        "draft_max_chars": 160,
+        "draft_max_chars": 200,
         "rag_min_score": 0.40,
         "max_parallel": 1,
     },

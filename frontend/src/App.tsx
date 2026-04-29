@@ -12,6 +12,7 @@ import MemoryPage from './pages/MemoryPage'
 import IntegrationsPage from './pages/IntegrationsPage'
 import DatabasesPage from './pages/DatabasesPage'
 import SkillsPage from './pages/SkillsPage'
+import RulesPage from './pages/RulesPage'
 
 function Protected({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -59,6 +60,11 @@ function SkillsRoute() {
   return <SkillsPage onBack={() => navigate('/chat')} />
 }
 
+function RulesRoute() {
+  const navigate = useNavigate()
+  return <RulesPage onBack={() => navigate('/chat')} />
+}
+
 export default function App() {
   const token = useAuthStore((s) => s.token)
   const mode = useThemeStore((s) => s.mode)
@@ -88,6 +94,7 @@ export default function App() {
       <Route path="/integrations" element={<Protected><IntegrationsRoute /></Protected>} />
       <Route path="/databases" element={<Protected><DatabasesRoute /></Protected>} />
       <Route path="/skills" element={<Protected><SkillsRoute /></Protected>} />
+      <Route path="/rules" element={<Protected><RulesRoute /></Protected>} />
 
       <Route path="*" element={<Navigate to={token ? '/chat' : '/login'} replace />} />
     </Routes>

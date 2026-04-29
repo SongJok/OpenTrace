@@ -32,7 +32,15 @@ def _post_process_identity_response(messages: list[LLMMessage], content: str) ->
 
 def _offline_fallback_response(messages: list[LLMMessage], role: LLMRole) -> LLMResponse:
     user_text = (last_user_text(messages) or '').strip()
-    if role == LLMRole.PLANNING:
+    if role == LLMRole.ROUTER:
+        content = '{"route": "complex", "difficulty": "simple"}'
+    elif role == LLMRole.FAST:
+        content = '我目前处于离线降级模式，暂时无法提供完整回答。请稍后重试或换一种更具体的问法。'
+    elif role == LLMRole.CHEAP_CRITIC:
+        content = '{"verdict": "pass", "confidence": 0.5, "issues": []}'
+    elif role == LLMRole.KNOWLEDGE:
+        content = '我目前处于离线降级模式，暂时无法查询知识库。请稍后重试。'
+    elif role == LLMRole.PLANNING:
         content = '{"subtasks": [{"agent_type": "tool", "query": "' + user_text.replace('"', '\\"')[:120] + '"}], "merge_strategy": "prioritized", "max_parallel": 1}'
     elif any(k in user_text for k in ['你是谁', '你叫什么', 'who are you', 'identity']):
         content = CANONICAL_IDENTITY_RESPONSE
@@ -53,6 +61,10 @@ class LLMRole(str, Enum):
     QUERY = "query"
     COMPRESS = "compress"
     PLANNING = "planning"
+    ROUTER = "router"             # JuniorShort 1.7B — L1 classification
+    FAST = "fast"                 # MiddleShort 8B — simple answers
+    CHEAP_CRITIC = "cheap_critic" # SeniorShort 14B — lightweight critique
+    KNOWLEDGE = "knowledge"       # SeniorShort 14B — knowledge Q&A
 
 
 # ---------------------------------------------------------------------------
@@ -126,11 +138,46 @@ def _build_config(role: LLMRole) -> LLMConfig:
             base_url=s.default_llm_compress_base_url,
             api_key=s.default_llm_compress_api_key,
         )
+    if role == LLMRole.PLANNING:
+        return LLMConfig(
+            provider=s.default_llm_planing_provider,
+            model=s.default_llm_planing_model,
+            base_url=s.default_llm_planing_base_url,
+            api_key=s.default_llm_planing_api_key,
+        )
+    if role == LLMRole.ROUTER:
+        return LLMConfig(
+            provider=s.default_llm_juniorshort_provider,
+            model=s.default_llm_juniorshort_model,
+            base_url=s.default_llm_juniorshort_base_url,
+            api_key=s.default_llm_juniorshort_api_key,
+        )
+    if role == LLMRole.FAST:
+        return LLMConfig(
+            provider=s.default_llm_middleshort_provider,
+            model=s.default_llm_middleshort_model,
+            base_url=s.default_llm_middleshort_base_url,
+            api_key=s.default_llm_middleshort_api_key,
+        )
+    if role == LLMRole.CHEAP_CRITIC:
+        return LLMConfig(
+            provider=s.default_llm_seniorshort_provider,
+            model=s.default_llm_seniorshort_model,
+            base_url=s.default_llm_seniorshort_base_url,
+            api_key=s.default_llm_seniorshort_api_key,
+        )
+    if role == LLMRole.KNOWLEDGE:
+        return LLMConfig(
+            provider=s.default_llm_seniorshort_provider,
+            model=s.default_llm_seniorshort_model,
+            base_url=s.default_llm_seniorshort_base_url,
+            api_key=s.default_llm_seniorshort_api_key,
+        )
     return LLMConfig(
-        provider=s.default_llm_planing_provider,
-        model=s.default_llm_planing_model,
-        base_url=s.default_llm_planing_base_url,
-        api_key=s.default_llm_planing_api_key,
+        provider=s.default_llm_query_provider,
+        model=s.default_llm_query_model,
+        base_url=s.default_llm_query_base_url,
+        api_key=s.default_llm_query_api_key,
     )
 
 
@@ -295,44 +342,34 @@ class ModelGateway:
                 for i in range(0, len(fallback), step):
                     yield fallback[i : i + step]
             return
-        try:
-            adapter = self._get_adapter(role)
-            t0 = time.monotonic()
-            buf: list[str] = []
-            retry_exc: Exception | None = None
-            max_attempts = int(kwargs.pop("max_attempts", 3))
-            for attempt in range(max_attempts):
-                try:
-                    async for chunk in adapter.stream(prepared_messages, **kwargs):
-                        buf.append(chunk)
-                    retry_exc = None
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    retry_exc = exc
-                    should_retry, base_delay = self._retry_policy(exc)
-                    if attempt >= max_attempts - 1 or not should_retry:
-                        raise
-                    await asyncio.sleep(base_delay * (2 ** attempt))
-                    buf = []
-            if retry_exc is not None:
-                raise retry_exc
-            full = enforce_identity_output("".join(buf), user_text)
-            if full:
-                step = 256
-                for i in range(0, len(full), step):
-                    yield full[i : i + step]
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            logger.info("LLM stream success", role=role.value, latency_ms=latency_ms)
-            cb.record_success()
-        except Exception as exc:
-            latency_ms = int((time.monotonic() - t0) * 1000) if 't0' in locals() else 0
-            cb.record_failure()
-            logger.warning("LLM stream failed; using offline fallback", role=role.value, error=str(exc), error_class=self._classify_exception(exc), latency_ms=latency_ms, cb_state=cb.state)
-            fallback = _offline_fallback_response(prepared_messages, role).content
-            if fallback:
-                step = 256
-                for i in range(0, len(fallback), step):
-                    yield fallback[i : i + step]
+        adapter = self._get_adapter(role)
+        t0 = time.monotonic()
+        buf: list[str] = []
+        max_attempts = int(kwargs.pop("max_attempts", 3))
+        for attempt in range(max_attempts):
+            try:
+                async for chunk in adapter.stream(prepared_messages, **kwargs):
+                    buf.append(chunk)
+                    yield chunk
+                latency_ms = int((time.monotonic() - t0) * 1000)
+                enforce_identity_output("".join(buf), user_text)  # post-hoc validation only
+                logger.info("LLM stream success", role=role.value, latency_ms=latency_ms)
+                cb.record_success()
+                return
+            except Exception as exc:  # noqa: BLE001
+                should_retry, base_delay = self._retry_policy(exc)
+                if attempt >= max_attempts - 1 or not should_retry:
+                    latency_ms = int((time.monotonic() - t0) * 1000)
+                    cb.record_failure()
+                    logger.warning("LLM stream failed; using offline fallback", role=role.value, error=str(exc), error_class=self._classify_exception(exc), latency_ms=latency_ms, cb_state=cb.state)
+                    fallback = _offline_fallback_response(prepared_messages, role).content
+                    if fallback:
+                        step = 256
+                        for i in range(0, len(fallback), step):
+                            yield fallback[i : i + step]
+                    return
+                await asyncio.sleep(base_delay * (2 ** attempt))
+                buf = []
 
 
 _gateway: Optional[ModelGateway] = None

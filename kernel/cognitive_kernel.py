@@ -28,6 +28,7 @@ from typing import Any, AsyncIterator, Optional
 
 from infra.config.settings import settings
 from infra.observability.logger import get_logger
+from infra.observability.runtime_metrics import runtime_metrics_store
 from infra.observability.tracer import get_tracer
 from kernel.cognition.self_model import SelfModel
 from kernel.cognition.types import CapabilityLevel, TaskDomain
@@ -128,6 +129,31 @@ class CognitiveKernel:
         from model.model_gateway.gateway import get_model_gateway
         return get_model_gateway()
 
+    # ── V5 Routing Tier lazy singletons ───────────────────────────────
+    def _get_l0_router(self):
+        if not hasattr(self, "_l0_router") or self._l0_router is None:
+            from kernel.query_router_v2 import L0RuleRouter
+            self._l0_router = L0RuleRouter()
+        return self._l0_router
+
+    def _get_semantic_cache(self):
+        if not hasattr(self, "_semantic_cache") or self._semantic_cache is None:
+            from kernel.semantic_cache import SemanticCache
+            self._semantic_cache = SemanticCache()
+        return self._semantic_cache
+
+    def _get_complexity_engine(self):
+        if not hasattr(self, "_complexity_engine") or self._complexity_engine is None:
+            from kernel.complexity_engine import ComplexityEngine
+            self._complexity_engine = ComplexityEngine()
+        return self._complexity_engine
+
+    def _get_tiny_router(self):
+        if not hasattr(self, "_tiny_router") or self._tiny_router is None:
+            from kernel.tiny_router import TinyRouter
+            self._tiny_router = TinyRouter()
+        return self._tiny_router
+
     # ── Main entry point ──────────────────────────────────────────────
     async def run(self, request: KernelRequest) -> KernelResponse:
         """同步执行：支持 v1/v2 编排器分流。"""
@@ -136,7 +162,10 @@ class CognitiveKernel:
         t0 = time.monotonic()
         with tracer.start_as_current_span("cognitive_kernel.run") as span:
             sid = request.session_id
-            if sid and is_identity_user_query(request.query):
+            is_multi = self._is_multi_question(request.query)
+
+            # ── Working memory identity cache (fastest path) ──────────
+            if sid and is_identity_user_query(request.query) and not is_multi:
                 cached = get_cached_identity_answer(sid)
                 if cached:
                     total_ms = int((time.monotonic() - t0) * 1000)
@@ -155,6 +184,109 @@ class CognitiveKernel:
                         total_latency_ms=total_ms,
                         metadata={"identity_cache": True},
                     )
+
+            # ── V5 Routing Tier ───────────────────────────────────────
+            if settings.kernel_v5_routing_enabled:
+                # L0: Rule Router (zero-LLM, <1ms)
+                if settings.kernel_l0_rule_router_enabled:
+                    l0_result = await self._get_l0_router().route(
+                        request.query, sid, is_multi=is_multi
+                    )
+                    if l0_result.hit and l0_result.answer is not None:
+                        if l0_result.route == "force_mode":
+                            identity_prompt = self.self_model.get_identity_prompt()
+                            from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+                            orchestrator_v4 = CognitiveOrchestratorV4(
+                                timeout_sec=int(settings.kernel_agent_timeout_sec),
+                                max_parallel=int(settings.kernel_agent_max_parallel),
+                            )
+                            resp = await orchestrator_v4.process(
+                                OrchestratorV4Request(
+                                    query=l0_result.answer,
+                                    session_id=request.session_id,
+                                    user_id=request.user_id,
+                                    history=request.history,
+                                    metadata={
+                                        **request.metadata,
+                                        "web_enabled": request.web_enabled,
+                                        "force_mode": l0_result.force_mode,
+                                    },
+                                )
+                            )
+                            total_ms = int((time.monotonic() - t0) * 1000)
+                            return KernelResponse(
+                                content=resp.content,
+                                session_id=request.session_id,
+                                route=resp.route,
+                                validation_score=resp.validation_score,
+                                passed_validation=resp.passed_validation,
+                                hallucination_risk=resp.hallucination_risk,
+                                intent_category=resp.intent_category,
+                                intent_complexity="loop",
+                                context_latency_ms=0,
+                                total_latency_ms=total_ms,
+                                metadata=resp.metadata or {},
+                            )
+
+                        if l0_result.route in ("identity", "faq") and sid:
+                            cache_identity_answer(sid, request.query, l0_result.answer)
+                        total_ms = int((time.monotonic() - t0) * 1000)
+                        return KernelResponse(
+                            content=l0_result.answer,
+                            session_id=request.session_id,
+                            route=l0_result.route,
+                            validation_score=1.0,
+                            passed_validation=True,
+                            hallucination_risk=0.0,
+                            intent_category=l0_result.route,
+                            intent_complexity="simple",
+                            context_latency_ms=0,
+                            total_latency_ms=total_ms,
+                            metadata=l0_result.metadata,
+                        )
+
+                # L0.5: Semantic Cache
+                if settings.kernel_semantic_cache_enabled and not is_multi:
+                    cached = await self._get_semantic_cache().lookup(request.query)
+                    if cached and cached.answer:
+                        total_ms = int((time.monotonic() - t0) * 1000)
+                        return KernelResponse(
+                            content=cached.answer,
+                            session_id=request.session_id,
+                            route="semantic_cache",
+                            validation_score=1.0,
+                            passed_validation=True,
+                            hallucination_risk=0.0,
+                            intent_category="cached",
+                            intent_complexity="simple",
+                            context_latency_ms=0,
+                            total_latency_ms=total_ms,
+                            metadata={"cache_hit": True, "cache_hits": cached.hit_count},
+                        )
+
+                # L1: Complexity Engine + Tiny Router
+                if settings.kernel_l1_tiny_router_enabled and not is_multi:
+                    complexity = self._get_complexity_engine().assess(request.query)
+                    if complexity.recommended_pipeline in ("L0", "L1"):
+                        l1_result = await self._get_tiny_router().route(
+                            request.query, request.history
+                        )
+                        if l1_result.route != "complex" and l1_result.answer:
+                            total_ms = int((time.monotonic() - t0) * 1000)
+                            return KernelResponse(
+                                content=l1_result.answer,
+                                session_id=request.session_id,
+                                route=f"l1_{l1_result.route}",
+                                validation_score=1.0,
+                                passed_validation=True,
+                                hallucination_risk=0.0,
+                                intent_category=l1_result.route,
+                                intent_complexity=l1_result.difficulty,
+                                context_latency_ms=0,
+                                total_latency_ms=total_ms,
+                                metadata={**l1_result.metadata, "complexity": complexity.level},
+                            )
+            # ── End V5 Routing Tier ────────────────────────────────────
 
             intent = self._classify_intent_domain(request.query)
             assessment = self.self_model.introspect(request.query, intent)
@@ -219,6 +351,10 @@ class CognitiveKernel:
             if sid and is_identity_user_query(request.query) and resp.content:
                 cache_identity_answer(sid, request.query, resp.content)
 
+            # Store in semantic cache for future hits
+            if settings.kernel_semantic_cache_enabled and resp.content:
+                await self._get_semantic_cache().store(request.query, resp.content)
+
             total_ms = int((time.monotonic() - t0) * 1000)
             span.set_attribute("total.latency_ms", total_ms)
             span.set_attribute("validation.score", resp.validation_score)
@@ -246,12 +382,69 @@ class CognitiveKernel:
     async def stream(self, request: KernelRequest) -> AsyncIterator[dict[str, Any]]:
         """SSE 路径：统一走稳定 V4。"""
         sid = request.session_id
-        if sid and is_identity_user_query(request.query):
+        is_multi = self._is_multi_question(request.query)
+
+        if sid and is_identity_user_query(request.query) and not is_multi:
             cached = get_cached_identity_answer(sid)
             if cached:
                 yield {"type": "reasoning_step", "data": {"id": "identity_reason", "stage": "REASON", "content": "命中身份记忆，直接返回缓存答案", "node_id": "node_identity", "status": "done"}}
                 yield {"type": "final_answer", "data": {"content": cached}}
                 return
+
+        # ── V5 Routing Tier (streaming) ──────────────────────────────────
+        if settings.kernel_v5_routing_enabled:
+            # L0: Rule Router
+            if settings.kernel_l0_rule_router_enabled:
+                l0_result = await self._get_l0_router().route(
+                    request.query, sid, is_multi=is_multi
+                )
+                if l0_result.hit and l0_result.answer is not None:
+                    if l0_result.route == "force_mode":
+                        # Slash command — re-enter as force_mode via orchestrator
+                        from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+                        orchestrator = CognitiveOrchestratorV4(
+                            timeout_sec=int(settings.kernel_agent_timeout_sec),
+                            max_parallel=int(settings.kernel_agent_max_parallel),
+                        )
+                        yield {"type": "reasoning_step", "data": {"id": "l0_slash", "stage": "ROUTE", "content": f"L0 斜杠命令: {l0_result.force_mode}", "node_id": "node_l0", "status": "done"}}
+                        async for event in orchestrator.stream(
+                            OrchestratorV4Request(
+                                query=l0_result.answer,
+                                session_id=request.session_id,
+                                user_id=request.user_id,
+                                history=request.history,
+                                metadata={
+                                    **request.metadata,
+                                    "web_enabled": request.web_enabled,
+                                    "force_mode": l0_result.force_mode,
+                                },
+                            )
+                        ):
+                            yield event
+                        return
+
+                    yield {"type": "reasoning_step", "data": {"id": "l0_route", "stage": "ROUTE", "content": f"L0 规则匹配: {l0_result.route}", "node_id": "node_l0", "status": "done"}}
+                    yield {"type": "final_answer", "data": {"content": l0_result.answer}}
+                    return
+
+            # L0.5: Semantic Cache
+            if settings.kernel_semantic_cache_enabled and not is_multi:
+                cached = await self._get_semantic_cache().lookup(request.query)
+                if cached and cached.answer:
+                    yield {"type": "reasoning_step", "data": {"id": "cache_hit", "stage": "ROUTE", "content": "语义缓存命中", "node_id": "node_cache", "status": "done"}}
+                    yield {"type": "final_answer", "data": {"content": cached.answer}}
+                    return
+
+            # L1: Tiny Router
+            if settings.kernel_l1_tiny_router_enabled and not is_multi:
+                complexity = self._get_complexity_engine().assess(request.query)
+                if complexity.recommended_pipeline in ("L0", "L1"):
+                    l1_result = await self._get_tiny_router().route(request.query, request.history)
+                    if l1_result.route != "complex" and l1_result.answer:
+                        yield {"type": "reasoning_step", "data": {"id": "l1_route", "stage": "ROUTE", "content": f"L1 路由: {l1_result.route}", "node_id": "node_l1", "status": "done"}}
+                        yield {"type": "final_answer", "data": {"content": l1_result.answer}}
+                        return
+        # ── End V5 Routing Tier ──────────────────────────────────────────
 
         from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
 
@@ -260,7 +453,8 @@ class CognitiveKernel:
                 timeout_sec=int(settings.kernel_agent_timeout_sec),
                 max_parallel=int(settings.kernel_agent_max_parallel),
             )
-            resp_v2 = await orchestrator.process(
+            final_content = None
+            async for event in orchestrator.stream(
                 OrchestratorV4Request(
                     query=request.query,
                     session_id=request.session_id,
@@ -271,48 +465,17 @@ class CognitiveKernel:
                         "web_enabled": request.web_enabled,
                     },
                 )
-            )
-            adaptive_profile = (resp_v2.metadata or {}).get("adaptive_profile") or {}
-            if adaptive_profile:
-                yield {"type": "adaptive_profile", "data": adaptive_profile}
-            force_mode = (resp_v2.metadata or {}).get("force_mode")
-            if force_mode:
-                yield {"type": "force_mode", "data": {"mode": force_mode}}
-            for st in resp_v2.metadata.get("plan", {}).get("subtasks", []):
-                agent_type = str(st.get("agent_type", "agent"))
-                q = str(st.get("query", ""))
-                node_id = f"{agent_type}_{abs(hash(q)) % 100000}"
-                yield {"type": "dag_node_start", "data": {"node_id": node_id, "agent_type": agent_type, "depends_on": st.get("depends_on", [])}}
-                yield {"type": "agent_start", "data": {"agent_type": agent_type, "task_id": node_id, "query": q}}
-            for st in resp_v2.metadata.get("plan", {}).get("subtasks", []):
-                agent_type = str(st.get("agent_type", "agent"))
-                q = str(st.get("query", ""))
-                yield {"type": "agent_progress", "data": {"agent_type": agent_type, "task_id": f"{agent_type}_{abs(hash(q)) % 100000}", "progress": 50, "message": "执行中"}}
-            for ar in resp_v2.metadata.get("agent_results", []):
-                agent_type = str(ar.get("agent_type", "agent"))
-                task_id = str(ar.get("task_id", ""))
-                yield {"type": "dag_node_complete", "data": {"node_id": task_id, "agent_type": agent_type, "status": str(ar.get("status", "success")), "preview": str(ar.get("content", ""))[:200]}}
-                yield {"type": "agent_complete", "data": {"agent_type": agent_type, "task_id": task_id, "status": str(ar.get("status", "success")), "preview": str(ar.get("content", ""))[:200]}}
-            conflict_summary = None
-            for ann in (resp_v2.metadata or {}).get("annotations", []):
-                if isinstance(ann, dict) and ann.get("id") == "conflict_summary":
-                    conflict_summary = ann
-                    break
-            if conflict_summary:
-                yield {"type": "conflict_summary", "data": conflict_summary}
-            for p in resp_v2.metadata.get("phases", []):
-                yield {"type": "reasoning_step", "data": {"id": f"v4_{p.get('phase', 'STEP')}", "stage": str(p.get("phase", "STEP")), "content": str(p), "node_id": None, "status": "done"}}
-            answer_draft = str((resp_v2.metadata or {}).get("answer_draft", "")).strip()
-            if answer_draft:
-                yield {"type": "answer_draft", "data": {"content": answer_draft}}
-            content = (resp_v2.content or answer_draft or str((resp_v2.metadata or {}).get("fusion", {}).get("context", "")).strip() or "").strip()
-            if not content:
-                content = "我已经完成了推理，但当前没有生成可展示的最终文本。请稍后重试，或尝试换一种更明确的问法。"
-            if content:
-                step = 24
-                for i in range(0, len(content), step):
-                    yield {"type": "delta", "data": {"text": content[i : i + step]}}
-            yield {"type": "final_answer", "data": {"content": content, "execution_graph": (resp_v2.metadata or {}).get("execution_graph"), "citations": (resp_v2.metadata or {}).get("citations", []), "annotations": (resp_v2.metadata or {}).get("annotations", []), "metadata": resp_v2.metadata}}
+            ):
+                # Track final answer for semantic cache
+                if event.get("type") == "final_answer":
+                    data = event.get("data", {})
+                    final_content = data.get("content") if isinstance(data, dict) else None
+                yield event
+
+            # Store in semantic cache after streaming completes
+            if settings.kernel_semantic_cache_enabled and final_content:
+                await self._get_semantic_cache().store(request.query, final_content)
+                yield event
         except Exception as exc:  # noqa: BLE001
             if is_identity_user_query(request.query):
                 yield {"type": "final_answer", "data": {"content": CANONICAL_IDENTITY_RESPONSE, "execution_graph": None, "citations": [], "annotations": []}}
@@ -320,80 +483,13 @@ class CognitiveKernel:
             yield {"type": "error", "data": {"message": str(exc)}}
         return
 
-        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-
-        async def emit(event: dict[str, Any]) -> None:
-            await queue.put(event)
-
-        async def run_orchestrator() -> None:
-            try:
-                orchestrator = CognitiveOrchestrator(
-                    intent_engine=self._get_intent_engine(),
-                    policy_engine=self._get_policy_engine(),
-                    reasoning_engine=self._get_reasoning_engine(),
-                    meta_cognition=self._get_meta_cognition(),
-                    stream_event_cb=emit,
-                )
-                resp = await orchestrator.process(
-                    OrchestratorRequest(
-                        query=request.query,
-                        session_id=request.session_id,
-                        user_id=request.user_id,
-                        history=request.history,
-                        metadata={
-                            **request.metadata,
-                            "web_enabled": request.web_enabled,
-                        },
-                    )
-                )
-
-                if sid and is_identity_user_query(request.query) and resp.content:
-                    cache_identity_answer(sid, request.query, resp.content)
-
-                await queue.put(
-                    {
-                        "type": "final_answer",
-                        "data": {
-                            "content": resp.content,
-                            "execution_graph": (resp.metadata or {}).get("execution_graph"),
-                        },
-                    }
-                )
-            except Exception as exc:  # noqa: BLE001
-                await queue.put({"type": "error", "data": {"message": str(exc)}})
-            finally:
-                await queue.put(None)
-
-        task = asyncio.create_task(run_orchestrator())
-        try:
-            while True:
-                event = await queue.get()
-                if event is None:
-                    break
-                if event.get("type") == "reasoning_step":
-                    data = event.get("data") or {}
-                    content = str(data.get("content", "")).strip()
-                    if content:
-                        yield {"type": "thinking", "data": {"content": content}}
-                    yield event
-                    continue
-                if event.get("type") == "final_answer":
-                    data = event.get("data") or {}
-                    content = str(data.get("content", ""))
-                    if content:
-                        step = 24
-                        for i in range(0, len(content), step):
-                            yield {"type": "delta", "data": {"text": content[i : i + step]}}
-                    yield event
-                    continue
-                yield event
-        finally:
-            await task
-
     # ── Helpers ───────────────────────────────────────────────────────
     def _classify_intent_domain(self, query: str) -> TaskDomain:
         q = (query or "").lower()
-        if any(k in q for k in ["查询", "统计", "报表", "销量", "订单", "sql", "数据库"]):
+        # SQL generation intent (user wants to *write* SQL, not execute)
+        if any(k in q for k in ["帮我写一段sql", "帮我写个sql", "帮我写sql", "写一个sql", "写一段sql", "写sql", "生成sql", "sql语句", "sql代码"]):
+            return TaskDomain.GENERAL_QA
+        if any(k in q for k in ["查询", "统计", "报表", "销量", "订单", "数据库"]):
             return TaskDomain.DATA_QUERY
         if any(k in q for k in ["文档", "手册", "pdf", "doc", "附件", "总结文档", "根据文档"]):
             return TaskDomain.DOCUMENT_RETRIEVAL
@@ -402,6 +498,163 @@ class CognitiveKernel:
         if any(k in q for k in ["执行", "工具", "调用", "计算", "时间", "天气"]):
             return TaskDomain.TOOL_EXECUTION
         return TaskDomain.GENERAL_QA
+
+    # ── Multi-question detection ────────────────────────────────────────
+    _MULTI_Q_HINTS = [
+        "第一个", "第二个", "第三个", "第一", "第二", "第三",
+        "并告诉我", "同时告诉我", "另外", "此外", "还有",
+        "再分析", "再查询", "再告诉我",
+    ]
+    _DOMAIN_DATA_KW = ["查询", "统计", "报表", "销量", "订单", "数据库", "sql", "表", "字段", "列", "聚合", "分组", "金额", "收入", "分布", "图表"]
+    _DOMAIN_RAG_KW = ["文档", "手册", "知识库", "总结", "归纳", "pdf", "doc", "附件", "政策", "规范", "记忆", "读取", ".pdf", ".doc", ".docx"]
+    _DOMAIN_WEB_KW = ["最新", "新闻", "今天", "实时", "联网", "搜索", "weather", "气温", "降雨", "资讯"]
+    _DOMAIN_TOOL_KW = ["时间", "几点", "天气", "计算", "代码", "执行", "翻译", "画图"]
+    _FACTUAL_Q_PATTERNS = ["首都", "国家", "哪里", "是谁", "哪个", "什么时候", "多少", "多大", "多远", "什么", "位于", "属于"]
+
+    def _classify_sub_question_domain(self, text: str) -> str:
+        t = (text or "").lower()
+        scores = {"data_query": 0, "document_retrieval": 0, "web_search": 0, "tool_execution": 0, "general_qa": 0}
+        for kw in self._DOMAIN_DATA_KW:
+            if kw in t:
+                scores["data_query"] += 1
+        for kw in self._DOMAIN_RAG_KW:
+            if kw in t:
+                scores["document_retrieval"] += 1
+        for kw in self._DOMAIN_WEB_KW:
+            if kw in t:
+                scores["web_search"] += 1
+        for kw in self._DOMAIN_TOOL_KW:
+            if kw in t:
+                scores["tool_execution"] += 1
+        # Factual/trivia patterns: if the question looks like a factual query
+        # AND no document/data signals are present, boost web_search.
+        has_factual = any(p in t for p in self._FACTUAL_Q_PATTERNS)
+        if has_factual and scores["document_retrieval"] == 0 and scores["data_query"] == 0:
+            scores["web_search"] = max(scores["web_search"], 2)
+        best = max(scores, key=scores.get)
+        return best if scores[best] > 0 else "general_qa"
+
+    def _is_multi_question(self, query: str) -> bool:
+        """Detect whether a query contains multiple sub-questions."""
+        q = (query or "").strip()
+
+        # Strongest signal: multiple question marks — check before length filter
+        qm_count = q.count("？") + q.count("?")
+        if qm_count >= 2:
+            return True
+
+        # Length filter: very short queries can't be multi-question
+        if len(q) < 15:
+            return False
+
+        # Check hints (并告诉我, 同时, 另外, etc.)
+        if any(hint in q for hint in self._MULTI_Q_HINTS):
+            return True
+
+        # Check IntentEngine's multi_step flag
+        try:
+            intent = self._get_intent_engine().parse(q)
+            if intent.multi_step:
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    def _split_by_syntax(self, query: str) -> list[str] | None:
+        """Attempt syntax-based splitting. Returns list of sub-question texts or None."""
+        q = (query or "").strip()
+
+        # Try question marks first — the most explicit delimiter
+        qm_parts = re.split(r"[？?]\s*", q)
+        qm_parts = [s.strip() for s in qm_parts if s.strip() and len(s.strip()) > 2]
+        if len(qm_parts) >= 2:
+            return qm_parts
+
+        # Try numbered patterns: "1. xxx 2. xxx" or "第一... 第二..."
+        numbered = re.split(r"(?:^|\n)\s*(?:\d+[\.\、\)]|第[一二三四五六七八九])", q)
+        numbered = [s.strip() for s in numbered if s.strip() and len(s.strip()) > 5]
+        if len(numbered) >= 2:
+            return numbered
+
+        # Try Chinese semicolons
+        if "；" in q:
+            parts = [s.strip() for s in q.split("；") if s.strip() and len(s.strip()) > 5]
+            if len(parts) >= 2:
+                return parts
+
+        # Try "并" / "同时" / "另外" as logical connectors between questions
+        logical_split = re.split(r"[，,]\s*(?:并|同时|另外|此外|还有)\s*", q)
+        logical_split = [s.strip() for s in logical_split if s.strip() and len(s.strip()) > 8]
+        if len(logical_split) >= 2:
+            return logical_split
+
+        return None
+
+    async def _split_by_llm(self, query: str) -> list[dict[str, str]] | None:
+        """Use PLANNING LLM to split a complex query into sub-questions."""
+        from model.llm_adapter.base import LLMMessage
+        from model.model_gateway.gateway import LLMRole
+
+        prompt = (
+            "你是一个问题分解器。将用户的复合问题拆分为独立的子问题列表，输出 JSON。\n"
+            "规则：\n"
+            "- 每个子问题应是一个独立、可单独回答的完整问题。\n"
+            "- domain 必须从以下选项中选择：\n"
+            "  · data_query — 数据库查询、统计、报表等\n"
+            "  · document_retrieval — 文档检索、知识库、总结归纳\n"
+            "  · web_search — 联网搜索、新闻、实时信息\n"
+            "  · tool_execution — 时间、天气、计算、代码执行\n"
+            "  · general_qa — 通用问答、分析、建议\n"
+            "- 如果用户只提了一个问题，返回包含该问题的单元素数组。\n"
+            '- 输出格式：{"questions": [{"id": "q1", "text": "...", "domain": "..."}]}\n'
+            f"用户输入：{query}"
+        )
+        try:
+            gw = self._get_gateway()
+            resp = await gw.complete(
+                [LLMMessage(role="user", content=prompt)],
+                role=LLMRole.PLANNING,
+                temperature=0.0,
+                max_tokens=400,
+            )
+            text = (resp.content or "").strip()
+            m = re.search(r"\{.*\}", text, re.DOTALL)
+            if not m:
+                return None
+            data = json.loads(m.group(0))
+            questions = data.get("questions", [])
+            if isinstance(questions, list) and len(questions) >= 2:
+                # Apply keyword heuristic to validate/override LLM domains
+                result = []
+                for i, q_data in enumerate(questions):
+                    if isinstance(q_data, dict):
+                        text_val = q_data.get("text", "")
+                        llm_domain = q_data.get("domain", "general_qa")
+                        heuristic_domain = self._classify_sub_question_domain(text_val)
+                        final_domain = heuristic_domain if heuristic_domain != "general_qa" else llm_domain
+                        result.append({
+                            "id": q_data.get("id", f"q{i+1}"),
+                            "text": text_val,
+                            "domain": final_domain,
+                        })
+                return result if len(result) >= 2 else None
+        except Exception:
+            pass
+        return None
+
+    async def _split_questions(self, query: str) -> list[dict[str, str]] | None:
+        """Split a multi-question query into sub-questions. Returns None for single questions."""
+        # Try syntax-based first
+        parts = self._split_by_syntax(query)
+        if parts and len(parts) >= 2:
+            return [
+                {"id": f"q{i+1}", "text": t, "domain": self._classify_sub_question_domain(t)}
+                for i, t in enumerate(parts)
+            ]
+
+        # Fall back to LLM
+        return await self._split_by_llm(query)
 
     def _map_complexity(self, complexity) -> str:
         """将 IntentEngine 的 complexity（float 或 str）统一为 simple/medium/complex。"""

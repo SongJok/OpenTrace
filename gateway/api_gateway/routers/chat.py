@@ -52,7 +52,7 @@ class ChatRequest(BaseModel):
     data_source_id: Optional[str] = None
     data_source_name: Optional[str] = None
     force_database: bool = False
-    force_mode: Optional[str] = Field(default=None, pattern="^(rag|data_query|data_analysis|anomaly_tracking)$")
+    force_mode: Optional[str] = Field(default=None, pattern="^(rag|data_query|data_analysis|anomaly_tracking|product|rule_engine)$")
 
 
 class ChatResponse(BaseModel):
@@ -98,6 +98,51 @@ class EditRegenerateRequest(BaseModel):
     new_content: str = Field(..., min_length=1, max_length=8192)
     stream: bool = True
     web_enabled: bool = False
+
+
+async def _load_conversation_history(
+    db: AsyncSession,
+    session_id: str,
+    limit: int = 10,
+) -> list[dict[str, str]]:
+    """Load recent conversation turns from trace logs for multi-turn context."""
+    try:
+        res = await db.execute(
+            select(TraceLog)
+            .where(TraceLog.session_id == session_id)
+            .order_by(TraceLog.created_at.desc())
+            .limit(limit)
+        )
+        logs = res.scalars().all()
+        # Reverse to chronological order (oldest first)
+        history: list[dict[str, str]] = []
+        for log in reversed(logs):
+            if log.query:
+                history.append({"role": "user", "content": log.query})
+            if log.response:
+                history.append({"role": "assistant", "content": log.response})
+        return history
+    except Exception:
+        return []
+
+
+def _is_sql_generation_intent(query: str) -> bool:
+    """Check if user wants to *write/generate* SQL rather than *execute* a query.
+
+    Examples: "帮我写一段SQL", "帮我写个sql", "写一个SQL查询", "帮我生成SQL"
+    These should produce SQL text via LLM, not execute against a database.
+    """
+    q = query.strip().lower()
+    sql_gen_keywords = [
+        "帮我写一段sql", "帮我写个sql", "帮我写sql",
+        "写一个sql", "写一段sql", "写sql",
+        "生成sql", "生成一段sql",
+        "sql语句", "sql代码", "sql查询语句",
+        "帮我写一段 sql", "帮我写个 sql",
+        "写一个 sql", "写一段 sql",
+        "create a sql", "write a sql", "generate sql",
+    ]
+    return any(kw in q for kw in sql_gen_keywords)
 
 
 async def _ensure_session(session_id: Optional[str], user: User, db: AsyncSession) -> str:
@@ -377,6 +422,9 @@ async def chat(
     session_id = await _ensure_session(req.session_id, current_user, db)
     set_user_session_context(user_id=current_user.id, session_id=session_id)
 
+    # Load conversation history for multi-turn support
+    conversation_history = await _load_conversation_history(db, session_id, limit=10)
+
     from kernel.cognitive_kernel import KernelRequest
 
     request_id = req.request_id or str(uuid.uuid4())
@@ -426,7 +474,7 @@ async def chat(
     }
     data_source_context: dict[str, Any] = {"data_source_id": None, "data_source_name": None, "database": None, "source_type": None, "schema": None}
     data_source_id = (req.data_source_id or "").strip() or None
-    force_database = bool(req.force_database) or _database_intent(req.query)
+    force_database = bool(req.force_database) or (_database_intent(req.query) and not _is_sql_generation_intent(req.query))
     if force_database and not data_source_id:
         data_source_context = await _load_data_source_context(db, current_user, None, req.query, force_database=True)
     else:
@@ -446,6 +494,7 @@ async def chat(
         query=req.query,
         session_id=session_id,
         user_id=current_user.id,
+        history=conversation_history,
         stream=req.stream,
         web_enabled=req.web_enabled,
         metadata={

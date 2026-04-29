@@ -15,9 +15,9 @@ class Stage7WorldModelDisambiguationContractTests(unittest.TestCase):
 
     def test_decision_trace_has_source_ratio(self):
         txt = (ROOT / "frontend/src/components/ChatMessage.tsx").read_text(encoding="utf-8")
-        self.assertIn("DB 证据占比", txt)
-        self.assertIn("Doc 证据占比", txt)
-        self.assertIn("Web 证据占比", txt)
+        self.assertIn("DB 证据", txt)
+        self.assertIn("Doc / Web", txt)
+        self.assertIn("sourceRatio.db", txt)
 
 
 if __name__ == "__main__":

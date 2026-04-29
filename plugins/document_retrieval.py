@@ -85,7 +85,9 @@ async def fetch_document_candidates(user_id: str, query: str, limit: int = 200) 
     return [DocumentCandidate(chunk=chunk, title=title or "Document") for chunk, title in rows]
 
 
-async def score_document_candidates(query: str, candidates: list[DocumentCandidate]) -> list[ScoredDocumentChunk]:
+async def score_document_candidates(
+    query: str, candidates: list[DocumentCandidate], query_type: str = "general"
+) -> list[ScoredDocumentChunk]:
     if not candidates:
         return []
 
@@ -95,6 +97,16 @@ async def score_document_candidates(query: str, candidates: list[DocumentCandida
         query_embedding = await build_query_embedding(query)
     except Exception:
         query_embedding = None
+
+    # Query-type-aware vector vs lexical weights
+    type_weights = {
+        "definition": (0.80, 0.20),  # rely more on semantic similarity
+        "fact": (0.50, 0.50),
+        "procedure": (0.40, 0.60),  # steps/actions match better via keywords
+        "comparison": (0.55, 0.45),
+        "general": (0.75, 0.25),
+    }
+    vw, lw = type_weights.get(query_type, type_weights["general"])
 
     scored: list[ScoredDocumentChunk] = []
     for candidate in candidates:
@@ -111,7 +123,7 @@ async def score_document_candidates(query: str, candidates: list[DocumentCandida
             except Exception:
                 vector_score = 0.0
 
-        score = max(vector_score, lexical_score * 0.92, (vector_score * 0.75) + (lexical_score * 0.25), lexical_score * 0.65)
+        score = max(vector_score, lexical_score * 0.92, (vector_score * vw) + (lexical_score * lw), lexical_score * 0.65)
         score += title_boost(title, query_terms)
         score = apply_rerank_boost(score, query_terms, title, chunk.content or "")
 
@@ -150,9 +162,27 @@ def apply_rerank_boost(score: float, query_terms: list[str], title: str, content
     overlap = sum(1 for term in query_terms if term in text_l)
     if overlap == 0:
         return score * 0.95
-    if overlap >= max(2, len(query_terms) // 3):
-        return min(0.999, score + 0.06)
-    return min(0.999, score + 0.02)
+
+    # Proportional bonus: more terms matched → higher boost (up to 0.10)
+    ratio = overlap / max(1, len(query_terms))
+    proportional_bonus = min(0.10, ratio * 0.12)
+
+    # Phrase bonus: 2+ consecutive query terms appearing in order
+    phrase_bonus = 0.0
+    if len(query_terms) >= 2:
+        for i in range(len(query_terms) - 1):
+            phrase = " ".join(query_terms[i : i + 2])
+            if phrase in text_l:
+                phrase_bonus = 0.08
+                break
+
+    # Position bonus: terms in the first 20% of content
+    position_bonus = 0.0
+    content_l = (content or "").lower()
+    if content_l and any(term in content_l[: max(1, len(content_l) // 5)] for term in query_terms[:4]):
+        position_bonus = 0.05
+
+    return min(0.999, score + proportional_bonus + phrase_bonus + position_bonus)
 
 
 async def _fetch_document_candidates_vector(user_id: str, query: str, limit: int) -> list[DocumentCandidate]:

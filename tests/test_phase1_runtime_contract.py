@@ -21,11 +21,18 @@ class Phase1RuntimeContractTests(unittest.TestCase):
         self.assertIn("adaptive_profile", code)
         self.assertIn("get_profile_defaults", code)
 
-    def test_stream_path_forwards_answer_draft_event(self):
+    def test_stream_path_delegates_to_orchestrator_stream(self):
         with open("kernel/cognitive_kernel.py", "r", encoding="utf-8") as f:
             code = f.read()
 
-        self.assertIn('"type": "answer_draft"', code)
+        # After TTFT optimization, stream() delegates to orchestrator.stream()
+        self.assertIn("orchestrator.stream", code)
+        self.assertIn("async for event in orchestrator.stream", code)
+
+        # answer_draft event is emitted by orchestrator_v4's stream method
+        with open("kernel/orchestrator_v4.py", "r", encoding="utf-8") as f:
+            v4_code = f.read()
+        self.assertIn('"type": "answer_draft"', v4_code)
 
 
 if __name__ == "__main__":

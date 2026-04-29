@@ -15,12 +15,13 @@ from model.model_gateway.gateway import LLMRole, get_model_gateway
 
 @dataclass
 class SubTask:
-    agent_type: Literal["data", "tool", "web", "memory", "rag"]
+    agent_type: Literal["data", "tool", "web", "memory", "rag", "rule_engine"]
     query: str
     params: dict[str, Any] = field(default_factory=dict)
     depends_on: list[str] = field(default_factory=list)
-    priority: Literal["high", "normal"] = "normal"
     priority: Literal["high", "normal", "low"] = "normal"
+    sub_question_id: str = ""
+    display_order: int = 0
 
 
 @dataclass
@@ -29,6 +30,7 @@ class TaskPlan:
     merge_strategy: Literal["union", "compare", "prioritized"] = "prioritized"
     max_parallel: int = 3
     adaptive_profile: dict[str, Any] = field(default_factory=dict)
+    is_multi_question: bool = False
 
 
 class PlanAgent:
@@ -262,3 +264,166 @@ class PlanAgent:
             except Exception:
                 pass
         return plan
+
+    _DOMAIN_AGENT_MAP = {
+        "data_query": "data",
+        "document_retrieval": "rag",
+        "web_search": "web",
+        "tool_execution": "tool",
+        "general_qa": "tool",
+    }
+
+    def _build_params_for_agent(
+        self, agent_type: str, sq: dict[str, str], selected_data_source_id: str
+    ) -> dict[str, Any]:
+        """Build sensible default params per agent type."""
+        params: dict[str, Any] = {}
+        if agent_type == "data" and selected_data_source_id:
+            params["data_source_id"] = selected_data_source_id
+        elif agent_type == "rag":
+            params.update({
+                "top_k": 8,
+                "sources": ["documents", "semantic_memory"],
+                "min_evidence_score": 0.65,
+                "fallback_to_web": True,
+            })
+        elif agent_type == "web":
+            params["fallback_to_web"] = True
+        return params
+
+    async def generate_multi_plan(
+        self, sub_questions: list[dict[str, str]], context: dict[str, Any] | None = None
+    ) -> TaskPlan:
+        """Generate a multi-question TaskPlan with ordered subtasks."""
+        adaptive_profile = (context or {}).get("adaptive_profile") if isinstance(context, dict) else {}
+        if not isinstance(adaptive_profile, dict):
+            adaptive_profile = {}
+
+        selected_data_source_id = ""
+        has_rag = bool(settings.kernel_agent_rag_enabled)
+        has_web = True
+        if isinstance(context, dict):
+            md = context.get("metadata") if isinstance(context, dict) else {}
+            if isinstance(md, dict):
+                selected_data_source_id = str(md.get("data_source_id", "") or "").strip()
+
+        # Build domain context for the LLM
+        domain_summary = "\n".join(
+            f"  q{i+1}[{sq.get('domain', 'general_qa')}]: {sq.get('text', '')}"
+            for i, sq in enumerate(sub_questions)
+        )
+        context_hints = []
+        if selected_data_source_id:
+            context_hints.append(f"- 已配置数据源(data_source_id={selected_data_source_id})，data_query 类问题应使用 data agent")
+        else:
+            context_hints.append("- 未配置数据源，data_query 类问题应降级为 tool agent")
+        if not has_rag:
+            context_hints.append("- RAG agent 当前不可用，document_retrieval 类问题应降级为 tool agent")
+
+        prompt = (
+            "你是任务规划专家。用户提出了多个子问题，为每个子问题分配合适的 agent_type 和查询文本。\n"
+            "可用 agent_type：data(数据库/结构化查询), rag(文档/知识库检索), web(联网搜索), tool(通用工具/问答)。\n"
+            "规则：\n"
+            "- 根据每个子问题的 domain 选择 agent_type\n"
+            f"{chr(10).join(context_hints) if context_hints else ''}\n"
+            "- query 字段可以改写原问题使其更精准，也可以保持原样\n"
+            "- 如果 rag agent 可用，为文档检索类问题添加 params: {\"top_k\": 8, \"sources\": [\"documents\", \"semantic_memory\"]}\n"
+            "- 如果 data agent 可用且有数据源，为数据查询类问题添加 params: {\"data_source_id\": \"...\"}\n"
+            '- 输出 JSON：{"subtasks": [{"agent_type": "rag", "query": "...", "params": {}}]}\n'
+            f"子问题列表（含 domain）：\n{domain_summary}"
+        )
+
+        subtasks: list[SubTask] = []
+        try:
+            gw = get_model_gateway()
+            resp = await gw.complete(
+                [LLMMessage(role="system", content=prompt),
+                 LLMMessage(role="user", content=json.dumps(sub_questions, ensure_ascii=False))],
+                role=LLMRole.PLANNING,
+                temperature=0.0,
+                max_tokens=500,
+            )
+            text = (resp.content or "").strip()
+            s = text[text.find("{") : text.rfind("}") + 1]
+            data = json.loads(s)
+            for i, st_data in enumerate(data.get("subtasks", [])):
+                if not isinstance(st_data, dict):
+                    continue
+                sq = sub_questions[i] if i < len(sub_questions) else None
+                agent_type = st_data.get("agent_type", "tool")
+                st_params = dict(st_data.get("params", {}))
+                if not st_params:
+                    st_params = self._build_params_for_agent(agent_type, sq or {}, selected_data_source_id)
+                subtasks.append(
+                    SubTask(
+                        agent_type=agent_type,
+                        query=st_data.get("query", sq.get("text", "") if sq else ""),
+                        params=st_params,
+                        sub_question_id=sq.get("id", f"q{i+1}") if sq else f"q{i+1}",
+                        display_order=i + 1,
+                        priority="high" if i == 0 else "normal",
+                    )
+                )
+        except Exception:
+            # Heuristic fallback: assign types based on domain
+            for i, sq in enumerate(sub_questions):
+                domain = sq.get("domain", "general_qa")
+                agent_type = self._DOMAIN_AGENT_MAP.get(domain, "tool")
+                # Downgrade data→tool if no data source
+                if agent_type == "data" and not selected_data_source_id:
+                    agent_type = "tool"
+                if agent_type == "rag" and not has_rag:
+                    agent_type = "tool"
+                subtasks.append(
+                    SubTask(
+                        agent_type=agent_type,
+                        query=sq.get("text", ""),
+                        params=self._build_params_for_agent(agent_type, sq, selected_data_source_id),
+                        sub_question_id=sq.get("id", f"q{i+1}"),
+                        display_order=i + 1,
+                        priority="high" if i == 0 else "normal",
+                    )
+                )
+
+        if not subtasks:
+            return TaskPlan(subtasks=[], merge_strategy="prioritized", is_multi_question=True)
+
+        self.__attach_deps_multi(subtasks, sub_questions)
+
+        return TaskPlan(
+            subtasks=subtasks,
+            merge_strategy="prioritized",
+            max_parallel=min(5, len(subtasks)),
+            adaptive_profile=get_profile_defaults(str(adaptive_profile.get("name", "balanced") or "balanced")),
+            is_multi_question=True,
+        )
+
+    def __attach_deps_multi(self, sts: list[SubTask], sub_questions: list[dict[str, str]]) -> None:
+        """Attach cross-question dependencies across all agent types."""
+        if not sts or len(sub_questions) < 2:
+            return
+        sq_to_st: dict[str, SubTask] = {}
+        for s in sts:
+            if s.sub_question_id:
+                sq_to_st[s.sub_question_id] = s
+
+        # Reference words that imply dependency on previous results
+        _DEP_REFERENCES = [
+            "它们", "这些", "上述", "其", "该产品", "该结果",
+            "基于以上", "根据以上", "根据上述", "在此基础上",
+            "based on the above", "based on that", "these",
+            "its", "their", "the above", "those results",
+        ]
+
+        for sq in sub_questions:
+            text = sq.get("text", "")
+            if any(ref in text.lower() for ref in _DEP_REFERENCES):
+                idx = sub_questions.index(sq)
+                if idx > 0:
+                    prev_sq = sub_questions[idx - 1]
+                    prev_st = sq_to_st.get(prev_sq.get("id", ""))
+                    current_st = sq_to_st.get(sq.get("id", ""))
+                    if prev_st and current_st:
+                        node_id = f"node_{sts.index(prev_st)}_{prev_st.agent_type}"
+                        if node_id not in current_st.depends_on:
+                            current_st.depends_on.append(node_id)

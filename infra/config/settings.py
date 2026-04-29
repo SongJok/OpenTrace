@@ -72,6 +72,30 @@ class LLMSettings(BaseSettings):
     default_llm_planing_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     default_llm_planing_api_key: str = ""
 
+    # SeniorShort LLM (14B) — knowledge Q&A, cheap critic
+    default_llm_seniorshort_provider: str = "阿里巴巴Qwen(DashScope)"
+    default_llm_seniorshort_model: str = "qwen3-14b"
+    default_llm_seniorshort_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    default_llm_seniorshort_api_key: str = ""
+
+    # MiddleShort LLM (8B) — simple/FAQ answers
+    default_llm_middleshort_provider: str = "阿里巴巴Qwen(DashScope)"
+    default_llm_middleshort_model: str = "qwen3-8b"
+    default_llm_middleshort_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    default_llm_middleshort_api_key: str = ""
+
+    # JuniorShort LLM (1.7B) — L1 router/classification
+    default_llm_juniorshort_provider: str = "阿里巴巴Qwen(DashScope)"
+    default_llm_juniorshort_model: str = "qwen3-1.7b"
+    default_llm_juniorshort_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    default_llm_juniorshort_api_key: str = ""
+
+    # MinShort LLM (0.6B) — reserved for future use
+    default_llm_minshort_provider: str = "阿里巴巴Qwen(DashScope)"
+    default_llm_minshort_model: str = "qwen3-0.6b"
+    default_llm_minshort_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    default_llm_minshort_api_key: str = ""
+
 
 class EmbeddingSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -199,6 +223,18 @@ class AppSettings(BaseSettings):
     kernel_fusion_enabled: bool = False
     kernel_critic_enabled: bool = False
     kernel_critic_max_retry: int = 2
+
+    # V5 Routing Tier
+    kernel_v5_routing_enabled: bool = True
+    kernel_l0_rule_router_enabled: bool = True
+    kernel_l1_tiny_router_enabled: bool = True
+    kernel_semantic_cache_enabled: bool = True
+    kernel_semantic_cache_threshold: float = 0.92
+    kernel_semantic_cache_ttl_seconds: int = 3600
+    kernel_semantic_cache_max_entries: int = 10000
+    kernel_l1_router_model: str = "juniorshort"
+    kernel_l1_fast_answer_model: str = "middleshort"
+    kernel_l1_knowledge_model: str = "seniorshort"
 
 
 class Settings(

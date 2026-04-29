@@ -7,7 +7,7 @@ class AdaptivePlanningContractTests(unittest.TestCase):
             code = f.read()
 
         self.assertIn("adaptive_profile: dict[str, Any]", code)
-        self.assertIn("return TaskPlan(subtasks=subtasks, merge_strategy=merge_strategy, max_parallel=max_parallel, adaptive_profile=adaptive_profile)", code)
+        self.assertIn("plan = TaskPlan(subtasks=subtasks, merge_strategy=merge_strategy, max_parallel=max_parallel, adaptive_profile=", code)
 
     def test_quality_profile_can_expand_requirements(self):
         with open("kernel/plan_agent.py", "r", encoding="utf-8") as f:

@@ -24,6 +24,7 @@ from gateway.api_gateway.routers import (
     feedback,
     health,
     memories,
+    rules,
     sandbox,
     skills,
     tasks,
@@ -123,3 +124,4 @@ app.include_router(databases.router, prefix="/api/v1", tags=["databases"])
 app.include_router(feedback.router, prefix="/api/v1", tags=["feedback"])
 app.include_router(sandbox.router, prefix="/api/v1", tags=["sandbox"])
 app.include_router(admin.router, prefix="/api/v1", tags=["admin"])
+app.include_router(rules.router, prefix="/api/v1", tags=["rules"])

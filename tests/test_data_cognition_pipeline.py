@@ -383,8 +383,8 @@ class TestSQLRewriterValidation(unittest.TestCase):
                 gw_mock.return_value.complete = AsyncMock(return_value=mock_resp)
                 return await rewriter.rewrite("SELECT 1", "error", dialect=detect_sql_dialect("mysql"))
 
-        # Empty output should fall back to original SQL
-        self.assertEqual(asyncio.run(_run()), "SELECT 1")
+        # Empty output should return None (repair failed)
+        self.assertIsNone(asyncio.run(_run()))
 
     def test_rejects_non_select_output(self):
         from kernel.data_cognition.sql_rewriter import SQLRewriter
@@ -397,7 +397,8 @@ class TestSQLRewriterValidation(unittest.TestCase):
                 gw_mock.return_value.complete = AsyncMock(return_value=mock_resp)
                 return await rewriter.rewrite("SELECT 1", "error", dialect=detect_sql_dialect("mysql"))
 
-        self.assertEqual(asyncio.run(_run()), "SELECT 1")
+        # Non-SELECT output should return None (repair failed)
+        self.assertIsNone(asyncio.run(_run()))
 
     def test_cleans_markdown_fences(self):
         from kernel.data_cognition.sql_rewriter import SQLRewriter
@@ -411,6 +412,7 @@ class TestSQLRewriterValidation(unittest.TestCase):
                 return await rewriter.rewrite("SELECT 1", "error", dialect=detect_sql_dialect("mysql"))
 
         result = asyncio.run(_run())
+        self.assertIsNotNone(result)
         self.assertNotIn("```", result)
         self.assertIn("SELECT", result)
 

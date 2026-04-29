@@ -16,12 +16,12 @@ class RagRetrievalE2EContractTests(unittest.TestCase):
 
     def test_document_plugin_returns_title_metadata(self):
         txt = self._read("plugins/document_plugin.py")
-        self.assertIn('"document_title": title', txt)
+        self.assertIn('"document_title": item.title', txt)
         self.assertIn("title_boost", txt)
 
     def test_rag_agent_tries_title_seeded_queries(self):
         txt = self._read("agents/rag_agent.py")
-        self.assertIn("search_queries = [query]", txt)
+        self.assertIn("search_queries = [rewritten_query]", txt)
         self.assertIn("title_seed = \" \".join(query_terms[:4])", txt)
         self.assertIn("matched_query", txt)
 

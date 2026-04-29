@@ -319,13 +319,10 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
               </div>
               <input className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent" placeholder="别名" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
               <div className="text-[11px] text-[var(--text-secondary)]">
-                示例 MySQL：`127.0.0.1` / `root` / `950514` / `test_db`
+                示例 MySQL：`127.0.0.1` / `root` / `123456` / `test_db`
               </div>
               <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] px-3 py-2 text-[11px] text-[var(--text-secondary)] space-y-1">
                 <div>仅支持连接本机/宿主机或外部链接数据库，不提供 Docker 内数据库创建入口。</div>
-                <div>如果 API 跑在 Docker 中，`localhost` / `127.0.0.1` 会自动映射到宿主机网关；也可以直接填写 `host.docker.internal` 或宿主机 IP。</div>
-                <div>这里只支持宿主机或外部可达数据库，不支持新增 Docker 内部服务名（例如 `mysql`、`postgres`、`db`）。</div>
-                <div>完整 JDBC 可以直接粘贴到 host 或 JDBC 输入框，保存前会自动解析出 host / port / database。</div>
               </div>
               <DatabaseTypeSelect
                 value={form.source_type}

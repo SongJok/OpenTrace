@@ -7,7 +7,7 @@ class RagFusionOutputContractTests(unittest.TestCase):
             code = f.read()
         self.assertIn("elif r.agent_type == \"rag\":", code)
         self.assertIn("chunks = (r.metadata or {}).get(\"chunks\")", code)
-        self.assertIn("未检索到相关内部文档或记忆。", code)
+        self.assertIn("Skip creating document ToolResult when no chunks found", code)
 
     def test_fusion_engine_masks_document_structured_payload(self):
         with open("kernel/fusion_engine/engine.py", "r", encoding="utf-8") as f:

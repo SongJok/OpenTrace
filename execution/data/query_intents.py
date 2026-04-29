@@ -38,6 +38,16 @@ def is_database_question(query: str) -> bool:
     text = (query or "").strip()
     if not text:
         return False
+    # Exclude SQL generation intent — user wants to write SQL, not execute query
+    sql_gen_keywords = [
+        "帮我写一段sql", "帮我写个sql", "帮我写sql",
+        "写一个sql", "写一段sql", "写sql",
+        "生成sql", "生成一段sql",
+        "sql语句", "sql代码", "sql查询语句",
+        "write a sql", "create a sql", "generate sql",
+    ]
+    if any(kw in text.lower() for kw in sql_gen_keywords):
+        return False
     return bool(
         ENGLISH_DATABASE_PATTERN.search(text)
         or CHINESE_DATABASE_PATTERN.search(text)

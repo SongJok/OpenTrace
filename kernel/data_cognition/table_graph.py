@@ -30,7 +30,7 @@ class TableRelationshipGraph:
         ],
         'doris': [
             (r'^(.+?)_key$', r'\1_id'),    # user_key → user_id
-            (r'^(.*)_id$', r'\1_id'),
+            (r'^(.*)_id$', r'\1_id'),      # user_id → user_id (identity, before generic id)
             (r'^(.+?)id$', r'\1_id'),
         ],
         'mysql': [
@@ -75,9 +75,8 @@ class TableRelationshipGraph:
         # Apply dialect-specific patterns in order
         patterns = self.DIALECT_PATTERNS.get(self.dialect, self.DIALECT_PATTERNS['mysql'])
         for pattern, replacement in patterns:
-            normalized = re.sub(pattern, replacement, col)
-            if normalized != col:
-                return normalized
+            if re.search(pattern, col):
+                return re.sub(pattern, replacement, col)
         
         # Generic fallback: strip common suffixes
         col = re.sub(r'(_id|id_|_key|key_)$', '', col)

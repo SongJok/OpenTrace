@@ -125,6 +125,7 @@ class DataAgent(BaseAgent):
                 schema_summary=schema_hint,
                 table_names=table_names,
                 semantic_config=semantic_config,
+                table_columns=table_columns,
             )
             self._query_planner = QueryPlanner(
                 table_names=table_names, schema_summary=schema_hint,
@@ -326,13 +327,23 @@ class DataAgent(BaseAgent):
                 validation = self.reflector.validate_result(current_sql, rows, query, semantic_ctx)
                 if validation.passed or attempt >= max_rounds:
                     return rows, current_sql
-                current_sql = await rewriter.rewrite(current_sql, "; ".join(validation.issues), schema_hint, dialect)
-                current_sql = self.validator.validate(current_sql)
+                fixed_sql = await rewriter.rewrite(current_sql, "; ".join(validation.issues), schema_hint, dialect)
+                if not fixed_sql:
+                    break
+                try:
+                    current_sql = self.validator.validate(fixed_sql)
+                except Exception:
+                    break
             except Exception as exc:
                 if attempt >= max_rounds:
                     raise
-                current_sql = await rewriter.rewrite(current_sql, str(exc), schema_hint, dialect)
-                current_sql = self.validator.validate(current_sql)
+                fixed_sql = await rewriter.rewrite(current_sql, str(exc), schema_hint, dialect)
+                if not fixed_sql:
+                    break
+                try:
+                    current_sql = self.validator.validate(fixed_sql)
+                except Exception:
+                    break
 
         return [], current_sql
 

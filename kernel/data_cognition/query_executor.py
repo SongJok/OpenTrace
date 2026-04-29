@@ -143,12 +143,11 @@ class QueryExecutor:
     ) -> tuple[str | None, list]:
         """Use LLM to rewrite SQL based on error feedback. Returns corrected SQL or None."""
         try:
-            new_sql, attempts = await rewriter.rewrite(
+            new_sql = await rewriter.rewrite(
                 current_sql, error, schema_hint, dialect, attempt_num=attempt_num,
             )
-            # Validate the rewritten SQL is non-empty and different
             if new_sql and len(new_sql) > 5 and new_sql.strip().lower().startswith(("select", "with")):
-                return new_sql, attempts
+                return new_sql, rewriter.attempts
         except Exception:
             pass
         return None, rewriter.attempts
@@ -163,12 +162,10 @@ class QueryExecutor:
     ) -> LogicalPlan:
         """Use LLM to rewrite the LogicalPlan based on error feedback."""
         rewriter = SQLRewriter()
-        # Rewrite the SQL and parse the result back into a plan adjustment
         current_sql = self._builder.build(plan, dialect)
         try:
-            new_sql, _ = await rewriter.rewrite(current_sql, error, schema_hint, dialect)
+            new_sql = await rewriter.rewrite(current_sql, error, schema_hint, dialect)
             if new_sql and new_sql != current_sql:
-                # Try to extract useful info from the corrected SQL
                 plan.metadata["last_error"] = error
                 plan.metadata["rewritten_sql"] = new_sql
                 plan.metadata["trace_id"] = rewriter.trace_id

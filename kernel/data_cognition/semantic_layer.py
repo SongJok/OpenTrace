@@ -132,25 +132,102 @@ class SemanticLayer:
 
     @staticmethod
     def extract_time_intent(query: str) -> dict[str, Any] | None:
-        """Heuristic time intent extraction when semantic config is sparse."""
+        """Heuristic time intent extraction when semantic config is sparse.
+
+        Returns:
+            {"type": "time_window", "days": N, "column": str|None, "raw": str}
+        or for absolute ranges:
+            {"type": "date_range", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "column": str|None}
+        """
+        # Absolute date range: "2024年1月15日到2024年3月20日"
+        m = re.search(r"(\d{4})[年-](\d{1,2})[月-](\d{1,2})\s*(?:到|至|~|-)\s*(\d{4})[年-](\d{1,2})[月-](\d{1,2})", query)
+        if m:
+            return {
+                "type": "date_range",
+                "start": f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}",
+                "end": f"{m.group(4)}-{int(m.group(5)):02d}-{int(m.group(6)):02d}",
+                "column": None, "raw": m.group(0),
+            }
+
+        # Month range: "2024年1月到2024年6月"
+        m = re.search(r"(\d{4})[年-](\d{1,2})月\s*(?:到|至|~|-)\s*(\d{4})[年-](\d{1,2})月", query)
+        if m:
+            import calendar
+            start_year, start_month = int(m.group(1)), int(m.group(2))
+            end_year, end_month = int(m.group(3)), int(m.group(4))
+            _, start_last = calendar.monthrange(start_year, start_month)
+            _, end_last = calendar.monthrange(end_year, end_month)
+            return {
+                "type": "date_range",
+                "start": f"{start_year}-{start_month:02d}-01",
+                "end": f"{end_year}-{end_month:02d}-{end_last}",
+                "column": None, "raw": m.group(0),
+            }
+
         patterns = [
+            (r"前\s*(\d+)\s*个?[月天日周]", "days", {"月": 30, "天": 1, "日": 1, "周": 7}),
             (r"最近\s*(\d+)\s*个?[月天日]", "days", {"月": 30, "天": 1, "日": 1}),
             (r"近\s*(\d+)\s*个?[月天日]", "days", {"月": 30, "天": 1, "日": 1}),
-            (r"过去\s*(\d+)\s*个?[月天日]", "days", {"月": 30, "天": 1, "日": 1}),
+            (r"过去\s*(\d+)\s*个?[月天日周]", "days", {"月": 30, "天": 1, "日": 1, "周": 7}),
             (r"last\s+(\d+)\s+(day|week|month)s?", "days", {"day": 1, "week": 7, "month": 30}),
+            (r"过去一年", "days_fixed", 365),
+            (r"过去半年", "days_fixed", 180),
             (r"最近一周", "days_fixed", 7),
             (r"最近一个月", "days_fixed", 30),
             (r"近一个月", "days_fixed", 30),
             (r"近一周", "days_fixed", 7),
+            (r"上个月", "month_offset", -1),
+            (r"上月", "month_offset", -1),
         ]
         for pattern, mode, unit_map in patterns:
             m = re.search(pattern, query)
             if not m:
                 continue
             if mode == "days_fixed":
-                return {"type": "time_window", "days": unit_map, "column": None}
+                return {"type": "time_window", "days": unit_map, "column": None, "raw": m.group(0)}
+            if mode == "month_offset":
+                from datetime import datetime
+                now = datetime.now()
+                month = now.month + unit_map
+                year = now.year
+                while month < 1:
+                    month += 12
+                    year -= 1
+                while month > 12:
+                    month -= 12
+                    year += 1
+                import calendar
+                _, last_day = calendar.monthrange(year, month)
+                start = f"{year}-{month:02d}-01"
+                end = f"{year}-{month:02d}-{last_day}"
+                return {"type": "date_range", "start": start, "end": end, "column": None, "raw": m.group(0)}
             n = int(m.group(1))
             unit = m.group(2) if m.lastindex and m.lastindex >= 2 else "天"
             days = n * (unit_map.get(unit, 1) if isinstance(unit_map, dict) else 1)
-            return {"type": "time_window", "days": days, "column": None}
+            col = SemanticLayer._guess_time_column_from_query(query)
+            return {"type": "time_window", "days": days, "column": col, "raw": m.group(0)}
+
+        # Absolute date: "2024年1月" or "2024-01-15"
+        m = re.search(r"(\d{4})[年-](\d{1,2})[月-](\d{1,2})", query)
+        if m:
+            date_str = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+            return {"type": "date_exact", "start": date_str, "end": date_str, "column": None, "raw": m.group(0)}
+
+        return None
+
+    @staticmethod
+    def _guess_time_column_from_query(query: str) -> str | None:
+        """Extract a likely time column hint from query text."""
+        # Check for explicit column mentions
+        time_col_patterns = [
+            (r"(?:订单|下单|创建)(?:时|时间|日期)", "order_time"),
+            (r"(?:支付|付款|成交)(?:时|时间|日期)", "pay_time"),
+            (r"(?:发货|配送)(?:时|时间|日期)", "ship_time"),
+            (r"(?:更新|修改)(?:时|时间|日期)", "updated_at"),
+            (r"(?:注册| signup)(?:时|时间|日期)", "register_time"),
+            (r"(?:登录|访问)(?:时|时间|日期)", "login_time"),
+        ]
+        for pattern, col in time_col_patterns:
+            if re.search(pattern, query):
+                return col
         return None

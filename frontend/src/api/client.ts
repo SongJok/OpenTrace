@@ -646,4 +646,94 @@ export async function apiPatchUiSettings(token: string, payload: any): Promise<a
   return res.json()
 }
 
+// ── Rules API ────────────────────────────────────────────────────────
+export interface RuleItem {
+  id: string
+  name: string
+  trigger: string
+  description: string
+  version: string
+  filename: string
+  data_sources_count: number
+  conditions_count: number
+  outputs_count: number
+}
+
+export interface RuleCondition {
+  id: string
+  data_ref: string
+  expr: string
+}
+
+export interface RuleOutput {
+  label: string
+  when: string[]
+  template: string
+}
+
+export interface RuleDataSource {
+  label: string
+  type: string
+  description?: string
+  sql?: string
+  value?: Record<string, unknown>
+}
+
+export interface RuleFormData {
+  id: string
+  name: string
+  trigger: string
+  description: string
+  version: string
+  data_sources: RuleDataSource[]
+  conditions: RuleCondition[]
+  outputs: RuleOutput[]
+}
+
+export async function apiListRules(token: string): Promise<RuleItem[]> {
+  const res = await apiFetch('/rules', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error('Failed to list rules')
+  return res.json()
+}
+
+export async function apiGetRule(token: string, filename: string): Promise<RuleFormData & { yaml_raw: string; filename: string }> {
+  const res = await apiFetch(`/rules/${encodeURIComponent(filename)}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error('Failed to get rule')
+  return res.json()
+}
+
+export async function apiCreateRule(token: string, payload: RuleFormData): Promise<any> {
+  const res = await apiFetch('/rules', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error('Failed to create rule')
+  return res.json()
+}
+
+export async function apiUpdateRule(token: string, filename: string, payload: RuleFormData): Promise<any> {
+  const res = await apiFetch(`/rules/${encodeURIComponent(filename)}`, {
+    method: 'PUT', headers: authHeaders(token), body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error('Failed to update rule')
+  return res.json()
+}
+
+export async function apiDeleteRule(token: string, filename: string): Promise<void> {
+  const res = await apiFetch(`/rules/${encodeURIComponent(filename)}`, {
+    method: 'DELETE', headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error('Failed to delete rule')
+}
+
+export async function apiGenerateRule(token: string, payload: {
+  id: string; name: string; trigger: string; description: string;
+  dataSourcesCount: number; conditionsCount: number; outputsCount: number;
+}): Promise<{ rule: RuleFormData; yaml_content: string; filename: string }> {
+  const res = await apiFetch('/rules/generate', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error('Failed to generate rule')
+  return res.json()
+}
+
 

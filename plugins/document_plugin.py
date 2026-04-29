@@ -130,9 +130,33 @@ def _normalize_keywords(keywords: Any, fallback_text: str) -> list[str]:
 
 def _fallback_llmwiki_entry(chunk: DocumentChunk, title: str) -> dict[str, Any]:
     body = " ".join((chunk.content or "").split())
-    summary = body[:220] if body else ""
-    question = f"{title or '这份文档'}的这部分主要讲了什么？"
-    answer = summary or "该片段暂无可用摘要。"
+    if not body:
+        return {
+            "question": f"{title or '这份文档'}的这部分主要讲了什么？",
+            "answer": "该片段暂无可用摘要。",
+            "keywords": [],
+        }
+
+    # Extract first definition-pattern sentence for a better question hint
+    import re
+    def_pattern = re.search(
+        r"([^\n。.!?;；]{2,40}?(?:是指|即为|就是|：|:)[^\n。.!?;；]{2,60})", body
+    )
+    entity_pattern = re.search(r"([^\n。.!?;；]{2,30}?(?:队长|负责人|管理员|操作员|角色|权限|资质|账号|任务|流程))", body)
+    first_sentence = body[:120].rsplit("。", 1)[0] if "。" in body[:120] else body[:120]
+
+    if def_pattern:
+        snippet = def_pattern.group(1).strip()
+        question = f"关于「{snippet[:30]}」，具体是怎么定义的？"
+        answer = snippet[:220]
+    elif entity_pattern:
+        entity = entity_pattern.group(1).strip()
+        question = f"关于「{entity}」，文档中是怎么说明的？"
+        answer = body[:220]
+    else:
+        question = f"{title or '这份文档'}的这部分主要讲了什么？"
+        answer = first_sentence[:220] if first_sentence else body[:220]
+
     keywords = _normalize_keywords([], f"{title}\n{body}")
     return {
         "question": question,
@@ -429,7 +453,14 @@ class DocumentPlugin(BasePlugin):
                 except Exception:
                     semantic = 0.0
 
-            score = max(semantic, keyword_overlap * 0.98, lexical * 0.92, (semantic * 0.7) + (keyword_overlap * 0.4))
+            # Weighted composite: semantic > keyword > lexical, with fallback chaining
+            if semantic >= 0.40:
+                composite = (semantic * 0.65) + (keyword_overlap * 0.25) + (lexical * 0.10)
+            elif keyword_overlap >= 0.40:
+                composite = (keyword_overlap * 0.55) + (semantic * 0.30) + (lexical * 0.15)
+            else:
+                composite = (semantic * 0.35) + (keyword_overlap * 0.35) + (lexical * 0.30)
+            score = max(semantic, keyword_overlap * 0.98, lexical * 0.92, composite)
             score += title_boost(str(title or ""), terms)
             score = min(score, 0.999)
             if score <= 0:

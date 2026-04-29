@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { BarChart3, Database, FileWarning, FileText, type LucideIcon } from 'lucide-react'
+import { BarChart3, Database, FileWarning, FileText, Package, type LucideIcon } from 'lucide-react'
 import Sidebar from '../components/Sidebar'
 import MessageList from '../components/MessageList'
 import ChatInput from '../components/ChatInput'
@@ -13,6 +13,7 @@ const QUICK_TAGS: Array<{ label: string; prefix: string; icon: LucideIcon }> = [
   { label: '数据查询', prefix: '/data_query', icon: Database },
   { label: '数据分析', prefix: '/data_analysis', icon: BarChart3 },
   { label: '异常追踪', prefix: '/skills', icon: FileWarning },
+  { label: '产品查询', prefix: '/product', icon: Package },
 ]
 
 function QuickTags() {

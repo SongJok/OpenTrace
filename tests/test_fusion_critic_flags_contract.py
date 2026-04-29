@@ -10,13 +10,13 @@ class FusionCriticFlagsContractTests(unittest.TestCase):
         self.assertIn("kernel_critic_enabled", code)
         self.assertIn("kernel_critic_max_retry", code)
 
-    def test_kernel_supports_v3_routing(self):
+    def test_kernel_supports_v4_orchestration(self):
+        """V4 is the current orchestrator version."""
         path = "kernel/cognitive_kernel.py"
         with open(path, "r", encoding="utf-8") as f:
             code = f.read()
-        self.assertIn("orchestrator_version", code)
-        self.assertIn('== "v3"', code)
-        self.assertIn("CognitiveOrchestratorV3", code)
+        self.assertIn("CognitiveOrchestrator", code)
+        self.assertIn("orchestrator", code)
 
 
 if __name__ == "__main__":

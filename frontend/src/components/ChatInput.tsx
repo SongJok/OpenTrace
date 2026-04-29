@@ -1,5 +1,5 @@
 import { useRef, useState, KeyboardEvent, useEffect, useCallback, type ReactNode } from 'react'
-import { Square, Paperclip, Globe, Brain, Settings2, Link2, Send, FileText, Database, BarChart3, FileWarning } from 'lucide-react'
+import { Square, Paperclip, Globe, Brain, Settings2, Link2, Send, FileText, Database, BarChart3, FileWarning, Package } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { useAuthStore } from '../store/auth'
 import {
@@ -30,7 +30,7 @@ function normalizeAnswerContent(content: unknown): string {
   }
 }
 
-export type ForceMode = 'rag' | 'data_query' | 'data_analysis' | 'anomaly_tracking' | null
+export type ForceMode = 'rag' | 'data_query' | 'data_analysis' | 'anomaly_tracking' | 'product' | null
 
 // Slash command prefixes → force_mode mapping
 const FORCE_MODE_PREFIXES: Record<string, ForceMode> = {
@@ -38,6 +38,7 @@ const FORCE_MODE_PREFIXES: Record<string, ForceMode> = {
   '/data_query': 'data_query',
   '/data_analysis': 'data_analysis',
   '/skills': 'anomaly_tracking',
+  '/product': 'product',
 }
 
 /**
@@ -64,6 +65,7 @@ const SLASH_COMMANDS: Array<{ prefix: string; mode: ForceMode; label: string; de
   { prefix: '/data_query', mode: 'data_query', label: '数据查询', description: '查询数据库' },
   { prefix: '/data_analysis', mode: 'data_analysis', label: '数据分析', description: '数据分析' },
   { prefix: '/skills', mode: 'anomaly_tracking', label: '异常追踪', description: '技能调用' },
+  { prefix: '/product', mode: 'product', label: '产品查询', description: '规则引擎查询' },
 ]
 
 interface SlashSuggestion {
@@ -674,6 +676,7 @@ const SLASH_ICON_MAP: Record<string, typeof FileText> = {
   '/data_query': Database,
   '/data_analysis': BarChart3,
   '/skills': FileWarning,
+  '/product': Package,
 }
 
 function SlashDropdown({

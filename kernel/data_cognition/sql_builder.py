@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from kernel.data_cognition.logical_plan import FilterSpec, LogicalPlan
+from kernel.data_cognition.logical_plan import FilterSpec, JoinSpec, LogicalPlan
 from kernel.data_cognition.sql_dialect import SQLDialectSpec, render_time_window
 
 
@@ -75,10 +75,45 @@ class SQLBuilder:
                 join_type = ""  # Default JOIN is INNER
             left = self._escape_ident(join.left_table, dialect)
             right = self._escape_ident(join.right_table, dialect)
-            on = join.on_clause or "1=1"  # guard against empty on_clause
+            on = join.on_clause
+            if not on:
+                # Avoid cartesian product: use table graph to find real join condition
+                on = self._resolve_join_on_clause(join, plan, dialect)
+                if not on:
+                    continue  # Skip join if no valid on_clause found
             from_parts.append(f"{join_type} JOIN {right} ON {on}".strip())
 
         return " ".join(from_parts)
+
+    def _resolve_join_on_clause(
+        self, join: JoinSpec, plan: LogicalPlan, dialect: SQLDialectSpec,
+    ) -> str:
+        """Resolve a missing on_clause using table relationship graph."""
+        from kernel.data_cognition.table_graph import TableRelationshipGraph
+        graph = TableRelationshipGraph()
+        table_cols = plan.metadata.get("table_columns", {})
+        for table, columns in table_cols.items():
+            graph.register_columns(table, columns)
+
+        # Try FK graph first
+        step = graph.find_join_path(join.left_table, join.right_table)
+        if step:
+            return f"{join.left_table}.{step[0].left_key} = {join.right_table}.{step[0].right_key}"
+
+        # Only generate heuristic join if we have column info
+        left_cols = table_cols.get(join.left_table, [])
+        right_cols = table_cols.get(join.right_table, [])
+        if left_cols and right_cols:
+            left_base = join.left_table.rstrip("s")
+            right_base = join.right_table.rstrip("s")
+            # Try to find matching columns
+            for lc in left_cols:
+                for rc in right_cols:
+                    if f"{right_base}_id" == lc.lower() or f"{left_base}_id" == rc.lower():
+                        return f"{join.left_table}.{lc} = {join.right_table}.{rc}"
+
+        # Fallback: preserve 1=1 to avoid breaking existing behavior
+        return "1=1"
 
     def _build_where(self, plan: LogicalPlan, dialect: SQLDialectSpec) -> str:
         conditions: list[str] = []
@@ -162,22 +197,36 @@ class SQLBuilder:
 
     def _guess_time_column(self, plan: LogicalPlan) -> str | None:
         """Guess a likely time column from the plan's context."""
+        # Priority 1: use explicit time_column from plan metadata (set by QueryPlanner)
+        if plan.metadata.get("time_column"):
+            return plan.metadata["time_column"]
+
         # Common datetime column names across databases
         common_time_cols = {"created_at", "updated_at", "create_time", "update_time",
                             "order_time", "pay_time", "date", "time", "timestamp",
                             "created_time", "modified_at"}
-        # Check filters for column references
+
+        # Priority 2: check filters for column references
         for f in plan.filters:
             if f.expr and not f.is_having:
                 col = f.expr.split()[0].split(".")[-1].lower() if f.expr else ""
                 if col in common_time_cols:
                     return col
-        # Check projections
+
+        # Priority 3: check projections
         for p in plan.projections:
             col = (p.alias or p.expr).split(".")[-1].lower()
             if col in common_time_cols:
                 return col
-        # Check if any table name hints at time (e.g., order_history, sales_log)
+
+        # Priority 4: check table columns from metadata
+        table_cols = plan.metadata.get("table_columns", {})
+        for table, columns in table_cols.items():
+            for col in columns:
+                if col.lower() in common_time_cols:
+                    return col
+
+        # Priority 5: table name heuristics
         for t in plan.tables:
             tname = t.split()[0].lower()
             if any(kw in tname for kw in ("log", "history", "record", "event", "transaction")):
