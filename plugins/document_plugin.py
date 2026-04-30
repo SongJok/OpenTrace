@@ -255,7 +255,7 @@ async def _build_llmwiki_drafts(title: str, chunks: list[DocumentChunk]) -> list
     ]
     embeddings: list[list[float] | None] = [None] * len(embedding_inputs)
     try:
-        raw_vectors = await get_embedder().embed(embedding_inputs)
+        raw_vectors = await get_embedder().embed(embedding_inputs, input_type="document")
         embeddings = [
             normalize_embedding_vector(vec, settings.embedding_dims) if isinstance(vec, list) else None
             for vec in raw_vectors

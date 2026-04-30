@@ -44,7 +44,7 @@ export default function MessageList() {
           对话内容将按任务、证据和执行链路自动整理展示
         </div>
         {items.map((msg) => (
-          <MessageBubble key={msg.id} msg={msg} />
+          <MessageBubble key={`${msg.id}-${msg.status}`} msg={msg} />
         ))}
 
         {streaming && items[items.length - 1]?.role !== 'assistant' && (

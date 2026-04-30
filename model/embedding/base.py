@@ -18,11 +18,16 @@ logger = get_logger(__name__)
 
 class BaseEmbedder(ABC):
     @abstractmethod
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        """Return one embedding vector per input text."""
+    async def embed(self, texts: list[str], input_type: str = "query") -> list[list[float]]:
+        """Return one embedding vector per input text.
 
-    async def embed_one(self, text: str) -> list[float]:
-        results = await self.embed([text])
+        Args:
+            texts: List of texts to embed.
+            input_type: \"query\" for search queries, \"document\" for documents to be indexed.
+        """
+
+    async def embed_one(self, text: str, input_type: str = "query") -> list[float]:
+        results = await self.embed([text], input_type=input_type)
         return results[0]
 
     async def embed_single(self, text: str) -> list[float]:
@@ -43,7 +48,7 @@ class HashEmbedder(BaseEmbedder):
     def __init__(self, dims: int = 384) -> None:
         self.dims = dims
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], input_type: str = "query") -> list[list[float]]:
         return [self._hash_embed(t) for t in texts]
 
     def _hash_embed(self, text: str) -> list[float]:
@@ -61,7 +66,7 @@ class DashScopeEmbedder(BaseEmbedder):
         self.model = model
         self.dims = dims
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], input_type: str = "query") -> list[list[float]]:
         try:
             import dashscope
         except Exception as exc:  # noqa: BLE001
@@ -75,15 +80,28 @@ class DashScopeEmbedder(BaseEmbedder):
             logger.warning("dashscope embedding missing api key; falling back to hash")
             return await HashEmbedder(self.dims).embed(texts)
 
-        # Prefer official SDK embedding classes when available.
-        embedding_call = None
+        # Collect all available embedding classes from the SDK.
+        embedding_classes: list = []
         for attr in ("TextEmbedding", "MultimodalEmbedding", "Embedding"):
-            embedding_call = getattr(dashscope, attr, None)
-            if embedding_call is not None:
-                break
-        if embedding_call is None:
+            cls = getattr(dashscope, attr, None)
+            if cls is not None:
+                embedding_classes.append((attr, cls))
+
+        if not embedding_classes:
             logger.warning("dashscope embedding class missing; falling back to hash")
             return await HashEmbedder(self.dims).embed(texts)
+
+        # Build call-kwargs candidates — for VL embedding models, include input_type.
+        is_vl_model = "vl-embedding" in (self.model or "").lower()
+        kwargs_candidates: list[dict] = [
+            {"model": self.model, "input": texts},
+            {"model": self.model, "texts": texts},
+            {"model": self.model, "input": {"texts": texts}},
+        ]
+        if is_vl_model:
+            # qwen3-vl-embedding benefits from explicit input_type
+            kwargs_candidates.insert(0, {"model": self.model, "input": texts, "input_type": input_type})
+            kwargs_candidates.insert(0, {"model": self.model, "texts": texts, "input_type": input_type})
 
         try:
             import asyncio
@@ -91,25 +109,26 @@ class DashScopeEmbedder(BaseEmbedder):
             loop = asyncio.get_event_loop()
 
             def _call_batch() -> list[list[float]]:
-                # SDK shape varies by product/version; try a few common call patterns.
-                for kwargs in (
-                    {"model": self.model, "input": texts},
-                    {"model": self.model, "texts": texts},
-                    {"model": self.model, "input": {"texts": texts}},
-                ):
-                    try:
-                        resp = embedding_call.call(**kwargs)  # type: ignore[attr-defined]
-                        data = getattr(resp, "output", None) or resp.get("output", {})
-                        items = data.get("embeddings") or data.get("data") or []
-                        vecs: list[list[float]] = []
-                        for item in items:
-                            emb = item.get("embedding") or item.get("vector") or item.get("embedding_vector") or []
-                            vecs.append(normalize_embedding_vector(list(emb), self.dims))
-                        if vecs:
-                            return vecs
-                    except Exception:
-                        continue
-                raise RuntimeError("No compatible dashscope embedding response shape")
+                last_err: Exception | None = None
+                for _attr_name, embedding_call in embedding_classes:
+                    for kwargs in kwargs_candidates:
+                        try:
+                            resp = embedding_call.call(**kwargs)  # type: ignore[attr-defined]
+                            data = getattr(resp, "output", None) or resp.get("output", {})
+                            items = data.get("embeddings") or data.get("data") or []
+                            vecs: list[list[float]] = []
+                            for item in items:
+                                emb = item.get("embedding") or item.get("vector") or item.get("embedding_vector") or []
+                                vecs.append(normalize_embedding_vector(list(emb), self.dims))
+                            if vecs:
+                                return vecs
+                        except Exception as exc:
+                            last_err = exc
+                            continue
+                raise RuntimeError(
+                    f"No compatible dashscope embedding response shape across "
+                    f"{[a for a, _ in embedding_classes]} for model={self.model}"
+                ) from last_err
 
             def _call_batch_with_proxy() -> list[list[float]]:
                 with dashscope_proxy_allowlist():
@@ -142,10 +161,10 @@ class APIEmbedder(BaseEmbedder):
     def _endpoint_candidates(self) -> list[str]:
         return [f"{self.base_url}{p}" for p in self.paths]
 
-    async def _post(self, client, url: str, batch: list[str]) -> list[list[float]]:
+    async def _post(self, client, url: str, batch: list[str], input_type: str = "query") -> list[list[float]]:
         payload = {"input": batch, "model": self.model}
         if self.api_style == "dashscope":
-            payload = {"input": batch, "model": self.model, "input_type": "query"}
+            payload = {"input": batch, "model": self.model, "input_type": input_type}
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -155,7 +174,7 @@ class APIEmbedder(BaseEmbedder):
         items = sorted(data.get("data", []), key=lambda x: x.get("index", 0))
         return [normalize_embedding_vector(item.get("embedding", []), self.dims) for item in items]
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], input_type: str = "query") -> list[list[float]]:
         import httpx
 
         results: list[list[float]] = []
@@ -171,7 +190,7 @@ class APIEmbedder(BaseEmbedder):
                 for endpoint in self._endpoint_candidates():
                     for client in clients:
                         try:
-                            results.extend(await self._post(client, endpoint, batch))
+                            results.extend(await self._post(client, endpoint, batch, input_type=input_type))
                             last_exc = None
                             break
                         except Exception as exc:  # noqa: BLE001
@@ -204,7 +223,7 @@ class LocalEmbedder(BaseEmbedder):
                 self._model = False
         return self._model
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], input_type: str = "query") -> list[list[float]]:
         import asyncio
 
         model = self._load()

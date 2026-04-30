@@ -12,6 +12,7 @@ from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import UserMemory
 from plugins.document_plugin import DocumentPlugin
 from plugins.document_retrieval import DocumentEvidenceGate, ScoredDocumentChunk
+from model.reranker.base import get_reranker
 
 
 class RagAgent(BaseAgent):
@@ -318,6 +319,50 @@ class RagAgent(BaseAgent):
             )
         return vector_chunks
 
+    async def _rerank_evidence(
+        self,
+        query: str,
+        evidence: list[dict[str, Any]],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """Re-rank evidence using neural reranker (qwen3-vl-rerank via DashScope).
+
+        Only applies when settings.rag_rerank_enabled is True and candidates exceed 1.
+        Falls back gracefully to original scoring on any error.
+        """
+        if not evidence or len(evidence) <= 1:
+            return evidence
+        if not settings.rag_rerank_enabled:
+            return evidence
+
+        try:
+            reranker = get_reranker()
+            texts = [str(e.get("text") or e.get("answer") or "")[:800] for e in evidence]
+            if not any(t.strip() for t in texts):
+                return evidence
+
+            ranked = await reranker.rerank(query, texts, top_k=min(top_k * 3, len(texts)))
+            if not ranked:
+                return evidence
+
+            rerank_score_map: dict[str, float] = {}
+            for rr in ranked:
+                normalized_score = max(0.0, min(1.0, rr.score))
+                rerank_score_map[rr.text] = normalized_score
+
+            for e in evidence:
+                txt = str(e.get("text") or e.get("answer") or "")[:800]
+                if txt in rerank_score_map:
+                    original_score = float(e.get("score", 0.0) or 0.0)
+                    rerank_score = rerank_score_map[txt]
+                    # Blend: 60% reranker, 40% original retrieval score
+                    e["score"] = round(original_score * 0.40 + rerank_score * 0.60, 4)
+                    e["_rerank_score"] = round(rerank_score, 4)
+
+            return evidence
+        except Exception:
+            return evidence
+
     async def execute(self, task: TaskMessage) -> AgentResult:
         try:
             query = self._normalize_query(task.query or "")
@@ -485,6 +530,19 @@ class RagAgent(BaseAgent):
             sorted_llmwiki_entries = sorted(llmwiki_entries, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:llmwiki_top_k]
             sorted_vector_chunks = sorted(vector_chunks, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:top_k]
 
+            # Neural rerank via qwen3-vl-rerank (when enabled) — rerank deduped evidence
+            if settings.rag_rerank_enabled and deduped:
+                deduped = await self._rerank_evidence(rewritten_query, deduped, top_k)
+                sorted_chunks = sorted(deduped, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:top_k]
+                sorted_llmwiki_entries = sorted(
+                    [e for e in deduped if e.get("source_type") == "llmwiki"],
+                    key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True,
+                )[:llmwiki_top_k]
+                sorted_vector_chunks = sorted(
+                    [e for e in deduped if e.get("source_type") == "document"],
+                    key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True,
+                )[:top_k]
+
             content_parts = []
             for i, chunk in enumerate(sorted_llmwiki_entries, start=1):
                 title_ctx = chunk.get('title', '')
@@ -606,6 +664,19 @@ class RagAgent(BaseAgent):
                 answerable = False
                 gated = False
 
+            evidence_items = []
+            for ch in sorted_chunks:
+                evidence_items.append(
+                    self._make_evidence(
+                        source=ch.get("title", ""),
+                        source_type=ch.get("source_type", "document"),
+                        payload={"text": ch.get("text", ""), "title": ch.get("title", ""), "id": ch.get("id", "")},
+                        credibility=ch.get("score", 0.5),
+                        relevance=ch.get("score", 0.5),
+                        provenance=ch.get("id", ""),
+                        evidence_tier=ch.get("evidence_tier", "contextual"),
+                    )
+                )
             return AgentResult(
                 task_id=task.task_id,
                 agent_type=self.agent_type,
@@ -630,6 +701,7 @@ class RagAgent(BaseAgent):
                         "gated": gated,
                     },
                 },
+                evidence=evidence_items,
             )
         except Exception as exc:  # noqa: BLE001
             return AgentResult(task_id=task.task_id, agent_type=self.agent_type, status="error", content="", error=str(exc))

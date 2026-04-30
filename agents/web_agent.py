@@ -59,6 +59,17 @@ class WebAgent(BaseAgent):
                 )
 
             content, metadata = self._normalize(raw)
+            items = metadata.get("items", [])
+            evidence = [
+                self._make_evidence(
+                    source=f"web:{item.get('url', '')}",
+                    source_type="web_search",
+                    payload={"title": item.get("title", ""), "snippet": item.get("snippet", ""), "url": item.get("url", "")},
+                    credibility=0.6,
+                    relevance=0.7,
+                )
+                for item in items
+            ]
             return AgentResult(
                 task_id=task.task_id,
                 agent_type=self.agent_type,
@@ -66,6 +77,7 @@ class WebAgent(BaseAgent):
                 content=content,
                 confidence=0.72,
                 metadata=metadata,
+                evidence=evidence,
             )
         except Exception as exc:  # noqa: BLE001
             return AgentResult(task_id=task.task_id, agent_type=self.agent_type, status="error", content="", error=str(exc))

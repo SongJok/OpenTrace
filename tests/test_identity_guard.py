@@ -15,6 +15,7 @@ from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import (
     _post_process_identity_response,
 )
+from infra.config.settings import settings
 
 
 class IdentityGuardTests(IsolatedAsyncioTestCase):
@@ -55,9 +56,10 @@ class IdentityGuardTests(IsolatedAsyncioTestCase):
         with patch("kernel.orchestrator.CognitiveOrchestrator") as orchestrator_cls:
             orchestrator = orchestrator_cls.return_value
             orchestrator.process = AsyncMock(return_value=fake_resp)
-            resp = await kernel.run(
-                KernelRequest(query="你是谁", session_id="session-store")
-            )
+            with patch.object(settings, "kernel_enriched_identity_enabled", False):
+                resp = await kernel.run(
+                    KernelRequest(query="你是谁", session_id="session-store")
+                )
 
         self.assertEqual(resp.content, CANONICAL_IDENTITY_RESPONSE)
         self.assertEqual(

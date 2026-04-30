@@ -16,7 +16,7 @@ if (typeof window !== 'undefined') {
   }
 }
 
-export type ReasoningStage = 'REASON' | 'DECIDE' | 'EXECUTE' | 'OBSERVE' | 'REFLECT' | 'PLAN' | 'ACT' | 'DRAFT' | 'CRITIC' | 'REWRITE' | 'FINAL'
+export type ReasoningStage = 'ROUTE' | 'REASON' | 'DECIDE' | 'EXECUTE' | 'OBSERVE' | 'REFLECT' | 'PLAN' | 'ACT' | 'DRAFT' | 'CRITIC' | 'REWRITE' | 'FINAL' | 'FUSION' | 'EVIDENCE'
 export type ReasoningStatus = 'pending' | 'running' | 'done'
 export type ToolRunStatus = 'idle' | 'running' | 'success' | 'error'
 
@@ -238,6 +238,94 @@ export async function apiChatSync(
   return res.json()
 }
 
+function parseSseEventBlock(block: string): { type: string; data: any } | null {
+  const lines = block.split(/\r?\n/).filter(Boolean)
+  const dataLines = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart())
+  if (!dataLines.length) return null
+  const raw = dataLines.join('\n')
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return { type: 'message', data: raw }
+  }
+}
+
+async function streamSseResponse(
+  res: Response,
+  callbacks: {
+    onReasoningStep?: (step: ReasoningStep) => void
+    onThinking?: (payload: any) => void
+    onDelta?: (text: string) => void
+    onToolCall?: (payload: any) => void
+    onToolResult?: (payload: any) => void
+    onForceMode?: (mode: string | null) => void
+    onFinalAnswer?: (...args: any[]) => void | Promise<void>
+    onError?: (err: any) => void | Promise<void>
+  },
+  signal?: AbortSignal,
+) {
+  const reader = res.body?.getReader()
+  if (!reader) throw new Error('Streaming response unavailable')
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let splitIndex: number
+      while ((splitIndex = buffer.indexOf('\n\n')) >= 0) {
+        const chunk = buffer.slice(0, splitIndex).trim()
+        buffer = buffer.slice(splitIndex + 2)
+        if (!chunk || chunk.startsWith(':')) continue
+        const event = parseSseEventBlock(chunk)
+        if (!event) continue
+        const type = String(event.type || '')
+        const data = event.data ?? {}
+
+        if (type === 'delta') {
+          callbacks.onDelta?.(String(data.text ?? data.delta ?? ''))
+          continue
+        }
+        if (type === 'thinking') {
+          callbacks.onThinking?.(data)
+          continue
+        }
+        if (type === 'reasoning_step') {
+          callbacks.onReasoningStep?.(data)
+          continue
+        }
+        if (type === 'tool_call') {
+          callbacks.onToolCall?.(data)
+          continue
+        }
+        if (type === 'tool_result') {
+          callbacks.onToolResult?.(data)
+          continue
+        }
+        if (type === 'force_mode') {
+          callbacks.onForceMode?.(data?.mode ?? null)
+          continue
+        }
+        if (type === 'final_answer') {
+          await callbacks.onFinalAnswer?.(data?.content ?? data?.answer ?? '', data?.execution_graph ?? null, data?.citations ?? [], data?.annotations ?? [])
+          continue
+        }
+        if (type === 'aborted') {
+          throw new DOMException('Aborted', 'AbortError')
+        }
+        if (type === 'error') {
+          throw new Error(data?.message ? String(data.message) : 'Streaming error')
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 export async function apiChatStream(
   token: string,
   sessionId: string,
@@ -260,29 +348,63 @@ export async function apiChatStream(
 ): Promise<void> {
   void webEnabled
   void mode
-  void graphControls
-  if (signal?.aborted) throw new DOMException('AbortError')
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  const finalPayload = { session_id: sessionId, query, stream: true, ...payload, ...(graphControls ? { graph_controls: graphControls } : {}) }
   try {
-    const sync = await apiChatSync(token, sessionId, query, { ...payload })
-    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-    const fm = sync?.metadata?.force_mode ?? null
-    if (fm) callbacks.onForceMode?.(fm)
-    if (sync?.reasoning_steps && Array.isArray(sync.reasoning_steps)) {
-      for (const step of sync.reasoning_steps) callbacks.onReasoningStep?.(step)
+    const res = await apiFetch('/chat', {
+      method: 'POST',
+      headers: authHeaders(token),
+      body: JSON.stringify(finalPayload),
+      signal,
+    })
+
+    if (res.status === 404 || res.headers.get('content-type')?.includes('application/json') && !res.headers.get('content-type')?.includes('text/event-stream')) {
+      const sync = await apiChatSync(token, sessionId, query, { ...payload, stream: false, ...(graphControls ? { graph_controls: graphControls } : {}) })
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      const fm = sync?.metadata?.force_mode ?? null
+      if (fm) callbacks.onForceMode?.(fm)
+      if (sync?.reasoning_steps && Array.isArray(sync.reasoning_steps)) {
+        for (const step of sync.reasoning_steps) callbacks.onReasoningStep?.(step)
+      }
+      if (sync?.thinking) callbacks.onThinking?.(sync.thinking)
+      const streamedText = String(sync?.delta ?? sync?.content ?? sync?.answer ?? '')
+      if (sync?.delta) {
+        callbacks.onDelta?.(String(sync.delta))
+      } else if (streamedText) {
+        const segments = streamedText.match(/\n\n|\n|.{1,12}/g) || []
+        for (const seg of segments) {
+          if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+          callbacks.onDelta?.(seg)
+          await new Promise((resolve) => window.setTimeout(resolve, 16))
+        }
+      }
+      if (sync?.tool_calls && Array.isArray(sync.tool_calls)) {
+        for (const item of sync.tool_calls) callbacks.onToolCall?.(item)
+      }
+      if (sync?.tool_results && Array.isArray(sync.tool_results)) {
+        for (const item of sync.tool_results) callbacks.onToolResult?.(item)
+      }
+      await callbacks.onFinalAnswer?.(sync?.content ?? sync?.answer ?? '', sync?.execution_graph ?? null, sync?.citations ?? [], sync?.annotations ?? [])
+      return
     }
-    if (sync?.thinking) callbacks.onThinking?.(sync.thinking)
-    if (sync?.delta) callbacks.onDelta?.(String(sync.delta))
-    if (sync?.tool_calls && Array.isArray(sync.tool_calls)) {
-      for (const item of sync.tool_calls) callbacks.onToolCall?.(item)
+
+    if (!res.ok) throw new Error(await readApiError(res, 'Chat stream failed'))
+    const contentType = res.headers.get('content-type') || ''
+    if (!contentType.includes('text/event-stream')) {
+      const sync = (await res.json().catch(() => null)) as any
+      if (!sync) throw new Error('Invalid chat response')
+      await callbacks.onFinalAnswer?.(sync?.content ?? '', sync?.execution_graph ?? null, sync?.citations ?? [], sync?.annotations ?? [])
+      return
     }
-    if (sync?.tool_results && Array.isArray(sync.tool_results)) {
-      for (const item of sync.tool_results) callbacks.onToolResult?.(item)
-    }
-    await callbacks.onFinalAnswer?.(sync?.content ?? sync?.answer ?? '', sync?.execution_graph ?? null, sync?.citations ?? [], sync?.annotations ?? [])
+
+    await streamSseResponse(res, callbacks, signal)
   } catch (err) {
     if (err instanceof Error && err.message.includes('Not Found')) {
       await callbacks.onFinalAnswer?.(`我叫 OpenTrace，是这个工作台里的 AI 助手。\n\n你刚刚问的是：${query}\n\n当前后端聊天接口返回了 Not Found，所以我先用前端兜底回复你。`, null, [], [])
       return
+    }
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw err
     }
     await callbacks.onError?.(err)
     throw err

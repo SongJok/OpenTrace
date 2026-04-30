@@ -5,6 +5,7 @@ import { CardShell } from './CardShell'
 import { DarkPillButton } from './ui/DarkPanel'
 
 const stageIconMap: Record<ReasoningStep['stage'], string> = {
+  ROUTE: '🚦',
   REASON: '🧠',
   DECIDE: '⚙️',
   EXECUTE: '🔧',
@@ -16,6 +17,8 @@ const stageIconMap: Record<ReasoningStep['stage'], string> = {
   CRITIC: '🧪',
   REWRITE: '♻️',
   FINAL: '✅',
+  FUSION: '🔄',
+  EVIDENCE: '📋',
 }
 
 const toolIconMap: Record<string, string> = {

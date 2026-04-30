@@ -174,6 +174,10 @@ class AppSettings(BaseSettings):
 
     serper_api_key: str = ""
 
+    # Weather
+    weather_api_key: str = ""
+    weather_stack_api_key: str = ""
+
     # Kernel V4 stable baseline
     kernel_orchestrator_version: str = "v4"
     kernel_agent_enabled: bool = True
@@ -191,6 +195,8 @@ class AppSettings(BaseSettings):
     kernel_adaptive_profile_json: str = ""
     kernel_plan_memory_enabled: bool = True
     kernel_plan_memory_window: int = 50
+    kernel_memory_context_enabled: bool = True
+    kernel_enriched_identity_enabled: bool = True
     kernel_agent_dag_scheduling_enabled: bool = False
     kernel_agent_speculative_execution_enabled: bool = False
     kernel_agent_bus_enabled: bool = False
@@ -217,6 +223,7 @@ class AppSettings(BaseSettings):
     text2sql_max_join_depth: int = 3
     rag_min_evidence_score: float = 0.65
     rag_auto_fallback_to_web: bool = True
+    rag_rerank_enabled: bool = True
     llmwiki_enabled: bool = True
     llmwiki_model: str = "qwen3.5-27b"
     llmwiki_top_k: int = 3

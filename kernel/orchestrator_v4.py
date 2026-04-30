@@ -5,6 +5,7 @@ import ast
 import contextlib
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any, AsyncIterator
@@ -40,6 +41,12 @@ from kernel.epistemology.validator import OutputValidator
 from kernel.context.query_rewriter import QueryRewriter
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
+
+
+_MATH_EXPR = re.compile(r"[\d]+\s*[\+\-\*\/\^]\s*[\d]")
+
+def _looks_like_math(text: str) -> bool:
+    return bool(_MATH_EXPR.search((text or "").strip()))
 
 
 class ToolAgent:
@@ -83,6 +90,9 @@ class ToolAgent:
                 elif any(k in q for k in ["天气", "weather", "温度", "下雨"]):
                     tool_name = "get_weather"
                     out = await router.execute_by_name(name="get_weather", query=task.query, session_id=task.session_id or "")
+                elif _looks_like_math(q):
+                    tool_name = "calculator"
+                    out = await router.execute_by_name(name="calculator", expression=q, session_id=task.session_id or "")
 
             raw = str(out or "").strip()
             low = raw.lower()
@@ -94,7 +104,15 @@ class ToolAgent:
                 tool_name = parsed_tool_name
 
             text_preview = payload.get("text") if isinstance(payload, dict) else None
-            if not text_preview and isinstance(payload, dict):
+            if tool_name == "datetime" and isinstance(payload, dict):
+                time_str = payload.get("time") or payload.get("datetime") or ""
+                tz_str = payload.get("timezone") or ""
+                text_preview = f"当前时间：{time_str}" + (f"（{tz_str}）" if tz_str else "")
+            elif tool_name == "tool" and isinstance(payload, dict) and "time" in payload:
+                time_str = payload.get("time") or ""
+                tz_str = payload.get("timezone") or ""
+                text_preview = f"当前时间：{time_str}" + (f"（{tz_str}）" if tz_str else "")
+            elif not text_preview and isinstance(payload, dict):
                 text_preview = json.dumps(payload, ensure_ascii=False)
 
             return AgentResult(
@@ -120,6 +138,7 @@ class OrchestratorV4Request:
     user_id: str = ""
     history: list[dict[str, str]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    trace_ctx: Any = None
 
 
 @dataclass
@@ -155,8 +174,8 @@ class CognitiveOrchestratorV4:
         if not content:
             return ""
 
-        # Remove explicit internal source markers like [tool]/[web_search]/[sql].
-        content = re.sub(r"\[(tool|web_search|sql|document|memory)\]\s*", "", content, flags=re.IGNORECASE)
+        # Remove explicit internal source markers like [tool]/[web_search]/[sql] and Chinese labels
+        content = re.sub(r"\[(tool|web_search|sql|document|memory|历史记忆|文档片段|数据库查询结果|网络搜索结果|天气信息|时间信息|LLMWiki增强问答|技能匹配)\]\s*", "", content, flags=re.IGNORECASE)
 
         # Remove evidence-level emoji prefixes from annotation rendering
         content = re.sub(r"[📊📄🔗🧠💡⚠️ℹ️]\s*", "", content)
@@ -486,12 +505,13 @@ class CognitiveOrchestratorV4:
             },
         )
 
-    async def _llm_fallback_answer(self, req: OrchestratorV4Request) -> str:
+    async def _llm_fallback_answer(self, req: OrchestratorV4Request, memory_context: list[dict[str, Any]] | None = None) -> str:
         gw = get_model_gateway()
         system = (
-            "你是一个热情、可靠的智能助手。请用自然、亲切的中文直接回答用户问题，语气像一位乐于助人的同事。"
+            "你是一个热情、可靠、有温度的智能助手。请用自然、亲切、口语化的中文直接回答用户问题，语气像一位乐于助人的好朋友。"
             "避免提及自身身份或底层模型，不要自称 OpenTrace、Qwen、ChatGPT 等。"
             "回答时尽量饱满完整：先给出核心结论，再补充必要的细节、依据或操作建议，让用户看完就能用上。"
+            "在适当的时候使用温和的语气词（如「呢」「哦」「哈」），让对话更轻松自然，但不要过度。"
             "如果涉及数据库操作但无法执行，请说明原因并给出建议的 SQL 语句。"
             "不要以「我是…」开头，直接切入正题。"
             "如果用户要求编写演示性代码（如游戏、可视化、交互效果），优先输出自包含的 HTML+JavaScript 代码，"
@@ -499,13 +519,29 @@ class CognitiveOrchestratorV4:
             "代码应完整可用，不要省略关键部分。"
         )
         msgs = [LLMMessage(role="system", content=system)]
+
+        # Inject memory context as additional background if available
+        memory_context = memory_context or []
+        if memory_context:
+            memory_lines = []
+            for mc in memory_context[:5]:
+                if isinstance(mc, dict) and mc.get("content"):
+                    src = mc.get("source", "memory")
+                    memory_lines.append(f"[{src}] {str(mc['content'])[:400]}")
+            if memory_lines:
+                memory_preamble = (
+                    "以下是与当前对话可能相关的历史记忆片段，仅供参考：\n"
+                    + "\n".join(memory_lines)
+                )
+                msgs.append(LLMMessage(role="system", content=memory_preamble))
+
         for h in (req.history or [])[-6:]:
             role = "assistant" if str(h.get("role", "")).lower() == "assistant" else "user"
             content = str(h.get("content", "")).strip()
             if content:
                 msgs.append(LLMMessage(role=role, content=content))
         msgs.append(LLMMessage(role="user", content=req.query))
-        resp = await gw.complete(msgs, role=LLMRole.QUERY, temperature=0.2, max_tokens=4096)
+        resp = await gw.complete(msgs, role=LLMRole.QUERY, temperature=0.35, max_tokens=4096)
         return (resp.content or "").strip() or "很抱歉，我暂时无法处理这个请求。请尝试补充更多细节或换一种方式描述你的问题，我会继续帮你。"
 
     def _grounded_answer_style(self, query: str, evidence_count: int = 0) -> tuple[str, int]:
@@ -513,14 +549,16 @@ class CognitiveOrchestratorV4:
         is_complex = any(k in q.lower() for k in ["步骤", "如何", "怎么", "流程", "原因", "总结", "归纳", "说明", "对比", "区别", "为什么", "分析", "解释"])
         if evidence_count <= 1:
             base = (
-                "请输出简洁但完整的中文回答：先给结论，再补充必要解释。语气要亲切自然，像在跟朋友聊天。"
-                "如果证据较少，请坦诚说明可确认的部分与不确定的部分，并给出下一步建议，让用户感到你在真诚地帮他。"
+                "请输出简洁但完整的中文回答：先给结论，再补充必要细节。语气要亲切自然，像在跟朋友聊天。"
+                "合理使用「呢」「哈」等温和语气词让对话轻松有温度，但不要刻意堆砌。"
+                "如果信息较少，坦诚说明已确认和不确定的部分，并给出实用的下一步建议，让用户感到你真心在帮他解决问题。"
             )
             return (base, 2048 if not is_complex else 3072)
         if evidence_count <= 3 and not is_complex:
             return (
                 "请输出自然、完整、有温度的中文回答：先给结论，再展开说明关键依据。"
-                "回答应适度分段，必要时补充注意事项和建议，不要只做干巴巴的摘要。语气可以亲切一些，像一位知识丰富的同事在耐心解答。",
+                "回答应适度分段，必要时补充注意事项和建议，不要只做干巴巴的摘要。语气亲切自然，像一位知识丰富的同事在耐心解答。"
+                "适当使用口语化的过渡和温和的表达，让回答读起来轻松、有人情味。",
                 3072,
             )
         if is_complex or evidence_count >= 4:
@@ -528,12 +566,14 @@ class CognitiveOrchestratorV4:
                 "请输出结构化、饱满、可交付的中文回答：先给结论，再分段展开说明。"
                 "建议包含背景、关键依据、步骤/条件、注意事项、边界和可执行建议。"
                 "语言要自然顺滑，段落之间要有顺畅的衔接，不要重复堆砌证据。"
-                "语气保持专业但不生硬，让回答读起来像一篇经过人工精心整理的高质量文档，可直接交付给用户阅读。",
+                "语气保持专业但不生硬，适当融入温和的表达使回答更有温度，"
+                "让回答读起来像一篇经过人工精心整理的高质量文档，可直接交付给用户阅读。",
                 4096,
             )
         return (
             "请输出自然、完整、饱满的中文回答：先给结论，再展开说明关键依据和细节。"
             "必要时补充步骤、条件、注意事项和边界。语言要自然、连贯、有温度，像人工精心整理后的最终稿。"
+            "适当使用口语化的表达和温和的语气，让回答有亲和力。"
             "不要过于简短，尽量做到可直接使用，读完让人觉得你真正帮到了他。",
             3072,
         )
@@ -544,14 +584,16 @@ class CognitiveOrchestratorV4:
         gw = get_model_gateway()
         style_hint, max_tokens = self._grounded_answer_style(query, evidence_count=max(0, evidence_text.count("[")))
         system = (
-            "你是文档问答助手。你的目标是把检索到的证据整理成一段自然、完整、有温度的中文回答。"
+            "你是知识问答助手。你的目标是把检索或查询到的信息整理成一段自然、完整、有温度的中文回答。"
             "请先直接给出结论，再展开说明关键依据和细节，必要时补充步骤、条件、注意事项和边界。"
             "语言要顺滑、专业但不生硬，像一位知识丰富的同事在认真回答——亲切、靠谱、不端着。"
+            "在保持专业的同时，适当使用口语化的过渡词和温和的语气，让回答读起来像是一次愉快的对话而不是一份干巴巴的报告。"
             "段落之间要有自然衔接，避免重复和机械感，让回答读起来像是人工精心整理后的最终稿。"
             "不要只复述证据，也不要过度简短；在证据充分时，回答应当完整、清晰、可直接给用户使用。"
             "如果证据不足，必须明确说明缺失点，并告诉用户还需要补充什么信息，语气要让人感到你是真心在帮他。"
+            "如果证据中包含 [历史记忆] 标记的内容，请自然融入回答中，让回复保持连贯、有上下文感。"
+            "对于用户追问或引用之前对话的问题，优先利用记忆片段保持回答的一致性。"
             "禁止输出内部字段名、JSON 结构、检索分数、agent 名称或原始工具内容。"
-            "如果用户提到之前对话的内容，请结合上下文给出连贯回答。"
         )
         msgs = [LLMMessage(role="system", content=system)]
         for h in (history or [])[-6:]:
@@ -573,7 +615,7 @@ class CognitiveOrchestratorV4:
         resp = await gw.complete(
             msgs,
             role=LLMRole.QUERY,
-            temperature=0.15,
+            temperature=0.3,
             max_tokens=max_tokens,
         )
         return (resp.content or "").strip()
@@ -699,11 +741,14 @@ class CognitiveOrchestratorV4:
 
     async def process(self, req: OrchestratorV4Request, event_cb=None) -> OrchestratorV4Response:
         t0 = monotonic()
+        tctx: Any = req.trace_ctx
         trace_id = str(req.metadata.get("trace_id") or req.metadata.get("request_id") or req.session_id or req.user_id or "")
+        root_span = tctx.start_span("planning") if tctx else ""
         if trace_id:
             await cognitive_event_bus.publish(
                 cognitive_event_bus.emit_planning(
                     trace_id=trace_id,
+                    span_id=root_span,
                     payload={
                         "action": "orchestrator.process.start",
                         "query": req.query,
@@ -941,10 +986,13 @@ class CognitiveOrchestratorV4:
                     s.depends_on = [f"node_{idx-1}_{plan.subtasks[idx-1].agent_type}"]
         plan.max_parallel = min(max(1, plan.max_parallel), self.max_parallel)
         agent_results = await self.dispatcher.dispatch(plan, event_cb=event_cb) if plan.subtasks else []
+        dispatch_span = tctx.start_span("dispatch", parent_span_id=root_span) if tctx else ""
         if trace_id:
             await cognitive_event_bus.publish(
                 cognitive_event_bus.emit_execution(
                     trace_id=trace_id,
+                    span_id=dispatch_span,
+                    parent_span_id=root_span,
                     payload={
                         "action": "orchestrator.dispatch.completed",
                         "subtasks": [
@@ -1101,8 +1149,18 @@ class CognitiveOrchestratorV4:
                     f"未找到与「{req.query}」匹配的产品规则。\n"
                     "请确认查询内容是否在已配置的产品规则范围内，或在 rules/ 目录下添加新规则。"
                 )
+            elif force_mode == "tool":
+                tool_err_msg = (agent_results[0].error if agent_results else "") or "工具执行失败"
+                fallback = (
+                    f"工具调用失败：{tool_err_msg}\n"
+                    "可能原因：\n"
+                    "- 天气查询需要配置 WEATHER_API_KEY 环境变量\n"
+                    "- 时间查询需要系统时间可用\n"
+                    "- 计算器需要提供合法的数学表达式\n"
+                    "如需联网搜索实时信息，请尝试使用 /web 模式。"
+                )
             else:
-                fallback = await self._llm_fallback_answer(req)
+                fallback = await self._llm_fallback_answer(req, memory_context=req.metadata.get("memory_context"))
 
             elapsed_ms = int((monotonic() - t0) * 1000)
             bus_used = [
@@ -1194,11 +1252,29 @@ class CognitiveOrchestratorV4:
                 payload = r.content if (r.content or "").strip() else (r.metadata if r.metadata else "")
             tool_results.append(ToolResult(source=source, data=payload, confidence=r.confidence))
 
+        # ── Inject memory context as additional fusion source ──────────
+        memory_context = req.metadata.get("memory_context", [])
+        if memory_context:
+            for mc in memory_context:
+                if isinstance(mc, dict) and mc.get("content"):
+                    tool_results.append(
+                        ToolResult(
+                            source="memory",
+                            data=str(mc["content"])[:500],
+                            confidence=float(mc.get("score", 0.5)),
+                            source_priority=3,
+                        )
+                    )
+        # ── End memory context injection ────────────────────────────────
+
         fusion = self.fusion_engine.run(FusionInput(query=req.query, results=tool_results, adaptive_profile=adaptive_profile))
+        fusion_span = tctx.start_span("fusion", parent_span_id=root_span) if tctx else ""
         if trace_id:
             await cognitive_event_bus.publish(
-                cognitive_event_bus.emit_evidence(
+                cognitive_event_bus.emit_fusion(
                     trace_id=trace_id,
+                    span_id=fusion_span,
+                    parent_span_id=root_span,
                     payload={
                         "action": "orchestrator.fusion.completed",
                         "confidence": fusion.confidence,
@@ -1278,8 +1354,17 @@ class CognitiveOrchestratorV4:
                     f"{error_detail}"
                 )
             if not answer:
-                merged_annotated.fragments = [f for f in merged_annotated.fragments if (f.text or "").strip()]
-                answer = self._sanitize_user_output(merged_annotated.to_text() if merged_annotated.fragments else (fusion.merged_context or ""))
+                has_web = any(r.source == "web_search" for r in tool_results)
+                has_meaningful_tool = any(
+                    r.source == "tool" and r.data and len(str(r.data)) > 80
+                    for r in tool_results
+                )
+                if (has_web or has_meaningful_tool) and (fusion.merged_context or "").strip():
+                    grounded = await self._llm_grounded_answer(req.query, fusion.merged_context or "", history=req.history)
+                    answer = self._sanitize_user_output(grounded or (fusion.merged_context or ""))
+                else:
+                    merged_annotated.fragments = [f for f in merged_annotated.fragments if (f.text or "").strip()]
+                    answer = self._sanitize_user_output(merged_annotated.to_text() if merged_annotated.fragments else (fusion.merged_context or ""))
 
         conflict_annotation = None
         if str(adaptive_profile.get("name", "balanced") or "balanced") == "quality" and fusion.conflicts:
@@ -1340,10 +1425,13 @@ class CognitiveOrchestratorV4:
                 adaptive_profile=adaptive_profile,
             )
         )
+        critic_span = tctx.start_span("critic", parent_span_id=root_span) if tctx else ""
         if trace_id:
             await cognitive_event_bus.publish(
                 cognitive_event_bus.emit_critic(
                     trace_id=trace_id,
+                    span_id=critic_span,
+                    parent_span_id=root_span,
                     payload={
                         "action": "orchestrator.critic.completed",
                         "need_fix": critique.need_fix,
@@ -1362,6 +1450,19 @@ class CognitiveOrchestratorV4:
             answer = self._sanitize_user_output(fusion.merged_context or answer_draft)
         if not (answer or "").strip():
             answer = "我已经完成了分析，但手头的信息还不足以给出一个完整回答。方便的话，补充一些细节或换个角度描述问题，我能帮得更到位。"
+
+        # ── Inject tool card JSON for frontend card rendering ──────────
+        for r in agent_results:
+            if r.agent_type != "tool" or r.status != "success":
+                continue
+            payload = (r.metadata or {}).get("payload") if isinstance(r.metadata, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            payload_type = str(payload.get("type", ""))
+            if payload_type in ("time", "weather"):
+                card_json = json.dumps(payload, ensure_ascii=False)
+                answer = f"```json\n{card_json}\n```\n\n{answer}"
+        # ── End tool card injection ─────────────────────────────────────
 
         bus_used = [
             {"agent_type": s.agent_type, "query": s.query}
@@ -1387,10 +1488,13 @@ class CognitiveOrchestratorV4:
             "avg_agent_latency_ms": int(total_latency_ms / max(1, len(agent_results))),
         }
         runtime_metrics_store.record(metrics)
+        final_span = tctx.start_span("final", parent_span_id=root_span) if tctx else ""
         if trace_id:
             await cognitive_event_bus.publish(
                 cognitive_event_bus.emit_learning(
                     trace_id=trace_id,
+                    span_id=final_span,
+                    parent_span_id=root_span,
                     payload={
                         "action": "orchestrator.process.completed",
                         "route": "agent_cluster",
@@ -1545,6 +1649,7 @@ class CognitiveOrchestratorV4:
                     step = 24
                     for i in range(0, len(content), step):
                         await queue.put({"type": "delta", "data": {"text": content[i : i + step]}})
+                        await asyncio.sleep(0.008)
                 final_data: dict[str, Any] = {
                     "content": content,
                     "execution_graph": (resp.metadata or {}).get("execution_graph"),

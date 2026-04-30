@@ -215,6 +215,29 @@ class DataAgent(BaseAgent):
                 "tables_used": explanation.tables_used,
                 "elapsed_ms": round(elapsed_ms, 1),
             },
+            agent_trace={
+                "agent_type": self.agent_type,
+                "task_id": task.task_id,
+                "problem_identification": task.query,
+                "metric_mapping": getattr(plan, "metric_mappings", {}),
+                "filters": getattr(plan, "filters", []),
+                "join_paths": getattr(plan, "join_paths", []),
+                "sql_generated": final_sql,
+                "sql_rewrites": [],
+                "validation_errors": warnings,
+                "execution_result": {"row_count": len(rows), "sample": rows[:5]},
+                "confidence": confidence,
+            },
+            evidence=[
+                self._make_evidence(
+                    source=f"sql:{data_source_id}",
+                    source_type="sql",
+                    payload={"sql": final_sql, "row_count": len(rows), "tables": explanation.tables_used},
+                    credibility=confidence,
+                    relevance=0.9,
+                    cost=round(elapsed_ms, 1),
+                )
+            ],
         )
 
     async def _execute_llm_direct(
@@ -300,6 +323,25 @@ class DataAgent(BaseAgent):
             content=f"data rows={len(rows)}",
             confidence=confidence,
             metadata=meta,
+            agent_trace={
+                "agent_type": self.agent_type,
+                "task_id": task.task_id,
+                "problem_identification": task.query,
+                "sql_generated": safe_sql,
+                "execution_result": {"row_count": len(rows), "sample": rows[:5]},
+                "confidence": confidence,
+                "mode": "llm_direct",
+            },
+            evidence=[
+                self._make_evidence(
+                    source=f"sql:{data_source_id}",
+                    source_type="sql",
+                    payload={"sql": safe_sql, "row_count": len(rows)},
+                    credibility=confidence,
+                    relevance=0.85,
+                    cost=round(elapsed_ms, 1),
+                )
+            ],
         )
 
     def _select_valid_sql(self, ranked: list[CandidateSQL], semantic_ctx: SemanticContext | None, query: str) -> str | None:
@@ -396,6 +438,15 @@ class DataAgent(BaseAgent):
             content=f"data rows={len(rows)}",
             confidence=0.95,
             metadata={"sql": safe_sql, "rows": rows[:20], "row_count": len(rows), "data_source_id": data_source_id, **meta},
+            evidence=[
+                self._make_evidence(
+                    source=f"sql:{data_source_id}",
+                    source_type="sql",
+                    payload={"sql": safe_sql, "row_count": len(rows)},
+                    credibility=0.95,
+                    relevance=0.9,
+                )
+            ],
         )
 
 

@@ -8,7 +8,6 @@ from typing import Awaitable, Callable
 from infra.message_bus.cognitive_event_bus import CognitiveEventBus, cognitive_event_bus
 from infra.message_bus.events import CognitiveEvent, CognitiveEventType
 from infra.observability.logger import get_logger
-from memory.evolution.router import EvolutionMemoryRouter
 
 logger = get_logger(__name__)
 
@@ -35,7 +34,8 @@ class SubscriberRuntimeState:
 class MemoryEventSubscriber:
     def __init__(self, bus: CognitiveEventBus = cognitive_event_bus) -> None:
         self.bus = bus
-        self.router = EvolutionMemoryRouter()
+        from memory.memory_router.router import get_memory_router
+        self.router = get_memory_router()
         self._state = SubscriberRuntimeState(
             subscriptions=[
                 SubscriptionSpec(CognitiveEventType.FEEDBACK, self._handle_feedback, "feedback"),

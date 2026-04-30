@@ -12,6 +12,7 @@ class FusionEngine:
         "time": 0.9,
         "search": 0.6,
         "web_search": 0.6,
+        "memory": 0.55,
     }
 
     def _weight(self, source: str) -> float:
@@ -30,12 +31,23 @@ class FusionEngine:
         return 0.0
 
     def _render_context(self, picked: dict[str, ToolResult]) -> str:
+        _source_labels: dict[str, str] = {
+            "memory": "历史记忆",
+            "llmwiki": "LLMWiki增强问答",
+            "document": "文档片段",
+            "sql": "数据库查询结果",
+            "web_search": "网络搜索结果",
+            "weather": "天气信息",
+            "time": "时间信息",
+            "skill": "技能匹配",
+        }
         lines: list[str] = []
         for src, r in picked.items():
             text = str(r.data)
             if src == "document" and (text.strip().startswith("{") or "'chunks'" in text or '"chunks"' in text):
                 text = "未检索到可直接引用的内部文档内容。"
-            lines.append(f"[{src}] {text[:1200]}")
+            label = _source_labels.get(src, src.upper())
+            lines.append(f"[{label}] {text[:1200]}")
         return "\n".join(lines)
 
     def run(self, input_data: FusionInput) -> FusionOutput:

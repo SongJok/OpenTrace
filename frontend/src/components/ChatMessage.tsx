@@ -62,12 +62,53 @@ function tryParseToolCard(content: string): { type: 'time' | 'weather' | 'table'
   const objectMatch = content.match(/\{[\s\S]*\}/)
   if (objectMatch?.[0]) candidates.unshift(objectMatch[0].trim())
 
+  const normalizeWeather = (parsed: any) => {
+    const current = parsed?.current && typeof parsed.current === 'object' ? parsed.current : {}
+    const forecast = Array.isArray(parsed?.forecast) ? parsed.forecast : []
+    const humidity = current.humidity ?? parsed?.humidity
+    const windSpeed = current.wind_speed ?? parsed?.wind_speed
+    const windDirection = current.wind_direction ?? parsed?.wind_direction
+    const temperature = current.temperature ?? parsed?.temperature
+    const weather = current.condition ?? parsed?.weather
+    const feelsLike = current.feels_like ?? parsed?.feels_like
+    const pressure = current.pressure ?? parsed?.pressure
+    const cloudiness = current.cloudiness ?? parsed?.cloudiness
+    const visibility = current.visibility ?? parsed?.visibility
+    const sunrise = current.sunrise ?? parsed?.sunrise
+    const sunset = current.sunset ?? parsed?.sunset
+    return {
+      type: 'weather',
+      city: parsed?.location || parsed?.city || '天气',
+      summary: parsed?.summary || parsed?.overview || parsed?.description || '',
+      overview: parsed?.overview || '',
+      feels_like_text: parsed?.feels_like_text || '',
+      outfit_advice: parsed?.outfit_advice || '',
+      travel_advice: parsed?.travel_advice || '',
+      risk_alert: parsed?.risk_alert || '',
+      activity_suggestion: parsed?.activity_suggestion || '',
+      keep_suggestion: parsed?.keep_suggestion || '',
+      temperature,
+      feels_like: feelsLike,
+      weather,
+      humidity,
+      pressure,
+      wind_speed: windSpeed,
+      wind_direction: windDirection,
+      cloudiness,
+      visibility,
+      sunrise,
+      sunset,
+      forecast,
+      raw: parsed,
+    }
+  }
+
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(candidate)
       if (parsed && typeof parsed === 'object') {
         if (parsed.type === 'time' || parsed.time || parsed.timestamp || parsed.displayTime) return { type: 'time', data: parsed }
-        if (parsed.city && (parsed.temperature !== undefined || parsed.weather)) return { type: 'weather', data: parsed }
+        if ((parsed.city || parsed.location || parsed.current) && (parsed.temperature !== undefined || parsed.weather || parsed.current)) return { type: 'weather', data: normalizeWeather(parsed) }
         if (parsed.type === 'table' && Array.isArray(parsed.rows)) return { type: 'table', data: parsed }
       }
     } catch {
@@ -157,6 +198,118 @@ function formatCountLabel(label: string, value: any) {
   return `${label} ${value}`
 }
 
+function formatWindDirection(value: any) {
+  if (value === undefined || value === null || value === '') return ''
+  const text = String(value).trim()
+  if (/^\d+(?:\.\d+)?°?$/.test(text)) return `${text.replace(/°?$/, '')}°`
+  return text
+}
+
+function formatUnixTime(value: any) {
+  if (value === undefined || value === null || value === '') return ''
+  const n = Number(value)
+  if (!Number.isFinite(n)) return ''
+  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(n * 1000))
+}
+
+function WeatherCard({ data }: { data: any }) {
+  const windDirection = formatWindDirection(data?.wind_direction)
+  const temperature = data?.temperature
+  const feelsLike = data?.feels_like
+  const humidity = data?.humidity
+  const pressure = data?.pressure
+  const windSpeed = data?.wind_speed
+  const cloudiness = data?.cloudiness
+  const visibility = data?.visibility
+  const sunrise = formatUnixTime(data?.sunrise)
+  const sunset = formatUnixTime(data?.sunset)
+  const condition = String(data?.weather || data?.current?.condition || '天气情况未知')
+  const summary = String(data?.summary || data?.overview || `${data?.city || '该地区'}天气信息如下。`)
+  return (
+    <CardShell
+      eyebrow="WEATHER"
+      title={String(data?.city || '天气')}
+      meta={summary}
+      accent="from-sky-500/70 via-cyan-400/45 to-emerald-300/35"
+    >
+      <div className="space-y-4">
+        <div className="rounded-[28px] border border-white/10 bg-gradient-to-br from-sky-500/20 via-cyan-400/10 to-emerald-400/10 p-4 shadow-inner shadow-cyan-950/20">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.24em] text-white/45">当前天气</div>
+              <div className="mt-2 text-2xl font-semibold text-white/95">{condition}</div>
+              <div className="mt-1 text-sm text-white/65">{summary}</div>
+            </div>
+            <div className="rounded-3xl border border-white/10 bg-black/18 px-4 py-3 text-right">
+              <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">气温</div>
+              <div className="mt-1 text-4xl font-semibold text-white/95">{temperature ?? '—'}<span className="text-xl">{temperature !== undefined && temperature !== null ? '°C' : ''}</span></div>
+              {feelsLike !== undefined && feelsLike !== null ? <div className="mt-1 text-xs text-white/60">体感 {feelsLike}°C</div> : null}
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+          <div className="rounded-2xl bg-white/6 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">湿度</div>
+            <div className="mt-1 text-white/88">{humidity ?? '-'}{humidity !== undefined && humidity !== null ? '%' : ''}</div>
+          </div>
+          <div className="rounded-2xl bg-white/6 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">气压</div>
+            <div className="mt-1 text-white/88">{pressure ?? '-'}{pressure !== undefined && pressure !== null ? ' hPa' : ''}</div>
+          </div>
+          <div className="rounded-2xl bg-white/6 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">风速</div>
+            <div className="mt-1 text-white/88">{windSpeed ?? '-'}{windSpeed ? ' m/s' : ''}</div>
+          </div>
+          <div className="rounded-2xl bg-white/6 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">风向</div>
+            <div className="mt-1 text-white/88">{windDirection || '-'}</div>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+          <div className="rounded-2xl bg-white/6 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">云量</div>
+            <div className="mt-1 text-white/88">{cloudiness ?? '-'}{cloudiness !== undefined && cloudiness !== null ? '%' : ''}</div>
+          </div>
+          <div className="rounded-2xl bg-white/6 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">可见度</div>
+            <div className="mt-1 text-white/88">{visibility ?? '-'}{visibility !== undefined && visibility !== null ? ' m' : ''}</div>
+          </div>
+          <div className="rounded-2xl bg-white/6 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">日出</div>
+            <div className="mt-1 text-white/88">{sunrise || '-'}</div>
+          </div>
+          <div className="rounded-2xl bg-white/6 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">日落</div>
+            <div className="mt-1 text-white/88">{sunset || '-'}</div>
+          </div>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          {data?.overview ? <div className="rounded-2xl bg-white/6 px-4 py-3 text-sm text-white/88"><span className="text-white/55">总体概述：</span>{data.overview}</div> : null}
+          {data?.feels_like_text ? <div className="rounded-2xl bg-white/6 px-4 py-3 text-sm text-white/88"><span className="text-white/55">体感：</span>{data.feels_like_text}</div> : null}
+          {data?.outfit_advice ? <div className="rounded-2xl bg-white/6 px-4 py-3 text-sm text-white/88"><span className="text-white/55">穿衣建议：</span>{data.outfit_advice}</div> : null}
+          {data?.travel_advice ? <div className="rounded-2xl bg-white/6 px-4 py-3 text-sm text-white/88"><span className="text-white/55">出行建议：</span>{data.travel_advice}</div> : null}
+          {data?.activity_suggestion ? <div className="rounded-2xl bg-white/6 px-4 py-3 text-sm text-white/88"><span className="text-white/55">活动建议：</span>{data.activity_suggestion}</div> : null}
+          {data?.risk_alert ? <div className="rounded-2xl bg-white/6 px-4 py-3 text-sm text-white/88"><span className="text-white/55">提醒：</span>{data.risk_alert}</div> : null}
+        </div>
+        {data?.keep_suggestion ? <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-50">{data.keep_suggestion}</div> : null}
+        {Array.isArray(data?.forecast) && data.forecast.length > 0 ? (
+          <div className="rounded-2xl border border-white/10 bg-black/18 p-3">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">未来预报</div>
+            <div className="mt-2 space-y-2 text-sm text-white/86">
+              {data.forecast.slice(0, 3).map((item: any, idx: number) => (
+                <div key={`${item.date || idx}`} className="flex items-center justify-between gap-3 rounded-xl bg-white/5 px-3 py-2">
+                  <span className="whitespace-nowrap text-white/72">{String(item.date || `第${idx + 1}天`)}</span>
+                  <span className="text-right">{[item.condition, item.low !== undefined || item.high !== undefined ? `${item.low ?? '-'}℃ ~ ${item.high ?? '-'}℃` : ''].filter(Boolean).join('，')}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </CardShell>
+  )
+}
+
 export default function ChatMessage({ message }: { message: Message }) {
   const activeId = useChatStore((s) => s.activeId)
   const showReasoning = getTraceVisibility('reasoning')
@@ -185,21 +338,7 @@ export default function ChatMessage({ message }: { message: Message }) {
   }
 
   if (message.status === 'streaming') {
-    return (
-      <div>
-        <ReasoningChain
-          steps={steps}
-          autoExpand
-          collapseOnEvent={`opentrace:assistant-stream-done:${message.id}`}
-        />
-        <ExecutionGraphPanel
-          graph={executionGraph}
-          autoExpand
-          collapseOnEvent={`opentrace:assistant-stream-done:${message.id}`}
-        />
-        <StreamingMessage text={message.streamText} />
-      </div>
-    )
+    return <StreamingMessage text={message.streamText} />
   }
 
   return (
@@ -361,10 +500,17 @@ function DecisionTraceCard({ executionGraph, annotations }: { executionGraph: Ex
 }
 
 function StreamingMessage({ text }: { text: string }) {
+  const visibleText = text || ' '
   return (
-    <pre className="m-0 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 font-mono text-[15px] leading-relaxed whitespace-pre-wrap break-words text-[var(--text)]">
-      {text}
-    </pre>
+    <div className="flex items-start gap-3">
+      <span className="mt-2 inline-block h-2.5 w-2.5 flex-shrink-0 rounded-full bg-black/90 animate-pulse shadow-[0_0_0_1px_rgba(0,0,0,0.08)]" aria-hidden="true" />
+      <div className="min-w-0 flex-1 text-[15px] leading-relaxed text-[var(--text)]">
+        <span className="whitespace-pre-wrap break-words">
+          {visibleText}
+          <span className="ml-0.5 inline-block h-[1.05em] w-[1px] translate-y-[2px] bg-black/90 animate-pulse" aria-hidden="true" />
+        </span>
+      </div>
+    </div>
   )
 }
 
@@ -507,8 +653,12 @@ function FinalMessage({
   }
 
   const streamingDoneEvent = typeof window !== 'undefined' ? `opentrace:assistant-stream-done:${messageId}` : ''
-  const toolCard = tryParseToolCard(content)
-  const multiQuestionCards = parseMultiQuestionCards(content)
+  const toolCard = useMemo(() => {
+    try { return tryParseToolCard(content) } catch { return null }
+  }, [content])
+  const multiQuestionCards = useMemo(() => {
+    try { return parseMultiQuestionCards(content) } catch { return null }
+  }, [content])
 
   const dagTimeline = useMemo<DagTimelineItem[]>(() => {
     const nodes = Array.isArray(executionGraph?.nodes) ? executionGraph.nodes : []
@@ -532,29 +682,7 @@ function FinalMessage({
       {showFlowCards ? (
         <div className="space-y-2">
           {toolCard?.type === 'time' ? <TimeCard data={toolCard.data} /> : null}
-          {toolCard?.type === 'weather' ? (
-            <CardShell
-              eyebrow="WEATHER"
-              title={String(toolCard.data.city || '天气')}
-              meta={formatCountLabel('温度', `${toolCard.data.temperature ?? '-'}°C`) || undefined}
-              accent="from-sky-500/70 via-cyan-400/45 to-emerald-300/35"
-            >
-              <div className="grid grid-cols-3 gap-3 text-sm">
-                <div className="rounded-2xl bg-white/6 px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">天气</div>
-                  <div className="mt-1 text-white/88">{toolCard.data.weather || '-'}</div>
-                </div>
-                <div className="rounded-2xl bg-white/6 px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">湿度</div>
-                  <div className="mt-1 text-white/88">{toolCard.data.humidity ?? '-'}%</div>
-                </div>
-                <div className="rounded-2xl bg-white/6 px-3 py-2">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">风速</div>
-                  <div className="mt-1 text-white/88">{toolCard.data.windSpeed ?? toolCard.data.wind_speed ?? '-'}{toolCard.data.windSpeed || toolCard.data.wind_speed ? ' m/s' : ''}</div>
-                </div>
-              </div>
-            </CardShell>
-          ) : null}
+          {toolCard?.type === 'weather' ? <WeatherCard data={toolCard.data} /> : null}
           {toolCard?.type === 'table' ? (
             <CardShell
               eyebrow="DATA"
@@ -611,21 +739,69 @@ function FinalMessage({
         <CardShell
           eyebrow="WEATHER"
           title={String(toolCard.data.city || '天气')}
-          meta={formatCountLabel('温度', `${toolCard.data.temperature ?? '-'}°C`) || undefined}
+          meta={toolCard.data.summary ? String(toolCard.data.summary) : formatCountLabel('温度', `${toolCard.data.temperature ?? '-'}°C`) || undefined}
           accent="from-sky-500/70 via-cyan-400/45 to-emerald-300/35"
         >
-          <div className="grid grid-cols-3 gap-3 text-sm">
-            <div className="rounded-2xl bg-white/6 px-3 py-2">
-              <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">天气</div>
-              <div className="mt-1 text-white/88">{toolCard.data.weather || '-'}</div>
-            </div>
-            <div className="rounded-2xl bg-white/6 px-3 py-2">
-              <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">湿度</div>
-              <div className="mt-1 text-white/88">{toolCard.data.humidity ?? '-'}%</div>
-            </div>
-            <div className="rounded-2xl bg-white/6 px-3 py-2">
-              <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">风速</div>
-              <div className="mt-1 text-white/88">{toolCard.data.windSpeed ?? toolCard.data.wind_speed ?? '-'}{toolCard.data.windSpeed || toolCard.data.wind_speed ? ' m/s' : ''}</div>
+          <div className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-[1.2fr_0.8fr]">
+              <div className="rounded-3xl border border-white/10 bg-white/6 p-4 shadow-[0_12px_40px_rgba(0,0,0,0.16)]">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-[0.24em] text-white/42">实时天气</div>
+                    <div className="mt-1 text-xl font-semibold text-white/96">{toolCard.data.city || '天气'}</div>
+                    <div className="mt-2 text-sm text-white/72">{toolCard.data.summary || `${toolCard.data.city || '该地区'}天气信息如下。`}</div>
+                  </div>
+                  <div className="rounded-2xl bg-black/20 px-4 py-3 text-right">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">温度</div>
+                    <div className="text-3xl font-semibold text-white">{toolCard.data.temperature ?? '-'}</div>
+                    <div className="text-xs text-white/55">{toolCard.data.temperature !== undefined && toolCard.data.temperature !== null ? '°C' : ''}</div>
+                  </div>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-3">
+                  <div className="rounded-2xl bg-black/16 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">天气</div>
+                    <div className="mt-1 text-white/90">{toolCard.data.weather || '-'}</div>
+                  </div>
+                  <div className="rounded-2xl bg-black/16 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">湿度</div>
+                    <div className="mt-1 text-white/90">{toolCard.data.humidity ?? '-'}{toolCard.data.humidity !== undefined && toolCard.data.humidity !== null ? '%' : ''}</div>
+                  </div>
+                  <div className="rounded-2xl bg-black/16 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">风速</div>
+                    <div className="mt-1 text-white/90">{toolCard.data.wind_speed ?? '-'}{toolCard.data.wind_speed ? ' m/s' : ''}</div>
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-3xl border border-white/10 bg-white/6 p-4">
+                <div className="text-[11px] uppercase tracking-[0.24em] text-white/42">补充信息</div>
+                <div className="mt-3 rounded-2xl bg-black/16 px-3 py-3 text-sm text-white/88">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">风向</div>
+                  <div className="mt-1 text-white/90">{formatWindDirection(toolCard.data.wind_direction) || '-'}</div>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                  <div className="rounded-2xl bg-black/16 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">体感</div>
+                    <div className="mt-1 text-white/90">{toolCard.data.feels_like ?? '-'}</div>
+                  </div>
+                  <div className="rounded-2xl bg-black/16 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">气压</div>
+                    <div className="mt-1 text-white/90">{toolCard.data.pressure ?? '-'}</div>
+                  </div>
+                </div>
+                {Array.isArray(toolCard.data.forecast) && toolCard.data.forecast.length > 0 ? (
+                  <div className="mt-3 rounded-2xl border border-white/10 bg-black/18 p-3">
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">未来预报</div>
+                    <div className="mt-2 space-y-2 text-sm text-white/86">
+                      {toolCard.data.forecast.slice(0, 3).map((item: any, idx: number) => (
+                        <div key={`${item.date || idx}`} className="flex items-center justify-between gap-3 rounded-xl bg-white/5 px-3 py-2">
+                          <span className="whitespace-nowrap text-white/72">{String(item.date || `第${idx + 1}天`)}</span>
+                          <span className="text-right">{[item.condition, item.low !== undefined || item.high !== undefined ? `${item.low ?? '-'}℃ ~ ${item.high ?? '-'}℃` : ''].filter(Boolean).join('，')}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
         </CardShell>

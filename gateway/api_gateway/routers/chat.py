@@ -30,6 +30,7 @@ from infra.observability.request_context import get_log_context, set_user_sessio
 from infra.security.zero_trust import assess_query_risk, issue_permission_token, tool_anomaly_detector, validate_permission_token
 from infra.storage.database import AsyncSessionLocal, db_session_dependency as get_db
 from infra.storage.models import ChatSession, DataSource, DataSourceSchema, ReasoningTrace, ToolStat, TraceLog, User, UserMemory, UserMemorySettings
+from kernel.protocol.events import SpanStage, trace_context_for_request
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -428,6 +429,7 @@ async def chat(
     from kernel.cognitive_kernel import KernelRequest
 
     request_id = req.request_id or str(uuid.uuid4())
+    trace_ctx = trace_context_for_request(request_id, session_id=session_id, user_id=current_user.id)
     user_preferences = await _load_user_memory_preferences(db, current_user.id)
 
     risk = assess_query_risk(req.query)
@@ -497,6 +499,7 @@ async def chat(
         history=conversation_history,
         stream=req.stream,
         web_enabled=req.web_enabled,
+        trace_ctx=trace_ctx,
         metadata={
             "request_id": request_id,
             "graph_controls": graph_controls,
@@ -515,9 +518,12 @@ async def chat(
 
     t0 = time.monotonic()
     trace_id = get_log_context().get("trace_id") or request_id
+    gateway_span = trace_ctx.start_span(SpanStage.GATEWAY)
     await cognitive_event_bus.publish(
         cognitive_event_bus.emit_planning(
             trace_id=trace_id,
+            span_id=gateway_span,
+            parent_span_id=trace_ctx.root_span_id,
             payload={
                 "action": "chat.request.received",
                 "query": req.query,
@@ -677,6 +683,8 @@ async def chat(
                             await cognitive_event_bus.publish(
                                 cognitive_event_bus.emit_execution(
                                     trace_id=trace_id,
+                                    span_id=trace_ctx.start_span(SpanStage.AGENT_EXECUTION, parent_span_id=gateway_span),
+                                    parent_span_id=gateway_span,
                                     payload={"action": "reasoning_step", "data": data},
                                     session_id=session_id,
                                     request_id=request_id,
@@ -692,6 +700,8 @@ async def chat(
                             await cognitive_event_bus.publish(
                                 cognitive_event_bus.emit_evidence(
                                     trace_id=trace_id,
+                                    span_id=trace_ctx.start_span(SpanStage.FUSION, parent_span_id=gateway_span),
+                                    parent_span_id=gateway_span,
                                     payload={
                                         "action": "final_answer",
                                         "content": final_content,
@@ -709,6 +719,8 @@ async def chat(
                     await cognitive_event_bus.publish(
                         cognitive_event_bus.emit_feedback(
                             trace_id=trace_id,
+                            span_id=trace_ctx.start_span(SpanStage.GATEWAY, parent_span_id=gateway_span),
+                            parent_span_id=gateway_span,
                             payload={"action": "stream_cancelled", "session_id": session_id, "request_id": request_id},
                             session_id=session_id,
                             request_id=request_id,
@@ -722,6 +734,8 @@ async def chat(
                     await cognitive_event_bus.publish(
                         cognitive_event_bus.emit_critic(
                             trace_id=trace_id,
+                            span_id=trace_ctx.start_span(SpanStage.CRITIC, parent_span_id=gateway_span),
+                            parent_span_id=gateway_span,
                             payload={"action": "stream_error", "message": str(exc)},
                             session_id=session_id,
                             request_id=request_id,
@@ -818,6 +832,8 @@ async def chat(
         await cognitive_event_bus.publish(
             cognitive_event_bus.emit_critic(
                 trace_id=trace_id,
+                span_id=trace_ctx.start_span(SpanStage.CRITIC, parent_span_id=gateway_span),
+                parent_span_id=gateway_span,
                 payload={"action": "kernel_run_error", "message": str(exc)},
                 session_id=session_id,
                 request_id=request_id,
@@ -856,6 +872,8 @@ async def chat(
         await cognitive_event_bus.publish(
             cognitive_event_bus.emit_critic(
                 trace_id=trace_id,
+                span_id=trace_ctx.start_span(SpanStage.CRITIC, parent_span_id=gateway_span),
+                parent_span_id=gateway_span,
                 payload={"action": "fallback_used", "reason": str(exc)},
                 session_id=session_id,
                 request_id=request_id,
@@ -889,6 +907,8 @@ async def chat(
     await cognitive_event_bus.publish(
         cognitive_event_bus.emit_learning(
             trace_id=trace_id,
+            span_id=trace_ctx.start_span(SpanStage.FINAL, parent_span_id=gateway_span),
+            parent_span_id=gateway_span,
             payload={
                 "action": "kernel_run_completed",
                 "route": result.route,

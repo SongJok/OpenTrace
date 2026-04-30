@@ -10,6 +10,30 @@ from __future__ import annotations
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
+from kernel.protocol.events import (
+    CognitiveEventTypeV2,
+    CognitiveEventV2,
+    SpanStage,
+    TraceContext,
+)
+from kernel.protocol.governance import (
+    Budget,
+    BudgetTracker,
+    GovernanceProfile,
+    QualityGate,
+    QualityGateResult,
+)
+from kernel.protocol.mcp import (
+    Action,
+    ActionPlan,
+    AgentTrace,
+    CognitiveContext,
+    Critique,
+    Evidence,
+    FailureTag,
+    Hypothesis,
+)
+
 __all__ = [
     "IntentEngine",
     "Intent",
@@ -30,6 +54,24 @@ __all__ = [
     "ComplexityScore",
     "SemanticCache",
     "CacheEntry",
+    # Protocol Layer
+    "CognitiveEventV2",
+    "CognitiveEventTypeV2",
+    "SpanStage",
+    "TraceContext",
+    "CognitiveContext",
+    "Evidence",
+    "Hypothesis",
+    "ActionPlan",
+    "Action",
+    "Critique",
+    "AgentTrace",
+    "FailureTag",
+    "GovernanceProfile",
+    "Budget",
+    "BudgetTracker",
+    "QualityGate",
+    "QualityGateResult",
 ]
 
 _EXPORTS = {

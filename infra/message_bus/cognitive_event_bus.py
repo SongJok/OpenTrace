@@ -75,23 +75,33 @@ class CognitiveEventBus:
         rows = await self.store.list_by_trace(trace_id, limit=limit)
         return [CognitiveEvent.from_dict(row) for row in rows]
 
-    def emit_planning(self, trace_id: str, payload: dict[str, Any], **meta: Any) -> CognitiveEvent:
-        return CognitiveEvent(event_type=CognitiveEventType.PLANNING, trace_id=trace_id, payload=payload, **meta)
+    def _next_span_id(self, prefix: str = "span") -> str:
+        from uuid import uuid4
+        return f"{prefix}:{uuid4().hex[:12]}"
 
-    def emit_execution(self, trace_id: str, payload: dict[str, Any], **meta: Any) -> CognitiveEvent:
-        return CognitiveEvent(event_type=CognitiveEventType.EXECUTION, trace_id=trace_id, payload=payload, **meta)
+    def emit_routing(self, trace_id: str, payload: dict[str, Any], span_id: str = "", parent_span_id: str = "", **meta: Any) -> CognitiveEvent:
+        return CognitiveEvent(event_type=CognitiveEventType.ROUTING, trace_id=trace_id, span_id=span_id, parent_span_id=parent_span_id, stage="routing", payload=payload, **meta)
 
-    def emit_evidence(self, trace_id: str, payload: dict[str, Any], **meta: Any) -> CognitiveEvent:
-        return CognitiveEvent(event_type=CognitiveEventType.EVIDENCE, trace_id=trace_id, payload=payload, **meta)
+    def emit_planning(self, trace_id: str, payload: dict[str, Any], span_id: str = "", parent_span_id: str = "", **meta: Any) -> CognitiveEvent:
+        return CognitiveEvent(event_type=CognitiveEventType.PLANNING, trace_id=trace_id, span_id=span_id, parent_span_id=parent_span_id, stage="planning", payload=payload, **meta)
 
-    def emit_critic(self, trace_id: str, payload: dict[str, Any], **meta: Any) -> CognitiveEvent:
-        return CognitiveEvent(event_type=CognitiveEventType.CRITIC, trace_id=trace_id, payload=payload, **meta)
+    def emit_execution(self, trace_id: str, payload: dict[str, Any], span_id: str = "", parent_span_id: str = "", **meta: Any) -> CognitiveEvent:
+        return CognitiveEvent(event_type=CognitiveEventType.EXECUTION, trace_id=trace_id, span_id=span_id, parent_span_id=parent_span_id, stage="agent_execution", payload=payload, **meta)
 
-    def emit_feedback(self, trace_id: str, payload: dict[str, Any], **meta: Any) -> CognitiveEvent:
-        return CognitiveEvent(event_type=CognitiveEventType.FEEDBACK, trace_id=trace_id, payload=payload, **meta)
+    def emit_evidence(self, trace_id: str, payload: dict[str, Any], span_id: str = "", parent_span_id: str = "", **meta: Any) -> CognitiveEvent:
+        return CognitiveEvent(event_type=CognitiveEventType.EVIDENCE, trace_id=trace_id, span_id=span_id, parent_span_id=parent_span_id, stage="agent_execution", payload=payload, **meta)
 
-    def emit_learning(self, trace_id: str, payload: dict[str, Any], **meta: Any) -> CognitiveEvent:
-        return CognitiveEvent(event_type=CognitiveEventType.LEARNING, trace_id=trace_id, payload=payload, **meta)
+    def emit_fusion(self, trace_id: str, payload: dict[str, Any], span_id: str = "", parent_span_id: str = "", **meta: Any) -> CognitiveEvent:
+        return CognitiveEvent(event_type=CognitiveEventType.FUSION, trace_id=trace_id, span_id=span_id, parent_span_id=parent_span_id, stage="fusion", payload=payload, **meta)
+
+    def emit_critic(self, trace_id: str, payload: dict[str, Any], span_id: str = "", parent_span_id: str = "", **meta: Any) -> CognitiveEvent:
+        return CognitiveEvent(event_type=CognitiveEventType.CRITIC, trace_id=trace_id, span_id=span_id, parent_span_id=parent_span_id, stage="critic", payload=payload, **meta)
+
+    def emit_feedback(self, trace_id: str, payload: dict[str, Any], span_id: str = "", parent_span_id: str = "", **meta: Any) -> CognitiveEvent:
+        return CognitiveEvent(event_type=CognitiveEventType.FEEDBACK, trace_id=trace_id, span_id=span_id, parent_span_id=parent_span_id, stage="feedback", payload=payload, **meta)
+
+    def emit_learning(self, trace_id: str, payload: dict[str, Any], span_id: str = "", parent_span_id: str = "", **meta: Any) -> CognitiveEvent:
+        return CognitiveEvent(event_type=CognitiveEventType.LEARNING, trace_id=trace_id, span_id=span_id, parent_span_id=parent_span_id, stage="learning", payload=payload, **meta)
 
 
 cognitive_event_bus = CognitiveEventBus()

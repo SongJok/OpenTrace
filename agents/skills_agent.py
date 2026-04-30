@@ -73,6 +73,16 @@ class SkillsAgent(BaseAgent):
 
         if best_result is not None:
             content = json.dumps(best_result, ensure_ascii=False) if isinstance(best_result, dict) else str(best_result)
+            evidence = [
+                self._make_evidence(
+                    source=f"skill:{r.get('skill_id', '')}",
+                    source_type="skill",
+                    payload=r.get("output") if r.get("skill_id") == results[0].get("skill_id") else None,
+                    credibility=r.get("score", 0.5),
+                    relevance=r.get("score", 0.5),
+                )
+                for r in results if r.get("score") is not None
+            ]
             return AgentResult(
                 task_id=task.task_id,
                 agent_type=self.agent_type,
@@ -80,6 +90,7 @@ class SkillsAgent(BaseAgent):
                 content=content,
                 confidence=max(0.7, best_score),
                 metadata={"matched_skills": len(results), "all_results": results},
+                evidence=evidence,
             )
 
         preview = ", ".join(s.name for s in skills[:5])

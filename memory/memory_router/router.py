@@ -27,6 +27,23 @@ class MemoryChunk:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+# ── Module-level singleton ──────────────────────────────────────────────
+# EvolutionMemoryRouter is the production default because it adds
+# reinforcement, skill retrieval, and evolution on top of base retrieval.
+# Both CognitiveKernel (read) and MemoryEventSubscriber (write) share this
+# single instance so semantic store data is visible to both paths.
+_global_memory_router: Optional["MemoryRouter"] = None
+
+
+def get_memory_router() -> "MemoryRouter":
+    """Return the process-wide singleton MemoryRouter (EvolutionMemoryRouter by default)."""
+    global _global_memory_router
+    if _global_memory_router is None:
+        from memory.evolution.router import EvolutionMemoryRouter
+        _global_memory_router = EvolutionMemoryRouter()
+    return _global_memory_router
+
+
 class MemoryRouter:
     """
     Federated memory:

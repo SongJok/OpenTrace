@@ -34,6 +34,8 @@ def _offline_fallback_response(messages: list[LLMMessage], role: LLMRole) -> LLM
     user_text = (last_user_text(messages) or '').strip()
     if role == LLMRole.ROUTER:
         content = '{"route": "complex", "difficulty": "simple"}'
+    elif role == LLMRole.IDENTITY:
+        content = CANONICAL_IDENTITY_RESPONSE
     elif role == LLMRole.FAST:
         content = '我目前处于离线降级模式，暂时无法提供完整回答。请稍后重试或换一种更具体的问法。'
     elif role == LLMRole.CHEAP_CRITIC:
@@ -65,6 +67,7 @@ class LLMRole(str, Enum):
     FAST = "fast"                 # MiddleShort 8B — simple answers
     CHEAP_CRITIC = "cheap_critic" # SeniorShort 14B — lightweight critique
     KNOWLEDGE = "knowledge"       # SeniorShort 14B — knowledge Q&A
+    IDENTITY = "identity"         # MinShort 0.6B — personalized identity response
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +175,16 @@ def _build_config(role: LLMRole) -> LLMConfig:
             model=s.default_llm_seniorshort_model,
             base_url=s.default_llm_seniorshort_base_url,
             api_key=s.default_llm_seniorshort_api_key,
+        )
+    if role == LLMRole.IDENTITY:
+        return LLMConfig(
+            provider=s.default_llm_minshort_provider,
+            model=s.default_llm_minshort_model,
+            base_url=s.default_llm_minshort_base_url,
+            api_key=s.default_llm_minshort_api_key,
+            temperature=0.7,
+            max_tokens=256,
+            timeout=8,
         )
     return LLMConfig(
         provider=s.default_llm_query_provider,

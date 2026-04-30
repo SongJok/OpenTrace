@@ -33,13 +33,44 @@ from infra.observability.tracer import get_tracer
 from kernel.cognition.self_model import SelfModel
 from kernel.cognition.types import CapabilityLevel, TaskDomain
 from kernel.identity.system_identity import CANONICAL_IDENTITY_RESPONSE, is_identity_user_query
+from kernel.protocol.events import trace_context_for_request
 from memory.working_memory.working_memory import (
     cache_identity_answer,
     get_cached_identity_answer,
+    get_or_create_session_memory,
 )
 
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
+
+_STREAM_CHUNK_SIZE = 16
+_STREAM_DELAY = 0.015
+
+
+async def _emit_streaming_answer(
+    content: str,
+    reasoning_step: dict | None = None,
+    execution_graph: dict | None = None,
+    citations: list | None = None,
+    annotations: list | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Yield delta chunks followed by final_answer for a streaming effect."""
+    if reasoning_step:
+        yield reasoning_step
+
+    text = content or ""
+    for i in range(0, len(text), _STREAM_CHUNK_SIZE):
+        yield {"type": "delta", "data": {"text": text[i : i + _STREAM_CHUNK_SIZE]}}
+        await asyncio.sleep(_STREAM_DELAY)
+
+    final_data: dict[str, Any] = {"content": text}
+    if execution_graph is not None:
+        final_data["execution_graph"] = execution_graph
+    if citations is not None:
+        final_data["citations"] = citations
+    if annotations is not None:
+        final_data["annotations"] = annotations
+    yield {"type": "final_answer", "data": final_data}
 
 
 @dataclass
@@ -51,6 +82,7 @@ class KernelRequest:
     stream: bool = False
     web_enabled: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    trace_ctx: Any = None
 
 
 @dataclass
@@ -117,8 +149,8 @@ class CognitiveKernel:
 
     def _get_memory_router(self):
         if self._memory_router is None:
-            from memory.memory_router.router import MemoryRouter
-            self._memory_router = MemoryRouter()
+            from memory.memory_router.router import get_memory_router
+            self._memory_router = get_memory_router()
         return self._memory_router
 
     def _get_prompt_engine(self):
@@ -162,6 +194,11 @@ class CognitiveKernel:
         t0 = time.monotonic()
         with tracer.start_as_current_span("cognitive_kernel.run") as span:
             sid = request.session_id
+            trace_ctx = request.trace_ctx or trace_context_for_request(
+                request_id=request.metadata.get("request_id", sid),
+                session_id=sid,
+                user_id=request.user_id,
+            )
             is_multi = self._is_multi_question(request.query)
 
             # ── Working memory identity cache (fastest path) ──────────
@@ -186,7 +223,14 @@ class CognitiveKernel:
                     )
 
             # ── V5 Routing Tier ───────────────────────────────────────
-            if settings.kernel_v5_routing_enabled:
+            # Skip V5 routing when force_mode is explicitly set (slash commands like /rag).
+            # L0/L1 routers don't see the slash prefix (frontend strips it), so they would
+            # misclassify the query and return a canned identity/FAQ/knowledge answer.
+            force_mode_from_meta: str | None = request.metadata.get("force_mode")
+            if force_mode_from_meta:
+                span.set_attribute("routing.force_mode", force_mode_from_meta)
+                span.set_attribute("routing.skip_v5", True)
+            elif settings.kernel_v5_routing_enabled:
                 # L0: Rule Router (zero-LLM, <1ms)
                 if settings.kernel_l0_rule_router_enabled:
                     l0_result = await self._get_l0_router().route(
@@ -211,6 +255,7 @@ class CognitiveKernel:
                                         "web_enabled": request.web_enabled,
                                         "force_mode": l0_result.force_mode,
                                     },
+                                    trace_ctx=trace_ctx,
                                 )
                             )
                             total_ms = int((time.monotonic() - t0) * 1000)
@@ -227,6 +272,27 @@ class CognitiveKernel:
                                 total_latency_ms=total_ms,
                                 metadata=resp.metadata or {},
                             )
+
+                        # ── Enriched identity via MinShort 0.6B ──────────
+                        if l0_result.route == "identity" and settings.kernel_enriched_identity_enabled:
+                            try:
+                                from kernel.identity.enriched_identity import generate_enriched_identity
+                                wm_turns = []
+                                if sid:
+                                    try:
+                                        wm_turns = get_or_create_session_memory(sid).to_messages()
+                                    except Exception:
+                                        pass
+                                enriched = await generate_enriched_identity(
+                                    query=request.query,
+                                    user_id=request.user_id,
+                                    user_preferences=request.metadata.get("user_preferences", []),
+                                    recent_history=wm_turns or request.history,
+                                )
+                                l0_result.answer = enriched
+                                l0_result.metadata["enriched"] = True
+                            except Exception as exc:
+                                logger.debug("Enriched identity failed, using canned", error=str(exc))
 
                         if l0_result.route in ("identity", "faq") and sid:
                             cache_identity_answer(sid, request.query, l0_result.answer)
@@ -288,6 +354,64 @@ class CognitiveKernel:
                             )
             # ── End V5 Routing Tier ────────────────────────────────────
 
+            # ── Memory Context Injection ─────────────────────────────────
+            memory_context: list[dict[str, Any]] = []
+            if settings.kernel_memory_context_enabled and sid:
+                episodic_chunks: list[str] = []
+                keyword_chunks: list[str] = []
+
+                # Episodic memory (Redis-backed, best-effort)
+                try:
+                    from memory.episodic_memory.episodic_memory import EpisodicMemory
+
+                    episodic = EpisodicMemory(sid)
+                    episodic_events = await episodic.recall(last_n=20)
+                    # Format episodic events as readable Q&A pairs instead of raw JSON
+                    for e in episodic_events:
+                        try:
+                            inner = json.loads(e.get("content", "{}"))
+                            if isinstance(inner, dict):
+                                q = inner.get("q", "")
+                                a = inner.get("a", "")
+                                if q and a:
+                                    episodic_chunks.append(f"Q: {q}\nA: {a[:300]}")
+                                else:
+                                    episodic_chunks.append(e.get("content", "")[:500])
+                            else:
+                                episodic_chunks.append(str(inner)[:500])
+                        except (json.JSONDecodeError, TypeError):
+                            episodic_chunks.append(str(e.get("content", ""))[:500])
+                except Exception:
+                    pass
+
+                # Working memory turns (in-process, always available)
+                try:
+                    wm = get_or_create_session_memory(sid)
+                    keyword_chunks = [
+                        f"user: {t.content}" if t.role == "user" else f"assistant: {t.content}"
+                        for t in wm.get_turns(last_n=8)
+                    ] + request.metadata.get("user_preferences", [])
+                except Exception:
+                    pass
+
+                # Semantic memory retrieval (combines all sources)
+                if episodic_chunks or keyword_chunks:
+                    try:
+                        memory_chunks = await self._get_memory_router().retrieve(
+                            query=request.query,
+                            episodic_chunks=episodic_chunks,
+                            keyword_chunks=keyword_chunks,
+                            top_k=8,
+                        )
+                        memory_context = [
+                            {"content": c.content, "score": c.score, "source": c.source}
+                            for c in memory_chunks
+                        ]
+                        span.set_attribute("memory_context.hits", len(memory_context))
+                    except Exception as exc:
+                        logger.debug("MemoryRouter.retrieve failed", error=str(exc))
+            # ── End Memory Context Injection ─────────────────────────────
+
             intent = self._classify_intent_domain(request.query)
             assessment = self.self_model.introspect(request.query, intent)
             span.set_attribute("cognition.intent_domain", intent.value)
@@ -344,7 +468,9 @@ class CognitiveKernel:
                         **request.metadata,
                         "web_enabled": request.web_enabled,
                         "identity_prompt": identity_prompt,
+                        "memory_context": memory_context,
                     },
+                    trace_ctx=trace_ctx,
                 )
             )
 
@@ -354,6 +480,36 @@ class CognitiveKernel:
             # Store in semantic cache for future hits
             if settings.kernel_semantic_cache_enabled and resp.content:
                 await self._get_semantic_cache().store(request.query, resp.content)
+
+            # ── Save turns to WorkingMemory + EpisodicMemory ────────────
+            if settings.kernel_memory_context_enabled and sid and resp.content:
+                try:
+                    wm = get_or_create_session_memory(sid)
+                    wm.add_turn("user", request.query)
+                    wm.add_turn("assistant", resp.content)
+                except Exception:
+                    pass
+                try:
+                    from memory.episodic_memory.episodic_memory import EpisodicMemory
+                    episodic = EpisodicMemory(sid)
+                    await episodic.record(
+                        "turn",
+                        json.dumps({"q": request.query, "a": resp.content[:500]}, ensure_ascii=False),
+                    )
+                except Exception:
+                    pass
+                # Async semantic write-back (non-blocking, fire-and-forget)
+                try:
+                    router = self._get_memory_router()
+                    await router.store(
+                        session_id=sid,
+                        query=request.query,
+                        answer=resp.content[:2000],
+                        metadata={"user_id": request.user_id, "route": resp.route},
+                    )
+                except Exception:
+                    pass
+            # ── End turn saving ──────────────────────────────────────────
 
             total_ms = int((time.monotonic() - t0) * 1000)
             span.set_attribute("total.latency_ms", total_ms)
@@ -387,12 +543,24 @@ class CognitiveKernel:
         if sid and is_identity_user_query(request.query) and not is_multi:
             cached = get_cached_identity_answer(sid)
             if cached:
-                yield {"type": "reasoning_step", "data": {"id": "identity_reason", "stage": "REASON", "content": "命中身份记忆，直接返回缓存答案", "node_id": "node_identity", "status": "done"}}
-                yield {"type": "final_answer", "data": {"content": cached}}
+                async for event in _emit_streaming_answer(
+                    cached,
+                    reasoning_step={"type": "reasoning_step", "data": {"id": "identity_reason", "stage": "REASON", "content": "命中身份记忆，直接返回缓存答案", "node_id": "node_identity", "status": "done"}},
+                ):
+                    yield event
                 return
 
+        trace_ctx = request.trace_ctx or trace_context_for_request(
+            request_id=request.metadata.get("request_id", sid),
+            session_id=sid,
+            user_id=request.user_id,
+        )
+
         # ── V5 Routing Tier (streaming) ──────────────────────────────────
-        if settings.kernel_v5_routing_enabled:
+        force_mode_from_meta: str | None = request.metadata.get("force_mode")
+        if force_mode_from_meta:
+            pass  # Skip V5 — explicit force_mode from slash command
+        elif settings.kernel_v5_routing_enabled:
             # L0: Rule Router
             if settings.kernel_l0_rule_router_enabled:
                 l0_result = await self._get_l0_router().route(
@@ -418,21 +586,49 @@ class CognitiveKernel:
                                     "web_enabled": request.web_enabled,
                                     "force_mode": l0_result.force_mode,
                                 },
-                            )
+                                trace_ctx=trace_ctx,
+                            ),
                         ):
                             yield event
                         return
 
-                    yield {"type": "reasoning_step", "data": {"id": "l0_route", "stage": "ROUTE", "content": f"L0 规则匹配: {l0_result.route}", "node_id": "node_l0", "status": "done"}}
-                    yield {"type": "final_answer", "data": {"content": l0_result.answer}}
+                    # ── Enriched identity via MinShort 0.6B (streaming) ──
+                    if l0_result.route == "identity" and settings.kernel_enriched_identity_enabled:
+                        try:
+                            from kernel.identity.enriched_identity import generate_enriched_identity
+                            wm_turns = []
+                            if sid:
+                                try:
+                                    wm_turns = get_or_create_session_memory(sid).to_messages()
+                                except Exception:
+                                    pass
+                            enriched = await generate_enriched_identity(
+                                query=request.query,
+                                user_id=request.user_id,
+                                user_preferences=request.metadata.get("user_preferences", []),
+                                recent_history=wm_turns or request.history,
+                            )
+                            l0_result.answer = enriched
+                            l0_result.metadata["enriched"] = True
+                        except Exception as exc:
+                            logger.debug("Enriched identity failed (stream), using canned", error=str(exc))
+
+                    async for event in _emit_streaming_answer(
+                        l0_result.answer,
+                        reasoning_step={"type": "reasoning_step", "data": {"id": "l0_route", "stage": "ROUTE", "content": f"L0 规则匹配: {l0_result.route}", "node_id": "node_l0", "status": "done"}},
+                    ):
+                        yield event
                     return
 
             # L0.5: Semantic Cache
             if settings.kernel_semantic_cache_enabled and not is_multi:
                 cached = await self._get_semantic_cache().lookup(request.query)
                 if cached and cached.answer:
-                    yield {"type": "reasoning_step", "data": {"id": "cache_hit", "stage": "ROUTE", "content": "语义缓存命中", "node_id": "node_cache", "status": "done"}}
-                    yield {"type": "final_answer", "data": {"content": cached.answer}}
+                    async for event in _emit_streaming_answer(
+                        cached.answer,
+                        reasoning_step={"type": "reasoning_step", "data": {"id": "cache_hit", "stage": "ROUTE", "content": "语义缓存命中", "node_id": "node_cache", "status": "done"}},
+                    ):
+                        yield event
                     return
 
             # L1: Tiny Router
@@ -441,10 +637,69 @@ class CognitiveKernel:
                 if complexity.recommended_pipeline in ("L0", "L1"):
                     l1_result = await self._get_tiny_router().route(request.query, request.history)
                     if l1_result.route != "complex" and l1_result.answer:
-                        yield {"type": "reasoning_step", "data": {"id": "l1_route", "stage": "ROUTE", "content": f"L1 路由: {l1_result.route}", "node_id": "node_l1", "status": "done"}}
-                        yield {"type": "final_answer", "data": {"content": l1_result.answer}}
+                        async for event in _emit_streaming_answer(
+                            l1_result.answer,
+                            reasoning_step={"type": "reasoning_step", "data": {"id": "l1_route", "stage": "ROUTE", "content": f"L1 路由: {l1_result.route}", "node_id": "node_l1", "status": "done"}},
+                        ):
+                            yield event
                         return
         # ── End V5 Routing Tier ──────────────────────────────────────────
+
+        # ── Memory Context Injection (streaming) ──────────────────────────
+        memory_context_stream: list[dict[str, Any]] = []
+        if settings.kernel_memory_context_enabled and sid:
+            episodic_chunks_stream: list[str] = []
+            keyword_chunks_stream: list[str] = []
+
+            # Episodic memory (Redis-backed, best-effort)
+            try:
+                from memory.episodic_memory.episodic_memory import EpisodicMemory
+
+                episodic = EpisodicMemory(sid)
+                episodic_events = await episodic.recall(last_n=20)
+                for e in episodic_events:
+                    try:
+                        inner = json.loads(e.get("content", "{}"))
+                        if isinstance(inner, dict):
+                            q = inner.get("q", "")
+                            a = inner.get("a", "")
+                            if q and a:
+                                episodic_chunks_stream.append(f"Q: {q}\nA: {a[:300]}")
+                            else:
+                                episodic_chunks_stream.append(e.get("content", "")[:500])
+                        else:
+                            episodic_chunks_stream.append(str(inner)[:500])
+                    except (json.JSONDecodeError, TypeError):
+                        episodic_chunks_stream.append(str(e.get("content", ""))[:500])
+            except Exception:
+                pass
+
+            # Working memory turns (in-process, always available)
+            try:
+                wm = get_or_create_session_memory(sid)
+                keyword_chunks_stream = [
+                    f"user: {t.content}" if t.role == "user" else f"assistant: {t.content}"
+                    for t in wm.get_turns(last_n=8)
+                ] + request.metadata.get("user_preferences", [])
+            except Exception:
+                pass
+
+            # Semantic memory retrieval
+            if episodic_chunks_stream or keyword_chunks_stream:
+                try:
+                    memory_chunks = await self._get_memory_router().retrieve(
+                        query=request.query,
+                        episodic_chunks=episodic_chunks_stream,
+                        keyword_chunks=keyword_chunks_stream,
+                        top_k=8,
+                    )
+                    memory_context_stream = [
+                        {"content": c.content, "score": c.score, "source": c.source}
+                        for c in memory_chunks
+                    ]
+                except Exception as exc:
+                    logger.debug("MemoryRouter.retrieve failed (stream)", error=str(exc))
+        # ── End Memory Context Injection ─────────────────────────────────
 
         from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
 
@@ -463,10 +718,11 @@ class CognitiveKernel:
                     metadata={
                         **request.metadata,
                         "web_enabled": request.web_enabled,
+                        "memory_context": memory_context_stream,
                     },
-                )
+                    trace_ctx=trace_ctx,
+                ),
             ):
-                # Track final answer for semantic cache
                 if event.get("type") == "final_answer":
                     data = event.get("data", {})
                     final_content = data.get("content") if isinstance(data, dict) else None
@@ -475,10 +731,40 @@ class CognitiveKernel:
             # Store in semantic cache after streaming completes
             if settings.kernel_semantic_cache_enabled and final_content:
                 await self._get_semantic_cache().store(request.query, final_content)
-                yield event
+
+            # ── Save turns to WorkingMemory + EpisodicMemory ────────────
+            if settings.kernel_memory_context_enabled and sid and final_content:
+                try:
+                    wm = get_or_create_session_memory(sid)
+                    wm.add_turn("user", request.query)
+                    wm.add_turn("assistant", final_content)
+                except Exception:
+                    pass
+                try:
+                    from memory.episodic_memory.episodic_memory import EpisodicMemory
+                    episodic = EpisodicMemory(sid)
+                    await episodic.record(
+                        "turn",
+                        json.dumps({"q": request.query, "a": final_content[:500]}, ensure_ascii=False),
+                    )
+                except Exception:
+                    pass
+                # Async semantic write-back (non-blocking, fire-and-forget)
+                try:
+                    router = self._get_memory_router()
+                    await router.store(
+                        session_id=sid,
+                        query=request.query,
+                        answer=final_content[:2000],
+                        metadata={"user_id": request.user_id},
+                    )
+                except Exception:
+                    pass
+            # ── End turn saving ──────────────────────────────────────────
         except Exception as exc:  # noqa: BLE001
             if is_identity_user_query(request.query):
-                yield {"type": "final_answer", "data": {"content": CANONICAL_IDENTITY_RESPONSE, "execution_graph": None, "citations": [], "annotations": []}}
+                async for event in _emit_streaming_answer(CANONICAL_IDENTITY_RESPONSE):
+                    yield event
                 return
             yield {"type": "error", "data": {"message": str(exc)}}
         return
