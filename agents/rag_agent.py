@@ -677,6 +677,29 @@ class RagAgent(BaseAgent):
                         evidence_tier=ch.get("evidence_tier", "contextual"),
                     )
                 )
+            from kernel.result_reference import ResultRef, serialize_refs
+
+            result_refs: list[ResultRef] = []
+            for i, ch in enumerate((sorted_vector_chunks or [])[:5]):
+                result_refs.append(ResultRef(
+                    ref_id=f"doc_chunk:{ch.get('id', task.task_id)}",
+                    type="doc_chunk",
+                    title=f"Chunk: {ch.get('title', 'Untitled')}",
+                    summary=(str(ch.get('text', '')) or '')[:120],
+                    payload={"chunk": ch, "score": ch.get("score", 0)},
+                    source_agent="rag",
+                    message_id=task.task_id,
+                ))
+            for c in (citations or [])[:5]:
+                result_refs.append(ResultRef(
+                    ref_id=f"citation:{c.get('source_name', task.task_id)}" if isinstance(c, dict) else f"citation:{task.task_id}",
+                    type="citation",
+                    title=f"Citation: {c.get('source_name', 'Unknown')}",
+                    summary=c.get('content_snippet', '')[:120] if isinstance(c, dict) else str(c)[:120],
+                    payload={"citation": c} if isinstance(c, dict) else {},
+                    source_agent="rag",
+                    message_id=task.task_id,
+                ))
             return AgentResult(
                 task_id=task.task_id,
                 agent_type=self.agent_type,
@@ -692,6 +715,7 @@ class RagAgent(BaseAgent):
                     "sources": sources,
                     "citations": citations,
                     "query_type": query_type,
+                    "result_refs": serialize_refs(result_refs),
                     "quality": {
                         "avg_score": avg_score,
                         "max_score": max_score,

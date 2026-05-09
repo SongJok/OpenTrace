@@ -74,6 +74,12 @@ class ChatSession(Base):
     trace_logs: Mapped[list["TraceLog"]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
     )
+    conversation_state: Mapped["ConversationState | None"] = relationship(
+        back_populates="session", uselist=False, passive_deletes=True
+    )
+    attachments: Mapped[list["Attachment"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<ChatSession id={self.id} user={self.user_id}>"
@@ -88,6 +94,7 @@ class TraceLog(Base):
     )
     trace_id: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
     span_id: Mapped[str] = mapped_column(String(32), nullable=True)
+    parent_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     query: Mapped[str] = mapped_column(Text, nullable=False)
     response: Mapped[str] = mapped_column(Text, nullable=True)
     decision_type: Mapped[str] = mapped_column(String(50), nullable=True)
@@ -277,6 +284,7 @@ class UserMemory(Base):
     pinned: Mapped[bool] = mapped_column(Boolean, default=False)
     access_count: Mapped[int] = mapped_column(Integer, default=0)
     last_accessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    score: Mapped[float] = mapped_column(Float, default=0.5)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -346,6 +354,44 @@ class TaskNotification(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ConversationState(Base):
+    """Per-session structured conversation state for multi-turn reference resolution."""
+
+    __tablename__ = "conversation_states"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    active_topic: Mapped[str] = mapped_column(String(255), nullable=True)
+    active_intent: Mapped[str] = mapped_column(String(64), nullable=True)
+    active_domain: Mapped[str] = mapped_column(String(64), nullable=True)
+    active_entities: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    active_constraints: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    active_mode: Mapped[str] = mapped_column(String(64), nullable=True)
+    active_data_source_id: Mapped[str] = mapped_column(String(36), nullable=True)
+    active_document_ids: Mapped[dict] = mapped_column(JSON, nullable=False, default=list)
+    active_attachment_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    last_user_goal: Mapped[str] = mapped_column(Text, nullable=True)
+    last_assistant_summary: Mapped[str] = mapped_column(Text, nullable=True)
+    last_plan: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    last_results: Mapped[dict] = mapped_column(JSON, nullable=False, default=list)
+    pending_clarification: Mapped[dict] = mapped_column(JSON, nullable=True)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    session: Mapped["ChatSession"] = relationship(back_populates="conversation_state")
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 
@@ -400,6 +446,45 @@ class DataQueryLog(Base):
     success: Mapped[bool] = mapped_column(Boolean, default=True)
     error_message: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Attachment(Base):
+    """Per-session uploaded attachment (document, image, etc.) with content dedup."""
+
+    __tablename__ = "attachments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    file_size: Mapped[int] = mapped_column(Integer, default=0)
+    mime_type: Mapped[str] = mapped_column(String(255), nullable=True)
+    file_extension: Mapped[str] = mapped_column(String(20), nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(128), nullable=True, index=True)
+    content_text: Mapped[str] = mapped_column(Text, nullable=True)
+    content_summary: Mapped[str] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    image_base64: Mapped[str] = mapped_column(Text, nullable=True)
+    image_mime: Mapped[str] = mapped_column(String(100), nullable=True)
+    message_id: Mapped[str] = mapped_column(String(36), nullable=True)
+    duplicate_of: Mapped[str] = mapped_column(String(36), nullable=True)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    session: Mapped["ChatSession"] = relationship(back_populates="attachments")
+    user: Mapped["User"] = relationship()
+
+    def __repr__(self) -> str:
+        return f"<Attachment id={self.id} filename={self.filename} session={self.session_id}>"
 
 
 class SystemSetting(Base):

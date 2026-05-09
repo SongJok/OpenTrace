@@ -70,13 +70,27 @@ class WebAgent(BaseAgent):
                 )
                 for item in items
             ]
+            from kernel.result_reference import ResultRef, serialize_refs
+
+            result_refs = [
+                ResultRef(
+                    ref_id=f"web:{item.get('url', task.task_id)}",
+                    type="web_source",
+                    title=f"Web: {item.get('title', 'No title')}",
+                    summary=(item.get('snippet', '') or '')[:120],
+                    payload={"url": item.get("url", ""), "title": item.get("title", ""), "snippet": item.get("snippet", "")},
+                    source_agent="web",
+                    message_id=task.task_id,
+                )
+                for item in items[:5]
+            ]
             return AgentResult(
                 task_id=task.task_id,
                 agent_type=self.agent_type,
                 status="success",
                 content=content,
                 confidence=0.72,
-                metadata=metadata,
+                metadata={**metadata, "result_refs": serialize_refs(result_refs)},
                 evidence=evidence,
             )
         except Exception as exc:  # noqa: BLE001

@@ -74,7 +74,43 @@ class Dispatcher:
         enabled = settings.kernel_agent_runtime_supervisor_enabled if runtime_supervisor_enabled is None else runtime_supervisor_enabled
         self.supervisor = RuntimeSupervisor(enabled=bool(enabled))
 
-    async def dispatch(self, plan: TaskPlan, event_cb=None) -> list[AgentResult]:
+    async def dispatch(
+        self, plan: TaskPlan, event_cb=None, previous_results: list[AgentResult] | None = None,
+    ) -> list[AgentResult]:
+        # ── Feature ⑥: DAG Checkpoint Reuse ──────────────────────────
+        # If previous_results are provided (from conversation branching),
+        # skip subtasks whose query + agent_type match a previous result.
+        prev_map: dict[tuple[str, str], AgentResult] = {}
+        if previous_results:
+            for pr in previous_results:
+                key = (pr.agent_type, (pr.metadata or {}).get("query", "") or "")
+                prev_map[key] = pr
+
+        if previous_results:
+            new_subtasks: list[SubTask] = []
+            reused_results: list[AgentResult] = []
+            for st in plan.subtasks:
+                match_key = (st.agent_type, st.query)
+                if match_key in prev_map:
+                    reused = prev_map[match_key]
+                    reused.metadata = {
+                        **(reused.metadata or {}),
+                        "reused_from_checkpoint": True,
+                    }
+                    reused_results.append(reused)
+                else:
+                    new_subtasks.append(st)
+            if reused_results and not new_subtasks:
+                return reused_results
+            if reused_results:
+                plan.subtasks = new_subtasks
+                remaining = await self._dispatch_inner(plan, event_cb)
+                return reused_results + remaining
+        # ── End DAG Checkpoint Reuse ─────────────────────────────────
+
+        return await self._dispatch_inner(plan, event_cb)
+
+    async def _dispatch_inner(self, plan: TaskPlan, event_cb=None) -> list[AgentResult]:
         if bool(settings.kernel_agent_dag_scheduling_enabled) and any(getattr(s, "depends_on", []) for s in plan.subtasks):
             dag_nodes = [
                 DagNode(

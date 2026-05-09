@@ -6,6 +6,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Optional
 
+from infra.config.settings import settings
 from infra.observability.logger import get_logger
 from infra.observability.tracer import get_tracer
 from memory.evolution.evolution import (
@@ -103,7 +104,7 @@ class EvolutionMemoryRouter(MemoryRouter):
         return matches[:3]
 
     # ------------------------------------------------------------------
-    # Retrieve — injects skills at the front of results
+    # Retrieve — injects skills at the front of results, with auto-decay
     # ------------------------------------------------------------------
     async def retrieve(
         self,
@@ -118,6 +119,22 @@ class EvolutionMemoryRouter(MemoryRouter):
             keyword_chunks=keyword_chunks,
             top_k=top_k,
         )
+
+        # ── Feature ③: Auto-decay memories with no feedback ──
+        if bool(getattr(settings, "kernel_memory_value_scoring_enabled", True)):
+            decay_threshold = int(getattr(settings, "kernel_memory_auto_decay_threshold", 3))
+            for chunk in chunks:
+                chunk_id = chunk.metadata.get("chunk_id") or chunk.metadata.get("id")
+                if chunk_id:
+                    try:
+                        no_fb_streak = await self._get_no_feedback_streak(chunk_id)
+                        if no_fb_streak >= decay_threshold:
+                            chunk.score *= 0.1  # Auto-decay
+                            chunk.metadata["auto_decayed"] = True
+                    except Exception:
+                        pass
+        # ── End auto-decay ──────────────────────────────────
+
         skills = await self.skill_retrieve(query)
         for skill in reversed(skills):
             chunks.insert(0, MemoryChunk(
@@ -130,6 +147,43 @@ class EvolutionMemoryRouter(MemoryRouter):
                 metadata={"skill_id": skill.skill_id},
             ))
         return chunks[:top_k + len(skills)]
+
+    async def _get_no_feedback_streak(self, chunk_id: str) -> int:
+        """Get consecutive no-feedback streak from Redis."""
+        try:
+            from infra.storage.redis_client import get_redis
+            redis = await get_redis()
+            key = f"opentrace:memory:feedback:{chunk_id}:streak"
+            val = await redis.get(key)
+            return int(val) if val else 0
+        except Exception:
+            return 0
+
+    async def _increment_no_feedback_streak(self, chunk_id: str) -> None:
+        """Increment the no-feedback streak counter."""
+        try:
+            from infra.storage.redis_client import get_redis
+            redis = await get_redis()
+            key = f"opentrace:memory:feedback:{chunk_id}:streak"
+            await redis.incr(key)
+            await redis.expire(key, 86400 * 30)  # 30-day TTL
+        except Exception:
+            pass
+
+    async def record_feedback(self, chunk_id: str, feedback_type: str) -> None:
+        """Record explicit feedback and reset streak."""
+        try:
+            from infra.storage.redis_client import get_redis
+            redis = await get_redis()
+            streak_key = f"opentrace:memory:feedback:{chunk_id}:streak"
+            fb_key = f"opentrace:memory:feedback:{chunk_id}:type"
+            if feedback_type in ("like", "dislike"):
+                await redis.set(fb_key, feedback_type, ex=86400 * 30)
+                await redis.delete(streak_key)  # Reset streak on feedback
+            else:
+                await self._increment_no_feedback_streak(chunk_id)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Compression

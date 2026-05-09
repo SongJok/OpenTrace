@@ -68,6 +68,7 @@ class LLMRole(str, Enum):
     CHEAP_CRITIC = "cheap_critic" # SeniorShort 14B — lightweight critique
     KNOWLEDGE = "knowledge"       # SeniorShort 14B — knowledge Q&A
     IDENTITY = "identity"         # MinShort 0.6B — personalized identity response
+    VISION = "vision"             # Vision-capable — image/chart interpretation
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +186,16 @@ def _build_config(role: LLMRole) -> LLMConfig:
             temperature=0.7,
             max_tokens=256,
             timeout=8,
+        )
+    if role == LLMRole.VISION:
+        return LLMConfig(
+            provider=s.default_llm_vision_provider,
+            model=s.default_llm_vision_model,
+            base_url=s.default_llm_vision_base_url,
+            api_key=s.default_llm_vision_api_key,
+            temperature=0.3,
+            max_tokens=2048,
+            timeout=60,
         )
     return LLMConfig(
         provider=s.default_llm_query_provider,

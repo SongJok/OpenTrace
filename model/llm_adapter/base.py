@@ -5,13 +5,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 
 @dataclass
 class LLMMessage:
     role: str  # system | user | assistant | tool
-    content: str
+    content: str | list[dict[str, Any]]  # str for text, list for multimodal (e.g. [{"type":"image_url",...}, {"type":"text",...}])
     name: Optional[str] = None
     tool_call_id: Optional[str] = None
 

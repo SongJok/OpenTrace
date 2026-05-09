@@ -96,6 +96,12 @@ class LLMSettings(BaseSettings):
     default_llm_minshort_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     default_llm_minshort_api_key: str = ""
 
+    # Vision LLM — image/chart/diagram interpretation
+    default_llm_vision_provider: str = "阿里巴巴Qwen(DashScope)"
+    default_llm_vision_model: str = "qwen3.6-vl-plus"
+    default_llm_vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    default_llm_vision_api_key: str = ""
+
 
 class EmbeddingSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -242,6 +248,66 @@ class AppSettings(BaseSettings):
     kernel_l1_router_model: str = "juniorshort"
     kernel_l1_fast_answer_model: str = "middleshort"
     kernel_l1_knowledge_model: str = "seniorshort"
+
+    # ── Multi-turn conversation enhancement ──────────────────────────
+    # Feature ⑤ ClarificationGate
+    kernel_clarification_gate_enabled: bool = True
+    kernel_clarification_confidence_threshold: float = 0.6
+
+    # Feature ④ Error Correction & Incremental Re-planning
+    kernel_correction_detection_enabled: bool = True
+    kernel_refine_replan_enabled: bool = True
+
+    # Feature ② Dialogue State Tracking
+    kernel_dst_enabled: bool = True
+    kernel_dst_query_length_threshold: int = 30
+
+    # Feature ⑥ Conversation State (structured multi-turn)
+    kernel_conversation_state_enabled: bool = True
+
+    # Feature ① Context Compression & Summarization
+    kernel_context_composer_enabled: bool = True
+    kernel_compress_trigger_tokens: int = 3000
+    kernel_compress_keep_recent_turns: int = 5
+
+    # Feature ③ Memory Value Feedback Loop
+    kernel_memory_value_scoring_enabled: bool = True
+    kernel_memory_feedback_like_bonus: float = 0.3
+    kernel_memory_feedback_dislike_penalty: float = -0.5
+    kernel_memory_auto_decay_threshold: int = 3
+
+    # Feature ⑥ Conversation Branching
+    kernel_conversation_branching_enabled: bool = True
+
+    # ── Attachment upload ─────────────────────────────────────────────
+    attachment_upload_enabled: bool = True
+    attachment_max_size_mb: int = 20
+    attachment_storage_path: str = "/tmp/opentrace_attachments"
+    attachment_max_chars: int = 4000
+    multimodal_attachment_enabled: bool = True
+
+    # ── Feature ⑦ CriticSelfCorrection REVISE loop ──────────────────────
+    kernel_revise_loop_enabled: bool = True
+    kernel_revise_max_iterations: int = 3
+    kernel_revise_confidence_improvement_threshold: float = 0.05
+
+    # ── Feature ⑧ Dynamic User Profiling ────────────────────────────────
+    kernel_user_profiling_enabled: bool = True
+    kernel_user_profiling_max_tags: int = 5
+
+    # ── Rule versioning & grayscale release ─────────────────────────────
+    kernel_rule_grayscale_enabled: bool = True
+    kernel_rule_grayscale_default_percentage: int = 100
+
+    # ── NER-based PII masking ──────────────────────────────────────────
+    kernel_ner_masking_enabled: bool = True
+    kernel_ner_masking_entity_types: str = "EMAIL,PHONE_CN,PHONE_INTL,CREDIT_CARD,ID_CN,IP_ADDRESS,PERSON_CN,LOCATION_CN,ORG_CN"
+
+    # ── Canary testing & auto-rollback ────────────────────────────────
+    kernel_canary_auto_rollback_enabled: bool = True
+    kernel_canary_error_rate_threshold: float = 0.10
+    kernel_canary_latency_multiplier: float = 2.0
+    kernel_canary_min_samples: int = 100
 
 
 class Settings(

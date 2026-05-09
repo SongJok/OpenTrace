@@ -207,6 +207,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     await apiSyncDatabaseSchema(token, selected.id)
     const out = await apiGetDatabaseSchema(token, selected.id)
     setSchema(out.schema)
+    setActiveTab('tables')
     await load()
     alert(`Schema 已同步，表数: ${out.schema.tables?.length || 0}`)
   }

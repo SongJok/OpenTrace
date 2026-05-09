@@ -156,7 +156,9 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                 yield part
 
     def _to_oai(self, m: LLMMessage) -> dict:
-        msg: dict = {"role": m.role, "content": m.content}
+        content = m.content
+        # Pass list content (multimodal) through as-is
+        msg: dict = {"role": m.role, "content": content}
         if m.name:
             msg["name"] = m.name
         return msg

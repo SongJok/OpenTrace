@@ -1,9 +1,20 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from 'react'
 import { useChatStore, type Message } from '../store/chat'
 import TypingIndicator from './TypingIndicator'
 import ChatMessage from './ChatMessage'
 
-export default function MessageList() {
+export interface MessageListHandle {
+  scrollToBottom: () => void
+}
+
+interface MessageListProps {
+  onScrollStateChange?: (isAtBottom: boolean) => void
+}
+
+const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList(
+  { onScrollStateChange },
+  ref,
+) {
   const activeId = useChatStore((s) => s.activeId)
   const messages = useChatStore((s) => (activeId ? s.messages[activeId] ?? [] : []))
   const streaming = useChatStore((s) => s.streaming)
@@ -12,6 +23,18 @@ export default function MessageList() {
   const [isAtBottom, setIsAtBottom] = useState(true)
 
   const items = useMemo(() => messages, [messages])
+
+  useImperativeHandle(ref, () => ({
+    scrollToBottom: () => {
+      const el = parentRef.current
+      if (!el) return
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    },
+  }))
+
+  useEffect(() => {
+    onScrollStateChange?.(isAtBottom)
+  }, [isAtBottom, onScrollStateChange])
 
   useEffect(() => {
     const el = parentRef.current
@@ -38,7 +61,7 @@ export default function MessageList() {
   if (!activeId) return null
 
   return (
-    <div ref={parentRef} className="flex-1 overflow-y-auto bg-[var(--bg)]">
+    <div ref={parentRef} className="relative flex-1 overflow-y-auto bg-[var(--bg)]">
       <div className="max-w-3xl mx-auto px-4 py-8">
         <div className="mb-6 rounded-[28px] border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-xs text-[var(--text-secondary)] shadow-[0_10px_30px_rgba(0,0,0,0.12)]">
           对话内容将按任务、证据和执行链路自动整理展示
@@ -57,7 +80,9 @@ export default function MessageList() {
       </div>
     </div>
   )
-}
+})
+
+export default MessageList
 
 function MessageBubble({ msg }: { msg: Message }) {
   if (msg.role === 'user') {

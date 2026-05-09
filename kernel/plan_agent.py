@@ -15,7 +15,7 @@ from model.model_gateway.gateway import LLMRole, get_model_gateway
 
 @dataclass
 class SubTask:
-    agent_type: Literal["data", "tool", "web", "memory", "rag", "rule_engine"]
+    agent_type: Literal["data", "tool", "web", "memory", "rag", "rule_engine", "vision"]
     query: str
     params: dict[str, Any] = field(default_factory=dict)
     depends_on: list[str] = field(default_factory=list)
@@ -77,6 +77,71 @@ class PlanAgent:
             "rag 可在 params 指定 top_k 和 sources，默认 top_k=8, sources=[documents, semantic_memory]。"
             "若用户一次提多个目标（如 查询+图表+分析），可同时返回 data + tool 子任务并行执行。"
         )
+        # Inject clarification context if available (Feature ⑤)
+        metadata = (context or {}).get("metadata", {}) if isinstance(context, dict) else {}
+        clarify_context = (
+            (context or {}).get("clarify_context")
+            if isinstance(context, dict)
+            else None
+        ) or metadata.get("clarify_context") if isinstance(metadata, dict) else None
+        if clarify_context and isinstance(clarify_context, str) and clarify_context.strip():
+            clarify_part = (
+                f"\n用户基于上一轮的追问补充了以下信息：{clarify_context.strip()}\n"
+                "请结合补充信息重新规划，优先使用明确的数据源、表名或查询目标。"
+            )
+            prompt += clarify_part
+
+        # Inject dialogue state if available (Feature ②)
+        dialogue_state = (context or {}).get("dialogue_state") if isinstance(context, dict) else None
+        if dialogue_state and isinstance(dialogue_state, dict) and dialogue_state.get("referenced_previous_result"):
+            dst_part = (
+                f"\n对话状态追踪结果：\n"
+                f"- 当前话题域：{dialogue_state.get('active_domain', 'general_qa')}\n"
+                f"- 引用了上轮结果：是（agent类型={dialogue_state.get('referenced_agent_type', 'unknown')}）\n"
+                f"- 消解后的完整查询：{dialogue_state.get('resolved_query', user_query)}\n"
+                "请优先沿用上一轮使用的 agent 类型和数据源参数，仅更新查询内容。"
+            )
+            prompt += dst_part
+            # Use resolved query as the effective query
+            resolved = dialogue_state.get("resolved_query", "")
+            if resolved and resolved != user_query:
+                user_query = resolved
+
+        # ── Multi-turn: inject conversation history ──
+        conversation_history = (context or {}).get("conversation_history") if isinstance(context, dict) else None
+        if conversation_history and isinstance(conversation_history, list) and len(conversation_history) > 0:
+            recent = conversation_history[-6:]
+            history_text = "\n".join(
+                f"[{h.get('role', '?')}]: {str(h.get('content', ''))[:200]}"
+                for h in recent
+            )
+            prompt += (
+                f"\n最近的对话历史（用于理解上下文和用户意图）：\n{history_text}\n"
+                "规则：如果用户是在追问、细化或延续上文，请优先复用上文中提到的数据源和 Agent 类型。"
+                "如果用户切换了话题，请按新话题规划。"
+            )
+
+        # ── Multi-turn: inject ConversationState context ──
+        conv_state = (context or {}).get("conversation_state") if isinstance(context, dict) else None
+        if conv_state and isinstance(conv_state, dict):
+            cs_parts = []
+            if conv_state.get("active_topic"):
+                cs_parts.append(f"- 当前话题：{conv_state['active_topic']}")
+            if conv_state.get("active_intent"):
+                cs_parts.append(f"- 当前意图：{conv_state['active_intent']}")
+            if conv_state.get("active_data_source_id"):
+                cs_parts.append(f"- 活跃数据源：{conv_state['active_data_source_id']}")
+            last_plan = conv_state.get("last_plan")
+            if isinstance(last_plan, dict) and last_plan.get("subtasks"):
+                prev_agents = [s.get("agent_type", "?") for s in last_plan["subtasks"] if isinstance(s, dict)]
+                if prev_agents:
+                    cs_parts.append(f"- 上一轮使用的 Agent：{', '.join(prev_agents)}")
+            if cs_parts:
+                prompt += (
+                    f"\n当前会话状态：\n" + "\n".join(cs_parts) + "\n"
+                    "如果用户是在延续当前话题，优先沿用上轮的 Agent 和参数配置。"
+                )
+
         recent_patterns: list[dict[str, Any]] = []
         if bool(getattr(settings, "kernel_plan_memory_enabled", True)):
             intent_hint = self._guess_query_type(user_query)
@@ -320,6 +385,40 @@ class PlanAgent:
         if not has_rag:
             context_hints.append("- RAG agent 当前不可用，document_retrieval 类问题应降级为 tool agent")
 
+        # ── Multi-turn: inject conversation history ──
+        conversation_history = (context or {}).get("conversation_history") if isinstance(context, dict) else None
+        history_hint = ""
+        if conversation_history and isinstance(conversation_history, list) and len(conversation_history) > 0:
+            recent = conversation_history[-6:]
+            history_text = "\n".join(
+                f"[{h.get('role', '?')}]: {str(h.get('content', ''))[:200]}"
+                for h in recent
+            )
+            history_hint = (
+                f"\n最近的对话历史：\n{history_text}\n"
+                "如果子问题与历史对话相关，请优先复用历史中的数据源和 Agent 参数。\n"
+            )
+
+        # ── Multi-turn: inject ConversationState context ──
+        conv_state = (context or {}).get("conversation_state") if isinstance(context, dict) else None
+        conv_state_hint = ""
+        if conv_state and isinstance(conv_state, dict):
+            cs_parts = []
+            if conv_state.get("active_topic"):
+                cs_parts.append(f"- 当前话题：{conv_state['active_topic']}")
+            if conv_state.get("active_data_source_id"):
+                cs_parts.append(f"- 活跃数据源：{conv_state['active_data_source_id']}")
+            last_plan = conv_state.get("last_plan")
+            if isinstance(last_plan, dict) and last_plan.get("subtasks"):
+                prev_agents = [s.get("agent_type", "?") for s in last_plan["subtasks"] if isinstance(s, dict)]
+                if prev_agents:
+                    cs_parts.append(f"- 上一轮使用的 Agent：{', '.join(prev_agents)}")
+            if cs_parts:
+                conv_state_hint = (
+                    f"\n当前会话状态：\n" + "\n".join(cs_parts) + "\n"
+                    "如果子问题是在延续当前话题，优先沿用上轮的 Agent 和参数配置。\n"
+                )
+
         prompt = (
             "你是任务规划专家。用户提出了多个子问题，为每个子问题分配合适的 agent_type 和查询文本。\n"
             "可用 agent_type：data(数据库/结构化查询), rag(文档/知识库检索), web(联网搜索), tool(通用工具/问答)。\n"
@@ -330,6 +429,8 @@ class PlanAgent:
             "- 如果 rag agent 可用，为文档检索类问题添加 params: {\"top_k\": 8, \"sources\": [\"documents\", \"semantic_memory\"]}\n"
             "- 如果 data agent 可用且有数据源，为数据查询类问题添加 params: {\"data_source_id\": \"...\"}\n"
             '- 输出 JSON：{"subtasks": [{"agent_type": "rag", "query": "...", "params": {}}]}\n'
+            f"{history_hint}"
+            f"{conv_state_hint}"
             f"子问题列表（含 domain）：\n{domain_summary}"
         )
 

@@ -1,5 +1,5 @@
 import { useRef, useState, KeyboardEvent, useEffect, useCallback, type ReactNode } from 'react'
-import { Square, Paperclip, Globe, Brain, Settings2, Link2, Send, FileText, Database, BarChart3, FileWarning, Package } from 'lucide-react'
+import { Square, Paperclip, Globe, Brain, Settings2, Link2, Send, X, FileText, Database, BarChart3, FileWarning, Package, Loader2, AlertCircle } from 'lucide-react'
 import { useChatStore } from '../store/chat'
 import { useAuthStore } from '../store/auth'
 import {
@@ -12,7 +12,10 @@ import {
   apiStopChatStream,
   apiCreateMemory,
   apiListDatabases,
+  apiUploadAttachment,
   type ReasoningStep,
+  type AttachmentItem,
+  type AttachmentUploadResponse,
 } from '../api/client'
 import clsx from 'clsx'
 import { isDatabaseQuestion } from '../lib/chatDatabase'
@@ -23,14 +26,40 @@ type ChatInputVariant = 'default' | 'welcome'
 function normalizeAnswerContent(content: unknown): string {
   if (typeof content === 'string') return content
   if (content == null) return ''
-  try {
-    return JSON.stringify(content, null, 2)
-  } catch {
-    return String(content)
+  if (typeof content === 'object' && !Array.isArray(content)) {
+    const obj = content as Record<string, unknown>
+    // If the object looks like a card (has type/agent_type/tool_name),
+    // serialize it as JSON so tryParseToolCard can parse it later
+    const isCard = (
+      obj.type === 'turn' || obj.type === 'agent_result' ||
+      obj.type === 'time' || obj.type === 'weather' || obj.type === 'table' ||
+      typeof obj.agent_type === 'string' ||
+      typeof obj.tool_name === 'string'
+    )
+    if (isCard) {
+      try {
+        const innerText = (
+          (typeof obj.content === 'string' ? obj.content : '') ||
+          (typeof obj.text === 'string' ? obj.text : '') ||
+          (typeof obj.answer === 'string' ? obj.answer : '') ||
+          (typeof obj.summary === 'string' ? obj.summary : '') ||
+          ''
+        )
+        const cardJson = JSON.stringify(obj)
+        return innerText ? `${cardJson}\n\n${innerText}` : cardJson
+      } catch { /* fall through */ }
+    }
+    if (typeof obj.content === 'string') return obj.content
+    if (typeof obj.text === 'string') return obj.text
+    if (typeof obj.answer === 'string') return obj.answer
+    if (typeof obj.summary === 'string') return obj.summary
+    if (typeof obj.output === 'string') return obj.output
+    if (typeof obj.message === 'string') return obj.message
   }
+  return ''
 }
 
-export type ForceMode = 'rag' | 'data_query' | 'data_analysis' | 'anomaly_tracking' | 'product' | null
+export type ForceMode = 'rag' | 'data_query' | 'data_analysis' | 'anomaly_tracking' | 'product' | 'vision' | null
 
 // Slash command prefixes → force_mode mapping
 const FORCE_MODE_PREFIXES: Record<string, ForceMode> = {
@@ -39,6 +68,7 @@ const FORCE_MODE_PREFIXES: Record<string, ForceMode> = {
   '/data_analysis': 'data_analysis',
   '/skills': 'anomaly_tracking',
   '/product': 'product',
+  '/vision': 'vision',
 }
 
 /**
@@ -66,6 +96,7 @@ const SLASH_COMMANDS: Array<{ prefix: string; mode: ForceMode; label: string; de
   { prefix: '/data_analysis', mode: 'data_analysis', label: '数据分析', description: '数据分析' },
   { prefix: '/skills', mode: 'anomaly_tracking', label: '异常追踪', description: '技能调用' },
   { prefix: '/product', mode: 'product', label: '产品查询', description: '规则引擎查询' },
+  { prefix: '/vision', mode: 'vision', label: '视觉识别', description: '图片分析与识别' },
 ]
 
 interface SlashSuggestion {
@@ -88,6 +119,8 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   const [dataSourceOptions, setDataSourceOptions] = useState<Array<{ id: string; name: string }>>([])
   const [toolPermissionToken, setToolPermissionToken] = useState<string | null>(null)
   const [suggestion, setSuggestion] = useState<SlashSuggestion>({ visible: false, query: '', selectedIndex: 0 })
+  const [attachments, setAttachments] = useState<AttachmentItem[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const abortRef = useRef<AbortController | null>(null)
   const token = useAuthStore((s) => s.token)!
@@ -179,6 +212,74 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
     }, 0)
   }
 
+  /** Handle file selection from hidden input */
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    const newAttachments: AttachmentItem[] = Array.from(files).map((file) => ({
+      id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      file,
+      name: file.name,
+      size: file.size,
+      status: 'pending' as const,
+    }))
+    setAttachments((prev) => [...prev, ...newAttachments])
+    // Reset input so re-selecting the same file works
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  /** Remove an attachment from the list */
+  function removeAttachment(id: string) {
+    setAttachments((prev) => prev.filter((a) => a.id !== id))
+  }
+
+  /** Upload all pending attachments and return their server IDs */
+  async function uploadAttachments(sessionId: string): Promise<string[]> {
+    const pending = attachments.filter((a) => a.status === 'pending')
+    if (pending.length === 0) {
+      return attachments
+        .filter((a) => a.status === 'done' && a.serverId)
+        .map((a) => a.serverId!)
+    }
+
+    const serverIds: string[] = []
+
+    for (const att of attachments) {
+      if (att.status === 'done' && att.serverId) {
+        serverIds.push(att.serverId)
+        continue
+      }
+      if (att.status === 'error') continue
+
+      // Mark as uploading
+      setAttachments((prev) =>
+        prev.map((a) => (a.id === att.id ? { ...a, status: 'uploading' as const } : a))
+      )
+
+      try {
+        const resp: AttachmentUploadResponse = await apiUploadAttachment(token, att.file, sessionId)
+        setAttachments((prev) =>
+          prev.map((a) =>
+            a.id === att.id
+              ? { ...a, status: 'done' as const, serverId: resp.attachment_id, contentHash: resp.content_hash, isDuplicate: resp.is_duplicate }
+              : a
+          )
+        )
+        serverIds.push(resp.attachment_id)
+      } catch (err: any) {
+        setAttachments((prev) =>
+          prev.map((a) =>
+            a.id === att.id
+              ? { ...a, status: 'error' as const, error: err?.message || 'Upload failed' }
+              : a
+          )
+        )
+      }
+    }
+
+    return serverIds
+  }
+
   async function send(overrideText?: string) {
     const rawQuery = (overrideText ?? text).trim()
     if (!rawQuery || streaming) return
@@ -204,16 +305,17 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
     let currentSessionId = activeId ?? ''
 
     try {
-      let sessionId = activeId
-      if (!sessionId) {
+      // Ensure session exists before uploading attachments
+      if (!currentSessionId) {
         const conv = await apiCreateConversation(token)
         store.addConversation(conv)
         store.setActiveId(conv.id)
         store.setMessages(conv.id, [])
-        sessionId = conv.id
+        currentSessionId = conv.id
       }
 
-      currentSessionId = sessionId as string
+      // Upload attachments before sending (needs session_id)
+      const attachmentIds = await uploadAttachments(currentSessionId)
       const controller = new AbortController()
       abortRef.current = controller
 
@@ -222,6 +324,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
         content: query,
       })
       setText('')
+      setAttachments([])
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
       const assistantMessageId = `a_${Date.now()}`
       store.appendAssistantStreamingMessage(currentSessionId, { id: assistantMessageId })
@@ -271,10 +374,9 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
             if (executionGraph) {
               store.setExecutionGraph(currentSessionId, assistantMessageId, executionGraph)
             }
-            const { parseMarkdownWithHighlight } = await import('../utils/markdown')
             const normalized = normalizeAnswerContent(content)
-            const finalText = await parseMarkdownWithHighlight(normalized || '（空响应）')
-            store.finishLastAssistantMessage(currentSessionId, finalText)
+            const display = normalized || '（空响应）'
+            store.finishLastAssistantMessage(currentSessionId, display)
             if (Array.isArray(citations) && citations.length) {
               store.setLastAssistantCitations(currentSessionId, citations as any)
             }
@@ -284,12 +386,13 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
             window.dispatchEvent(new Event(`opentrace:assistant-stream-done:${assistantMessageId}`))
           },
           onError: async (err) => {
-            if (err === 'REQUEST_ABORTED') {
+            if (err instanceof Error && err.message === 'REQUEST_ABORTED') {
               store.stopLastAssistantMessage(currentSessionId)
               return
             }
+            const errMsg = err instanceof Error ? err.message : String(err)
             try {
-              const parsed = JSON.parse(err)
+              const parsed = JSON.parse(errMsg)
               if (parsed?.requires_confirmation && parsed?.tool_permission_token) {
                 const ok = window.confirm(`检测到高风险操作（${parsed.risk_level}）。是否授权继续？`)
                 if (ok) {
@@ -310,10 +413,10 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
                 disabled_skills: disabledSkills,
                 tool_permission_token: toolPermissionToken,
                 confirmation_granted: Boolean(toolPermissionToken),
+                attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
               })
-              const { parseMarkdownWithHighlight } = await import('../utils/markdown')
-              const finalText = await parseMarkdownWithHighlight(sync.content || '（空响应）')
-              store.finishLastAssistantMessage(currentSessionId, finalText)
+              const display = sync.content || '（空响应）'
+              store.finishLastAssistantMessage(currentSessionId, display)
               if (sync.execution_graph) {
                 store.setExecutionGraph(currentSessionId, assistantMessageId, sync.execution_graph)
               }
@@ -324,7 +427,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
                 store.setLastAssistantAnnotations(currentSessionId, sync.annotations as any)
               }
             } catch {
-              store.failLastAssistantMessage(currentSessionId, `Error: ${err}`)
+              store.failLastAssistantMessage(currentSessionId, `Error: ${errMsg}`)
             }
           },
         },
@@ -339,6 +442,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
           ...dataSourceContext,
           force_database: needDataSource,
           force_mode: effectiveMode,
+          attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
         },
         graphControls
       )
@@ -505,10 +609,9 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
           onToolResult: (payload) => store.updateToolResult(activeId, payload),
           onFinalAnswer: async (content, executionGraph, citations, annotations) => {
             if (executionGraph) store.setExecutionGraph(activeId, assistantMessageId, executionGraph)
-            const { parseMarkdownWithHighlight } = await import('../utils/markdown')
             const normalized = normalizeAnswerContent(content)
-            const finalText = await parseMarkdownWithHighlight(normalized || '（空响应）')
-            store.finishLastAssistantMessage(activeId, finalText)
+            const display = normalized || '（空响应）'
+            store.finishLastAssistantMessage(activeId, display)
             if (Array.isArray(citations) && citations.length) {
               store.setLastAssistantCitations(activeId, citations as any)
             }
@@ -517,11 +620,11 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
             }
           },
           onError: (err) => {
-            if (err === 'REQUEST_ABORTED') {
+            if (err instanceof Error && err.message === 'REQUEST_ABORTED') {
               store.stopLastAssistantMessage(activeId)
               return
             }
-            store.failLastAssistantMessage(activeId, `Error: ${err}`)
+            store.failLastAssistantMessage(activeId, `Error: ${err instanceof Error ? err.message : String(err)}`)
           },
         },
         webEnabled,
@@ -541,6 +644,56 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   return (
     <div className={isWelcome ? 'w-full pt-4' : 'pb-4 pt-2'}>
       <div className={isWelcome ? 'mx-auto w-full max-w-[820px] px-4 sm:px-6' : 'mx-auto w-full max-w-4xl px-6'}>
+        {/* Hidden file input */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleFileSelect}
+          accept=".txt,.md,.markdown,.csv,.tsv,.pdf,.json,.jsonl,.docx,.xlsx,.xls,.py,.js,.ts,.tsx,.jsx,.go,.rs,.java,.c,.cpp,.h,.hpp,.sql,.sh,.bash,.yaml,.yml,.toml,.ini,.cfg,.conf,.html,.css,.scss,.less,.vue,.svelte,.png,.jpg,.jpeg,.gif,.webp,.bmp,.svg"
+        />
+
+        {/* Attachment preview chips */}
+        {attachments.length > 0 && (
+          <div className={clsx('flex flex-wrap gap-2 mb-2', isWelcome ? 'px-0' : 'px-0')}>
+            {attachments.map((att) => (
+              <div
+                key={att.id}
+                className={clsx(
+                  'inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs transition-colors',
+                  att.status === 'error'
+                    ? 'border-red-300 bg-red-50 text-red-600'
+                    : att.status === 'uploading'
+                    ? 'border-blue-200 bg-blue-50 text-blue-600'
+                    : 'border-[var(--border)] bg-[var(--surface-raised)] text-[var(--text-secondary)]'
+                )}
+              >
+                {att.status === 'uploading' ? (
+                  <Loader2 size={12} className="animate-spin flex-shrink-0" />
+                ) : att.status === 'error' ? (
+                  <AlertCircle size={12} className="flex-shrink-0" />
+                ) : (
+                  <FileText size={12} className="flex-shrink-0" />
+                )}
+                <span className="max-w-[140px] truncate">{att.name}</span>
+                {att.isDuplicate && (
+                  <span className="text-amber-500 flex-shrink-0" title="此文件内容与已上传的文件相同">
+                    <AlertCircle size={10} />
+                  </span>
+                )}
+                <button
+                  onClick={() => removeAttachment(att.id)}
+                  className="ml-0.5 flex-shrink-0 rounded-full p-0.5 hover:bg-black/10 transition-colors"
+                  title="移除附件"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div
           className={clsx(
             'relative border shadow transition-colors',
@@ -577,7 +730,12 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
             )}
           >
             <div className={clsx('flex items-center', isWelcome ? 'gap-1.5' : 'gap-0.5')}>
-              <IconOnlyButton icon={<Paperclip size={16} />} label="Attach" variant={variant} />
+              <IconOnlyButton
+                icon={<Paperclip size={16} />}
+                label="Attach"
+                variant={variant}
+                onClick={() => fileInputRef.current?.click()}
+              />
               <IconOnlyButton icon={<Settings2 size={16} />} label="Settings" variant={variant} />
               <button
                 className={clsx(
@@ -650,14 +808,17 @@ function IconOnlyButton({
   icon,
   label,
   variant,
+  onClick,
 }: {
   icon: ReactNode
   label: string
   variant: ChatInputVariant
+  onClick?: () => void
 }) {
   const isWelcome = variant === 'welcome'
   return (
     <button
+      onClick={onClick}
       className={clsx(
         'flex items-center justify-center text-[var(--text-secondary)] transition-colors',
         isWelcome

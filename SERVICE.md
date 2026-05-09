@@ -2,7 +2,7 @@
 
 > 本文档是 OpenTrace 项目的唯一权威技术参考，涵盖架构设计、API 接口、配置说明、数据流程、部署方案和开发指南。
 >
-> 最后更新：2026-04-30
+> 最后更新：2026-05-09
 
 ---
 
@@ -37,6 +37,12 @@
 27. [开发规范](#27-开发规范)
 28. [多子问题支持（Multi-Question）](#28-多子问题支持multi-question)
 29. [协议层（Protocol Layer）](#29-协议层protocol-layer)
+30. [V6 多轮对话增强（Multi-Turn Enhancement）](#30-v6-多轮对话增强multi-turn-enhancement)
+  - [30.10 L3 Phase 1 — 结构化对话状态与引用消解](#3010-l3-phase-1-结构化对话状态与引用消解-conversationstate-resultref-referenceresolver)
+31. [文件附件上传与上下文注入（Attachment Upload & Injection）](#31-文件附件上传与上下文注入attachment-upload--injection)
+32. [NER PII 数据脱敏（NER-based PII Masking）](#32-ner-pii-数据脱敏ner-based-pii-masking)
+33. [金丝雀测试与自动回滚（Canary Testing & Auto-Rollback）](#33-金丝雀测试与自动回滚canary-testing--auto-rollback)
+34. [可解释审计 XAI（Explainable Audit XAI）](#34-可解释审计-xaiexplainable-audit-xai)
 
 ---
 
@@ -63,6 +69,7 @@ OpenTrace 是一个**认知内核驱动的 Agent 系统**，支持以下核心�
 | V3 | legacy | 单线问答管线 |
 | V4 | stable | Plan → Dispatcher → Agent Cluster → Fusion → Critic |
 | V5 | current | V4 + L0 规则路由 + L1 小模型分类 + 语义缓存 |
+| V6 | current | V5 + 多轮对话 6 大增强（追问/纠正/DST/压缩/记忆价值/分支）+ 文件附件上传与注入 |
 
 ---
 
@@ -121,12 +128,13 @@ OpenTrace 是一个**认知内核驱动的 Agent 系统**，支持以下核心�
 ┌──────────────────────────────────────────────────────────────────┐
 │                    API Gateway (FastAPI)                          │
 │                    http://localhost:14100                        │
-│  ├── /api/v1/chat       — 聊天（同步/流式）                      │
+│  ├── /api/v1/chat       — 聊天（同步/流式/追问/纠正/分支）      │
+│  ├── /api/v1/chat/feedback — 记忆反馈（like/dislike）            │
 │  ├── /api/v1/auth       — 认证（注册/登录/Token）                │
 │  ├── /api/v1/documents  — 文档管理                               │
 │  ├── /api/v1/databases  — 数据源管理                             │
 │  ├── /api/v1/data       — 数据查询                               │
-│  ├── /api/v1/conversations — 会话管理                            │
+│  ├── /api/v1/conversations — 会话管理（含分支）                  │
 │  ├── /api/v1/memories   — 记忆 CRUD                              │
 │  ├── /api/v1/skills     — 技能管理                               │
 │  ├── /api/v1/rules      — 规则管理（CRUD + YAML 生成）           │
@@ -145,11 +153,17 @@ OpenTrace 是一个**认知内核驱动的 Agent 系统**，支持以下核心�
 ┌──────────────────────────────────────────────────────────────────┐
 │              Cognitive Kernel (kernel/)                           │
 │  ├── V5 Routing Tier (L0 → L0.5 → L1 → L2)                      │
+│  ├── V6 Multi-Turn Enhancement                                    │
+│  │   ├── ClarificationGate — 主动追问                            │
+│  │   ├── RefinePlanner — 纠正增量重规划                          │
+│  │   ├── DialogueStateTracker — 对话状态追踪                     │
+│  │   ├── ContextComposer — 智能上下文压缩                        │
+│  │   └── Active Memory Detection — 主动记忆写入                  │
 │  ├── Intent Engine — 意图域分类                                  │
 │  ├── Self Model — 自我能力评估                                    │
 │  └── Orchestrator V4 — 主编排器                                   │
 │      ├── Plan Agent — 任务分解 (DAG)                              │
-│      ├── Dispatcher — 并发调度                                    │
+│      ├── Dispatcher — 并发调度 + DAG checkpoint 复用             │
 │      ├── DAG Scheduler — 依赖调度                                 │
 │      ├── Fusion Engine — 证据融合                                 │
 │      └── Critic Engine — 质量审校                                 │
@@ -195,7 +209,7 @@ opentrace/
 ├── gateway/                     # FastAPI 网关
 │   └── api_gateway/
 │       ├── main.py              # FastAPI 应用入口
-│       └── routers/             # API 路由模块（19 个）
+│       └── routers/             # API 路由模块（20 个）
 │           ├── chat.py          # 聊天（同步/流式/重生成/图控制）
 │           ├── auth.py          # 认证
 │           ├── conversations.py # 会话管理
@@ -204,7 +218,8 @@ opentrace/
 │           ├── data.py          # 数据查询
 │           ├── memories.py      # 记忆 CRUD
 │           ├── skills.py        # 技能管理
-│           ├── rules.py         # 规则管理（CRUD + YAML 生成）
+│           ├── rules.py         # 规则管理（CRUD + YAML 生成 + 金丝雀回滚）
+│           ├── xai.py           # [Phase 3] XAI 认知审计追踪 API
 │           ├── tasks.py         # 任务管理
 │           ├── health.py        # 健康检查
 │           ├── cognitive.py     # 认知事件回放
@@ -214,14 +229,18 @@ opentrace/
 │           ├── sandbox.py       # 沙箱
 │           ├── admin.py         # 管理接口
 │           └── ui_settings.py   # 用户 UI 设置
-├── kernel/                      # 认知内核（88 个文件）
-│   ├── cognitive_kernel.py      # 唯一中枢入口（run/stream）
-│   ├── orchestrator_v4.py       # V4 编排器（核心调度逻辑）
+├── kernel/                      # 认知内核（97 个文件）
+│   ├── cognitive_kernel.py      # 唯一中枢入口（run/stream + ContextComposer + 主动记忆检测）
+│   ├── orchestrator_v4.py       # V4 编排器（核心调度逻辑 + 追问/纠正/DST/分支集成）
+│   ├── clarification_gate.py    # [V6] 主动追问门控（ClarificationGate + 启发式快速路径）
+│   ├── refine_planner.py        # [V6] 纠正增量重规划（RefinePlanner + CorrectionIntent）
+│   ├── dialogue_state_tracker.py # [V6] 对话状态追踪（DST + EntitySlot + 槽位解析）
+│   ├── context_composer.py      # [V6] 智能上下文压缩（ContextComposer + ConversationSummary）
 │   ├── protocol/                # 统一协议层（事件/MCP/治理）
 │   │   ├── events.py            # 标准化事件协议 v2（Trace/Span 模型）
 │   │   ├── mcp.py               # 模型上下文协议（Evidence/Hypothesis/Critique）
 │   │   └── governance.py        # 可编程治理框架（Budget/QualityGate/GovernanceProfile）
-│   ├── plan_agent.py            # 任务规划 Agent（单/多问题）
+│   ├── plan_agent.py            # 任务规划 Agent（单/多问题 + DST/clarify 上下文注入）
 │   ├── dispatcher.py            # 并发任务分发
 │   ├── dag_scheduler.py         # DAG 依赖调度
 │   ├── query_router_v2.py       # L0 规则路由器（零 LLM 模式匹配）
@@ -239,6 +258,9 @@ opentrace/
 │   ├── intent_engine/           # 意图识别
 │   ├── meta_cognition/          # 元认知（质量门控）
 │   ├── epistemology/            # 认识论（内容标注/验证）
+│   ├── conversation_state.py    # [L3 Phase 1] 结构化对话状态 + ConversationStateManager
+│   ├── result_reference.py      # [L3 Phase 1] ResultRef 结构化引用 + 序列化
+│   ├── reference_resolver.py    # [L3 Phase 1] 中文多轮指代消解 + 启发式+LLM 双向解析
 │   ├── cognition/               # 认知模块
 │   │   ├── sub_question.py      # 子问题数据模型
 │   │   └── __init__.py          # 认知模块导出
@@ -256,7 +278,7 @@ opentrace/
 │   ├── context/                 # 查询重写
 │   ├── identity/                # 系统身份
 │   └── prompts/                 # Prompt 模板
-├── agents/                      # 智能体集群（10 个文件）
+├── agents/                      # 智能体集群（11 个文件）
 │   ├── base.py                  # BaseAgent 抽象基类
 │   ├── data_agent.py            # 数据查询 Agent（Text2SQL）
 │   ├── rag_agent.py             # RAG 检索 Agent
@@ -264,6 +286,7 @@ opentrace/
 │   ├── tool_agent.py            # 通用工具 Agent
 │   ├── skills_agent.py          # 技能调用 Agent
 │   ├── rule_engine_agent.py     # 规则引擎 Agent
+│   ├── vision_agent.py          # [Phase 3] 视觉分析 Agent（图表/截图/照片解读）
 │   ├── worker.py                # Agent Worker（消费 Redis 消息）
 │   └── registry.py              # Agent 注册与发现
 ├── model/                       # 模型网关
@@ -276,13 +299,14 @@ opentrace/
 │   │   └── base.py              # 嵌入模型接口
 │   └── reranker/
 │       └── base.py              # 重排接口
-├── memory/                      # 记忆系统（14 个文件）
-│   ├── working_memory/          # 工作记忆（环形缓冲区）
+├── memory/                      # 记忆系统（15 个文件）
+│   ├── working_memory/          # 工作记忆（环形缓冲区 + summary_slot）
 │   ├── semantic_memory/         # 语义记忆（向量检索）
 │   ├── episodic_memory/         # 情节记忆（会话事件）
 │   ├── procedural_memory/       # 程序记忆
-│   ├── memory_router/           # 记忆路由
-│   └── evolution/               # 记忆演化
+│   ├── memory_router/           # 记忆路由（联邦检索 + 价值评分重排）
+│   ├── evolution/               # 记忆演化（强化 + 演化 + 技能 + 自动衰减）
+│   └── value_scorer.py          # [V6] 记忆价值评分（base + recency + feedback）
 ├── execution/                   # 执行平面（23 个文件）
 │   ├── dag_engine/              # DAG 执行引擎
 │   ├── data/                    # 数据执行层
@@ -316,9 +340,17 @@ opentrace/
 │   │   └── logger.py            # 审计日志写入
 │   └── metadata/
 │       └── schema_inspector.py  # 数据库 Schema 检查
-├── safety/                      # 安全防护
-│   └── guardrails/              # 输入防护栏
+├── safety/                      # 安全防护（5 个模块）
+│   ├── guardrails/              # 输入防护栏
+│   ├── masking/                 # [Phase 3] NER PII 脱敏
+│   │   └── ner_masker.py        # 中英文实体识别 + 可逆占位符替换
+│   ├── canary/                  # [Phase 3] 金丝雀测试与自动回滚
+│   │   └── canary_guard.py      # 版本指标追踪 + 衰退检测 + 自动回滚
+│   └── xai/                     # [Phase 3] 可解释审计
+│       └── cognitive_trace.py   # 认知管道全链路审计追踪
 ├── rules/                       # YAML 规则存储
+├── services/                    # 业务服务
+│   └── file_parser.py           # 文件解析服务（txt/pdf/docx/csv/xlsx/json/code/image）
 ├── skills/                      # 技能系统
 │   └── marketplace/
 │       ├── store.py             # 技能存储
@@ -328,7 +360,7 @@ opentrace/
 │   └── versions/                # 迁移脚本
 ├── deploy/docker/               # Docker 配置
 ├── scripts/                     # 运维脚本
-├── tests/                       # 测试（87 个测试文件，425 个测试方法）
+├── tests/                       # 测试（102 个测试文件，759 个测试方法）
 ├── docker-compose.yml           # Docker 编排
 ├── pyproject.toml               # Python 项目配置
 ├── alembic.ini                  # Alembic 配置
@@ -382,6 +414,7 @@ opentrace/
 | `apiGetDatabaseSchema(token, dataSourceId)` | 获取数据库 Schema |
 | `apiGraphControl(...)` | 图控制 |
 | `apiGetSessionSkills(...)` | 获取会话技能 |
+| `apiUploadAttachment(token, file, onProgress)` | 上传文件附件（XMLHttpRequest + 进度回调） |
 
 ### 5.3 推理链前端类型
 
@@ -434,6 +467,69 @@ interface ReasoningStep {
 - `↑/↓` 方向键导航，`Enter/Tab` 确认，`Escape` 关闭
 - 选择后自动插入前缀 + 空格
 
+### 5.6 消息渲染与 JSON 剥离管线（Card-Based Rendering）
+
+前端强制要求**不展示裸 JSON 数据**——工具/Agent 结果必须以卡片化形式渲染。系统实现了三层防御管线：
+
+**第一层：ChatInput normalizeAnswerContent**（`frontend/src/components/ChatInput.tsx`）
+
+```ts
+function normalizeAnswerContent(content: unknown): string {
+  // 字符串 → 透传
+  // 对象且含卡片标识（type/agent_type/tool_name）→ 序列化 JSON + 提取 inner text
+  //   使 tryParseToolCard 可解析卡片元数据（解决 JSON 双层嵌套时卡片类型丢失）
+  // 对象无卡片标识 → 提取 content/text/answer/summary/output/message 字段
+  // 无匹配 → 返回 ''（绝不 fallback 到 JSON.stringify）
+}
+```
+
+**注意**：`onFinalAnswer` 中已移除 `parseMarkdownWithHighlight` 调用。原因是后端的工具卡片注入使用 ` ```json {...} ``` ` 代码块格式，`parseMarkdownWithHighlight` 会将代码块替换为语法高亮 HTML，导致 `tryParseToolCard` 无法解析 JSON。保留原始内容可确保卡片正确渲染。
+
+**流式渲染中的 JSON 剥离**：`StreamingMessage` 组件使用 `useMemo` 调用 `stripJsonBlocks()`，在流式传输期间实时剥离 JSON 块，防止裸 JSON 在流式显示时闪烁。
+
+**第二层：chat.ts normalizeMessageText**（`frontend/src/store/chat.ts`）
+
+```ts
+function normalizeMessageText(input: unknown): string {
+  // 对已知卡片类型（table/time/weather/sql/tool/turn/agent_result）返回 ''
+  // 防止卡片化对象被当作 plain text 渲染
+  // 不匹配任何字符串字段 → 返回 ''
+}
+```
+
+**第三层：ChatMessage 渲染管线**（`frontend/src/components/ChatMessage.tsx`）
+
+```
+markdown 内容
+  └── stripJsonBlocks() — 剥离嵌入的 JSON 块
+      ├── _stripTrailingJsonArray() — 剥离末尾 JSON 数组
+      ├── _stripInlineJsonObjects() — 剥离行内独立 JSON 对象/数组
+      │   ├── 单行：以 { 或 [ 开头 → JSON.parse 成功 → 跳过
+      │   └── 多行：均衡的大括号/中括号块 → JSON.parse 成功 → 跳过所有行
+      └── 剩余内容 → MarkdownMessage 渲染
+
+tryParseToolCard(content):
+  ├── time card:   { current_time: ..., timezone: ... }
+  ├── weather card: { location: ..., temperature: ..., description: ... }
+  ├── table card:  { type: "table", columns: [...], rows: [...], row_count: ... }
+  ├── data card:   { sql: ..., rows: [...], row_count: ... }
+  │   └── CardShell(eyebrow="DATA QUERY") + SQL code block + DataTableChart
+  └── agent card:  { agent_type: ... } | { tool_name: ... } | type="agent_result" | type="turn"
+      └── CardShell(eyebrow=agent_type) + title + confidence + MarkdownMessage/content
+```
+
+**卡片类型覆盖**：
+
+| 卡片类型 | 检测条件 | 渲染方式 |
+|---------|---------|---------|
+| `time` | `parsed.current_time` 存在 | CardShell + 时间/时区信息 |
+| `weather` | `parsed.temperature` 存在 | CardShell + 天气信息 |
+| `table` | `parsed.type === 'table'` | CardShell + DataTableChart |
+| `data` | `parsed.sql` 非空 | CardShell + SQL pre/code + DataTableChart |
+| `agent` | `parsed.agent_type` / `parsed.tool_name` / type=`turn`/`agent_result` | CardShell + 标题/meta + MarkdownMessage |
+
+若 `tryParseToolCard` 返回 `null` 且 `stripJsonBlocks` 后无内容 → "未获取到有效回答"安全提示。
+
 ---
 
 ## 6. API 网关
@@ -445,7 +541,7 @@ interface ReasoningStep {
 
 ### 6.1 路由注册
 
-19 个路由模块注册在 `gateway/api_gateway/main.py`：
+20 个路由模块注册在 `gateway/api_gateway/main.py`：
 
 ```python
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
@@ -466,6 +562,7 @@ app.include_router(feedback.router, prefix="/api/v1", tags=["feedback"])
 app.include_router(sandbox.router, prefix="/api/v1", tags=["sandbox"])
 app.include_router(admin.router, prefix="/api/v1", tags=["admin"])
 app.include_router(rules.router, prefix="/api/v1", tags=["rules"])
+app.include_router(xai.router, prefix="/api/v1", tags=["xai"])
 ```
 
 ### 6.2 关键端点
@@ -474,14 +571,16 @@ app.include_router(rules.router, prefix="/api/v1", tags=["rules"])
 |------|------|------|
 | POST | `/auth/register` | 用户注册 |
 | POST | `/auth/login` | 用户登录 |
-| POST | `/chat` | 同步聊天 |
+| POST | `/chat` | 同步聊天（含 clarify_context, parent_message_id） |
 | POST | `/chat/stream` | SSE 流式聊天 |
+| POST | `/chat/feedback` | [V6] 记忆反馈（like/dislike/none） |
+| POST | `/chat/attachments` | 上传文件附件（支持 txt/pdf/docx/csv/xlsx/json/code/image） |
 | GET | `/chat/history/{session_id}` | 聊天历史 |
 | POST | `/conversations` | 创建会话 |
 | GET | `/conversations` | 列出会话 |
 | DELETE | `/conversations/{id}` | 删除会话 |
 | POST | `/conversations/{id}/archive` | 归档会话 |
-| POST | `/conversations/{id}/branch` | 分支会话 |
+| POST | `/conversations/{id}/branch` | 分支会话（含 parent_message_id） |
 | POST | `/documents` | 上传文档 |
 | GET | `/documents` | 列出文档 |
 | DELETE | `/documents/{id}` | 删除文档 |
@@ -492,7 +591,11 @@ app.include_router(rules.router, prefix="/api/v1", tags=["rules"])
 | GET | `/health/runtime` | 运行时信息 |
 | GET/POST | `/skills` | 技能 CRUD |
 | GET/POST | `/rules` | 规则 CRUD |
+| POST | `/rules/{rule_id}/rollback` | [Phase 3] 规则金丝雀回滚 |
 | GET | `/rules/yaml` | 规则 YAML 生成 |
+| GET | `/xai/traces` | [Phase 3] 列出认知审计追踪 |
+| GET | `/xai/traces/{trace_id}` | [Phase 3] 获取完整审计追踪 |
+| GET | `/xai/sessions/{session_id}/trace` | [Phase 3] 获取会话最近追踪 |
 | GET/POST | `/memories` | 记忆 CRUD |
 | POST | `/feedback` | 提交反馈 |
 | GET | `/audit` | 审计日志 |
@@ -531,12 +634,14 @@ Step 2: V5 Routing Tier    —
       ├── identity/faq → 直接回答
       ├── knowledge → SeniorShort 14B 直答
       └── complex → 落入 L2
-Step 3: Memory Injection   — [NEW] EpisodicMemory + WorkingMemory + MemoryRouter 语义检索
-Step 4: intent_domain      — 意图域分类（仅 L2）
-Step 5: SelfModel          — 自我能力评估（仅 L2）
-Step 6: OrchestratorV4     — 全 V4 管线（L2）
-Step 7: Semantic Cache Save — L2 成功后写入缓存
-Step 8: Memory Save        — 异步保存对话记忆
+Step 3: ContextComposer    — [V6] 长历史智能压缩（>2000 tokens 触发，摘要存入 WorkingMemory.summary_slot）
+Step 4: Memory Injection   — EpisodicMemory + WorkingMemory + MemoryRouter 语义检索 + 价值评分
+Step 5: intent_domain      — 意图域分类（仅 L2）
+Step 6: SelfModel          — 自我能力评估（仅 L2）
+Step 7: OrchestratorV4     — 全 V4+V6 管线（L2）
+Step 8: Active Memory      — [V6] 检测"记住/我更喜欢"模式，写入 UserMemory 偏好表
+Step 9: Semantic Cache Save — L2 成功后写入缓存
+Step 10: Memory Save       — 异步保存对话记忆
 ```
 
 ### 7.3 入口方法
@@ -809,21 +914,21 @@ OrchestratorV4Request
     │
     ▼
 Process:
+├── 0. Resume/Branch Check → [V6] 对话分支回溯，加载 checkpoint plan + results
 ├── 1. force_mode 检测 → 跳过规划
-├── 2. PlanAgent → TaskPlan（DAG 子任务图）
-├── 3. Memory Context 注入 → 记忆片段转为 ToolResult(memory) → FusionEngine
-├── 4. Dispatcher → 并行调度子任务到 Agent Cluster
-├── 5. DAG Scheduler → 依赖解析 + 拓扑排序
-├── 6. 各 Agent 执行 → 返回候选结果
-├── 7. FusionEngine → 加权融合多源证据（含 Memory/SQL/Document/Web/Tool）
-├── 8. Answer Generation:
-│     ├── 有文档证据 → _llm_grounded_answer（知识问答助手，0.3 temp）
-│     ├── 有 Data 结果 → _format_data_answer
-│     ├── 有 Web/丰富工具结果 → _llm_grounded_answer（已扩展，原仅文档路径）
-│     └── 简单工具（时间/天气）→ annotator 文本 + Card JSON 注入
-├── 9. Tool Card Injection → 时间/天气 payload 以 JSON code block 注入答案
+├── 2. Correction Detection → [V6] 启发式检测纠正意图（不对/错了/换成），RefinePlanner 增量重规划
+├── 3. Dialogue State Tracking → [V6] 短查询（<30 字）槽位解析，指代消解
+├── 4. PlanAgent → TaskPlan（DAG 子任务图 + clarify_context + DST 上下文）
+├── 5. Memory Context 注入 → 记忆片段转为 ToolResult(memory) → FusionEngine
+├── 5.5. Attachment Context 注入 → 附件转为 ToolResult(attachment) → FusionEngine + background_materials → LLM prompt
+├── 6. Dispatcher → 并行调度 + [V6] DAG checkpoint 复用（分支场景跳过已执行子任务）
+├── 7. DAG Scheduler → 依赖解析 + 拓扑排序
+├── 8. 各 Agent 执行 → 返回候选结果
+├── 9. FusionEngine → 加权融合多源证据（含 Memory/SQL/Document/Web/Tool）
 ├── 10. CriticEngine → 质量审校 + 重写/拒答
-└── 11. Final Answer → 结构化回答 + 引文 + 注释 + Card JSON
+├── 11. ClarificationGate → [V6] 启发式检查（fusion_confidence < 0.6 + 短答案 + 信息不足），触发时返回追问
+├── 12. Answer Generation → 结构化回答 + 引文 + 注释 + Card JSON
+└── 13. Tool Card Injection → 时间/天气 payload JSON 注入
 ```
 
 ### 9.2 有效强制模式
@@ -883,6 +988,7 @@ class SubTask:
 - 并发任务分发，支持 `max_parallel` 限制
 - 超时管理：每个 Agent 独立超时
 - 降级：Agent 失败不阻塞其他 Agent
+- **[V6] DAG checkpoint 复用**：`dispatch(plan, previous_results=...)` — 对话分支时按 `(agent_type, query)` 匹配跳过已执行子任务，仅调度新增子任务，~40% 延迟降低
 
 ### 9.6 Fusion + Critic
 
@@ -912,6 +1018,13 @@ class SubTask:
 - `_llm_fallback_answer`：温度 0.2→0.35，system prompt 强调"热情、可靠、有温度""亲切口语化""温和语气词"
 - `_llm_grounded_answer`：温度 0.15→0.3，system prompt 从"文档问答助手"扩展为"知识问答助手"，强调"亲切、靠谱、不端着""愉快的对话而不是干巴巴的报告"
 - `_grounded_answer_style`：4 个分支全部加入口语化引导，单证据分支强调"实用的下一步建议""真心帮他解决问题"
+
+**附件作为候选认知材料**（1 处）：
+- 用户上传的文件在 `process()` 中转换为 `ToolResult(source="attachment", confidence=0.95, source_priority=2)` 注入 FusionEngine
+- FusionEngine 权重 `"attachment": 0.85`（高于 web_search 的 0.6，低于 llmwiki 的 1.05）
+- `[用户上传文件]` 标签在融合上下文中呈现
+- **背景材料注入**：附件内容作为 `background_materials` 注入 `_llm_grounded_answer()`，置于用户问题之前（`--- 背景材料开始 ---`），指导 LLM 以文件内容为知识背景作答
+- 全路径覆盖：`process()` → `_llm_grounded_answer()`、`_process_multi_question()` → `SequenceFusionEngine`、`_llm_fallback_answer()` 均支持背景材料注入
 
 **Web/Tool 结果走 LLM**（1 处）：
 - 此前 Web 搜索结果和丰富工具结果通过 annotator 直出文本，绕过 LLM，导致回复干瘪
@@ -967,7 +1080,8 @@ class AgentResult(BaseModel):
 | WebAgent | `web_agent.py` | 联网搜索（Serper API） | `KERNEL_AGENT_WEB_ENABLED` |
 | ToolAgent | `tool_agent.py` | 通用工具（时间/天气/计算），含卡片 JSON payload 输出 | `KERNEL_AGENT_TOOL_ENABLED` |
 | SkillsAgent | `skills_agent.py` | 技能调用 | — |
-| RuleEngineAgent | `rule_engine_agent.py` | YAML 规则引擎 | — |
+| RuleEngineAgent | `rule_engine_agent.py` | YAML 规则引擎 + 金丝雀指标记录 | — |
+| VisionAgent | `vision_agent.py` | 视觉分析（图表/截图/照片解读）+ Redis 缓存降级 | — |
 
 ### 10.3 Agent Worker
 
@@ -1007,6 +1121,8 @@ class AgentResult(BaseModel):
 | `COMPRESS` | 上下文压缩、总结 | qwen3.5-27b | 27B |
 | `QUERY` | 用户查询回答 | qwen3.6-plus | 32B |
 
+**多模态支持**：`LLMMessage.content` 字段类型为 `str | list[dict]`，`list` 格式用于图像等多模态输入（如 `[{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}, {"type": "text", "text": "..."}]`），`openai_adapter._to_oai()` 透传 list content。用于文件附件中的图像解析（图片 → base64 → qwen3.6-plus vision → 文字描述）。
+
 每个角色有独立的 CircuitBreaker 和重试策略。
 
 ### 11.2 Short 模型配置
@@ -1045,7 +1161,7 @@ class AgentResult(BaseModel):
 
 ## 12. 记忆系统（Memory System）
 
-四层记忆 + 路由 + 演化，已全量接入聊天管线（2026-04-30）。
+四层记忆 + 路由 + 演化 + 价值评分闭环，已全量接入聊天管线（2026-05-03）。
 
 ### 12.1 记忆层级
 
@@ -1055,8 +1171,9 @@ class AgentResult(BaseModel):
 | L2 语义记忆 | `semantic_memory` | `memory/semantic_memory/` | ✅ 已激活 | 向量检索（InMemorySemanticStore），MemoryRouter 调用 |
 | L3 情节记忆 | `episodic_memory` | `memory/episodic_memory/` | ✅ 已激活 | Redis 持久化会话事件序列，recall(last_n=20) 注入上下文 |
 | L4 程序记忆 | `procedural_memory` | `memory/procedural_memory/` | 待接入 | 成功的流程和工具链 |
-| 路由 | `memory_router` | `memory/memory_router/` | ✅ 已激活 | 联邦检索 + 重排序，retrieve(top_k=8) |
-| 演化 | `evolution` | `memory/evolution/` | ✅ 已激活 | EvolutionMemoryRouter：经验版本 + 技能检索 + 强化学习 |
+| 路由 | `memory_router` | `memory/memory_router/` | ✅ 已激活 | 联邦检索 + 重排序 + [V6] 价值评分重排 |
+| 演化 | `evolution` | `memory/evolution/` | ✅ 已激活 | EvolutionMemoryRouter：强化 + 演化 + 压缩 + 技能 + [V6] 自动衰减 |
+| 价值评分 | `value_scorer` | `memory/value_scorer.py` | ✅ [V6] | base + recency + feedback 三元加权，Redis feedback streak |
 
 ### 12.2 查询管线
 
@@ -1068,16 +1185,40 @@ MemoryRouter.retrieve(query, episodic_chunks, keyword_chunks, top_k=8)
   └── 重排序合并    → 加权 Top-K 记忆片段
 ```
 
-### 12.3 写入管线（已有）
+### 12.3 价值评分与反馈闭环 [V6]
+
+**文件**：`memory/value_scorer.py`
+
+每段记忆在检索后计算最终价值分：
+
+```
+final_score = 0.5 × base_score + 0.3 × recency_score + 0.2 × feedback_score
+recency_score = exp(-0.01 × turn_gap)     # 半衰期 ~70 轮
+feedback_score = like: +0.3 / dislike: -0.5 / 无反馈: 0
+```
+
+**自动衰减**：连续 N 轮无反馈 → score × 0.1（`kernel_memory_auto_decay_threshold=3`）
+
+**Feedback API**：`POST /api/v1/chat/feedback` 接收 `{session_id, chunk_id, feedback_type: like|dislike|none, score?}`，更新 EvolutionMemoryRouter 价值评分和 Redis streak counter。
+
+Redis 键格式：
+- `opentrace:memory:feedback:{chunk_id}:streak` — 连续无反馈计数（INCR，30 天 TTL）
+- `opentrace:memory:feedback:{chunk_id}:type` — 最新反馈类型（like/dislike，30 天 TTL）
+
+### 12.4 写入管线（已有）
 
 - Gateway 层 `_save_user_memory_from_turn()` — 每轮 Q&A 异步写入
 - `EvolutionMemoryRouter` 订阅者 — 技能检索 + 演化记录
 
-### 12.4 配置
+### 12.5 配置
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `KERNEL_MEMORY_CONTEXT_ENABLED` | `true` | 记忆上下文注入主开关 |
+| `KERNEL_MEMORY_VALUE_SCORING_ENABLED` | `true` | [V6] 记忆价值评分开关 |
+| `KERNEL_MEMORY_FEEDBACK_LIKE_BONUS` | `0.3` | [V6] 点赞加分 |
+| `KERNEL_MEMORY_FEEDBACK_DISLIKE_PENALTY` | `-0.5` | [V6] 踩罚分 |
+| `KERNEL_MEMORY_AUTO_DECAY_THRESHOLD` | `3` | [V6] 无反馈衰减阈值 |
 | `KERNEL_V5_ROUTING_ENABLED` | `true` | V5 路由（Memory Injection 在此之后执行） |
 
 ---
@@ -1186,7 +1327,7 @@ MemoryRouter.retrieve(query, episodic_chunks, keyword_chunks, top_k=8)
 | `JWTSettings` | JWT | 3 |
 | `SMTPSettings` | SMTP | 5 |
 | `OTelSettings` | 链路追踪 | 4 |
-| `AppSettings` | 应用 + 内核 + V5 | 60+ |
+| `AppSettings` | 应用 + 内核 + V5 + V6 | 75+ |
 
 ### 15.2 Redis 分库
 
@@ -1231,11 +1372,152 @@ class AppException(Exception):
 
 ## 16. 安全与防护（Safety）
 
+### 16.1 零信任与输入防护
+
 - **零信任风险评估**（`infra/security/zero_trust.py`）：输入风险评分
 - **输入防护栏**（`safety/guardrails/`）：PII/SQL 注入/有害内容检测
 - **SQL 只读校验**：所有生成的 SQL 强制只读
 - **JWT 认证**：所有 API 端点需 Bearer Token
 - **CORS**：已配置跨域支持
+
+### 16.2 NER PII 数据脱敏 [Phase 3]
+
+**文件**：`safety/masking/ner_masker.py`（~154 行）
+
+在所有查询进入 LLM 管线之前，自动检测并替换敏感实体为类型化占位符，LLM 回答后再逆向还原。无需外部 NLP 依赖，使用精选正则模式覆盖中英文 9 种实体类型。
+
+**实体类型**：
+
+| 类型 | 示例 | 占位符 |
+|------|------|--------|
+| `EMAIL` | `user@example.com` | `{MASK_EMAIL_0}` |
+| `PHONE_CN` | `13800138000` | `{MASK_PHONE_CN_0}` |
+| `PHONE_INTL` | `+86 10 1234 5678` | `{MASK_PHONE_INTL_0}` |
+| `CREDIT_CARD` | `1234-5678-9012-3456` | `{MASK_CREDIT_CARD_0}` |
+| `ID_CN` | `110101199001011234` | `{MASK_ID_CN_0}` |
+| `IP_ADDRESS` | `192.168.1.1` | `{MASK_IP_ADDRESS_0}` |
+| `PERSON_CN` | `张三先生`、`李丽老师` | `{MASK_PERSON_CN_0}` |
+| `LOCATION_CN` | `北京市`、`浦东新区` | `{MASK_LOCATION_CN_0}` |
+| `ORG_CN` | `阿里巴巴集团`、`人民医院` | `{MASK_ORG_CN_0}` |
+
+**数据模型**：
+
+```python
+@dataclass
+class MaskResult:
+    masked: str               # 脱敏后的文本
+    mapping: dict[str, str]   # 占位符 → 原始值映射
+    pii_detected: bool        # 是否检测到 PII
+
+class NERMasker:
+    def mask_input(text: str) -> MaskResult    # 替换 PII → 占位符
+    def unmask_output(text: str, mapping: dict) -> str  # 还原占位符 → 原始值
+    def scan_pii(text: str) -> dict[str, list[str]]     # 审计扫描（不替换）
+```
+
+**编排器集成**（`kernel/orchestrator_v4.py`）：在 `process()` 入口处调用 `get_ner_masker().mask_input(req.query)`，脱敏后的查询用于后续所有 LLM 调用，最终答案通过 `unmask_output()` 还原。
+
+### 16.3 金丝雀测试与自动回滚 [Phase 3]
+
+**文件**：`safety/canary/canary_guard.py`（~327 行）
+
+为规则引擎提供版本金丝雀发布能力：每个规则版本可独立追踪错误率/延迟指标，当金丝雀版本相对基线出现衰退时自动回滚。
+
+**核心组件**：
+
+```python
+@dataclass
+class RuleVersionMetrics:
+    rule_id: str; version: str
+    error_count: int; success_count: int
+    total_latency_ms: float; sample_count: int
+    # 属性: error_rate, avg_latency_ms
+
+@dataclass
+class CanaryStatus:
+    rule_id: str; canary_version: str; baseline_version: str
+    canary_error_rate: float; canary_avg_latency_ms: float
+    baseline_error_rate: float; baseline_avg_latency_ms: float
+    degraded: bool; auto_rolled_back: bool; rollback_reason: str
+
+class CanaryGuard:
+    def record(rule_id, version, success, latency_ms)      # 记录执行指标
+    def check_health(rule_id) -> CanaryStatus | None        # 健康检查（冷启动保护）
+    def rollback(rule_id, reason="") -> bool                # 回滚到稳定版本
+    def auto_rollback_if_degraded(rule_id) -> CanaryStatus   # 检测 + 自动回滚
+    def sweep_all() -> list[CanaryStatus]                   # 全量规则健康巡扫
+```
+
+**衰退检测逻辑**：
+- 错误率 > `kernel_canary_error_rate_threshold`（默认 10%）→ 触发
+- 平均延迟 > 基线 `kernel_canary_latency_multiplier` 倍（默认 2×）→ 触发
+- 最小样本数保护：`kernel_canary_min_samples`（默认 100），冷启动期间不做判断
+
+**自动回滚机制**：
+1. 修改 `_meta.yml` 将金丝雀版本 percentage 置 0、status 置 `rolled_back`
+2. 基线版本 percentage 恢复 100%
+3. `grayscale.enabled` 设为 false
+4. 记录回滚事件（含 reason/timestamp）至 `_rollback_history`
+
+**编排器集成**（`agents/rule_engine_agent.py`）：`execute()` 循环中对每个规则执行结果调用 `guard.record(rid, version, success, latency_ms)`。
+
+**API 端点**：`POST /api/v1/rules/{rule_id}/rollback` 支持手动回滚。
+
+### 16.4 可解释审计 XAI [Phase 3]
+
+**文件**：`safety/xai/cognitive_trace.py`（~317 行）
+
+为每次查询构建结构化的认知管道审计追踪，记录 **什么发生了**（数据）和 **为什么会这样决定**（人类可读的推理说明）。追踪覆盖完整的 PLAN → DISPATCH → AGENT → FUSION → CRITIC → REWRITE → FINAL 管道。
+
+**核心组件**：
+
+```python
+@dataclass
+class TraceEvent:
+    timestamp: float; stage: str; event_type: str
+    data: dict; reasoning: str  # 人类可读的 WHY
+
+@dataclass
+class CognitiveTrace:
+    trace_id: str; session_id: str; query: str
+    events: list[TraceEvent]; summary: dict; metadata: dict
+
+class CognitiveTracer:
+    def start_trace(session_id, query, user_id="") -> str  # 返回 trace_id
+    def finish_trace(trace_id, summary=None)
+    def record_decision(trace_id, stage, event_type, data={}, reasoning="")
+    def record_agent_execution(trace_id, agent_type, status, latency_ms, ...)
+    def record_fusion(trace_id, source_count, merged_length, strategy="")
+    def record_critic(trace_id, issues_found, corrections=[], llm_feedback="")
+    def record_rewrite(trace_id, iteration, reason="", improvement="")
+    def record_final(trace_id, answer_length, confidence, total_agents, total_latency_ms)
+    def get_trace(trace_id) -> dict | None
+    def list_traces(session_id=None, limit=50) -> list[dict]
+    def get_recent_trace_for_session(session_id) -> dict | None
+```
+
+**管道阶段覆盖**：
+
+| 阶段 | 记录方法 | 记录内容 |
+|------|---------|---------|
+| DST | `record_decision` | 对话状态追踪，查询消解 |
+| PLAN | `record_decision` | 任务规划（子任务数/Agent 类型） |
+| AGENT | `record_agent_execution` | 每个 Agent 的执行结果/耗时/置信度 |
+| FUSION | `record_fusion` | 多源证据融合（来源数/策略/上下文长度） |
+| CRITIC | `record_critic` | 质量审校（问题数/修正建议） |
+| REWRITE | `record_rewrite` | 每次重写迭代 |
+| FINAL | `record_final` | 最终答案（长度/置信度/总耗时） |
+
+**容量控制**：
+- 单次追踪最大 500 个事件（`MAX_TRACE_EVENTS`）
+- 内存中最多保留 200 条追踪（`MAX_STORED_TRACES`，FIFO 淘汰）
+
+**编排器集成**（`kernel/orchestrator_v4.py`）：`process()` 中在 NER 脱敏后立即 `start_trace()`，每个管道阶段调用相应记录方法，最终 `finish_trace()`。
+
+**API 端点**（3 个）：
+- `GET /api/v1/xai/traces` — 列出追踪（可选 `session_id` 过滤，`limit` 1-100）
+- `GET /api/v1/xai/traces/{trace_id}` — 获取完整追踪（含所有事件和管道阶段摘要）
+- `GET /api/v1/xai/sessions/{session_id}/trace` — 获取会话最近追踪
 
 ---
 
@@ -1260,7 +1542,45 @@ class AppException(Exception):
 - `/product` 斜杠命令触发
 - `force_mode=product` 或 `rule_engine` 直接路由
 
-### 18.2 规则管理 API
+### 18.2 规则版本化与灰度发布 [Phase 3]
+
+每个规则目录包含 `_meta.yml` 元信息文件，支持多版本管理和灰度发布：
+
+```yaml
+# rules/{rule_id}/_meta.yml 示例
+rule_id: product_catalog
+active_version: v1
+versions:
+  v1:
+    file: rule_v1.yml
+    status: baseline
+    percentage: 90
+  v2:
+    file: rule_v2.yml
+    status: canary
+    percentage: 10
+grayscale:
+  enabled: true
+  hash_key: user_id    # 用户 ID 哈希分桶
+```
+
+**版本解析**（`_resolve_version()`）：通过 `hash(user_id) % 100` 确定性分桶，`hash_value < canary_percentage` 的请求路由到金丝雀版本，其余路由到基线版本。同一用户始终落在同一桶中（粘性）。
+
+### 18.3 金丝雀指标追踪
+
+**文件**：`agents/rule_engine_agent.py`
+
+```python
+# execute() 循环中
+t0 = time.monotonic()
+# ... 规则执行 ...
+elapsed_ms = (time.monotonic() - t0) * 1000
+guard.record(rid, version, success=ok, latency_ms=elapsed_ms)
+```
+
+每次规则执行后记录成功/失败和延迟至 `CanaryGuard`，用于衰退检测和自动回滚判断。
+
+### 18.4 规则管理 API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -1268,9 +1588,12 @@ class AppException(Exception):
 | POST | `/rules` | 创建规则 |
 | PUT | `/rules/{id}` | 更新规则 |
 | DELETE | `/rules/{id}` | 删除规则 |
+| POST | `/rules/{rule_id}/rollback` | [Phase 3] 规则版本回滚（手动或自动触发） |
 | GET | `/rules/yaml` | 生成 YAML |
 
-### 18.3 前端规则页面
+**回滚端点**：接受 `{"reason": "..."}` 请求体，调用 `CanaryGuard.rollback()` 将金丝雀版本 percentage 归零、基线版本恢复 100%、关闭灰度。返回 `{"message": "...", "rule_id": "..."}`。
+
+### 18.5 前端规则页面
 
 **文件**：`frontend/src/pages/RulesPage.tsx`
 
@@ -1359,8 +1682,14 @@ class AppException(Exception):
 |------|------|
 | `User` | 用户（邮箱/密码/角色） |
 | `ChatSession` | 聊天会话 |
-| `TraceLog` | 请求追踪日志 |
-| 更多 | 文档、记忆、任务、审计等 |
+| `ConversationState` | [L3 Phase 1] 结构化对话状态（FK→chat_sessions.id ON DELETE CASCADE，含 `active_attachment_ids`） |
+| `Attachment` | [L3 Phase 2] 文件附件持久化（FK→chat_sessions.id + users.id，含 content_hash / image_base64 / duplicate_of） |
+| `TraceLog` | 请求追踪日志（含 [V6] `parent_message_id` 分支字段） |
+| `UserMemory` | 用户记忆（含 [V6] `score` 价值分数字段） |
+| `Feedback` | 用户反馈（like/dislike/none） |
+| 更多 | 文档、数据源、任务、审计等 |
+
+**ConversationState 模型字段**：`id`, `session_id`（FK, unique, ondelete="CASCADE"）, `active_topic`, `active_intent`, `active_domain`, `active_entities`（JSON）, `active_constraints`（JSON）, `active_mode`, `active_data_source_id`, `active_document_ids`（JSON）, `active_attachment_ids`（JSON list, [L3 Phase 2]）, `last_user_goal`, `last_assistant_summary`, `last_plan`（JSON）, `last_results`（JSON）, `pending_clarification`（JSON）, `state_version`（int）, `created_at`, `updated_at`。ChatSession 反向关系：`conversation_state`（uselist=False, passive_deletes=True）和 `attachments`（cascade="all, delete-orphan"）。
 
 ### 21.2 迁移
 
@@ -1413,7 +1742,7 @@ KERNEL_SEMANTIC_CACHE_ENABLED=true
 KERNEL_MEMORY_CONTEXT_ENABLED=true
 ```
 
-**内核 V4**：
+**内核 V4/V6**：
 ```
 KERNEL_ORCHESTRATOR_VERSION=v4
 KERNEL_AGENT_TIMEOUT_SEC=25
@@ -1424,6 +1753,73 @@ KERNEL_ANSWER_DRAFT_CONFIDENCE_THRESHOLD=0.75
 KERNEL_ANSWER_DRAFT_MAX_CHARS=220
 KERNEL_MEMORY_CONTEXT_ENABLED=true
 RAG_MIN_SCORE=0.25
+```
+
+**V6 多轮对话增强**：
+```
+# Feature ⑤ ClarificationGate — 主动追问
+KERNEL_CLARIFICATION_GATE_ENABLED=true
+KERNEL_CLARIFICATION_CONFIDENCE_THRESHOLD=0.6
+
+# Feature ④ Error Correction — 错误纠正
+KERNEL_CORRECTION_DETECTION_ENABLED=true
+KERNEL_REFINE_REPLAN_ENABLED=true
+
+# Feature ② Dialogue State Tracking — 对话状态追踪
+KERNEL_DST_ENABLED=true
+KERNEL_DST_QUERY_LENGTH_THRESHOLD=30
+
+# Feature ① Context Compression — 上下文压缩
+KERNEL_CONTEXT_COMPOSER_ENABLED=true
+KERNEL_COMPRESS_TRIGGER_TOKENS=3000
+KERNEL_COMPRESS_KEEP_RECENT_TURNS=5
+
+# Feature ③ Memory Value Feedback — 记忆价值闭环
+KERNEL_MEMORY_VALUE_SCORING_ENABLED=true
+KERNEL_MEMORY_FEEDBACK_LIKE_BONUS=0.3
+KERNEL_MEMORY_FEEDBACK_DISLIKE_PENALTY=-0.5
+KERNEL_MEMORY_AUTO_DECAY_THRESHOLD=3
+
+# Feature ⑥ Conversation Branching — 对话分支
+KERNEL_CONVERSATION_BRANCHING_ENABLED=true
+
+# [L3 Phase 1] ConversationState — 结构化对话状态
+KERNEL_CONVERSATION_STATE_ENABLED=true
+```
+
+**文件附件上传**：
+```
+ATTACHMENT_UPLOAD_ENABLED=true
+ATTACHMENT_MAX_SIZE_MB=20
+ATTACHMENT_STORAGE_PATH=/tmp/opentrace_attachments
+ATTACHMENT_MAX_CHARS=4000
+MULTIMODAL_ATTACHMENT_ENABLED=true
+```
+
+**Vision LLM（视觉分析）**：
+```
+DEFAULT_LLM_VISION_MODEL=qwen3.6-vl-plus
+DEFAULT_LLM_VISION_PROVIDER=阿里巴巴Qwen(DashScope)
+```
+
+**规则版本化与灰度发布**：
+```
+KERNEL_RULE_GRAYSCALE_ENABLED=true
+KERNEL_RULE_GRAYSCALE_DEFAULT_PERCENTAGE=100
+```
+
+**NER PII 数据脱敏 [Phase 3]**：
+```
+KERNEL_NER_MASKING_ENABLED=true
+KERNEL_NER_MASKING_ENTITY_TYPES=EMAIL,PHONE_CN,PHONE_INTL,CREDIT_CARD,ID_CN,IP_ADDRESS,PERSON_CN,LOCATION_CN,ORG_CN
+```
+
+**金丝雀测试与自动回滚 [Phase 3]**：
+```
+KERNEL_CANARY_AUTO_ROLLBACK_ENABLED=true
+KERNEL_CANARY_ERROR_RATE_THRESHOLD=0.10
+KERNEL_CANARY_LATENCY_MULTIPLIER=2.0
+KERNEL_CANARY_MIN_SAMPLES=100
 ```
 
 ---
@@ -1470,7 +1866,7 @@ RAG_MIN_SCORE=0.25
 
 | 命令 | 说明 |
 |------|------|
-| `pytest` | 运行全部 401 个测试 |
+| `pytest` | 运行全部 759 个测试 |
 | `pytest tests/path/to/test.py::test_name` | 运行特定测试 |
 | `pytest -v` | 详细输出 |
 | `pytest -q` | 安静模式 |
@@ -1497,8 +1893,8 @@ RAG_MIN_SCORE=0.25
 
 ### 25.1 总览
 
-- **测试文件**：87 个（不含 `__init__.py`）
-- **测试方法**：425 个
+- **测试文件**：102 个（不含 `__init__.py`）
+- **测试方法**：759 个
 - **框架**：pytest + unittest.TestCase
 - **风格**：合约测试（Contract Tests），验证代码结构和关键路径存在
 
@@ -1508,18 +1904,28 @@ RAG_MIN_SCORE=0.25
 |---------|--------|---------|
 | `test_v5_routing_contract.py` | 50 | V5 L0/L1/缓存/复杂度/导出/降级/.env |
 | `test_data_cognition_pipeline.py` | 36 | Text2SQL 完整管线 |
-| `test_multi_question_orchestration_contract.py` | 27 | 多子问题编排全链路 |
+| `test_canary_rollback_contract.py` | 34 | [Phase 3] 金丝雀测试：指标/衰退检测/自动回滚/API/sweep |
+| `test_xai_cognitive_trace_contract.py` | 34 | [Phase 3] XAI 认知追踪：事件/生命周期/录制/检索/编排器集成/API |
+| `test_multi_question_orchestration_contract.py` | 33 | 多子问题编排全链路 + background_materials 注入 |
+| `test_attachment_api_kernel_contract.py` | 32 | 附件上传 API + 认知内核注入 + 全路径背景材料 |
+| `test_ner_masking_contract.py` | 28 | [Phase 3] NER 脱敏：9 种实体/可逆占位符/中英文/边界条件 |
 | `test_force_mode_routing.py` | 20 | 强制模式/斜杠命令路由 |
+| `test_memory_context_injection.py` | 18 | 记忆上下文注入全链路 |
 | `test_kernel_agent_loop.py` | 15 | 内核 Agent 循环 |
+| `test_attachment_file_parser_contract.py` | 14 | 文件解析服务全类型覆盖 |
 | `test_rag_agent_contract.py` | 14 | RAG 检索 Agent |
 | `test_rule_engine_agent_contract.py` | 13 | 规则引擎 Agent |
 | `test_streaming_ttft_contract.py` | 10 | 流式输出 + TTFT |
-| `test_memory_context_injection.py` | 18 | 记忆上下文注入全链路 |
-| `test_tool_card_injection.py` | 6 | 工具卡片 JSON 注入 |
 | `test_skills_api_contract.py` | 9 | 技能 API |
 | `test_analytics_plugins.py` | 7 | 分析插件 |
+| `test_tool_card_injection.py` | 6 | 工具卡片 JSON 注入 |
+| `test_conversation_state_contract.py` | 17 | [L3 Phase 1] ConversationState：创建/加载/更新/合并/压缩/边界值/并发 |
+| `test_reference_resolution_contract.py` | 20 | [L3 Phase 1] 中文指代消解：刚才/第二个/换成/不要/那个+10+ 场景 |
+| `test_multiturn_data_query_contract.py` | 10 | [L3 Phase 1] Data Agent 多轮追问端到端 |
+| `test_multiturn_rag_contract.py` | 8 | [L3 Phase 1] RAG 文档 QA 多轮追问端到端 |
+| `test_multiturn_correction_contract.py` | 8 | [L3 Phase 1] 纠正重规划全链路 |
 
-其余 77 个测试文件覆盖 orchestrator、fusion、critic、bus、memory、database、adapters 等。
+其余 80 个测试文件覆盖 orchestrator、fusion、critic、bus、memory、database、adapters 等。
 
 ### 25.3 测试命令
 
@@ -1881,10 +2287,962 @@ type ReasoningStage =
 - 所有旧版 `CognitiveEvent` 新增字段 (`span_id`, `parent_span_id`, `stage`) 均提供空字符串/None 默认值
 - `AgentResult.evidence` 和 `AgentResult.agent_trace` 默认空列表/None
 - `schema_version` 机制区分 v1/v2 事件
-- 现有 401 个测试全部通过，零破坏性变更
+- 现有测试全部通过，零破坏性变更
 
 ---
 
+## 30. V6 多轮对话增强（Multi-Turn Enhancement）
+
+V6 在 V5 基础上为多轮对话引入了 6 大增强功能，解决指代消解、上下文压缩、错误纠正、主动追问、记忆价值评估和对话分支回溯等核心痛点。
+
+### 30.1 功能总览
+
+| # | 功能 | 优先级 | 核心文件 | 解决的问题 |
+|---|------|--------|---------|-----------|
+| ⑤ | ClarificationGate | P0 | `kernel/clarification_gate.py` | 信息不足时主动生成追问 |
+| ④ | Error Correction | P0 | `kernel/refine_planner.py` | 用户纠正后增量重规划，避免全量重跑 |
+| ② | Dialogue State Tracking | P1 | `kernel/dialogue_state_tracker.py` | 指代消解（"那华北区呢？"） |
+| ① | ContextComposer | P1 | `kernel/context_composer.py` | 长历史智能压缩，节省 token |
+| ③ | Memory Value Scoring | P2 | `memory/value_scorer.py` | 记忆分值评估 + 自动衰减 + 反馈闭环 |
+| ⑥ | Conversation Branching | P2 | `kernel/dispatcher.py` + `chat.py` | 对话分支回溯，复用 checkpoint |
+
+### 30.2 Feature ⑤ — ClarificationGate（主动追问）
+
+**核心逻辑**：
+
+```
+ClarificationGate.check(fusion_confidence, answer, query)
+  ├── 启发式快速路径（无 LLM）：
+  │   ├── fusion_confidence < 0.6 → 触发
+  │   ├── answer < 50 字符 → 触发
+  │   └── 答案含"信息不足"/"无法确定" → 触发
+  └── 仅当启发式触发时 → MiddleShort 8B 生成追问
+      └── 返回 ClarificationGateResult(needs_clarification=True, questions=[...])
+```
+
+**Orchestrator 集成**：Critic 之后、Tool Card Injection 之前，触发时提前返回 `route="clarification_needed"`，metadata 含 `clarification_question`。
+
+**前端交互**：收到 `needs_clarification` SSE 事件 → 渲染追问卡片 → 用户回答后带 `clarify_context` 和 `clarify_question_id` 重新请求 → PlanAgent 检测 `clarify_context` 后将其注入规划 prompt。
+
+**API 字段**（`ChatRequest`）：
+- `clarify_context: Optional[str]` — 用户对追问的回答
+- `clarify_question_id: Optional[str]` — 被回答的追问 ID
+
+### 30.3 Feature ④ — Error Correction & Incremental Re-planning（错误纠正）
+
+**启发式门控**：仅当 `query < 100 字符` 且含以下关键词时才触发 LLM 分类：
+`不对`, `不是`, `错了`, `重新`, `纠正`, `改成`, `换成`, `应该是`
+
+**核心流程**：
+
+```
+1. looks_like_correction(query) → True
+2. TinyRouter._CLASSIFY_PROMPT 返回 reply_type: "correction"
+3. RefinePlanner.detect_correction(query, previous_plan) → CorrectionIntent
+4. RefinePlanner.refine_plan(correction, plan, results, original_query) → RefinedPlan
+5. Dispatcher 仅执行 replaced_indices 对应的新 SubTask
+6. 合并 reused_results + new_results → 最终答案
+```
+
+**效果**：延迟降低 ~40%（仅重新执行 1 个 Agent 而非全部）。
+
+**RefinedPlan 数据结构**：
+
+```python
+@dataclass
+class RefinedPlan:
+    plan: TaskPlan              # 增量后的新计划
+    replaced_indices: list[int] # 被替换的 SubTask 索引
+    reused_results: dict[int, AgentResult]  # 复用的已有结果
+```
+
+### 30.4 Feature ② — DialogueStateTracker（对话状态追踪）
+
+**触发条件**：`len(query) < 30` AND `not _has_explicit_entities(query)`
+
+**核心流程**：
+
+```
+DialogueStateTracker.track(query, previous_plan, previous_results, history)
+  ├── 检查显式实体（华东、销量、订单等）→ 有则跳过
+  ├── 使用 MiddleShort 8B 做结构化槽位解析
+  │   输入：当前 query + 上一轮 TaskPlan + AgentResult
+  │   输出：DialogueSlotState
+  └── PlanAgent 检测到 referenced_previous_result=True
+      └── 优先沿用上一轮的 Agent 类型和数据源参数
+```
+
+**DialogueSlotState 数据结构**：
+
+```python
+@dataclass
+class EntitySlot:
+    slot_name: str        # 例如 "region", "metric"
+    value: str            # 例如 "华北区", "销量"
+    confidence: float
+    source: str           # "explicit" | "resolved" | "inferred"
+
+@dataclass
+class DialogueSlotState:
+    active_domain: str
+    entity_slots: list[EntitySlot]
+    referenced_previous_result: bool
+    referenced_agent_type: str   # "data" | "rag" | "web" | ""
+    resolved_query: str          # 补全后的完整查询
+```
+
+### 30.5 Feature ① — ContextComposer（智能上下文压缩）
+
+**触发条件**：估算 token 数超过 `kernel_compress_trigger_tokens`（默认 2000）
+
+**Token 估算**：中文 ~2 chars/token，英文 ~4 chars/token
+
+**核心流程**：
+
+```
+ContextComposer.compose(history, current_query, session_id)
+  ├── _estimate_tokens(history) > 2000 → 触发压缩
+  ├── 调用 COMPRESS 模型（qwen3.5-27b, LLMRole.COMPRESS）
+  │   生成 ConversationSummary：
+  │   ├── 用户身份/偏好
+  │   ├── 已确认事实
+  │   ├── 未完成动作
+  │   └── 最近 kernel_compress_keep_recent_turns 轮原文
+  ├── 存入 WorkingMemory.summary_slot（带版本号）
+  └── 返回 ComposedContext(compressed=True, summary=..., recent_turns=[...])
+```
+
+**Cognitive Kernel 集成**：`run()` 和 `stream()` 两条路径都在调用 orchestrator 前执行压缩，并将 `memory_injection_query` 设为 `current_query + summary[:200]`，提升记忆检索精度。
+
+### 30.6 Feature ③ — Memory Value Feedback Loop（记忆价值闭环）
+
+**评分公式**：
+
+```
+final_score = 0.5 × base_score + 0.3 × recency_score + 0.2 × feedback_score
+recency_score = exp(-0.01 × turn_gap)     # 半衰期 ~70 轮
+feedback_score = like: +0.3 / dislike: -0.5 / 无反馈: 0
+```
+
+**调用链**：
+
+```
+MemoryRouter.retrieve()
+  └── rerank → MemoryScoreComponents.apply()
+      └── re-sort by final_score
+
+EvolutionMemoryRouter.retrieve()
+  └── auto-decay: no_feedback_streak >= threshold → score *= 0.1
+
+POST /api/v1/chat/feedback
+  └── EvolutionMemoryRouter.record_feedback(chunk_id, feedback_type)
+      ├── like/dislike → set Redis feedback:type, reset streak
+      └── none → INCR Redis feedback:streak
+```
+
+**主动记忆检测**（Cognitive Kernel）：
+
+检测查询中的"记住，我更喜欢..."等模式，自动写入 `UserMemory`（`kind="preference"`, `score=0.7`）：
+
+```python
+_ACTIVE_MEMORY_PATTERNS = [
+    "记住", "记下", "记录下来", "别忘了", "提醒我",
+    "我更喜欢", "我喜欢", "我偏好", "我习惯", "我常用",
+    "保存下来", "存下来", "记录下来",
+]
+```
+
+### 30.7 Feature ⑥ — Conversation Branching（对话分支回溯）
+
+**核心流程**：
+
+```
+POST /chat (parent_message_id="msg_xxx")
+  ├── _load_history_before_message(db, session_id, parent_message_id)
+  │   └── 回滚历史到 parent_message_id 之前
+  ├── _load_branch_checkpoint(db, session_id, parent_message_id)
+  │   └── 从 TraceLog.execution_graph_json 提取 plan + agent_results
+  ├── metadata["resume_mode"] = True
+  ├── metadata["branch_checkpoint"] = {plan, agent_results}
+  └── OrchestratorV4.process()
+      ├── resume_mode 检测 → 加载 checkpoint_plan / checkpoint_results
+      └── Dispatcher.dispatch(plan, previous_results=checkpoint_results)
+          ├── 按 (agent_type, query) 匹配已有结果 → 跳过执行
+          └── 仅调度新 Subtask → 合并结果
+```
+
+**数据库字段**：
+
+```python
+# TraceLog 模型
+parent_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+```
+
+**_save_trace 签名更新**：
+
+```python
+async def _save_trace(
+    session_id, query, response, latency_ms,
+    decision_type="kernel", validation_score=1.0,
+    reasoning_steps=None, execution_graph=None,
+    parent_message_id=None,  # [V6] 新增
+)
+```
+
+### 30.8 架构原则
+
+1. **懒加载模式**：所有新组件通过 `_get_xxx()` 在首次访问时初始化，不影响零 LLM 的 L0 路径
+2. **启发式门控**：Feature ④ 和 ② 使用关键词/长度检查做 LLM 调用前置过滤，减少无谓开销
+3. **向后兼容**：所有新 metadata 字段通过 `.get()` 安全访问，不存在时不改变原有行为
+4. **两路对齐**：`run()` 和 `stream()` 两条路径同步接入所有 V6 特性
+
+### 30.9 验证方案
+
+| Feature | 验证方式 | 预期结果 |
+|---------|---------|---------|
+| ⑤ | 发送"查一下数据"（无数据源） | 收到 clarification 追问 → 回答后正确路由到 DataAgent |
+| ④ | 先问"华东区销量"，再说"不对，我要的是利润" | 检测为 correction → 仅重新执行 data 子任务 |
+| ② | 先问"华东区销量"，再问"那华北区呢？" | 复用 DataAgent + 数据源，自动补全为"华北区销量是多少" |
+| ① | 连续 15+ 轮对话 | 触发压缩 → 摘要存入 WorkingMemory.summary_slot |
+| ③ | 点赞/踩记忆片段 | final_score 对应调整 → 连续无反馈自动衰减 |
+| ⑥ | 点击 AI 回答的"分支"按钮 | 回滚历史 → 加载 checkpoint → 复用已有结果继续对话 |
+
+### 30.10 L3 Phase 1 — 结构化对话状态与引用消解（ConversationState, ResultRef, ReferenceResolver）
+
+L3 Phase 1 将多轮对话从 **L1/L2（prompt 内拼接 history 数组）** 升级到 **L3（持久化结构化对话状态 + 结果引用 + 智能指代消解）**。核心设计：每轮对话后，编排器从 Plan + Agent 结果中派生 `state_patch`，由 API 层持久化到 `conversation_states` 表；下一轮开始时加载状态，若用户查询短/模糊则触发 `ReferenceResolver` 解析中文指代（"刚才那个"/"第二个"/"换成…"）。
+
+#### 30.10.1 数据流
+
+```
+Chat Request
+  └── chat.py: 通过 ConversationStateManager.get_or_create() 加载 ConversationState
+      └── KernelRequest(conversation_state=...)
+          └── OrchestratorV4.process()
+              ├── ReferenceResolver.resolve(query, state, result_refs)
+              │   └── 返回 ResolutionResult（resolved_refs, turn_type, resolved_query, ...）
+              ├── PlanAgent.generate_plan(resolved_query, ...)
+              ├── Agent Cluster 执行 → AgentResult.metadata.result_refs
+              ├── Fusion Engine 收集 all_result_refs
+              ├── Critic Engine 审校
+              └── derive state_patch (从 plan + results + DST)
+          └── KernelResponse(state_patch=state_patch, result_refs=result_refs)
+      └── chat.py: ConversationStateManager.apply_patch(state, state_patch)
+      └── ChatResponse(result_refs=result_refs, state_version=state.state_version)
+```
+
+#### 30.10.2 ConversationState（`kernel/conversation_state.py`）
+
+持久化到 `conversation_states` 表的每会话结构化状态。
+
+**数据模型**：
+
+```python
+@dataclass
+class EntityRef:
+    name: str                 # 例如 "华东区"
+    entity_type: str          # "region" | "metric" | "date" | "product" ...
+    value: str                # 例如 "华东区"
+    confidence: float = 1.0
+
+@dataclass
+class ConversationState:
+    session_id: str
+    active_topic: str = ""            # 当前话题
+    active_intent: str = ""           # DST 意图（如 "data_query"）
+    active_domain: str = "general_qa"
+    active_entities: list = []        # list[EntityRef]
+    active_constraints: dict = {}     # {"date_range": "昨天", "region": "华北"}
+    active_mode: str = ""             # "data_query" | "rag" | ...
+    active_data_source_id: str = ""
+    active_document_ids: list = []
+    last_user_goal: str = ""          # 上一轮用户目标原文
+    last_assistant_summary: str = ""  # 上一轮回答摘要
+    last_plan: dict | None = None     # 上一轮 TaskPlan（序列化）
+    last_results: list = []           # list[ResultRef]（最多保留 10 条）
+    pending_clarification: dict = {}
+    state_version: int = 0
+```
+
+**ConversationStateManager**：
+
+| 方法 | 说明 |
+|------|------|
+| `async load(session_id)` | 从 DB 加载状态 |
+| `async save(state)` | 写入 DB（insert/update） |
+| `apply_patch(state, patch: dict)` | 合并 patch 到状态，`state_version += 1`（in-place 修改） |
+| `compact(state)` | 修剪旧数据：last_results 保留最新 10 条，summaries 截断到 2000 字符 |
+| `async get_or_create(session_id)` | 优先加载，不存在时创建默认状态 |
+
+#### 30.10.3 ResultRef（`kernel/result_reference.py`）
+
+Agent 执行结果的结构化引用——替代之前不可查询的原始 AgentResult 对象。
+
+**数据模型**：
+
+```python
+@dataclass
+class ResultRef:
+    ref_id: str                # 全局唯一（uuid4）
+    type: str                  # sql | table | doc_chunk | citation | tool | skill | sub_question | graph_node | web_source
+    title: str                 # 简短描述（如"华东区销量 SQL"）
+    summary: str = ""          # 单行摘要
+    payload: dict = {}         # 携带数据 {sql:, table_name:, rows: [...], ...}
+    source_agent: str = ""     # "data_agent" | "rag_agent" | ...
+    message_id: str = ""       # 产生该引用的消息 ID
+    created_at: str = ""       # ISO 时间戳
+```
+
+**序列化工具**：`serialize_refs()`, `deserialize_refs()`, `refs_from_agent_result()`, `collect_refs_from_results()`
+
+**Agent 与 result_refs 类型映射**：
+
+| Agent | ref type | 说明 |
+|-------|---------|------|
+| `data_agent.py` | `sql`, `table` | SQL 语句 + 查询结果表格 |
+| `rag_agent.py` | `doc_chunk`, `citation` | 文档片段 + 出处 |
+| `web_agent.py` | `web_source` | 网页来源 |
+| `skills_agent.py` | `skill` | 技能执行结果 |
+| `vision_agent.py` | `vision` | 图表/图片分析结果 |
+| `rule_engine_agent.py` | `rule` | 规则引擎匹配结果 |
+
+#### 30.10.4 ReferenceResolver（`kernel/reference_resolver.py`）
+
+中文多轮对话的指代消解和追问意图识别。先用启发式规则匹配，匹配不明确时回退到 LLM。
+
+**5 阶段启发式流水线**：
+
+```
+Stage 1 — 纠正检测（Correction）
+  keywords: 不对|不是|错了|重新|纠正|改成|换成|应该是|不要|去掉|去掉那个
+  → turn_type = "correction", resolved_refs = 上一轮被纠正的结果
+
+Stage 2 — 序号索引（Index）
+  pattern: 第(一|二|三|四|1|2|3)个 / 第N个
+  → turn_type = "reference", 按索引匹配上一轮的 result_refs
+
+Stage 3 — 类型匹配（Type）
+  type hints: SQL|查询|表格(/data), 文档|这个文档(/rag/doc), 搜索/搜索结果(/web), 工具(/tool)
+  → turn_type = "reference", 按类型匹配上一轮的 result_refs
+
+Stage 4 — 通用引用（Generic）
+  keywords: 刚才|刚才那个|上一个|上一步|这个|那个
+  → turn_type = "continuation", 使用上一轮的首个 result_ref
+
+Stage 5 — 新话题（New Topic）
+  default: 未匹配任何模式
+  → turn_type = "new_topic", resolved_refs = []
+```
+
+**ResolutionResult 数据结构**：
+
+```python
+@dataclass
+class ResolutionResult:
+    resolved_refs: list           # list[ResultRef] — 匹配到的结果引用
+    turn_type: str                # "continuation" | "correction" | "new_topic" | "reference" | "clarification_answer"
+    confidence: float             # 0.0–1.0
+    resolved_query: str           # 补全后的完整查询（替换了"那个"等模糊指代）
+    corrected_constraints: dict   # 纠正类型时的新约束（替换或删除）
+    suggested_domain: str         # 建议的 Agent 类型
+    suggested_agent: str          # 建议的 Agent 名称
+```
+
+#### 30.10.5 Orchestrator 集成
+
+`OrchestratorV4.process()` 方法在所有 5 条返回路径均返回 `state_patch` + `result_refs`：
+
+| 返回路径 | state_patch | result_refs |
+|---------|------------|-------------|
+| 身份快捷路径 | `state_patch` | `[]` |
+| 多子问题 | `multi_q_state_patch` | `multi_q_result_refs` |
+| Force-mode 缺少数据源 | `state_patch` | `[]` |
+| Force-mode 回退 | `fallback_state_patch` | `fallback_result_refs` |
+| Agent 集群主路径 | `state_patch` | `all_turn_result_refs`（fusion 收集） |
+
+`stream()` 方法在 `final_data` 中发送 `"state_patch"` 和 `"result_refs"` 字段。
+
+**state_patch 推导逻辑**（在 OrchestratorV4 返回前执行）：
+
+```python
+state_patch = {
+    "active_domain": (dst_resolved_query 或 "general_qa"),
+    "active_topic": dst_detected_topic,
+    "active_mode": planned_task_types,
+    "last_user_goal": query,
+    "last_plan": task_plan.to_dict(),
+    "last_results": [serialize_refs(all_turn_result_refs)],
+}
+# 如果纠正检测到 constraints，同时更新 active_constraints
+```
+
+#### 30.10.6 API 层集成（chat.py）
+
+**同步路径**：
+1. `ConversationStateManager.get_or_create(session_id)` 加载/初始化状态
+2. 传入 `KernelRequest(conversation_state=conversation_state)` 替代散落在 `metadata["previous_plan"]` / `metadata["previous_results"]` 中的 flat dict
+3. Orchestrator 返回后：`ConversationStateManager.save(conversation_state)` fire-and-forget 持久化
+4. `ChatResponse` 携带 `result_refs` 和 `state_version` 字段
+
+**流式路径**：同样加载状态、传入 KernelRequest；在 SSE final_answer 事件中发送 `state_patch` 和 `result_refs`；异常时 `logger.warning("Failed to persist ConversationState in stream path")` 安全降级。
+
+**ChatRequest 扩展字段**：
+- `reference_id: Optional[str]` — 用户明确引用的结果 ID
+- `reference_type: Optional[str]` — 引用类型（sql/table/doc_chunk/...）
+- `state_version: Optional[int]` — 客户端上次已知的 state_version（乐观并发参考）
+
+**ChatResponse 扩展字段**：
+- `result_refs: list` — 本轮的 ResultRef 列表（前端可展示为"结果引用"卡片）
+- `state_version: int` — 新 state_version（每次 apply_patch 后 +1）
+
+#### 30.10.7 数据库迁移
+
+**文件**：`alembic/versions/20260508_add_conversation_state.py`
+
+- `down_revision = "20260423_add_chunk_strategy"`
+- 创建 `conversation_states` 表（20 列）
+- `session_id` FK → `chat_sessions.id` ON DELETE CASCADE, UNIQUE 约束
+- 遵循幂等模式（`_table_exists()` / `_index_exists()` 守卫）
+
+#### 30.10.8 验证方案
+
+| 场景 | 验证方法 | 预期结果 |
+|------|---------|---------|
+| 追踪引用 | 先问"查一下华东区销量"→再问"刚才的 SQL 是什么" | ReferenceResolver 识别"刚才"→返回 sql ResultRef |
+| 序号引用 | 多子问题后说"第二个结果再详细一点" | 按索引匹配第二个 ResultRef |
+| 类型引用 | "那个表格再展开一下" | 按 type=table 匹配上一轮结果 |
+| 纠正 | "查一下销量"→"换成昨天" | 检测为 correction → 重建 plan 并使用新约束 |
+| 新话题 | 先问数据查询→再问"今天天气怎么样" | Turn type = new_topic，不加载状态 |
+| 状态持久化 | 同一 session 发送 3 轮 | 每轮 state_version 递增，最后验证 DB 记录 |
+| 流式对齐 | SSE 多轮对话 | final_answer 事件包含 state_patch + result_refs |
+
+#### 30.10.9 合约测试
+
+新增 5 个合约测试模块，63 个测试方法：
+
+| 测试文件 | 测试数 | 覆盖范围 |
+|---------|--------|---------|
+| `test_conversation_state_contract.py` | 17 | State 创建/加载/更新/合并/压缩/边界值/并发 |
+| `test_reference_resolution_contract.py` | 20 | 中文指代：刚才/第二个/换成/那个/不要/10+ 场景 |
+| `test_multiturn_data_query_contract.py` | 10 | Data Agent MR Follow-Up E2E |
+| `test_multiturn_rag_contract.py` | 8 | RAG 文档 QA MR Follow-Up E2E |
+| `test_multiturn_correction_contract.py` | 8 | 纠正重规划全链路 |
+
+**运行**：
+```bash
+pytest tests/test_conversation_state_contract.py \
+       tests/test_reference_resolution_contract.py \
+       tests/test_multiturn_data_query_contract.py \
+       tests/test_multiturn_rag_contract.py \
+       tests/test_multiturn_correction_contract.py -v
+```
+
+---
+
+## 31. 文件附件上传与上下文注入（Attachment Upload & Injection）
+
+文件附件上传功能允许用户上传文件（代码、文档、表格、图片等），系统自动解析内容并作为「候选认知材料」注入 LLM 提示词，使 AI 能基于文件内容回答用户问题。架构上严格遵循认知内核唯一中枢原则：**所有输出必须由认知内核生成，附件只是候选认知材料**。
+
+### 31.1 整体数据流
+
+```
+用户选择文件 → 前端预览 → POST /chat/attachments
+  → 文件扩展名校验（_ALLOWED_EXTENSIONS 白名单）
+  → SHA-256 content_hash 计算 & 同会话重复检测
+  → services/file_parser.parse_attachment_content()
+  → PostgreSQL 持久化（attachments 表） + Redis 缓存（12h TTL）
+  → 更新 ConversationState.active_attachment_ids
+  → 返回 AttachmentUploadResponse（attachment_id + content_summary + content_hash + is_duplicate）
+用户输入文字（不指定 attachment_ids 时自动加载当前会话所有活跃附件）
+  → POST /chat → Gateway 从 PostgreSQL 批量加载附件内容（Redis fallback）
+  → 注入 KernelRequest.metadata["attachment_contexts"]
+  → OrchestratorV4.process()
+      ├── ToolResult(source="attachment", confidence=0.95, source_priority=2) → FusionEngine
+      └── background_materials → _llm_grounded_answer() / SequenceFusionEngine / _llm_fallback_answer()
+  → LLM 生成融入文件内容的回答
+```
+
+### 31.2 API 端点
+
+**文件**：`gateway/api_gateway/routers/chat.py`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/chat/attachments` | 上传文件附件（multipart/form-data），持久化到 PostgreSQL + Redis |
+| GET | `/chat/attachments/{session_id}` | 列出会话所有活跃附件 |
+| DELETE | `/chat/attachments/{attachment_id}` | 软删除附件（标记 status="deleted" + 清除 Redis） |
+
+**POST 请求参数**：
+- `file: UploadFile` — 文件（最大 20MB）
+- `session_id: str` — 所属会话 ID（Form 字段）
+- `message_id: Optional[str]` — 关联消息 ID（Form 字段，可选）
+
+**POST 响应体**（`AttachmentUploadResponse`）：
+```python
+class AttachmentUploadResponse(BaseModel):
+    attachment_id: str       # UUID，用于后续 chat 请求引用
+    content_summary: str     # 解析后的内容摘要（前 200 字符）
+    content_hash: str        # SHA-256 哈希，用于去重
+    is_duplicate: bool       # 同会话是否已存在相同内容的附件
+```
+
+**GET 响应体**（`AttachmentListResponse`）：
+```python
+class AttachmentListResponse(BaseModel):
+    session_id: str
+    attachments: list[AttachmentInfo]  # 含 filename, file_size, mime_type, file_extension, content_summary, status, message_id, created_at
+    total: int
+```
+
+**ChatRequest 扩展字段**：
+```python
+attachment_ids: list[str] | None = None  # 关联的附件 ID 列表（为空时自动加载会话所有活跃附件）
+```
+
+**MIME 类型校验**：上传时比对真实 MIME 类型与文件扩展名，不匹配时通过 `_warn_on_mime_mismatch()` 记录 warning 日志（仅警告，不阻断）。
+
+### 31.3 允许的文件类型
+
+**文件**：`gateway/api_gateway/routers/chat.py`（`_ALLOWED_EXTENSIONS`）
+
+| 类别 | 扩展名 | 解析器 |
+|------|--------|--------|
+| 纯文本 | `.txt`, `.md`, `.rst`, `.log` | `_parse_txt()` |
+| 代码 | `.py`, `.js`, `.ts`, `.go`, `.rust`, `.java`, `.c`, `.cpp`, `.sql`, `.sh`, `.yaml`, `.html`, `.css`, `.vue`, `.svelte` | `_parse_code()` |
+| PDF | `.pdf` | `_parse_pdf()` (PyMuPDF → pdfplumber) |
+| Word | `.docx` | `_parse_docx()` (python-docx) |
+| CSV/TSV | `.csv`, `.tsv` | `_parse_csv()` (pandas → markdown table) |
+| Excel | `.xlsx` | `_parse_xlsx()` (pandas) |
+| JSON | `.json` | `_parse_json_file()` |
+| 图片 | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` | `_parse_image()` (multimodal LLM) |
+
+### 31.4 文件解析服务
+
+**文件**：`services/file_parser.py`
+
+核心入口函数：
+```python
+async def parse_attachment_content(file_path: str, mime_type: str = "") -> str
+```
+
+**解析器类型**：
+
+| 解析器 | 说明 | 截断策略 |
+|--------|------|---------|
+| `_parse_txt()` | 直接读取文本内容，含 frontmatter 格式优化 | 总字符数 ≤ `MAX_ATTACHMENT_CONTENT_CHARS` (4000) |
+| `_parse_code()` | 代码文件，包裹在 ```` ```py ```` markdown fence 中 | 行数 ≤ `MAX_CODE_LINES` (500) |
+| `_parse_pdf()` | PyMuPDF (fitz) 提取文本，失败降级到 pdfplumber | 同上 4000 字符 |
+| `_parse_docx()` | python-docx 提取段落文本 | 同上 |
+| `_parse_csv()` | pandas 读取 → markdown 表格 | 行数 ≤ `MAX_CSV_ROWS` (50) |
+| `_parse_xlsx()` | pandas 读取所有 sheet → 多段输出 | 每 sheet 前 30 行 |
+| `_parse_json_file()` | `json.load()` → `indent=2` 格式化 | 同上 4000 字符 |
+| `_parse_image()` | base64 编码 → qwen3.6-plus vision → 文字描述 | `max_tokens=1024` |
+
+**输出格式**：所有解析结果以 `[用户上传文件: filename.ext]` 为前缀。
+
+**图片解析**（多模态）：
+- 将图片编码为 base64 data URI
+- 构建多模态 `LLMMessage`（`content` 为 `list[dict]`，含 `image_url` 和 `text` 两部分）
+- 调用 ModelGateway（QUERY 角色，temperature=0.2，max_tokens=1024）
+- 模型输出图片中的文字、表格、图表描述等信息
+- `multimodal_attachment_enabled=false` 时返回"多模态解析未启用"提示
+
+### 31.5 认知内核注入
+
+**文件**：`kernel/orchestrator_v4.py`
+
+#### ToolResult 注入
+
+在 `process()` 的 Agent 执行之后、FusionEngine 调用之前：
+
+```python
+attachment_contexts = req.metadata.get("attachment_contexts", [])
+if attachment_contexts:
+    for ac in attachment_contexts:
+        if isinstance(ac, dict) and ac.get("content"):
+            tool_results.append(ToolResult(
+                source="attachment",
+                data=str(ac["content"])[:4000],
+                confidence=0.95,
+                source_priority=2,
+            ))
+```
+
+附件 ToolResult 参与 FusionEngine 加权融合，与其他 Agent 结果（RAG、Web、Tool 等）平等竞争。
+
+#### 背景材料注入（background_materials）
+
+附件内容同时注入为**背景材料**，在 `_llm_grounded_answer()` 中置于用户问题之前：
+
+```
+用户上传了以下文件作为背景材料，请将材料内容作为回答的知识背景：
+
+--- 背景材料开始 ---
+[文件内容，最多 6000 字符]
+--- 背景材料结束 ---
+
+用户问题：xxx
+
+检索证据：
+[FusionEngine 融合结果]
+
+输出要求：
+...
+```
+
+**全路径覆盖**（3 条答案生成路径均已支持）：
+
+| 路径 | 注入方式 | 截断 |
+|------|---------|------|
+| `process()` → `_llm_grounded_answer()` | `background_materials` 参数 → 直接拼入 LLM 提示词 | 6000 字符 |
+| `_process_multi_question()` → `SequenceFusionEngine` | `SequenceFusionInput.background_materials` → `_generate_answer_for_question()` / `_generate_knowledge_answer()` | 4000 字符 |
+| `_llm_fallback_answer()` | 从 `req.metadata` 提取 → 拼入最终用户消息 | 6000 字符 |
+
+#### FusionEngine 配置
+
+**文件**：`kernel/fusion_engine/engine.py`
+
+```python
+_weights = {
+    ...
+    "attachment": 0.85,  # 高权重：用户上传内容可信度高
+    ...
+}
+
+_source_labels = {
+    ...
+    "attachment": "用户上传文件",
+    ...
+}
+```
+
+权重设计：`llmwiki(1.05) > sql(1.0) > weather/time(0.9) > attachment(0.85) > document(0.72) > web_search/search(0.6) > memory(0.55)`
+
+### 31.6 前端附件 UI
+
+**文件**：`frontend/src/components/ChatInput.tsx`
+
+**交互流程**：
+1. 用户点击输入框附件按钮（Paperclip 图标）→ 触发隐藏的 `<input type="file" multiple>`
+2. 选择文件后 → 文件显示为预览 Chip（文件名 + 大小 + 状态图标）
+3. 状态指示器：`pending`（等待）→ `uploading`（上传中，Loader2 动画）→ `done`（✓ 绿色）→ `error`（✗ 红色）
+4. 每个 Chip 有 X 按钮可移除
+5. 用户发送消息时 → `send()` 先确保会话存在 → 调用 `uploadAttachments(currentSessionId)` 先上传所有 pending 文件 → 将 `attachment_ids` 放入 chat 请求 payload → 发送后清空附件列表
+6. 重复文件检测：上传后若 `is_duplicate=true`，Chip 旁显示黄色 AlertCircle 图标提示内容重复
+
+**API 客户端**（`frontend/src/api/client.ts`）：
+```typescript
+apiUploadAttachment(token, file, sessionId, messageId?, onProgress?)
+  : Promise<AttachmentUploadResponse>   // XHR 上传，含 content_hash + is_duplicate
+apiListAttachments(token, sessionId)
+  : Promise<AttachmentListResponse>     // 列出会话所有附件
+apiDeleteAttachment(token, attachmentId)
+  : Promise<{ attachment_id, status }>  // 软删除附件
+```
+使用 XMLHttpRequest 实现上传进度回调。
+
+### 31.7 PostgreSQL 持久化与 Redis 缓存
+
+**数据库模型**：`infra/storage/models.py` — `Attachment` 类（`attachments` 表）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | String(36) PK | UUID 主键 |
+| `session_id` | String(36) FK→chat_sessions.id | 所属会话（CASCADE 删除，已索引） |
+| `user_id` | String(36) FK→users.id | 上传用户 |
+| `filename` | String(512) | 原始文件名 |
+| `file_size` | Integer | 文件大小（bytes） |
+| `mime_type` | String(255) | MIME 类型 |
+| `file_extension` | String(20) | 文件扩展名 |
+| `content_hash` | String(128) | SHA-256 内容哈希（已索引） |
+| `content_text` | Text | 解析后的文本内容（≤100KB） |
+| `content_summary` | String(512) | 前 200 字符摘要 |
+| `status` | String(20) | active / expired / deleted |
+| `image_base64` | Text | 图片 base64 编码（nullable） |
+| `image_mime` | String(100) | 图片 MIME 类型（nullable） |
+| `message_id` | String(36) | 关联的上传消息 ID |
+| `duplicate_of` | String(36) | 指向同内容的首个附件 ID（nullable） |
+| `state_version` | Integer | 乐观并发版本号 |
+| `created_at` / `updated_at` | DateTime(tz) | 时间戳 |
+
+**索引**：`(session_id)`、`(user_id)`、`(content_hash)`、`(session_id, created_at)`。
+
+**ChatSession 反向关系**：`attachments`（cascade="all, delete-orphan"）。
+
+**双写策略**：
+- 上传时同时写入 PostgreSQL（持久化 + FK 约束 + 去重检测）和 Redis（快速读取缓存）
+- 读取时优先从 PostgreSQL 批量查询（`WHERE session_id=$1 AND id IN $2 AND status='active'`），缺失的 ID 回退到 Redis
+- 删除时软标记 `status='deleted'` 并清除 Redis 缓存
+
+**重复检测**：
+- 上传时计算 `content_hash`（SHA-256），查询同会话同哈希的活跃附件
+- 相同内容也允许上传（每次上传都是新的附件），但记录 `duplicate_of` 字段标记
+- 前端通过 `is_duplicate` 响应字段提示用户
+
+**ConversationState 集成**：
+- `ConversationState.active_attachment_ids: list[str]` — 会话级活跃附件 ID 列表
+- 每次上传后自动追加到 `ConversationState`，跨轮持久化
+- Chat 请求未指定 `attachment_ids` 时，自动加载 `ConversationState` 中的所有活跃附件
+
+**Redis 缓存**（辅助层）：
+- **Key 格式**：`attachment:{attachment_id}:content` / `attachment:{attachment_id}:raw`
+- **TTL**：12 小时（43,200 秒）
+- **容错**：Redis 读取失败时跳过该附件（不阻断聊天请求），日志记录 warning
+
+### 31.8 配置项
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `attachment_upload_enabled` | `True` | 附件上传功能主开关 |
+| `attachment_max_size_mb` | `20` | 最大文件大小（MiB） |
+| `attachment_storage_path` | `/tmp/opentrace_attachments` | 文件临时存储路径 |
+| `attachment_max_chars` | `4000` | 解析后内容最大字符数 |
+| `multimodal_attachment_enabled` | `True` | 多模态图片解析开关 |
+
+### 31.9 测试覆盖
+
+| 测试文件 | 测试数 | 覆盖范围 |
+|---------|--------|---------|
+| `test_attachment_file_parser_contract.py` | 14 | 文件解析器全类型（txt/md/code/csv/json）/截断/header/不支持类型/图片多模态 |
+| `test_attachment_api_kernel_contract.py` | 32 | API 端点/模型字段/扩展名校验/Redis key/FusionEngine 权重标签/background_materials 注入全路径/降级路径/截断/多附件拼接 |
+| `test_attachments_contract.py` | 25 | [L3 Phase 2] Attachment ORM 模型字段/FK 关系/迁移链验证/API 端点完整覆盖/PG 持久化/ConversationState 集成/前端 API 函数签名/防重复追踪 |
+
+### 31.10 架构原则
+
+1. **唯一中枢**：附件不是回答来源，而是「候选认知材料」— LLM 根据背景材料自行判断和回答
+2. **双重注入**：附件既作为 FusionEngine 加权证据参与竞争，又作为背景材料直接注入 LLM 提示词，确保文件内容在回答中充分体现
+3. **安全第一**：扩展名白名单 + MIME 校验 + 大小限制，禁止可执行文件
+4. **全路径覆盖**：正常路径、多问题路径、降级路径均支持背景材料注入
+5. **按需解析**：图片多模态解析仅在 `multimodal_attachment_enabled=true` 时启用
+6. **[L3 Phase 2] 会话级持久化**：附件从临时 Redis 缓存升级为 PostgreSQL 持久化存储（双写），通过 `ConversationState.active_attachment_ids` 跨轮自动生效，用户无需每次重新上传
+7. **[L3 Phase 2] 自动加载**：指定 `attachment_ids` 或自动加载会话所有活跃附件，前后轮无缝衔接
+8. **[L3 Phase 2] 去重检测**：SHA-256 内容哈希检测重复上传，但每次上传都生成新的附件记录（不阻塞），仅标记 `duplicate_of` 字段
+
+---
+
+## 32. NER PII 数据脱敏（NER-based PII Masking）
+
+**核心文件**：`safety/masking/ner_masker.py`（~154 行）
+
+### 32.1 设计动机
+
+在查询进入 LLM 管线之前，自动检测并替换敏感实体为类型化占位符，防止 PII 数据进入第三方 LLM 服务。LLM 回答后逆向还原占位符为原始值。整个过程对用户透明。
+
+### 32.2 覆盖实体类型
+
+9 种中英文实体，全部基于精选正则（无外部 NLP 依赖）：
+
+| 类型 | 覆盖范围 | 正则精度 |
+|------|---------|---------|
+| EMAIL | 标准邮箱格式 | 高 |
+| PHONE_CN | 中国大陆手机号 1[3-9]xxxxxxxxx | 高 |
+| PHONE_INTL | 国际电话号码（含分隔符） | 中 |
+| CREDIT_CARD | 13-19 位数字（含空格/连字符） | 中 |
+| ID_CN | 18 位身份证号（含校验位 X） | 高 |
+| IP_ADDRESS | IPv4 地址 | 高 |
+| PERSON_CN | 中文人名 + 称谓（先生/女士/老师/经理等） | 中 |
+| LOCATION_CN | 中文地名 + 地理后缀（省/市/区/路/大厦等） | 中 |
+| ORG_CN | 中文组织名 + 机构后缀（公司/银行/医院/学校等） | 中 |
+
+### 32.3 可逆脱敏流程
+
+```
+原始查询: "请查张三先生的账户，手机13800138000"
+    │  mask_input()
+    ▼
+脱敏查询: "请查{MASK_PERSON_CN_0}的账户，手机{MASK_PHONE_CN_0}"
+    │  送入 LLM 管线（Plan/Agent/Fusion 全部使用脱敏后文本）
+    ▼
+LLM 回答: "{MASK_PERSON_CN_0}的账户余额为 500 元"
+    │  unmask_output()
+    ▼
+最终回答: "张三先生的账户余额为 500 元"
+```
+
+### 32.4 编排器集成点
+
+1. `orchestrator_v4.py` → `process()` 入口处调用 `mask_input(query)`
+2. 脱敏后的 query 用于所有 Plan/Agent/Fusion 调用
+3. 最终 `answer` 调用 `unmask_output()` 还原
+4. XAI 认知追踪中 `start_trace()` 的 query 参数使用脱敏前原文（审计完整性）
+
+### 32.5 配置
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `KERNEL_NER_MASKING_ENABLED` | `True` | 脱敏主开关 |
+| `KERNEL_NER_MASKING_ENTITY_TYPES` | 全部 9 种 | 逗号分隔的实体类型列表 |
+
+### 32.6 测试覆盖
+
+**文件**：`tests/test_ner_masking_contract.py`（28 个测试）
+
+- 9 种实体类型识别与替换
+- 可逆还原（占位符 → 原始值）
+- 无 PII 文本零影响
+- 边界条件（空字符串、仅占位符文本）
+- `scan_pii()` 审计扫描
+- 配置开关（enabled=false 跳过）
+- 单例模式
+
+详细设计见 [16.2 NER PII 数据脱敏](#162-ner-pii-数据脱敏-phase-3)。
+
+---
+
+## 33. 金丝雀测试与自动回滚（Canary Testing & Auto-Rollback）
+
+**核心文件**：`safety/canary/canary_guard.py`（~327 行）
+
+### 33.1 设计动机
+
+规则引擎支持多版本 YAML 定义（如 `v1`/`v2`），但缺乏安全发布机制。金丝雀测试允许新版本先承载少量流量（如 10%），通过实时指标追踪判断是否衰退，出现问题时自动回滚到稳定版本，避免影响全体用户。
+
+### 33.2 流量分桶
+
+通过 `hash(user_id) % 100 < canary_percentage` 实现确定性分桶：
+- 同一用户始终路由到同一版本（粘性）
+- 10% 金丝雀 = hash 值 0-9 的用户路由到 canary 版本
+- 90% 用户继续使用 baseline 版本
+
+### 33.3 衰退检测
+
+两种触发条件（满足任一即判定衰退）：
+
+| 条件 | 阈值配置 | 说明 |
+|------|---------|------|
+| 错误率超标 | `kernel_canary_error_rate_threshold` (0.10) | canary error_rate > 10% |
+| 延迟倍增 | `kernel_canary_latency_multiplier` (2.0) | canary avg_latency > baseline × 2 |
+
+**冷启动保护**：`kernel_canary_min_samples`（默认 100）——样本不足时不做判断，避免因小样本波动误触发回滚。
+
+### 33.4 自动回滚流程
+
+```
+CanaryGuard.sweep_all()  ← 定时任务 / API 触发
+  └── check_health(rule_id)
+      ├── 样本充足 → 比较 error_rate / latency
+      ├── 已衰退 → auto_rollback_if_degraded()
+      │   ├── 修改 _meta.yml: canary% → 0, baseline% → 100
+      │   ├── grayscale.enabled → false
+      │   ├── canary status → "rolled_back"
+      │   └── 记录回滚事件 + 触发回调
+      └── 未衰退 → 返回 CanaryStatus
+```
+
+### 33.5 集成点
+
+| 位置 | 集成内容 |
+|------|---------|
+| `agents/rule_engine_agent.py` | `execute()` 循环中 `guard.record()` 记录每次执行的 success/latency_ms |
+| `gateway/api_gateway/routers/rules.py` | `POST /rules/{rule_id}/rollback` 手动回滚端点 |
+| `infra/config/settings.py` | 4 个 canary 配置项 |
+
+### 33.6 配置
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `KERNEL_CANARY_AUTO_ROLLBACK_ENABLED` | `True` | 自动回滚主开关 |
+| `KERNEL_CANARY_ERROR_RATE_THRESHOLD` | `0.10` | 错误率阈值 |
+| `KERNEL_CANARY_LATENCY_MULTIPLIER` | `2.0` | 延迟倍数阈值 |
+| `KERNEL_CANARY_MIN_SAMPLES` | `100` | 最小样本数（冷启动保护） |
+
+### 33.7 测试覆盖
+
+**文件**：`tests/test_canary_rollback_contract.py`（34 个测试）
+
+- 模块导入（CanaryGuard/RuleVersionMetrics/CanaryStatus/get_canary_guard）
+- RuleVersionMetrics（error_rate/avg_latency_ms 计算）
+- CanaryStatus dataclass
+- record/health/rollback/history/sweep 全流程
+- 配置项验证
+- RuleEngineAgent 金丝雀接线
+- API rollback 端点
+- 包 `__init__.py`
+
+详细设计见 [16.3 金丝雀测试与自动回滚](#163-金丝雀测试与自动回滚-phase-3)。
+
+---
+
+## 34. 可解释审计 XAI（Explainable Audit XAI）
+
+**核心文件**：`safety/xai/cognitive_trace.py`（~317 行）
+
+### 34.1 设计动机
+
+V4/V5 认知管道包含多个阶段（Plan/Agent/Fusion/Critic），但此前缺少结构化的审计追踪。XAI 模块为每次查询构建完整的决策时间线，记录每个阶段**发生了什么**（数据）和**为什么这样做**（人类可读的推理说明），支持事后审计、调试和可解释性检查。
+
+### 34.2 管道覆盖
+
+```
+Trace Timeline
+──────────────────────────────────────────────►
+PLAN → DST → AGENT → FUSION → CRITIC → REWRITE → FINAL
+ │       │      │        │        │         │        │
+ │       │      │        │        │         │        └─ answer_length, confidence, total_latency_ms
+ │       │      │        │        │         └─ iteration, reason, improvement
+ │       │      │        │        └─ issues_found, corrections[], llm_feedback
+ │       │      │        └─ source_count, merged_length, strategy
+ │       │      └─ agent_type, status, latency_ms, confidence
+ │       └─ resolved_query, confidence
+ └─ agent_types, subtask_count, plan_strategy
+```
+
+### 34.3 事件记录语义
+
+每个事件包含 `reasoning` 字段（中文），直接可用作审计报告：
+
+```json
+{
+  "timestamp": 1714780000.123,
+  "stage": "PLAN",
+  "event_type": "plan_generated",
+  "data": {"plan_id": "p1", "subtasks": 3},
+  "reasoning": "查询被拆分为 3 个子任务 (data/rag/web)，因为用户询问了华东区销量、最新行业报告和竞品动态"
+}
+```
+
+### 34.4 容量与性能
+
+- **事件上限**：单次追踪最大 `MAX_TRACE_EVENTS=500`，超标后静默丢弃
+- **存储上限**：内存中 `MAX_STORED_TRACES=200`，FIFO 淘汰
+- **延迟开销**：<1ms/event（纯内存操作，无 I/O）
+- **内存估算**：200 条追踪 × ~100 事件 × ~500 字节 ≈ 10MB
+
+### 34.5 API 端点
+
+| 方法 | 路径 | 参数 | 说明 |
+|------|------|------|------|
+| GET | `/xai/traces` | `session_id?` `limit?` (1-100) | 列出追踪摘要 |
+| GET | `/xai/traces/{trace_id}` | — | 获取完整追踪（含事件列表 + 管道阶段摘要） |
+| GET | `/xai/sessions/{session_id}/trace` | — | 获取会话最近追踪 |
+
+### 34.6 集成点
+
+| 位置 | 集成内容 |
+|------|---------|
+| `kernel/orchestrator_v4.py` | `start_trace()` → 各阶段 `record_*()` → `finish_trace()` |
+| `gateway/api_gateway/routers/xai.py` | 3 个 API 端点 |
+| `gateway/api_gateway/main.py` | xai router 注册 |
+
+### 34.7 测试覆盖
+
+**文件**：`tests/test_xai_cognitive_trace_contract.py`（34 个测试）
+
+- 模块导入（CognitiveTrace/CognitiveTracer/TraceEvent/get_cognitive_tracer）
+- TraceEvent 创建与默认值
+- start/finish 生命周期
+- 全部录制方法（record_decision/agent_execution/fusion/critic/rewrite/final）
+- 事件顺序保证
+- 管道阶段摘要
+- 列表/过滤/会话最近追踪
+- 空追踪处理
+- 事件上限 capping
+- 编排器接线验证（7 个方法调用断言）
+- API 路由端点验证
+- 包 `__init__.py`
+
+详细设计见 [16.4 可解释审计 XAI](#164-可解释审计-xai-phase-3)。
+
+---
 > 文档版本：SERVICE.md
 >
 > 维护原则：当核心能力、运行链路、配置项、API 端点发生变化时，优先追加或者修改或者更新本文档，使其代表当前项目状态的准确参考。

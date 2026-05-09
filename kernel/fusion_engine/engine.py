@@ -12,6 +12,7 @@ class FusionEngine:
         "time": 0.9,
         "search": 0.6,
         "web_search": 0.6,
+        "attachment": 0.85,
         "memory": 0.55,
     }
 
@@ -40,6 +41,7 @@ class FusionEngine:
             "weather": "天气信息",
             "time": "时间信息",
             "skill": "技能匹配",
+            "attachment": "用户上传文件",
         }
         lines: list[str] = []
         for src, r in picked.items():
@@ -53,6 +55,11 @@ class FusionEngine:
     def run(self, input_data: FusionInput) -> FusionOutput:
         if not input_data.results:
             return FusionOutput(merged_context="", conflicts=[], confidence=0.0)
+
+        # Collect result_refs from all input results
+        all_result_refs: list[dict] = []
+        for r in input_data.results:
+            all_result_refs.extend(r.result_refs)
 
         profile = input_data.adaptive_profile or {}
         profile_name = str(profile.get("name", "balanced") or "balanced")
@@ -110,4 +117,5 @@ class FusionEngine:
             confidence=conf,
             alternate_contexts=alternates[:3],
             evidence_map=evidence_map,
+            result_refs=all_result_refs,
         )

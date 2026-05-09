@@ -1,7 +1,7 @@
-import { useEffect } from 'react'
-import { BarChart3, Database, FileWarning, FileText, Package, type LucideIcon } from 'lucide-react'
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { BarChart3, ChevronDown, Database, FileWarning, FileText, Package, type LucideIcon } from 'lucide-react'
 import Sidebar from '../components/Sidebar'
-import MessageList from '../components/MessageList'
+import MessageList, { type MessageListHandle } from '../components/MessageList'
 import ChatInput from '../components/ChatInput'
 import WelcomeScreen from '../components/WelcomeScreen'
 import { apiGetMessages, apiListConversations } from '../api/client'
@@ -49,6 +49,17 @@ export default function ChatPage() {
   const messages = useChatStore((s) => (activeId ? s.messages[activeId] ?? [] : []))
   const showWelcome = !activeId || messages.length === 0
 
+  const messageListRef = useRef<MessageListHandle>(null)
+  const [isAtBottom, setIsAtBottom] = useState(true)
+
+  const handleScrollStateChange = useCallback((atBottom: boolean) => {
+    setIsAtBottom(atBottom)
+  }, [])
+
+  const scrollToBottom = () => {
+    messageListRef.current?.scrollToBottom()
+  }
+
   useEffect(() => {
     const onSwitch = async (ev: Event) => {
       const ce = ev as CustomEvent<{ conversationId?: string }>
@@ -64,12 +75,12 @@ export default function ChatPage() {
     }
     window.addEventListener('opentrace:switch-conversation', onSwitch as EventListener)
     return () => window.removeEventListener('opentrace:switch-conversation', onSwitch as EventListener)
-  }, [setActiveId, setMessages, token])
+  }, [setActiveId, setMessages, token, setConversations])
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[var(--bg)] text-[var(--text)]">
       <Sidebar />
-      <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.04),transparent_32%),linear-gradient(180deg,var(--bg-secondary),var(--bg))]">
+      <div className="relative flex min-w-0 flex-1 flex-col bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.04),transparent_32%),linear-gradient(180deg,var(--bg-secondary),var(--bg))]">
         {showWelcome ? (
           <div className="relative flex flex-1 flex-col justify-center overflow-hidden px-2 py-10 sm:px-6 animate-fade-in">
             <div className="pointer-events-none absolute inset-0">
@@ -93,8 +104,25 @@ export default function ChatPage() {
                 AI Workflow Console
               </div>
             </div>
-            <MessageList />
-            <ChatInput />
+            <MessageList ref={messageListRef} onScrollStateChange={handleScrollStateChange} />
+            <div className="relative flex-shrink-0">
+              {!isAtBottom && (
+                <div className="pointer-events-none absolute inset-x-0 bottom-full z-30 mx-auto w-full max-w-4xl px-6">
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={scrollToBottom}
+                      aria-label="跳转到最新消息"
+                      title="回到底部"
+                      className="pointer-events-auto inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--text-secondary)]/70 transition-all duration-200 hover:-translate-y-0.5 hover:text-[var(--text)]"
+                    >
+                      <ChevronDown size={16} strokeWidth={2.4} />
+                    </button>
+                  </div>
+                </div>
+              )}
+              <ChatInput />
+            </div>
           </>
         )}
       </div>

@@ -91,7 +91,7 @@ def _schema_sql(source_type: str, schema_name: str) -> tuple[str, str]:
         return tables_sql, cols_sql
     if t == "doris":
         tables_sql = (
-            "SELECT TABLE_NAME AS table_name FROM information_schema.tables "
+            "SELECT TABLE_NAME AS table_name, TABLE_COMMENT AS table_comment FROM information_schema.tables "
             f"WHERE table_schema = '{schema_name}' "
             "ORDER BY TABLE_NAME"
         )
@@ -101,13 +101,34 @@ def _schema_sql(source_type: str, schema_name: str) -> tuple[str, str]:
             "ORDER BY TABLE_NAME, ORDINAL_POSITION"
         )
         return tables_sql, cols_sql
+    if t == "postgres":
+        tables_sql = (
+            "SELECT c.relname AS table_name, "
+            "obj_description(c.oid) AS table_comment "
+            "FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            f"WHERE n.nspname = '{schema_name}' AND c.relkind = 'r' "
+            "ORDER BY c.relname"
+        )
+        cols_sql = (
+            "SELECT c.relname AS table_name, a.attname AS column_name, "
+            "pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type, "
+            "col_description(a.attrelid, a.attnum) AS column_comment "
+            "FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "JOIN pg_attribute a ON a.attrelid = c.oid "
+            f"WHERE n.nspname = '{schema_name}' AND c.relkind = 'r' AND a.attnum > 0 AND NOT a.attisdropped "
+            "ORDER BY c.relname, a.attnum"
+        )
+        return tables_sql, cols_sql
+    # MySQL
     tables_sql = (
-        "SELECT table_name FROM information_schema.tables "
+        "SELECT table_name AS table_name, table_comment AS table_comment FROM information_schema.tables "
         f"WHERE table_schema = '{schema_name}' "
         "ORDER BY table_name"
     )
     cols_sql = (
-        "SELECT table_name, column_name, data_type, column_comment FROM information_schema.columns "
+        "SELECT table_name AS table_name, column_name AS column_name, data_type AS data_type, column_comment AS column_comment FROM information_schema.columns "
         f"WHERE table_schema = '{schema_name}' "
         "ORDER BY table_name, ordinal_position"
     )

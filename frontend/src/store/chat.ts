@@ -106,11 +106,18 @@ interface ChatState {
 function normalizeMessageText(input: unknown): string {
   if (typeof input === 'string') return input
   if (input == null) return ''
-  try {
-    return JSON.stringify(input, null, 2)
-  } catch {
-    return String(input)
+  if (typeof input === 'object' && !Array.isArray(input)) {
+    const obj = input as Record<string, unknown>
+    // Card-rendered types — handled elsewhere, no raw text
+    if (obj.type === 'table' || obj.type === 'time' || obj.type === 'weather') return ''
+    if (obj.type === 'sql' || obj.type === 'tool' || obj.type === 'turn' || obj.type === 'agent_result') return ''
+    if (typeof obj.content === 'string') return obj.content
+    if (typeof obj.text === 'string') return obj.text
+    if (typeof obj.answer === 'string') return obj.answer
+    if (typeof obj.summary === 'string') return obj.summary
   }
+  // Never render raw JSON
+  return ''
 }
 
 function asDoneMessage(raw: any): Message {

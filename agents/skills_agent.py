@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from agents.base import BaseAgent, AgentResult, TaskMessage
+from kernel.result_reference import ResultRef, serialize_refs
 from skills.store.marketplace import marketplace
 
 # Map force_mode to preferred skill_type for prioritized matching
@@ -83,13 +84,17 @@ class SkillsAgent(BaseAgent):
                 )
                 for r in results if r.get("score") is not None
             ]
+            result_refs = serialize_refs([
+                ResultRef(ref_id=f"skill:{r.get('skill_id', '')}", type="skill", title=r.get("name", "skill"), summary=str(r.get("output", ""))[:200], payload=r.get("output") if r.get("output") else {}, source_agent=self.agent_type, message_id=task.task_id)
+                for r in results if r.get("output")
+            ])
             return AgentResult(
                 task_id=task.task_id,
                 agent_type=self.agent_type,
                 status="success",
                 content=content,
                 confidence=max(0.7, best_score),
-                metadata={"matched_skills": len(results), "all_results": results},
+                metadata={"matched_skills": len(results), "all_results": results, "result_refs": result_refs},
                 evidence=evidence,
             )
 

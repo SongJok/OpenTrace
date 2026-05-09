@@ -198,22 +198,46 @@ class DataAgent(BaseAgent):
         # Step 5: Build explanation
         explanation = build_explanation(plan, final_sql, rows, task.query, warnings)
 
+        row_count = len(rows)
+        from kernel.result_reference import ResultRef, serialize_refs
+
+        result_refs = serialize_refs([
+            ResultRef(
+                ref_id=f"sql:{task.task_id}",
+                type="sql",
+                title=f"SQL: {task.query[:60]}",
+                summary=f"Generated SQL ({len(final_sql)} chars, {row_count} rows)",
+                payload={"sql": final_sql, "dialect": str(dialect), "row_count": row_count},
+                source_agent="data",
+                message_id=task.task_id,
+            ),
+            ResultRef(
+                ref_id=f"table:{task.task_id}",
+                type="table",
+                title=f"Results: {task.query[:60]}",
+                summary=f"{row_count} rows returned",
+                payload={"rows_preview": rows[:5], "row_count": row_count},
+                source_agent="data",
+                message_id=task.task_id,
+            ),
+        ])
         return AgentResult(
             task_id=task.task_id,
             agent_type=self.agent_type,
             status="success",
-            content=f"data rows={len(rows)}",
+            content=f"data rows={row_count}",
             confidence=confidence,
             metadata={
                 "sql": final_sql,
                 "rows": rows[:20],
-                "row_count": len(rows),
+                "row_count": row_count,
                 "data_source_id": data_source_id,
                 "mode": "pipeline",
                 "plan_json": plan.to_json(),
                 "explanation": format_explanation(explanation, include_sql=False),
                 "tables_used": explanation.tables_used,
                 "elapsed_ms": round(elapsed_ms, 1),
+                "result_refs": result_refs,
             },
             agent_trace={
                 "agent_type": self.agent_type,
@@ -303,6 +327,28 @@ class DataAgent(BaseAgent):
         elapsed_ms = (time.monotonic() - start_ts) * 1000
         confidence = self._compute_confidence(rows, semantic_ctx, mode="llm_direct")
 
+        from kernel.result_reference import ResultRef, serialize_refs
+
+        result_refs = serialize_refs([
+            ResultRef(
+                ref_id=f"sql:{task.task_id}",
+                type="sql",
+                title=f"SQL: {task.query[:60]}",
+                summary=f"Generated SQL ({len(final_sql)} chars, {len(rows)} rows)",
+                payload={"sql": final_sql, "dialect": str(dialect), "row_count": len(rows)},
+                source_agent="data",
+                message_id=task.task_id,
+            ),
+            ResultRef(
+                ref_id=f"table:{task.task_id}",
+                type="table",
+                title=f"Results: {task.query[:60]}",
+                summary=f"{len(rows)} rows returned",
+                payload={"rows_preview": rows[:5], "row_count": len(rows)},
+                source_agent="data",
+                message_id=task.task_id,
+            ),
+        ])
         meta: dict[str, Any] = {
             "sql": final_sql,
             "rows": rows[:20],
@@ -312,6 +358,7 @@ class DataAgent(BaseAgent):
             "ranked_candidates": len(candidates),
             "semantic_mappings": len(semantic_ctx.dimension_mappings),
             "elapsed_ms": round(elapsed_ms, 1),
+            "result_refs": result_refs,
         }
         if fallback_reason:
             meta["fallback_reason"] = fallback_reason
@@ -431,13 +478,36 @@ class DataAgent(BaseAgent):
     ) -> AgentResult:
         dsn = self._build_dsn(ds)
         rows = await SQLExecutor_from_executor().run_on_dsn(dsn, safe_sql)
+        row_count = len(rows)
+        from kernel.result_reference import ResultRef, serialize_refs
+
+        result_refs = serialize_refs([
+            ResultRef(
+                ref_id=f"sql:{task.task_id}",
+                type="sql",
+                title=f"SQL: {task.query[:60]}",
+                summary=f"Generated SQL ({len(safe_sql)} chars, {row_count} rows)",
+                payload={"sql": safe_sql, "dialect": str(dialect), "row_count": row_count},
+                source_agent="data",
+                message_id=task.task_id,
+            ),
+            ResultRef(
+                ref_id=f"table:{task.task_id}",
+                type="table",
+                title=f"Results: {task.query[:60]}",
+                summary=f"{row_count} rows returned",
+                payload={"rows_preview": rows[:5], "row_count": row_count},
+                source_agent="data",
+                message_id=task.task_id,
+            ),
+        ])
         return AgentResult(
             task_id=task.task_id,
             agent_type=self.agent_type,
             status="success",
-            content=f"data rows={len(rows)}",
+            content=f"data rows={row_count}",
             confidence=0.95,
-            metadata={"sql": safe_sql, "rows": rows[:20], "row_count": len(rows), "data_source_id": data_source_id, **meta},
+            metadata={"sql": safe_sql, "rows": rows[:20], "row_count": row_count, "data_source_id": data_source_id, "result_refs": result_refs, **meta},
             evidence=[
                 self._make_evidence(
                     source=f"sql:{data_source_id}",

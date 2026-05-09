@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gateway.api_gateway.routers.auth import get_current_user
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
-from infra.storage.models import ChatSession, Feedback, TraceLog, User
+from infra.storage.models import Attachment, ChatSession, ConversationState, Feedback, ReasoningTrace, ToolStat, TraceLog, User
 
 router = APIRouter()
 
@@ -282,6 +282,49 @@ async def delete_conversation(
     session = result.scalar_one_or_none()
     if not session:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation not found")
+
+    # Explicitly delete ConversationState first to avoid FK constraint issues
+    # with passive_deletes=True on the ChatSession.conversation_state relationship.
+    cs_result = await db.execute(
+        select(ConversationState).where(ConversationState.session_id == conversation_id)
+    )
+    cs = cs_result.scalar_one_or_none()
+    if cs:
+        await db.delete(cs)
+        await db.flush()
+
+    # Delete attachments explicitly to avoid FK issues if CASCADE wasn't applied in migration
+    att_result = await db.execute(
+        select(Attachment).where(Attachment.session_id == conversation_id)
+    )
+    attachments = att_result.scalars().all()
+    for att in attachments:
+        await db.delete(att)
+    if attachments:
+        await db.flush()
+
+    # Delete TraceLog entries explicitly to avoid FK constraint issues
+    # if CASCADE wasn't applied in migration
+    trace_result = await db.execute(
+        select(TraceLog).where(TraceLog.session_id == conversation_id)
+    )
+    traces = trace_result.scalars().all()
+    for trace in traces:
+        await db.delete(trace)
+    if traces:
+        await db.flush()
+
+    # Clean up rows that reference session_id without FK constraints
+    for model in (ReasoningTrace, ToolStat, Feedback):
+        orphan_result = await db.execute(
+            select(model).where(model.session_id == conversation_id)
+        )
+        for row in orphan_result.scalars().all():
+            await db.delete(row)
+    # Flush after deleting orphan rows if any were found
+    # (we already flushed after TraceLog/Attachment, so this is defensive)
+    await db.flush()
+
     await db.delete(session)
     await db.commit()
     return {"deleted": True}

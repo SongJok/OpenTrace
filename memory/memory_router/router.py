@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from infra.config.settings import settings
 from infra.metadata.unified_metadata import make_memory_metadata
 from infra.observability.logger import get_logger
 from infra.observability.metrics import MEMORY_HITS
@@ -124,6 +125,34 @@ class MemoryRouter:
                         metadata=meta,
                     )
                 )
+
+            # ── Feature ③: Value scoring with recency + feedback ──
+            if bool(getattr(settings, "kernel_memory_value_scoring_enabled", True)):
+                try:
+                    from memory.value_scorer import get_value_scorer
+                    scorer = get_value_scorer()
+                    # Use a default current turn (memory router doesn't track turns directly)
+                    # Feedback scores would come from Redis, use 0.0 as default
+                    for chunk in results:
+                        base = chunk.score
+                        components = scorer.compute_score(
+                            base_score=base,
+                            turn_number=0,   # Not tracked here, neutral recency
+                            current_turn=0,
+                            feedback_score=0.0,  # Will be enriched from Redis in EvolutionMemoryRouter
+                        )
+                        chunk.score = components.final_score
+                        chunk.metadata["value_components"] = {
+                            "base": components.base_score,
+                            "recency": components.recency_score,
+                            "feedback": components.feedback_score,
+                            "final": components.final_score,
+                        }
+                    # Re-sort by final score
+                    results.sort(key=lambda c: c.score, reverse=True)
+                except Exception:
+                    pass  # Degrade gracefully if scorer unavailable
+            # ── End value scoring ────────────────────────────
 
             span.set_attribute("memory.hits", len(results))
             return results

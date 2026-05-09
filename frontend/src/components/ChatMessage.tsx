@@ -13,6 +13,150 @@ import DagTimeline, { type DagTimelineItem } from './DagTimeline'
 import { CardShell } from './CardShell'
 import { DarkPanel } from './ui/DarkPanel'
 import { t } from '../i18n'
+import DataTableChart from './DataTableChart'
+
+function stripJsonBlocks(content: string): string {
+  let result = content
+  // Remove fenced JSON code blocks
+  result = result.replace(/```json\s*[\s\S]*?```/gi, '')
+  // Remove fenced code blocks that look like JSON
+  result = result.replace(/```\s*(\{[\s\S]*?\}|\[[\s\S]*?\])\s*```/g, '')
+  // Remove leading standalone JSON object/array
+  const trimmed = result.trim()
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    let depth = 0
+    let end = 0
+    for (let i = 0; i < trimmed.length; i++) {
+      const ch = trimmed[i]
+      if (ch === '{' || ch === '[') depth++
+      else if (ch === '}' || ch === ']') {
+        depth--
+        if (depth === 0) { end = i + 1; break }
+      }
+    }
+    if (end > 0) {
+      result = trimmed.substring(end).trim()
+    }
+  }
+  // Remove trailing JSON array of objects (e.g. [{"col":"val"}])
+  result = _stripTrailingJsonArray(result)
+  // Remove inline standalone JSON objects mid-text (e.g. {"type":"turn",...})
+  result = _stripInlineJsonObjects(result)
+  return result.trim()
+}
+
+function _isStandaloneJson(s: string): boolean {
+  const t = s.trim()
+  if (!(t.startsWith('{') || t.startsWith('['))) return false
+  try {
+    JSON.parse(t)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function _stripInlineJsonObjects(content: string): string {
+  // Find balanced JSON objects/arrays that appear mid-text on their own lines
+  // and remove them if they parse as valid JSON
+  let result = content
+  // Pattern: a line (or multi-line block bounded by balanced braces/brackets) that is valid JSON
+  const lines = result.split('\n')
+  const out: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i].trim()
+    if ((line.startsWith('{') || line.startsWith('[')) && _isStandaloneJson(line)) {
+      // Check if it's a single-line JSON value
+      try {
+        const parsed = JSON.parse(line)
+        if (parsed && typeof parsed === 'object') {
+          // It's a standalone JSON object/array — skip it
+          i++
+          continue
+        }
+      } catch {}
+    }
+    // Check for multi-line JSON block starting on this line
+    if (line.startsWith('{') || line.startsWith('[')) {
+      let depth = 0
+      let j = i
+      let found = false
+      const blockLines: string[] = []
+      for (; j < lines.length; j++) {
+        blockLines.push(lines[j])
+        for (let k = 0; k < lines[j].length; k++) {
+          const ch = lines[j][k]
+          if (ch === '{' || ch === '[') depth++
+          else if (ch === '}' || ch === ']') {
+            depth--
+            if (depth === 0 && j > i) { found = true; break }
+          }
+        }
+        if (found) break
+      }
+      if (found) {
+        const candidate = blockLines.join('\n')
+        try {
+          JSON.parse(candidate)
+          // Valid JSON block — skip all these lines
+          i = j + 1
+          continue
+        } catch {}
+      }
+    }
+    out.push(lines[i])
+    i++
+  }
+  return out.join('\n')
+}
+
+function _stripTrailingJsonArray(content: string): string {
+  const trimmed = content.trimEnd()
+  if (!trimmed.endsWith(']')) return trimmed
+  let depth = 0
+  let start = -1
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    if (trimmed[i] === ']') depth++
+    else if (trimmed[i] === '[') {
+      depth--
+      if (depth === 0) { start = i; break }
+    }
+  }
+  if (start >= 0) {
+    const candidate = trimmed.substring(start)
+    try {
+      const parsed = JSON.parse(candidate)
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((item: any) => typeof item === 'object' && item !== null && !Array.isArray(item))) {
+        return trimmed.substring(0, start).trim()
+      }
+    } catch { /* not valid JSON */ }
+  }
+  return trimmed
+}
+
+function _extractBalancedJsonArray(content: string): string | null {
+  const trimmed = content.trim()
+  // Walk backward from end to find a balanced [...] pair
+  if (!trimmed.endsWith(']')) return null
+  let depth = 0
+  let start = -1
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    if (trimmed[i] === ']') depth++
+    else if (trimmed[i] === '[') {
+      depth--
+      if (depth === 0) { start = i; break }
+    }
+  }
+  if (start >= 0) {
+    const candidate = trimmed.substring(start)
+    try {
+      JSON.parse(candidate)
+      return candidate
+    } catch { /* skip */ }
+  }
+  return null
+}
 
 function parseEpistemicMeta(messageText: string): { level?: string; issues: string[] } {
   const match = messageText.match(/^([📊📄🔗🧠💡⚠️])\s+/)
@@ -53,7 +197,7 @@ function levelBadge(level?: string) {
   return <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ${cls}`}>{level}</span>
 }
 
-function tryParseToolCard(content: string): { type: 'time' | 'weather' | 'table'; data: any } | null {
+function tryParseToolCard(content: string): { type: 'time' | 'weather' | 'table' | 'data' | 'agent'; data: any } | null {
   const candidates = [content.trim()]
 
   const fenceMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/i)
@@ -61,6 +205,27 @@ function tryParseToolCard(content: string): { type: 'time' | 'weather' | 'table'
 
   const objectMatch = content.match(/\{[\s\S]*\}/)
   if (objectMatch?.[0]) candidates.unshift(objectMatch[0].trim())
+
+  // Extract the first balanced JSON object — robust against brace chars
+  // appearing later in natural-language text.
+  const trimmed = content.trim()
+  if (trimmed.startsWith('{')) {
+    let depth = 0
+    let end = 0
+    for (let i = 0; i < trimmed.length; i++) {
+      if (trimmed[i] === '{') depth++
+      else if (trimmed[i] === '}') {
+        depth--
+        if (depth === 0) { end = i + 1; break }
+      }
+    }
+    if (end > 0) {
+      const balanced = trimmed.substring(0, end)
+      if (balanced !== candidates[0] && balanced !== candidates[1]) {
+        candidates.unshift(balanced)
+      }
+    }
+  }
 
   const normalizeWeather = (parsed: any) => {
     const current = parsed?.current && typeof parsed.current === 'object' ? parsed.current : {}
@@ -106,14 +271,40 @@ function tryParseToolCard(content: string): { type: 'time' | 'weather' | 'table'
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(candidate)
+      // Detect raw result arrays of plain objects → table
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((item: any) => typeof item === 'object' && item !== null && !Array.isArray(item))) {
+        const columns = Object.keys(parsed[0])
+        return { type: 'table', data: { type: 'table', columns, rows: parsed } }
+      }
       if (parsed && typeof parsed === 'object') {
         if (parsed.type === 'time' || parsed.time || parsed.timestamp || parsed.displayTime) return { type: 'time', data: parsed }
         if ((parsed.city || parsed.location || parsed.current) && (parsed.temperature !== undefined || parsed.weather || parsed.current)) return { type: 'weather', data: normalizeWeather(parsed) }
         if (parsed.type === 'table' && Array.isArray(parsed.rows)) return { type: 'table', data: parsed }
+        // Data query results: objects with sql field
+        if (typeof parsed.sql === 'string' && parsed.sql.trim()) {
+          const rows = Array.isArray(parsed.rows) ? parsed.rows : []
+          return { type: 'data', data: { sql: parsed.sql, rows, row_count: parsed.row_count ?? rows.length } }
+        }
+        // Tool/agent results: objects with agent_type or tool_name
+        if (typeof parsed.agent_type === 'string') return { type: 'agent', data: parsed }
+        if (typeof parsed.tool_name === 'string') return { type: 'agent', data: parsed }
+        if (parsed.type === 'turn' || parsed.type === 'agent_result') return { type: 'agent', data: parsed }
       }
     } catch {
       // ignore non-json content
     }
+  }
+
+  // Detect raw JSON array of objects as table (e.g. [{"col":"val"}, ...])
+  const arrayCandidate = _extractBalancedJsonArray(content)
+  if (arrayCandidate) {
+    try {
+      const parsed = JSON.parse(arrayCandidate)
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((item: any) => typeof item === 'object' && item !== null && !Array.isArray(item))) {
+        const columns = Object.keys(parsed[0])
+        return { type: 'table', data: { type: 'table', columns, rows: parsed } }
+      }
+    } catch { /* skip */ }
   }
 
   const looseTimeMatch = content.match(/(?:current\s+time|\btime\b|当前时间|现在时间)[:：\s\-]*([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)/i)
@@ -225,81 +416,109 @@ function WeatherCard({ data }: { data: any }) {
   const sunset = formatUnixTime(data?.sunset)
   const condition = String(data?.weather || data?.current?.condition || '天气情况未知')
   const summary = String(data?.summary || data?.overview || `${data?.city || '该地区'}天气信息如下。`)
+
+  const weatherEmoji = (() => {
+    const text = `${condition} ${summary}`.toLowerCase()
+    if (/(雷|暴雨|storm|thunder)/.test(text)) return '⛈️'
+    if (/(雪|冰|霜|hail|sleet)/.test(text)) return '🌨️'
+    if (/(雨|阵雨|drizzle|rain)/.test(text)) return '🌧️'
+    if (/(雾|霾|haze|fog|smog)/.test(text)) return '🌫️'
+    if (/(云|阴|overcast|cloud)/.test(text)) return '☁️'
+    if (/(晴|clear|sunny|sun)/.test(text)) return '☀️'
+    return '🌤️'
+  })()
+
+  const llmHighlights = [
+    data?.overview && { label: '总体概述', value: data.overview },
+    data?.feels_like_text && { label: '体感', value: data.feels_like_text },
+    data?.outfit_advice && { label: '穿衣建议', value: data.outfit_advice },
+    data?.travel_advice && { label: '出行建议', value: data.travel_advice },
+    data?.activity_suggestion && { label: '活动建议', value: data.activity_suggestion },
+    data?.risk_alert && { label: '提醒', value: data.risk_alert },
+  ].filter(Boolean) as Array<{ label: string; value: string }>
+
+  const recommendation = data?.keep_suggestion
+    || data?.llm_recommendation
+    || [
+      temperature !== undefined && temperature !== null ? `当前气温 ${temperature}°C` : '当前气温暂未获取',
+      feelsLike !== undefined && feelsLike !== null ? `体感约 ${feelsLike}°C` : null,
+      humidity !== undefined && humidity !== null ? `湿度 ${humidity}%` : null,
+      windSpeed !== undefined && windSpeed !== null ? `风速 ${windSpeed} m/s` : null,
+    ].filter(Boolean).join('，')
+
   return (
     <CardShell
       eyebrow="WEATHER"
       title={String(data?.city || '天气')}
       meta={summary}
-      accent="from-sky-500/70 via-cyan-400/45 to-emerald-300/35"
+      accent="from-sky-500/45 via-cyan-400/25 to-emerald-300/20"
     >
       <div className="space-y-4">
-        <div className="rounded-[28px] border border-white/10 bg-gradient-to-br from-sky-500/20 via-cyan-400/10 to-emerald-400/10 p-4 shadow-inner shadow-cyan-950/20">
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-4">
           <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="text-[11px] uppercase tracking-[0.24em] text-white/45">当前天气</div>
-              <div className="mt-2 text-2xl font-semibold text-white/95">{condition}</div>
-              <div className="mt-1 text-sm text-white/65">{summary}</div>
+            <div className="min-w-0">
+              <div className="inline-flex items-center rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.22em] text-[var(--text-secondary)]">
+                当前天气
+              </div>
+              <div className="mt-2 flex items-center gap-2 text-[22px] font-semibold leading-tight text-[var(--text)]">
+                <span aria-hidden="true">{weatherEmoji}</span>
+                <span className="truncate">{condition}</span>
+              </div>
+              <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">{summary}</p>
             </div>
-            <div className="rounded-3xl border border-white/10 bg-black/18 px-4 py-3 text-right">
-              <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">气温</div>
-              <div className="mt-1 text-4xl font-semibold text-white/95">{temperature ?? '—'}<span className="text-xl">{temperature !== undefined && temperature !== null ? '°C' : ''}</span></div>
-              {feelsLike !== undefined && feelsLike !== null ? <div className="mt-1 text-xs text-white/60">体感 {feelsLike}°C</div> : null}
+            <div className="flex-shrink-0 rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-right">
+              <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">气温</div>
+              <div className="mt-1 text-4xl font-semibold leading-none text-[var(--text)]">
+                {temperature ?? '—'}
+                <span className="text-xl">{temperature !== undefined && temperature !== null ? '°C' : ''}</span>
+              </div>
+              {feelsLike !== undefined && feelsLike !== null ? <div className="mt-1 text-xs text-[var(--text-secondary)]">体感 {feelsLike}°C</div> : null}
             </div>
           </div>
         </div>
+
         <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
-          <div className="rounded-2xl bg-white/6 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">湿度</div>
-            <div className="mt-1 text-white/88">{humidity ?? '-'}{humidity !== undefined && humidity !== null ? '%' : ''}</div>
-          </div>
-          <div className="rounded-2xl bg-white/6 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">气压</div>
-            <div className="mt-1 text-white/88">{pressure ?? '-'}{pressure !== undefined && pressure !== null ? ' hPa' : ''}</div>
-          </div>
-          <div className="rounded-2xl bg-white/6 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">风速</div>
-            <div className="mt-1 text-white/88">{windSpeed ?? '-'}{windSpeed ? ' m/s' : ''}</div>
-          </div>
-          <div className="rounded-2xl bg-white/6 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">风向</div>
-            <div className="mt-1 text-white/88">{windDirection || '-'}</div>
-          </div>
+          {[
+            ['湿度', humidity, '%'],
+            ['气压', pressure, ' hPa'],
+            ['风速', windSpeed, ' m/s'],
+            ['风向', windDirection || '-', ''],
+            ['云量', cloudiness, '%'],
+            ['可见度', visibility, ' m'],
+            ['日出', sunrise || '-', ''],
+            ['日落', sunset || '-', ''],
+          ].map(([label, value, unit]) => (
+            <div key={String(label)} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5">
+              <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">{label}</div>
+              <div className="mt-1 text-[var(--text)]">{value ?? '-'}{value !== undefined && value !== null && value !== '-' ? unit : ''}</div>
+            </div>
+          ))}
         </div>
-        <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
-          <div className="rounded-2xl bg-white/6 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">云量</div>
-            <div className="mt-1 text-white/88">{cloudiness ?? '-'}{cloudiness !== undefined && cloudiness !== null ? '%' : ''}</div>
+
+        {llmHighlights.length > 0 ? (
+          <div className="grid gap-3 md:grid-cols-2">
+            {llmHighlights.map((item) => (
+              <div key={item.label} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm leading-6 text-[var(--text)]">
+                <span className="text-[var(--text-secondary)]">{item.label}：</span>
+                <span>{item.value}</span>
+              </div>
+            ))}
           </div>
-          <div className="rounded-2xl bg-white/6 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">可见度</div>
-            <div className="mt-1 text-white/88">{visibility ?? '-'}{visibility !== undefined && visibility !== null ? ' m' : ''}</div>
-          </div>
-          <div className="rounded-2xl bg-white/6 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">日出</div>
-            <div className="mt-1 text-white/88">{sunrise || '-'}</div>
-          </div>
-          <div className="rounded-2xl bg-white/6 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">日落</div>
-            <div className="mt-1 text-white/88">{sunset || '-'}</div>
-          </div>
+        ) : null}
+
+        <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm leading-6 text-[var(--text)]">
+          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">推荐补充</div>
+          <div className="mt-1">{recommendation}</div>
         </div>
-        <div className="grid gap-3 md:grid-cols-2">
-          {data?.overview ? <div className="rounded-2xl bg-white/6 px-4 py-3 text-sm text-white/88"><span className="text-white/55">总体概述：</span>{data.overview}</div> : null}
-          {data?.feels_like_text ? <div className="rounded-2xl bg-white/6 px-4 py-3 text-sm text-white/88"><span className="text-white/55">体感：</span>{data.feels_like_text}</div> : null}
-          {data?.outfit_advice ? <div className="rounded-2xl bg-white/6 px-4 py-3 text-sm text-white/88"><span className="text-white/55">穿衣建议：</span>{data.outfit_advice}</div> : null}
-          {data?.travel_advice ? <div className="rounded-2xl bg-white/6 px-4 py-3 text-sm text-white/88"><span className="text-white/55">出行建议：</span>{data.travel_advice}</div> : null}
-          {data?.activity_suggestion ? <div className="rounded-2xl bg-white/6 px-4 py-3 text-sm text-white/88"><span className="text-white/55">活动建议：</span>{data.activity_suggestion}</div> : null}
-          {data?.risk_alert ? <div className="rounded-2xl bg-white/6 px-4 py-3 text-sm text-white/88"><span className="text-white/55">提醒：</span>{data.risk_alert}</div> : null}
-        </div>
-        {data?.keep_suggestion ? <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-50">{data.keep_suggestion}</div> : null}
+
         {Array.isArray(data?.forecast) && data.forecast.length > 0 ? (
-          <div className="rounded-2xl border border-white/10 bg-black/18 p-3">
-            <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">未来预报</div>
-            <div className="mt-2 space-y-2 text-sm text-white/86">
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-3">
+            <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">未来预报</div>
+            <div className="mt-2 space-y-2 text-sm">
               {data.forecast.slice(0, 3).map((item: any, idx: number) => (
-                <div key={`${item.date || idx}`} className="flex items-center justify-between gap-3 rounded-xl bg-white/5 px-3 py-2">
-                  <span className="whitespace-nowrap text-white/72">{String(item.date || `第${idx + 1}天`)}</span>
-                  <span className="text-right">{[item.condition, item.low !== undefined || item.high !== undefined ? `${item.low ?? '-'}℃ ~ ${item.high ?? '-'}℃` : ''].filter(Boolean).join('，')}</span>
+                <div key={`${item.date || idx}`} className="flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2">
+                  <span className="whitespace-nowrap text-[var(--text-secondary)]">{String(item.date || `第${idx + 1}天`)}</span>
+                  <span className="text-right text-[var(--text)]">{[item.condition, item.low !== undefined || item.high !== undefined ? `${item.low ?? '-'}℃ ~ ${item.high ?? '-'}℃` : ''].filter(Boolean).join('，')}</span>
                 </div>
               ))}
             </div>
@@ -500,7 +719,10 @@ function DecisionTraceCard({ executionGraph, annotations }: { executionGraph: Ex
 }
 
 function StreamingMessage({ text }: { text: string }) {
-  const visibleText = text || ' '
+  const stripped = useMemo(() => {
+    try { return stripJsonBlocks(text) } catch { return text }
+  }, [text])
+  const visibleText = stripped || ' '
   return (
     <div className="flex items-start gap-3">
       <span className="mt-2 inline-block h-2.5 w-2.5 flex-shrink-0 rounded-full bg-black/90 animate-pulse shadow-[0_0_0_1px_rgba(0,0,0,0.08)]" aria-hidden="true" />
@@ -659,6 +881,7 @@ function FinalMessage({
   const multiQuestionCards = useMemo(() => {
     try { return parseMultiQuestionCards(content) } catch { return null }
   }, [content])
+  const displayContent = useMemo(() => stripJsonBlocks(content), [content])
 
   const dagTimeline = useMemo<DagTimelineItem[]>(() => {
     const nodes = Array.isArray(executionGraph?.nodes) ? executionGraph.nodes : []
@@ -683,38 +906,43 @@ function FinalMessage({
         <div className="space-y-2">
           {toolCard?.type === 'time' ? <TimeCard data={toolCard.data} /> : null}
           {toolCard?.type === 'weather' ? <WeatherCard data={toolCard.data} /> : null}
-          {toolCard?.type === 'table' ? (
+          {toolCard?.type === 'table' ? <DataTableChart data={toolCard.data} /> : null}
+          {toolCard?.type === 'data' ? (
             <CardShell
-              eyebrow="DATA"
-              title={toolCard.data.title || 'SQL 查询结果'}
-              meta={toolCard.data.summary || undefined}
-              accent="from-violet-500/65 via-fuchsia-400/40 to-rose-300/35"
+              eyebrow="DATA QUERY"
+              title="查询结果"
+              meta={toolCard.data.row_count !== undefined ? `${toolCard.data.row_count} 行` : undefined}
+              accent="from-blue-500/55 via-cyan-400/35 to-indigo-300/25"
             >
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-white/50">
-                <div>{typeof toolCard.data.rowCount === 'number' ? `${toolCard.data.rowCount} 行` : '结果表'}</div>
-                <div>{typeof toolCard.data.tableCount === 'number' ? `${toolCard.data.tableCount} 表` : ''}</div>
-              </div>
-              <div className="mt-3 overflow-x-auto rounded-2xl border border-white/10 bg-black/20">
-                <table className="min-w-full text-xs">
-                  <thead className="sticky top-0 bg-white/8 text-white/70 backdrop-blur">
-                    <tr>
-                      {(toolCard.data.columns || []).map((col: string) => (
-                        <th key={col} className="px-3 py-2 text-left font-medium whitespace-nowrap">{col}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(toolCard.data.rows || []).slice(0, 20).map((row: Record<string, any>, idx: number) => (
-                      <tr key={idx} className="border-t border-white/8 odd:bg-white/[0.03] even:bg-white/[0.015]">
-                        {(toolCard.data.columns || []).map((col: string) => (
-                          <td key={col} className="px-3 py-2 align-top text-white/85 whitespace-pre-wrap break-words">{String(row?.[col] ?? '')}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              {toolCard.data.sql ? (
+                <div className="mb-3">
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-secondary)] mb-1">SQL</div>
+                  <pre className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs overflow-x-auto"><code>{toolCard.data.sql}</code></pre>
+                </div>
+              ) : null}
+              {Array.isArray(toolCard.data.rows) && toolCard.data.rows.length > 0 ? (
+                <DataTableChart data={{ columns: Object.keys(toolCard.data.rows[0] || {}), rows: toolCard.data.rows }} />
+              ) : null}
             </CardShell>
+          ) : null}
+          {toolCard?.type === 'agent' ? (
+            <CardShell
+              eyebrow={String(toolCard.data.agent_type || toolCard.data.type || 'AGENT')}
+              title={String(toolCard.data.title || toolCard.data.agent_type || '执行结果')}
+              meta={typeof toolCard.data.confidence === 'number' ? `置信度 ${Math.round(toolCard.data.confidence * 100)}%` : undefined}
+              accent="from-purple-500/55 via-violet-400/35 to-fuchsia-300/25"
+            >
+              {typeof toolCard.data.content === 'string' && toolCard.data.content ? (
+                <MarkdownMessage content={toolCard.data.content} />
+              ) : toolCard.data.summary ? (
+                <p className="text-sm text-[var(--text-secondary)]">{String(toolCard.data.summary)}</p>
+              ) : toolCard.data.output ? (
+                <pre className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs overflow-x-auto"><code>{typeof toolCard.data.output === 'string' ? toolCard.data.output : JSON.stringify(toolCard.data.output, null, 2)}</code></pre>
+              ) : null}
+            </CardShell>
+          ) : null}
+          {displayContent ? (
+            <MarkdownMessage content={displayContent} />
           ) : null}
         </div>
       ) : null}
@@ -731,153 +959,125 @@ function FinalMessage({
             <button onClick={() => void saveAssistantEdit()} className="px-2 py-1 rounded bg-[var(--accent)] text-white">保存答案</button>
           </div>
         </div>
+      ) : showFlowCards && toolCard ? (
+        displayContent ? <MarkdownMessage content={displayContent} /> : null
       ) : multiQuestionCards ? (
         <MultiQuestionCards cards={multiQuestionCards} />
       ) : toolCard?.type === 'time' ? (
-        <TimeCard data={toolCard.data} />
+        <div className="space-y-2">
+          <TimeCard data={toolCard.data} />
+          {displayContent ? <MarkdownMessage content={displayContent} /> : null}
+        </div>
       ) : toolCard?.type === 'weather' ? (
-        <CardShell
-          eyebrow="WEATHER"
-          title={String(toolCard.data.city || '天气')}
-          meta={toolCard.data.summary ? String(toolCard.data.summary) : formatCountLabel('温度', `${toolCard.data.temperature ?? '-'}°C`) || undefined}
-          accent="from-sky-500/70 via-cyan-400/45 to-emerald-300/35"
-        >
+        <div className="space-y-2">
+          <CardShell
+            eyebrow="WEATHER"
+            title={String(toolCard.data.city || '天气')}
+            meta={toolCard.data.summary ? String(toolCard.data.summary) : formatCountLabel('温度', `${toolCard.data.temperature ?? '-'}°C`) || undefined}
+            accent="from-sky-500/55 via-cyan-400/35 to-emerald-300/25"
+          >
           <div className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-[1.2fr_0.8fr]">
-              <div className="rounded-3xl border border-white/10 bg-white/6 p-4 shadow-[0_12px_40px_rgba(0,0,0,0.16)]">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <div className="text-[11px] uppercase tracking-[0.24em] text-white/42">实时天气</div>
-                    <div className="mt-1 text-xl font-semibold text-white/96">{toolCard.data.city || '天气'}</div>
-                    <div className="mt-2 text-sm text-white/72">{toolCard.data.summary || `${toolCard.data.city || '该地区'}天气信息如下。`}</div>
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-secondary)]">实时天气</div>
+                  <div className="mt-2 flex items-center gap-2 text-[22px] font-semibold leading-tight text-[var(--text)]">
+                    <span aria-hidden="true">{(() => {
+                      const text = `${String(toolCard.data.weather || '')} ${String(toolCard.data.summary || '')}`.toLowerCase()
+                      if (/(雷|暴雨|storm|thunder)/.test(text)) return '⛈️'
+                      if (/(雪|冰|霜|hail|sleet)/.test(text)) return '🌨️'
+                      if (/(雨|阵雨|drizzle|rain)/.test(text)) return '🌧️'
+                      if (/(雾|霾|haze|fog|smog)/.test(text)) return '🌫️'
+                      if (/(云|阴|overcast|cloud)/.test(text)) return '☁️'
+                      if (/(晴|clear|sunny|sun)/.test(text)) return '☀️'
+                      return '🌤️'
+                    })()}</span>
+                    <span className="truncate">{toolCard.data.weather || '天气情况未知'}</span>
                   </div>
-                  <div className="rounded-2xl bg-black/20 px-4 py-3 text-right">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">温度</div>
-                    <div className="text-3xl font-semibold text-white">{toolCard.data.temperature ?? '-'}</div>
-                    <div className="text-xs text-white/55">{toolCard.data.temperature !== undefined && toolCard.data.temperature !== null ? '°C' : ''}</div>
-                  </div>
+                  <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">{toolCard.data.summary || `${toolCard.data.city || '该地区'}天气信息如下。`}</p>
                 </div>
-                <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-3">
-                  <div className="rounded-2xl bg-black/16 px-3 py-2">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">天气</div>
-                    <div className="mt-1 text-white/90">{toolCard.data.weather || '-'}</div>
-                  </div>
-                  <div className="rounded-2xl bg-black/16 px-3 py-2">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">湿度</div>
-                    <div className="mt-1 text-white/90">{toolCard.data.humidity ?? '-'}{toolCard.data.humidity !== undefined && toolCard.data.humidity !== null ? '%' : ''}</div>
-                  </div>
-                  <div className="rounded-2xl bg-black/16 px-3 py-2">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">风速</div>
-                    <div className="mt-1 text-white/90">{toolCard.data.wind_speed ?? '-'}{toolCard.data.wind_speed ? ' m/s' : ''}</div>
-                  </div>
+                <div className="flex-shrink-0 rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-right shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
+                  <div className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-secondary)]">温度</div>
+                  <div className="mt-1 text-4xl font-semibold leading-none text-[var(--text)]">{toolCard.data.temperature ?? '—'}<span className="text-xl">{toolCard.data.temperature !== undefined && toolCard.data.temperature !== null ? '°C' : ''}</span></div>
+                  {toolCard.data.feels_like !== undefined && toolCard.data.feels_like !== null ? <div className="mt-1 text-xs text-[var(--text-secondary)]">体感 {toolCard.data.feels_like}°C</div> : null}
                 </div>
-              </div>
-              <div className="rounded-3xl border border-white/10 bg-white/6 p-4">
-                <div className="text-[11px] uppercase tracking-[0.24em] text-white/42">补充信息</div>
-                <div className="mt-3 rounded-2xl bg-black/16 px-3 py-3 text-sm text-white/88">
-                  <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">风向</div>
-                  <div className="mt-1 text-white/90">{formatWindDirection(toolCard.data.wind_direction) || '-'}</div>
-                </div>
-                <div className="mt-3 grid grid-cols-2 gap-3 text-sm">
-                  <div className="rounded-2xl bg-black/16 px-3 py-2">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">体感</div>
-                    <div className="mt-1 text-white/90">{toolCard.data.feels_like ?? '-'}</div>
-                  </div>
-                  <div className="rounded-2xl bg-black/16 px-3 py-2">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">气压</div>
-                    <div className="mt-1 text-white/90">{toolCard.data.pressure ?? '-'}</div>
-                  </div>
-                </div>
-                {Array.isArray(toolCard.data.forecast) && toolCard.data.forecast.length > 0 ? (
-                  <div className="mt-3 rounded-2xl border border-white/10 bg-black/18 p-3">
-                    <div className="text-[11px] uppercase tracking-[0.18em] text-white/42">未来预报</div>
-                    <div className="mt-2 space-y-2 text-sm text-white/86">
-                      {toolCard.data.forecast.slice(0, 3).map((item: any, idx: number) => (
-                        <div key={`${item.date || idx}`} className="flex items-center justify-between gap-3 rounded-xl bg-white/5 px-3 py-2">
-                          <span className="whitespace-nowrap text-white/72">{String(item.date || `第${idx + 1}天`)}</span>
-                          <span className="text-right">{[item.condition, item.low !== undefined || item.high !== undefined ? `${item.low ?? '-'}℃ ~ ${item.high ?? '-'}℃` : ''].filter(Boolean).join('，')}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
               </div>
             </div>
-          </div>
-        </CardShell>
-      ) : toolCard?.type === 'table' ? (
-        <CardShell
-          eyebrow="DATA"
-          title={toolCard.data.title || 'SQL 查询结果'}
-          meta={toolCard.data.summary || undefined}
-          accent="from-violet-500/65 via-fuchsia-400/40 to-rose-300/35"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-white/50">
-            <div>{typeof toolCard.data.rowCount === 'number' ? `${toolCard.data.rowCount} 行` : '结果表'}</div>
-            <div>{typeof toolCard.data.tableCount === 'number' ? `${toolCard.data.tableCount} 表` : ''}</div>
-          </div>
-          <div className="mt-3 overflow-x-auto rounded-2xl border border-white/10 bg-black/20">
-            <table className="min-w-full text-xs">
-              <thead className="sticky top-0 bg-white/8 text-white/70 backdrop-blur">
-                <tr>
-                  {(toolCard.data.columns || []).map((col: string) => (
-                    <th key={col} className="px-3 py-2 text-left font-medium whitespace-nowrap">{col}</th>
+            <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+              {[
+                ['天气', toolCard.data.weather, ''],
+                ['湿度', toolCard.data.humidity, '%'],
+                ['风速', toolCard.data.wind_speed, ' m/s'],
+                ['风向', formatWindDirection(toolCard.data.wind_direction) || '-', ''],
+                ['体感', toolCard.data.feels_like, '°C'],
+                ['气压', toolCard.data.pressure, ' hPa'],
+              ].map(([label, value, unit]) => (
+                <div key={String(label)} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">{label}</div>
+                  <div className="mt-1 text-[var(--text)]">{value ?? '-'}{value !== undefined && value !== null && value !== '-' ? unit : ''}</div>
+                </div>
+              ))}
+            </div>
+            {Array.isArray(toolCard.data.forecast) && toolCard.data.forecast.length > 0 ? (
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-3">
+                <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">未来预报</div>
+                <div className="mt-2 space-y-2 text-sm">
+                  {toolCard.data.forecast.slice(0, 3).map((item: any, idx: number) => (
+                    <div key={`${item.date || idx}`} className="flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2">
+                      <span className="whitespace-nowrap text-[var(--text-secondary)]">{String(item.date || `第${idx + 1}天`)}</span>
+                      <span className="text-right text-[var(--text)]">{[item.condition, item.low !== undefined || item.high !== undefined ? `${item.low ?? '-'}℃ ~ ${item.high ?? '-'}℃` : ''].filter(Boolean).join('，')}</span>
+                    </div>
                   ))}
-                </tr>
-              </thead>
-              <tbody>
-                {(toolCard.data.rows || []).slice(0, 20).map((row: Record<string, any>, idx: number) => (
-                  <tr key={idx} className="border-t border-white/8 odd:bg-white/[0.03] even:bg-white/[0.015]">
-                    {(toolCard.data.columns || []).map((col: string) => (
-                      <td key={col} className="px-3 py-2 align-top text-white/85 whitespace-pre-wrap break-words">{String(row?.[col] ?? '')}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                </div>
+              </div>
+            ) : null}
           </div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
-              className="rounded-full border border-white/12 bg-white/6 px-3 py-1 text-xs text-white/88 hover:bg-white/10"
-              onClick={() => navigator.clipboard.writeText(String(toolCard.data.sql || ''))}
-            >
-              复制 SQL
-            </button>
-            <button
-              type="button"
-              className="rounded-full border border-white/12 bg-white/6 px-3 py-1 text-xs text-white/88 hover:bg-white/10"
-              onClick={() => {
-                const csv = [toolCard.data.columns || [], ...(toolCard.data.rows || []).map((row: Record<string, any>) => (toolCard.data.columns || []).map((col: string) => JSON.stringify(row?.[col] ?? '')))].map((r: any[]) => r.join(',')).join('\n')
-                void navigator.clipboard.writeText(csv)
-              }}
-            >
-              复制 CSV
-            </button>
-            <button
-              type="button"
-              className="rounded-full border border-white/12 bg-white/6 px-3 py-1 text-xs text-white/88 hover:bg-white/10"
-              onClick={() =>
-                window.dispatchEvent(
-                  new CustomEvent('opentrace:prefill', {
-                    detail: {
-                      text: `请基于以下表格数据生成图表并解释：\n${JSON.stringify((toolCard.data.rows || []).slice(0, 20), null, 2)}`,
-                      autoSend: false,
-                    },
-                  })
-                )
-              }
-            >
-              生成图表
-            </button>
-          </div>
-          {toolCard.data.sql ? (
-            <details className="mt-3">
-              <summary className="cursor-pointer text-xs text-white/52">查看 SQL</summary>
-              <pre className="mt-2 whitespace-pre-wrap rounded-2xl bg-black/35 px-3 py-2 text-xs text-white/82">{toolCard.data.sql}</pre>
-            </details>
-          ) : null}
         </CardShell>
+        {displayContent ? <MarkdownMessage content={displayContent} /> : null}
+        </div>
+      ) : toolCard?.type === 'table' ? (
+        <div className="space-y-2">
+          <DataTableChart data={toolCard.data} />
+          {displayContent ? <MarkdownMessage content={displayContent} /> : null}
+        </div>
+      ) : toolCard?.type === 'data' ? (
+        <div className="space-y-2">
+          <CardShell
+            eyebrow="DATA QUERY"
+            title="查询结果"
+            meta={toolCard.data.row_count !== undefined ? `${toolCard.data.row_count} 行` : undefined}
+            accent="from-blue-500/55 via-cyan-400/35 to-indigo-300/25"
+          >
+            {toolCard.data.sql ? (
+              <div className="mb-3">
+                <div className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-secondary)] mb-1">SQL</div>
+                <pre className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs overflow-x-auto"><code>{toolCard.data.sql}</code></pre>
+              </div>
+            ) : null}
+            {Array.isArray(toolCard.data.rows) && toolCard.data.rows.length > 0 ? (
+              <DataTableChart data={{ columns: Object.keys(toolCard.data.rows[0] || {}), rows: toolCard.data.rows }} />
+            ) : null}
+          </CardShell>
+          {displayContent ? <MarkdownMessage content={displayContent} /> : null}
+        </div>
+      ) : toolCard?.type === 'agent' ? (
+        <div className="space-y-2">
+          <CardShell
+            eyebrow={String(toolCard.data.agent_type || toolCard.data.type || 'AGENT')}
+            title={String(toolCard.data.title || toolCard.data.agent_type || '执行结果')}
+            meta={typeof toolCard.data.confidence === 'number' ? `置信度 ${Math.round(toolCard.data.confidence * 100)}%` : undefined}
+            accent="from-purple-500/55 via-violet-400/35 to-fuchsia-300/25"
+          >
+            {typeof toolCard.data.content === 'string' && toolCard.data.content ? (
+              <MarkdownMessage content={toolCard.data.content} />
+            ) : toolCard.data.summary ? (
+              <p className="text-sm text-[var(--text-secondary)]">{String(toolCard.data.summary)}</p>
+            ) : toolCard.data.output ? (
+              <pre className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs overflow-x-auto"><code>{typeof toolCard.data.output === 'string' ? toolCard.data.output : JSON.stringify(toolCard.data.output, null, 2)}</code></pre>
+            ) : null}
+          </CardShell>
+          {displayContent ? <MarkdownMessage content={displayContent} /> : null}
+        </div>
       ) : (
         <div className="space-y-2">
           <div className="flex items-center gap-2">
@@ -886,7 +1086,7 @@ function FinalMessage({
               <span className="text-[10px] text-[var(--text-secondary)]">置信度 {Math.round((annotations[0].annotation!.confidence || 0) * 100)}%</span>
             ) : null}
           </div>
-          <MarkdownMessage content={content} />
+          <MarkdownMessage content={displayContent} />
           {(annotations?.[0]?.annotation?.caveats?.length || 0) > 0 ? (
             <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
               {(annotations?.[0]?.annotation?.caveats || []).join('\n')}

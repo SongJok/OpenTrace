@@ -27,7 +27,7 @@ class EnvAdaptiveProfilesContractTests(unittest.TestCase):
             code = f.read()
 
         self.assertIn("from kernel.adaptive_profiles import get_profile_defaults", code)
-        self.assertIn("return get_profile_defaults(profile_name)", code)
+        self.assertIn("profile = get_profile_defaults(profile_name)", code)
 
 
 if __name__ == "__main__":

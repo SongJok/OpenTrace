@@ -23,6 +23,7 @@ import asyncio
 import json
 import re
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, AsyncIterator, Optional
 
@@ -53,6 +54,8 @@ async def _emit_streaming_answer(
     execution_graph: dict | None = None,
     citations: list | None = None,
     annotations: list | None = None,
+    state_patch: dict | None = None,
+    result_refs: list | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield delta chunks followed by final_answer for a streaming effect."""
     if reasoning_step:
@@ -70,6 +73,10 @@ async def _emit_streaming_answer(
         final_data["citations"] = citations
     if annotations is not None:
         final_data["annotations"] = annotations
+    if state_patch is not None:
+        final_data["state_patch"] = state_patch
+    if result_refs is not None:
+        final_data["result_refs"] = result_refs
     yield {"type": "final_answer", "data": final_data}
 
 
@@ -83,6 +90,7 @@ class KernelRequest:
     web_enabled: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
     trace_ctx: Any = None
+    conversation_state: Any = None  # ConversationState | None
 
 
 @dataclass
@@ -98,6 +106,8 @@ class KernelResponse:
     context_latency_ms: int = 0
     total_latency_ms: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+    state_patch: dict[str, Any] | None = None
+    result_refs: list[dict[str, Any]] = field(default_factory=list)
 
 
 class CognitiveKernel:
@@ -186,6 +196,12 @@ class CognitiveKernel:
             self._tiny_router = TinyRouter()
         return self._tiny_router
 
+    def _get_context_composer(self):
+        if not hasattr(self, "_context_composer") or self._context_composer is None:
+            from kernel.context_composer import ContextComposer
+            self._context_composer = ContextComposer()
+        return self._context_composer
+
     # ── Main entry point ──────────────────────────────────────────────
     async def run(self, request: KernelRequest) -> KernelResponse:
         """同步执行：支持 v1/v2 编排器分流。"""
@@ -256,6 +272,7 @@ class CognitiveKernel:
                                         "force_mode": l0_result.force_mode,
                                     },
                                     trace_ctx=trace_ctx,
+                                    conversation_state=request.conversation_state,
                                 )
                             )
                             total_ms = int((time.monotonic() - t0) * 1000)
@@ -270,6 +287,8 @@ class CognitiveKernel:
                                 intent_complexity="loop",
                                 context_latency_ms=0,
                                 total_latency_ms=total_ms,
+                                state_patch=resp.state_patch,
+                                result_refs=resp.result_refs or [],
                                 metadata=resp.metadata or {},
                             )
 
@@ -452,6 +471,23 @@ class CognitiveKernel:
                 )
 
             identity_prompt = self.self_model.get_identity_prompt()
+
+            # ── Feature ①: ContextComposer — compress long histories ──
+            composed_ctx = None
+            if bool(settings.kernel_context_composer_enabled) and request.history:
+                try:
+                    composer = self._get_context_composer()
+                    composed_ctx = await composer.compose(
+                        history=request.history,
+                        current_query=request.query,
+                        session_id=request.session_id,
+                    )
+                except Exception:
+                    composed_ctx = None
+            effective_history = composed_ctx.recent_turns if (composed_ctx and composed_ctx.compressed) else request.history
+            memory_injection_query = composed_ctx.memory_injection_query if composed_ctx else request.query
+            # ── End ContextComposer ────────────────────────────────────────
+
             from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
 
             orchestrator_v4 = CognitiveOrchestratorV4(
@@ -463,14 +499,17 @@ class CognitiveKernel:
                     query=request.query,
                     session_id=request.session_id,
                     user_id=request.user_id,
-                    history=request.history,
+                    history=effective_history,
                     metadata={
                         **request.metadata,
                         "web_enabled": request.web_enabled,
+                        "memory_injection_query": memory_injection_query,
+                        "composed_context": composed_ctx.__dict__ if composed_ctx else None,
                         "identity_prompt": identity_prompt,
                         "memory_context": memory_context,
                     },
                     trace_ctx=trace_ctx,
+                    conversation_state=request.conversation_state,
                 )
             )
 
@@ -511,6 +550,15 @@ class CognitiveKernel:
                     pass
             # ── End turn saving ──────────────────────────────────────────
 
+            # ── Feature ③: Active Memory Detection ─────────────────────
+            if sid and request.user_id:
+                memory_intent = self._detect_active_memory_intent(request.query)
+                if memory_intent:
+                    asyncio.create_task(
+                        self._persist_active_memory(request.user_id, memory_intent, sid)
+                    )
+            # ── End Active Memory Detection ───────────────────────────
+
             total_ms = int((time.monotonic() - t0) * 1000)
             span.set_attribute("total.latency_ms", total_ms)
             span.set_attribute("validation.score", resp.validation_score)
@@ -532,6 +580,8 @@ class CognitiveKernel:
                     **resp_metadata,
                     "execution_graph": execution_graph,
                 },
+                state_patch=resp.state_patch,
+                result_refs=resp.result_refs,
             )
 
     # ── Streaming ─────────────────────────────────────────────────────
@@ -587,6 +637,7 @@ class CognitiveKernel:
                                     "force_mode": l0_result.force_mode,
                                 },
                                 trace_ctx=trace_ctx,
+                                conversation_state=request.conversation_state,
                             ),
                         ):
                             yield event
@@ -701,6 +752,22 @@ class CognitiveKernel:
                     logger.debug("MemoryRouter.retrieve failed (stream)", error=str(exc))
         # ── End Memory Context Injection ─────────────────────────────────
 
+        # ── Feature ①: ContextComposer — compress long histories (stream path) ──
+        composed_ctx_stream = None
+        if bool(settings.kernel_context_composer_enabled) and request.history:
+            try:
+                composer = self._get_context_composer()
+                composed_ctx_stream = await composer.compose(
+                    history=request.history,
+                    current_query=request.query,
+                    session_id=request.session_id,
+                )
+            except Exception:
+                composed_ctx_stream = None
+        effective_history_stream = composed_ctx_stream.recent_turns if (composed_ctx_stream and composed_ctx_stream.compressed) else request.history
+        memory_injection_query_stream = composed_ctx_stream.memory_injection_query if composed_ctx_stream else request.query
+        # ── End ContextComposer ────────────────────────────────────────────
+
         from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
 
         try:
@@ -714,18 +781,23 @@ class CognitiveKernel:
                     query=request.query,
                     session_id=request.session_id,
                     user_id=request.user_id,
-                    history=request.history,
+                    history=effective_history_stream,
                     metadata={
                         **request.metadata,
                         "web_enabled": request.web_enabled,
                         "memory_context": memory_context_stream,
+                        "memory_injection_query": memory_injection_query_stream,
+                        "composed_context": composed_ctx_stream.__dict__ if composed_ctx_stream else None,
                     },
                     trace_ctx=trace_ctx,
+                    conversation_state=request.conversation_state,
                 ),
             ):
                 if event.get("type") == "final_answer":
                     data = event.get("data", {})
                     final_content = data.get("content") if isinstance(data, dict) else None
+                    # state_patch / result_refs flow through in the event data,
+                    # persistence is handled by the caller (chat.py)
                 yield event
 
             # Store in semantic cache after streaming completes
@@ -761,6 +833,15 @@ class CognitiveKernel:
                 except Exception:
                     pass
             # ── End turn saving ──────────────────────────────────────────
+
+            # ── Feature ③: Active Memory Detection (stream path) ──────
+            if sid and request.user_id:
+                memory_intent = self._detect_active_memory_intent(request.query)
+                if memory_intent:
+                    asyncio.create_task(
+                        self._persist_active_memory(request.user_id, memory_intent, sid)
+                    )
+            # ── End Active Memory Detection ───────────────────────────
         except Exception as exc:  # noqa: BLE001
             if is_identity_user_query(request.query):
                 async for event in _emit_streaming_answer(CANONICAL_IDENTITY_RESPONSE):
@@ -768,6 +849,58 @@ class CognitiveKernel:
                 return
             yield {"type": "error", "data": {"message": str(exc)}}
         return
+
+    # ── Active Memory Detection ──────────────────────────────────────
+    _ACTIVE_MEMORY_PATTERNS = [
+        "记住", "记下", "记录下来", "别忘了", "提醒我",
+        "我更喜欢", "我喜欢", "我偏好", "我习惯", "我常用",
+        "保存下来", "存下来", "记录下来",
+    ]
+
+    def _detect_active_memory_intent(self, query: str) -> str | None:
+        """Detect explicit memory-write requests like "记住，我更喜欢简洁的回答".
+
+        Returns the extracted memory content or None.
+        """
+        q = (query or "").strip()
+        if not any(p in q for p in self._ACTIVE_MEMORY_PATTERNS):
+            return None
+        # Extract the content after memory keywords
+        for kw in ["记住，", "记住,", "记住 ", "记住", "记下，", "记下,", "记下 "]:
+            if kw in q:
+                idx = q.index(kw) + len(kw)
+                content = q[idx:].strip().rstrip("。，,.!！？?")
+                if content:
+                    return content
+        return q if len(q) > 5 else None
+
+    async def _persist_active_memory(
+        self, user_id: str, content: str, session_id: str
+    ) -> None:
+        """Write a user memory fact to the database."""
+        try:
+            from infra.storage.database import AsyncSessionLocal
+            from infra.storage.models import UserMemory
+
+            async with AsyncSessionLocal() as db:
+                memory = UserMemory(
+                    id=str(uuid.uuid4()),
+                    user_id=user_id,
+                    memory_type="semantic",
+                    kind="preference",
+                    title=(content[:64] + ("…" if len(content) > 64 else "")),
+                    content=content,
+                    enabled=True,
+                    pinned=False,
+                    score=0.7,  # Explicitly written memories start higher
+                    access_count=1,
+                    last_accessed_at=__import__("datetime").datetime.utcnow(),
+                )
+                db.add(memory)
+                await db.commit()
+                logger.debug("Active memory persisted", user_id=user_id, content=content[:80])
+        except Exception as exc:
+            logger.debug("Active memory persist failed", error=str(exc))
 
     # ── Helpers ───────────────────────────────────────────────────────
     def _classify_intent_domain(self, query: str) -> TaskDomain:

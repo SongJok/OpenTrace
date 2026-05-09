@@ -201,7 +201,7 @@ export async function apiRenameConversation(token: string, id: string, title: st
 
 export async function apiDeleteConversation(token: string, id: string): Promise<void> {
   const res = await apiFetch(`/conversations/${id}`, { method: 'DELETE', headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to delete conversation')
+  if (!res.ok) throw new Error(await readApiError(res, 'Failed to delete conversation'))
 }
 
 export async function apiArchiveConversation(token: string, id: string, archived = true): Promise<any> {
@@ -855,6 +855,122 @@ export async function apiGenerateRule(token: string, payload: {
     method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload),
   })
   if (!res.ok) throw new Error('Failed to generate rule')
+  return res.json()
+}
+
+// ── Attachment API ────────────────────────────────────────────────────────
+
+export interface AttachmentUploadResponse {
+  attachment_id: string
+  content_summary: string
+  content_hash: string
+  is_duplicate: boolean
+}
+
+export interface AttachmentInfo {
+  id: string
+  filename: string
+  file_size: number
+  mime_type: string | null
+  file_extension: string | null
+  content_summary: string | null
+  status: string
+  message_id: string | null
+  created_at: string
+}
+
+export interface AttachmentListResponse {
+  session_id: string
+  attachments: AttachmentInfo[]
+  total: number
+}
+
+export interface AttachmentItem {
+  id: string
+  file: File
+  name: string
+  size: number
+  status: 'pending' | 'uploading' | 'done' | 'error'
+  serverId?: string
+  contentHash?: string
+  isDuplicate?: boolean
+  error?: string
+}
+
+export async function apiUploadAttachment(
+  token: string,
+  file: File,
+  sessionId: string,
+  messageId?: string,
+  onProgress?: (pct: number) => void,
+): Promise<AttachmentUploadResponse> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('session_id', sessionId)
+  if (messageId) form.append('message_id', messageId)
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${BASE}/chat/attachments`)
+
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress(Math.round((e.loaded / e.total) * 100))
+      }
+    })
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText))
+        } catch {
+          reject(new Error('Invalid response'))
+        }
+      } else {
+        let msg = 'Upload failed'
+        try {
+          const err = JSON.parse(xhr.responseText)
+          msg = err.message || err.detail || msg
+        } catch { /* ignore */ }
+        reject(new Error(msg))
+      }
+    })
+
+    xhr.addEventListener('error', () => reject(new Error('Network error')))
+    xhr.addEventListener('abort', () => reject(new Error('Upload aborted')))
+
+    xhr.send(form)
+  })
+}
+
+export async function apiListAttachments(
+  token: string,
+  sessionId: string,
+): Promise<AttachmentListResponse> {
+  const res = await fetch(`${BASE}/chat/attachments/${sessionId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ message: 'Failed to list attachments' }))
+    throw new Error(err.message || err.detail || 'Failed to list attachments')
+  }
+  return res.json()
+}
+
+export async function apiDeleteAttachment(
+  token: string,
+  attachmentId: string,
+): Promise<{ attachment_id: string; status: string }> {
+  const res = await fetch(`${BASE}/chat/attachments/${attachmentId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ message: 'Delete failed' }))
+    throw new Error(err.message || err.detail || 'Delete failed')
+  }
   return res.json()
 }
 

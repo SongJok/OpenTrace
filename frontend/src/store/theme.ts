@@ -22,12 +22,20 @@ export const TRACE_VISIBILITY_KEYS = {
 
 export function getTraceVisibility(key: keyof typeof TRACE_VISIBILITY_KEYS) {
   if (typeof window === 'undefined') return false
-  return window.localStorage.getItem(TRACE_VISIBILITY_KEYS[key]) === '1'
+  try {
+    return window.localStorage.getItem(TRACE_VISIBILITY_KEYS[key]) === '1'
+  } catch {
+    return false
+  }
 }
 
 export function setTraceVisibility(key: keyof typeof TRACE_VISIBILITY_KEYS, value: boolean) {
   if (typeof window === 'undefined') return
-  window.localStorage.setItem(TRACE_VISIBILITY_KEYS[key], value ? '1' : '0')
+  try {
+    window.localStorage.setItem(TRACE_VISIBILITY_KEYS[key], value ? '1' : '0')
+  } catch {
+    // localStorage not available
+  }
 }
 
 export const useThemeStore = create<ThemeState>()(

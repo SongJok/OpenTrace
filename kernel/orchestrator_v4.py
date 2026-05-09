@@ -12,13 +12,14 @@ from typing import Any, AsyncIterator
 
 logger = logging.getLogger(__name__)
 
-VALID_FORCE_MODES = frozenset({"rag", "data_query", "data_analysis", "anomaly_tracking", "product", "rule_engine", "tool", "skills", "web"})
+VALID_FORCE_MODES = frozenset({"rag", "data_query", "data_analysis", "anomaly_tracking", "product", "rule_engine", "tool", "skills", "web", "vision"})
 
 from agents.data_agent import DataAgent
 from agents.rag_agent import RagAgent
 from agents.registry import AgentRegistry
 from agents.rule_engine_agent import RuleEngineAgent
 from agents.skills_agent import SkillsAgent
+from agents.vision_agent import VisionAgent
 from agents.web_agent import WebAgent
 from execution.tool_router.router import ToolRouter
 from kernel.adaptive_profiles import get_profile_defaults
@@ -34,8 +35,11 @@ from infra.message_bus.cognitive_event_bus import cognitive_event_bus
 from infra.observability.runtime_metrics import runtime_metrics_store
 from kernel.cognition.task_model import TaskModel
 from kernel.cognition.world_model import WorldModel
+from kernel.clarification_gate import ClarificationGate, ClarificationGateResult
+from kernel.dialogue_state_tracker import DialogueStateTracker, _has_explicit_entities
 from kernel.identity.system_identity import CANONICAL_IDENTITY_RESPONSE, is_identity_user_query
 from kernel.plan_agent import PlanAgent
+from kernel.refine_planner import RefinePlanner, looks_like_correction
 from kernel.epistemology.annotator import ContentAnnotator
 from kernel.epistemology.validator import OutputValidator
 from kernel.context.query_rewriter import QueryRewriter
@@ -139,6 +143,7 @@ class OrchestratorV4Request:
     history: list[dict[str, str]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     trace_ctx: Any = None
+    conversation_state: Any = None  # ConversationState | None
 
 
 @dataclass
@@ -151,21 +156,30 @@ class OrchestratorV4Response:
     hallucination_risk: float
     intent_category: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    state_patch: dict[str, Any] | None = None
+    result_refs: list[dict[str, Any]] = field(default_factory=list)
 
 
 class CognitiveOrchestratorV4:
-    def _get_adaptive_profile(self, query: str) -> dict[str, Any]:
+    def _get_adaptive_profile(self, query: str, user_tags: list[str] | None = None) -> dict[str, Any]:
         q = (query or "").lower()
         profile_name = "balanced"
         if not bool(settings.kernel_adaptive_mode_enabled):
             return get_profile_defaults(profile_name)
+        # Honor user_tags: if user prefers speed/quality, bias the profile
+        tags = [t.lower() for t in (user_tags or [])]
         if any(k in q for k in ["最新", "新闻", "实时", "联网", "今天", "weather"]):
             profile_name = "speed"
         elif any(k in q for k in ["文档", "总结", "归纳", "pdf", "docx", "根据文档", "从文档"]):
             profile_name = "quality"
         elif any(k in q for k in ["查询", "统计", "报表", "销量", "订单", "sql", "数据库"]):
             profile_name = "quality"
-        return get_profile_defaults(profile_name)
+        elif "speed" in tags:
+            profile_name = "speed"
+        elif "quality" in tags:
+            profile_name = "quality"
+        profile = get_profile_defaults(profile_name)
+        return profile
 
     def _sanitize_user_output(self, text: str) -> str:
         import re
@@ -384,12 +398,22 @@ class CognitiveOrchestratorV4:
             )
 
         # Step 1: Generate multi-plan
+        # ── Normalize conversation_state ──────────────────────────────
+        _multi_conv_state_dict: dict[str, Any] | None = None
+        if req.conversation_state is not None:
+            if hasattr(req.conversation_state, 'to_db_dict'):
+                _multi_conv_state_dict = req.conversation_state.to_db_dict()
+            elif isinstance(req.conversation_state, dict):
+                _multi_conv_state_dict = req.conversation_state
+
         plan = await self.plan_agent.generate_multi_plan(
             sub_questions,
             context={
                 "metadata": req.metadata,
                 "adaptive_profile": adaptive_profile,
                 "data_source_context": data_source_context,
+                "conversation_history": req.history,
+                "conversation_state": _multi_conv_state_dict,
             },
         )
 
@@ -459,6 +483,40 @@ class CognitiveOrchestratorV4:
                 )
             )
 
+        # ── Build state_patch for multi-question ──────────────────────
+        _mq_state_patch: dict[str, Any] = {
+            "last_user_goal": req.query,
+            "last_assistant_summary": (answer or "")[:300],
+            "last_plan": {
+                "subtasks": [
+                    {
+                        "agent_type": s.agent_type,
+                        "query": s.query,
+                        "params": s.params,
+                        "sub_question_id": s.sub_question_id,
+                    }
+                    for s in plan.subtasks
+                ],
+                "merge_strategy": plan.merge_strategy,
+                "max_parallel": plan.max_parallel,
+                "is_multi_question": True,
+            },
+            "last_results": [
+                {
+                    "agent_type": r.agent_type,
+                    "status": r.status,
+                    "content": (r.content or "")[:300],
+                }
+                for r in agent_results
+            ],
+        }
+        _mq_result_refs: list[dict[str, Any]] = []
+        for r in agent_results:
+            if isinstance(r.metadata, dict):
+                refs = r.metadata.get("result_refs", [])
+                if isinstance(refs, list):
+                    _mq_result_refs.extend(refs)
+
         return OrchestratorV4Response(
             content=answer,
             route="multi_question",
@@ -467,6 +525,8 @@ class CognitiveOrchestratorV4:
             validation_score=fusion_output.confidence,
             hallucination_risk=0.0,
             intent_category="multi_question",
+            state_patch=_mq_state_patch,
+            result_refs=_mq_result_refs,
             metadata={
                 "orchestrator_version": "v4",
                 "adaptive_profile": adaptive_profile,
@@ -727,6 +787,8 @@ class CognitiveOrchestratorV4:
         self.registry.register(ToolAgent())
         self.registry.register(SkillsAgent())
         self.registry.register(RuleEngineAgent())
+        if bool(getattr(settings, 'kernel_agent_vision_enabled', False)):
+            self.registry.register(VisionAgent())
         self.dispatcher = Dispatcher(
             self.registry,
             timeout_sec=timeout_sec,
@@ -828,7 +890,10 @@ class CognitiveOrchestratorV4:
         world_model = WorldModel()
         grounded_entities = world_model.ground_query(req.query)
 
-        adaptive_profile = self._get_adaptive_profile(req.query)
+        user_tags: list[str] = req.metadata.get("user_preferences", []) or []
+        if isinstance(user_tags, str):
+            user_tags = [user_tags]
+        adaptive_profile = self._get_adaptive_profile(req.query, user_tags=user_tags)
         data_source_context = {
             "data_source_id": req.metadata.get("data_source_id"),
             "data_source_name": req.metadata.get("data_source_name"),
@@ -840,6 +905,34 @@ class CognitiveOrchestratorV4:
         if force_mode and force_mode not in VALID_FORCE_MODES:
             logger.warning("ignoring unknown force_mode=%r, falling back to PlanAgent", force_mode)
             force_mode = None
+
+        # ── Normalize conversation_state ──────────────────────────────
+        conv_state_dict: dict[str, Any] | None = None
+        if req.conversation_state is not None:
+            if hasattr(req.conversation_state, 'to_db_dict'):
+                conv_state_dict = req.conversation_state.to_db_dict()
+            elif isinstance(req.conversation_state, dict):
+                conv_state_dict = req.conversation_state
+
+        # ── DST: resolve short/ambiguous follow-up queries ────────────
+        dialogue_state = None
+        resolved_query = req.query
+        if not force_mode:
+            try:
+                dst = DialogueStateTracker()
+                prev_plan = conv_state_dict.get('last_plan') if conv_state_dict else None
+                prev_results = conv_state_dict.get('last_results') if conv_state_dict else None
+                dialogue_state = await dst.track(
+                    req.query,
+                    previous_plan=prev_plan,
+                    previous_results=prev_results,
+                    history=req.history,
+                )
+                if dialogue_state.resolved_query and dialogue_state.resolved_query != req.query:
+                    resolved_query = dialogue_state.resolved_query
+            except Exception:
+                dialogue_state = None
+                resolved_query = req.query
 
         # Multi-question detection (only when not in force_mode)
         if not force_mode:
@@ -861,6 +954,7 @@ class CognitiveOrchestratorV4:
                 "tool": "tool",
                 "skills": "skills",
                 "web": "web",
+                "vision": "vision",
             }
             agent_type = agent_map.get(force_mode, "rag")
 
@@ -901,7 +995,7 @@ class CognitiveOrchestratorV4:
             plan.adaptive_profile = adaptive_profile
         else:
             plan = await self.plan_agent.generate_plan(
-                req.query,
+                resolved_query,
                 context={
                     "metadata": req.metadata,
                     "adaptive_profile": adaptive_profile,
@@ -916,6 +1010,14 @@ class CognitiveOrchestratorV4:
                         }
                         for g in grounded_entities
                     ],
+                    "conversation_history": req.history,
+                    "conversation_state": conv_state_dict,
+                    "dialogue_state": {
+                        "active_domain": dialogue_state.active_domain,
+                        "referenced_previous_result": dialogue_state.referenced_previous_result,
+                        "referenced_agent_type": dialogue_state.referenced_agent_type,
+                        "resolved_query": dialogue_state.resolved_query,
+                    } if dialogue_state and dialogue_state.referenced_previous_result else None,
                 },
             )
 
@@ -1267,7 +1369,7 @@ class CognitiveOrchestratorV4:
                     )
         # ── End memory context injection ────────────────────────────────
 
-        fusion = self.fusion_engine.run(FusionInput(query=req.query, results=tool_results, adaptive_profile=adaptive_profile))
+        fusion = self.fusion_engine.run(FusionInput(query=req.query, results=tool_results, adaptive_profile=adaptive_profile, conversation_history=req.history))
         fusion_span = tctx.start_span("fusion", parent_span_id=root_span) if tctx else ""
         if trace_id:
             await cognitive_event_bus.publish(
@@ -1451,6 +1553,18 @@ class CognitiveOrchestratorV4:
         if not (answer or "").strip():
             answer = "我已经完成了分析，但手头的信息还不足以给出一个完整回答。方便的话，补充一些细节或换个角度描述问题，我能帮得更到位。"
 
+        # ── ClarificationGate: check if answer needs follow-up ─────────
+        clarification_result = None
+        try:
+            gate = ClarificationGate()
+            clarification_result = await gate.check(
+                fusion_confidence=fusion.confidence,
+                answer=answer,
+                query=req.query,
+            )
+        except Exception:
+            clarification_result = None
+
         # ── Inject tool card JSON for frontend card rendering ──────────
         for r in agent_results:
             if r.agent_type != "tool" or r.status != "success":
@@ -1509,8 +1623,52 @@ class CognitiveOrchestratorV4:
                 )
             )
 
+        # ── Build state_patch for next turn ────────────────────────────
+        state_patch: dict[str, Any] = {
+            "last_user_goal": req.query,
+            "last_assistant_summary": (answer or "")[:300],
+            "last_plan": {
+                "subtasks": [
+                    {
+                        "agent_type": s.agent_type,
+                        "query": s.query,
+                        "params": s.params,
+                    }
+                    for s in plan.subtasks
+                ],
+                "merge_strategy": plan.merge_strategy,
+                "max_parallel": plan.max_parallel,
+            },
+            "last_results": [
+                {
+                    "agent_type": r.agent_type,
+                    "status": r.status,
+                    "content": (r.content or "")[:300],
+                }
+                for r in agent_results
+            ],
+        }
+        if clarification_result is not None and clarification_result.needs_clarification:
+            question = clarification_result.question
+            state_patch["pending_clarification"] = {
+                "question_id": question.question_id if question else "",
+                "question_text": question.question_text if question else "",
+                "missing_entities": question.missing_entities if question else [],
+                "suggested_options": question.suggested_options if question else [],
+            }
+
+        # ── Collect result_refs from agent results ─────────────────────
+        all_result_refs: list[dict[str, Any]] = []
+        for r in agent_results:
+            if isinstance(r.metadata, dict):
+                refs = r.metadata.get("result_refs", [])
+                if isinstance(refs, list):
+                    all_result_refs.extend(refs)
+
         return OrchestratorV4Response(
             content=answer,
+            state_patch=state_patch if state_patch else None,
+            result_refs=all_result_refs,
             route="agent_cluster",
             strategy="parallel",
             passed_validation=True,
@@ -1656,6 +1814,8 @@ class CognitiveOrchestratorV4:
                     "citations": (resp.metadata or {}).get("citations", []),
                     "annotations": (resp.metadata or {}).get("annotations", []),
                     "metadata": resp.metadata,
+                    "state_patch": resp.state_patch,
+                    "result_refs": resp.result_refs,
                 }
                 await queue.put({"type": "final_answer", "data": final_data})
             except Exception as exc:
