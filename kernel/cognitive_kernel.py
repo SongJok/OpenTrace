@@ -239,12 +239,16 @@ class CognitiveKernel:
                     )
 
             # ── V5 Routing Tier ───────────────────────────────────────
-            # Skip V5 routing when force_mode is explicitly set (slash commands like /rag).
-            # L0/L1 routers don't see the slash prefix (frontend strips it), so they would
-            # misclassify the query and return a canned identity/FAQ/knowledge answer.
+            # Skip V5 routing when force_mode is explicitly set (slash commands like /rag)
+            # or when the request includes attachment contexts. L0/L1 routers can't handle
+            # attachment content and would return canned identity/FAQ/knowledge answers.
             force_mode_from_meta: str | None = request.metadata.get("force_mode")
-            if force_mode_from_meta:
-                span.set_attribute("routing.force_mode", force_mode_from_meta)
+            has_attachments = bool(request.metadata.get("attachment_contexts"))
+            if force_mode_from_meta or has_attachments:
+                if force_mode_from_meta:
+                    span.set_attribute("routing.force_mode", force_mode_from_meta)
+                if has_attachments:
+                    span.set_attribute("routing.has_attachments", True)
                 span.set_attribute("routing.skip_v5", True)
             elif settings.kernel_v5_routing_enabled:
                 # L0: Rule Router (zero-LLM, <1ms)
@@ -608,8 +612,11 @@ class CognitiveKernel:
 
         # ── V5 Routing Tier (streaming) ──────────────────────────────────
         force_mode_from_meta: str | None = request.metadata.get("force_mode")
+        has_stream_attachments = bool(request.metadata.get("attachment_contexts"))
         if force_mode_from_meta:
             pass  # Skip V5 — explicit force_mode from slash command
+        elif has_stream_attachments:
+            pass  # Skip V5 — attachment contexts require full orchestrator
         elif settings.kernel_v5_routing_enabled:
             # L0: Rule Router
             if settings.kernel_l0_rule_router_enabled:

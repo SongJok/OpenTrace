@@ -1,6 +1,6 @@
 import { useRef, useState, KeyboardEvent, useEffect, useCallback, type ReactNode } from 'react'
 import { Square, Paperclip, Globe, Brain, Settings2, Link2, Send, X, FileText, Database, BarChart3, FileWarning, Package, Loader2, AlertCircle } from 'lucide-react'
-import { useChatStore } from '../store/chat'
+import { useChatStore, type MessageAttachment } from '../store/chat'
 import { useAuthStore } from '../store/auth'
 import {
   apiChatStream,
@@ -261,7 +261,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
         setAttachments((prev) =>
           prev.map((a) =>
             a.id === att.id
-              ? { ...a, status: 'done' as const, serverId: resp.attachment_id, contentHash: resp.content_hash, isDuplicate: resp.is_duplicate }
+              ? { ...a, status: 'done' as const, serverId: resp.attachment_id, contentHash: resp.content_hash, contentSummary: resp.content_summary, isDuplicate: resp.is_duplicate }
               : a
           )
         )
@@ -316,12 +316,29 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
 
       // Upload attachments before sending (needs session_id)
       const attachmentIds = await uploadAttachments(currentSessionId)
+
+      // Build attachment metadata to display on the user message
+      const msgAttachments: MessageAttachment[] = attachments
+        .filter(a => a.status === 'done' && a.serverId)
+        .map(a => {
+          const dot = a.name.lastIndexOf('.')
+          const ext = dot >= 0 ? a.name.slice(dot + 1) : undefined
+          return {
+            id: a.serverId || a.id,
+            filename: a.name,
+            file_size: a.size,
+            file_extension: ext,
+            content_summary: a.contentSummary,
+          }
+        })
+
       const controller = new AbortController()
       abortRef.current = controller
 
       store.appendUserMessage(currentSessionId, {
         id: `u_${Date.now()}`,
         content: query,
+        attachments: msgAttachments.length > 0 ? msgAttachments : undefined,
       })
       setText('')
       setAttachments([])

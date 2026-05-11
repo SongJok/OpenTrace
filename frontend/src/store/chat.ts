@@ -24,6 +24,15 @@ export interface ExecutionGraphData {
 
 export type MessageStatus = 'streaming' | 'done'
 
+export interface MessageAttachment {
+  id: string
+  filename: string
+  file_size: number
+  file_extension?: string
+  mime_type?: string
+  content_summary?: string
+}
+
 export interface CitationItem {
   id: number
   title: string
@@ -55,6 +64,7 @@ export interface Message {
   execution_graph?: ExecutionGraphData | null
   citations?: CitationItem[]
   annotations?: MessageAnnotation[]
+  attachments?: MessageAttachment[]
 }
 
 export interface Conversation {
@@ -79,7 +89,7 @@ interface ChatState {
   addConversation: (c: Conversation) => void
   removeConversation: (id: string) => void
   setMessages: (id: string, msgs: any[]) => void
-  appendUserMessage: (id: string, msg: { id: string; content: string }) => void
+  appendUserMessage: (id: string, msg: { id: string; content: string; attachments?: MessageAttachment[] }) => void
   appendAssistantStreamingMessage: (id: string, msg: { id: string }) => void
   setLastAssistantCitations: (id: string, citations: CitationItem[]) => void
   setLastAssistantAnnotations: (id: string, annotations: MessageAnnotation[]) => void
@@ -126,6 +136,7 @@ function asDoneMessage(raw: any): Message {
   const executionGraph = raw?.execution_graph && typeof raw.execution_graph === 'object'
     ? (raw.execution_graph as ExecutionGraphData)
     : null
+  const attachments = Array.isArray(raw?.attachments) ? raw.attachments as MessageAttachment[] : undefined
   return {
     id: String(raw?.id ?? `m_${Date.now()}`),
     role: (raw?.role ?? 'assistant') as Message['role'],
@@ -136,6 +147,7 @@ function asDoneMessage(raw: any): Message {
     validation_score: raw?.validation_score,
     reasoning_steps: reasoningSteps,
     execution_graph: executionGraph,
+    attachments,
   }
 }
 
@@ -192,10 +204,11 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           ...(s.messages[id] ?? []),
           {
             id: msg.id,
-            role: 'user',
-            status: 'done',
+            role: 'user' as const,
+            status: 'done' as const,
             streamText: '',
             finalText: msg.content,
+            attachments: msg.attachments ?? undefined,
           },
         ],
       },

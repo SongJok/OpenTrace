@@ -470,7 +470,7 @@ class Attachment(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     image_base64: Mapped[str] = mapped_column(Text, nullable=True)
     image_mime: Mapped[str] = mapped_column(String(100), nullable=True)
-    message_id: Mapped[str] = mapped_column(String(36), nullable=True)
+    message_id: Mapped[str] = mapped_column(String(50), nullable=True)
     duplicate_of: Mapped[str] = mapped_column(String(36), nullable=True)
     state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(

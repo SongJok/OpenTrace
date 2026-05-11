@@ -442,12 +442,21 @@ class CognitiveOrchestratorV4:
                     r.metadata = md
 
         # Step 4: Sequence fusion
+        # Build background_materials from attachment contexts
+        attachment_contexts = req.metadata.get("attachment_contexts", [])
+        background_materials = ""
+        if attachment_contexts:
+            bg_parts = [str(ac["content"]) for ac in attachment_contexts if isinstance(ac, dict) and ac.get("content")]
+            if bg_parts:
+                background_materials = "\n\n---\n\n".join(bg_parts)
+
         fusion_engine = SequenceFusionEngine()
         fusion_output = await fusion_engine.run(
             SequenceFusionInput(
                 query=req.query,
                 sub_questions=sub_questions,
                 agent_results=agent_results,
+                background_materials=background_materials,
             )
         )
 
@@ -600,7 +609,22 @@ class CognitiveOrchestratorV4:
             content = str(h.get("content", "")).strip()
             if content:
                 msgs.append(LLMMessage(role=role, content=content))
-        msgs.append(LLMMessage(role="user", content=req.query))
+
+        # Inject attachment content as background material
+        attachment_contexts = req.metadata.get("attachment_contexts", [])
+        if attachment_contexts:
+            bg_parts = [str(ac["content"]) for ac in attachment_contexts if isinstance(ac, dict) and ac.get("content")]
+            if bg_parts:
+                bg_text = "\n\n---\n\n".join(bg_parts)
+                user_message = (
+                    "用户上传了以下文件作为背景材料，请将材料内容作为回答的知识背景：\n\n"
+                    f"--- 背景材料开始 ---\n{bg_text[:6000]}\n--- 背景材料结束 ---\n\n"
+                ) + req.query
+                msgs.append(LLMMessage(role="user", content=user_message))
+            else:
+                msgs.append(LLMMessage(role="user", content=req.query))
+        else:
+            msgs.append(LLMMessage(role="user", content=req.query))
         resp = await gw.complete(msgs, role=LLMRole.QUERY, temperature=0.35, max_tokens=4096)
         return (resp.content or "").strip() or "很抱歉，我暂时无法处理这个请求。请尝试补充更多细节或换一种方式描述你的问题，我会继续帮你。"
 
@@ -640,6 +664,7 @@ class CognitiveOrchestratorV4:
 
     async def _llm_grounded_answer(
         self, query: str, evidence_text: str, history: list[dict[str, str]] | None = None,
+        background_materials: str | None = None,
     ) -> str:
         gw = get_model_gateway()
         style_hint, max_tokens = self._grounded_answer_style(query, evidence_count=max(0, evidence_text.count("[")))
@@ -661,7 +686,13 @@ class CognitiveOrchestratorV4:
             content = str(h.get("content", "")).strip()
             if content:
                 msgs.append(LLMMessage(role=role, content=content))
-        user = (
+        user_parts: list[str] = []
+        if background_materials and background_materials.strip():
+            user_parts.append(
+                "用户上传了以下文件作为背景材料，请将材料内容作为回答的知识背景：\n\n"
+                f"--- 背景材料开始 ---\n{background_materials.strip()[:6000]}\n--- 背景材料结束 ---"
+            )
+        user_parts.append(
             f"用户问题：{query}\n\n"
             f"检索证据：\n{evidence_text[:7000]}\n\n"
             f"输出要求：\n{style_hint}\n\n"
@@ -671,7 +702,7 @@ class CognitiveOrchestratorV4:
             "3. 关键依据或要点\n"
             "4. 注意事项/下一步（如适用）"
         )
-        msgs.append(LLMMessage(role="user", content=user))
+        msgs.append(LLMMessage(role="user", content="\n\n".join(user_parts)))
         resp = await gw.complete(
             msgs,
             role=LLMRole.QUERY,
@@ -1369,6 +1400,30 @@ class CognitiveOrchestratorV4:
                     )
         # ── End memory context injection ────────────────────────────────
 
+        # ── Inject attachment context as additional fusion source ──────
+        attachment_contexts = req.metadata.get("attachment_contexts", [])
+        if attachment_contexts:
+            for ac in attachment_contexts:
+                if isinstance(ac, dict) and ac.get("content"):
+                    tool_results.append(
+                        ToolResult(
+                            source="attachment",
+                            data=str(ac["content"])[:4000],
+                            confidence=0.85,
+                            source_priority=3,
+                        )
+                    )
+        # ── End attachment context injection ───────────────────────────
+
+        # ── Build background_materials from attachment contexts ─────────
+        attachment_contexts_for_answer = req.metadata.get("attachment_contexts", [])
+        background_materials = ""
+        if attachment_contexts_for_answer:
+            bg_parts = [str(ac["content"]) for ac in attachment_contexts_for_answer if isinstance(ac, dict) and ac.get("content")]
+            if bg_parts:
+                background_materials = "\n\n---\n\n".join(bg_parts)
+        # ── End background_materials ─────────────────────────────────────
+
         fusion = self.fusion_engine.run(FusionInput(query=req.query, results=tool_results, adaptive_profile=adaptive_profile, conversation_history=req.history))
         fusion_span = tctx.start_span("fusion", parent_span_id=root_span) if tctx else ""
         if trace_id:
@@ -1391,13 +1446,19 @@ class CognitiveOrchestratorV4:
 
         answer_draft = ""
         first_token_ms = 0
-        draft_threshold = float(adaptive_profile["draft_threshold"])
-        draft_max_chars = max(60, int(adaptive_profile["draft_max_chars"]))
-        if fusion.confidence >= draft_threshold and (fusion.merged_context or "").strip():
-            raw_draft = self._sanitize_user_output((fusion.merged_context or "")[:draft_max_chars])
-            if raw_draft:
-                answer_draft = f"以下是目前梳理出的关键信息：\n\n{raw_draft}"
-            first_token_ms = int((monotonic() - t0) * 1000)
+        # Skip draft when attachment contexts are present — the draft shows
+        # raw agent results (e.g. database rows) that are confusing before
+        # the LLM has had a chance to synthesize a proper answer from the
+        # attachment content.
+        _has_attachment = any(r.source == "attachment" for r in tool_results)
+        if not _has_attachment:
+            draft_threshold = float(adaptive_profile["draft_threshold"])
+            draft_max_chars = max(60, int(adaptive_profile["draft_max_chars"]))
+            if fusion.confidence >= draft_threshold and (fusion.merged_context or "").strip():
+                raw_draft = self._sanitize_user_output((fusion.merged_context or "")[:draft_max_chars])
+                if raw_draft:
+                    answer_draft = f"以下是目前梳理出的关键信息：\n\n{raw_draft}"
+                first_token_ms = int((monotonic() - t0) * 1000)
 
         annotated_results = []
         for r in agent_results:
@@ -1428,7 +1489,7 @@ class CognitiveOrchestratorV4:
 
         # Only enter RAG answer path when we actually have document evidence
         if has_document and rag_chunks_count > 0:
-            grounded = await self._llm_grounded_answer(req.query, fusion.merged_context or "", history=req.history)
+            grounded = await self._llm_grounded_answer(req.query, fusion.merged_context or "", history=req.history, background_materials=background_materials)
             answer = self._sanitize_user_output(grounded or (fusion.merged_context or ""))
 
             answer = self._format_rag_answer(answer, rag_chunks_count, rag_citations)
@@ -1439,7 +1500,12 @@ class CognitiveOrchestratorV4:
             answer = ""
             has_data = any(r.agent_type == "data" and r.status == "success" for r in agent_results)
             has_data_error = any(r.agent_type == "data" and r.status == "error" for r in agent_results)
-            if has_data:
+            # When attachments are present and the user did not explicitly request
+            # data query/analysis, skip the raw data-answer so that the LLM-grounded
+            # path below can synthesise a proper answer from all sources (attachment
+            # content + data results + web/tool results).
+            _data_mode = force_mode in {"data_query", "data_analysis"}
+            if has_data and (not _has_attachment or _data_mode):
                 answer = self._format_data_answer(req.query, agent_results)
             if not answer and has_data_error and force_mode in {"data_query", "data_analysis"}:
                 # force_mode data agent failed — return helpful message instead of falling back
@@ -1461,8 +1527,8 @@ class CognitiveOrchestratorV4:
                     r.source == "tool" and r.data and len(str(r.data)) > 80
                     for r in tool_results
                 )
-                if (has_web or has_meaningful_tool) and (fusion.merged_context or "").strip():
-                    grounded = await self._llm_grounded_answer(req.query, fusion.merged_context or "", history=req.history)
+                if (has_web or has_meaningful_tool or _has_attachment) and (fusion.merged_context or "").strip():
+                    grounded = await self._llm_grounded_answer(req.query, fusion.merged_context or "", history=req.history, background_materials=background_materials)
                     answer = self._sanitize_user_output(grounded or (fusion.merged_context or ""))
                 else:
                     merged_annotated.fragments = [f for f in merged_annotated.fragments if (f.text or "").strip()]

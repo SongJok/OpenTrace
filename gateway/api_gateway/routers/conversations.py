@@ -130,6 +130,7 @@ class MessageOut(BaseModel):
     validation_score: Optional[float] = None
     reasoning_steps: list[dict] = Field(default_factory=list)
     execution_graph: Optional[dict] = None
+    attachments: list[dict] = Field(default_factory=list)
 
 
 class UpdateConversationRequest(BaseModel):
@@ -447,6 +448,30 @@ async def get_messages(
         .limit(300)
     )
     logs = logs_result.scalars().all()
+
+    # Query all attachments for this session that are linked to messages
+    attachments_result = await db.execute(
+        select(Attachment)
+        .where(
+            Attachment.session_id == conversation_id,
+            Attachment.message_id.isnot(None),
+            Attachment.status == "active",
+        )
+    )
+    attachments_by_msg: dict[str, list[dict]] = {}
+    for att in attachments_result.scalars().all():
+        mid = att.message_id or ""
+        if mid not in attachments_by_msg:
+            attachments_by_msg[mid] = []
+        attachments_by_msg[mid].append({
+            "id": att.id,
+            "filename": att.filename,
+            "file_size": att.file_size,
+            "file_extension": att.file_extension,
+            "mime_type": att.mime_type,
+            "content_summary": att.content_summary,
+        })
+
     messages: list[MessageOut] = []
     for log in logs:
         reasoning_steps = []
@@ -464,12 +489,14 @@ async def get_messages(
                     execution_graph = parsed_graph
             except Exception:
                 execution_graph = None
+        user_msg_id = log.id + "_q"
         messages.append(
             MessageOut(
-                id=log.id + "_q",
+                id=user_msg_id,
                 role="user",
                 content=log.query,
                 created_at=log.created_at.isoformat(),
+                attachments=attachments_by_msg.get(user_msg_id, []),
             )
         )
         if log.response:

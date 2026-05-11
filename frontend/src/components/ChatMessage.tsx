@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Copy, RotateCcw, Quote, Pencil, GitBranch, ShieldCheck } from 'lucide-react'
+import { Copy, RotateCcw, Quote, Pencil, GitBranch, ShieldCheck, FileText, FileCode, FileSpreadsheet, FileImage } from 'lucide-react'
 import { Message, useChatStore, type ExecutionGraphData } from '../store/chat'
 import { getTraceVisibility } from '../store/theme'
 import { apiBranchConversation, apiGetMessages, apiPatchMessage, type ReasoningStep } from '../api/client'
@@ -573,6 +573,23 @@ export default function ChatMessage({ message }: { message: Message }) {
   )
 }
 
+function fileIcon(ext: string | undefined) {
+  if (!ext) return <FileText size={16} />
+  const e = ext.toLowerCase()
+  if (['pdf'].includes(e)) return <FileText size={16} className="text-red-500" />
+  if (['doc', 'docx'].includes(e)) return <FileText size={16} className="text-blue-500" />
+  if (['xls', 'xlsx', 'csv', 'tsv'].includes(e)) return <FileSpreadsheet size={16} className="text-green-600" />
+  if (['py', 'js', 'ts', 'tsx', 'jsx', 'go', 'rs', 'java', 'c', 'cpp', 'sh', 'sql', 'yaml', 'yml', 'json', 'toml'].includes(e)) return <FileCode size={16} className="text-purple-500" />
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(e)) return <FileImage size={16} className="text-orange-500" />
+  return <FileText size={16} />
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 function UserMessage({ message }: { message: Message }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(message.finalText)
@@ -608,40 +625,68 @@ function UserMessage({ message }: { message: Message }) {
   }
 
   return (
-    <div className="max-w-[85%] rounded-3xl border border-[var(--border)] bg-[var(--surface)] px-5 py-3 text-[15px] leading-relaxed text-[var(--text)] shadow-[0_10px_30px_rgba(0,0,0,0.08)]">
-      {editing ? (
-        <div className="space-y-2">
-          <textarea
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text)]"
-            rows={3}
-          />
-          <div className="flex gap-2 justify-end text-xs">
-            <button onClick={() => setEditing(false)} className="rounded px-2 py-1 bg-[var(--bg-secondary)] text-[var(--text-secondary)]">
-              取消
-            </button>
-            <button onClick={save} className="rounded px-2 py-1 bg-[var(--accent)] text-white">
-              保存并重生成
-            </button>
-          </div>
+    <div className="flex flex-col items-end gap-2">
+      {/* File attachment cards — above the question bubble */}
+      {message.attachments && message.attachments.length > 0 && (
+        <div className="flex flex-col gap-1.5 w-full max-w-[85%]">
+          {message.attachments.map((att) => (
+            <div
+              key={att.id}
+              className="flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-2.5 shadow-sm"
+            >
+              <div className="shrink-0">
+                {fileIcon(att.file_extension)}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-medium text-[var(--text)] truncate">
+                  {att.filename}
+                </div>
+                <div className="text-[11px] text-[var(--text-secondary)] mt-0.5">
+                  {formatSize(att.file_size)}
+                  {att.content_summary ? ` · ${att.content_summary}` : ''}
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
-      ) : (
-        <>
-          <div>{message.finalText}</div>
-          <div className="mt-2 flex items-center gap-2 opacity-80">
-            <button onClick={copy} className="p-1 hover:opacity-100" title="复制">
-              <Copy size={14} />
-            </button>
-            <button onClick={quote} className="p-1 hover:opacity-100" title="引用到输入框">
-              <Quote size={14} />
-            </button>
-            <button onClick={() => setEditing(true)} className="p-1 hover:opacity-100" title="编辑并重生成">
-              <Pencil size={14} />
-            </button>
-          </div>
-        </>
       )}
+
+      {/* Text bubble */}
+      <div className="max-w-[85%] rounded-3xl border border-[var(--border)] bg-[var(--surface)] px-5 py-3 text-[15px] leading-relaxed text-[var(--text)] shadow-[0_10px_30px_rgba(0,0,0,0.08)]">
+        {editing ? (
+          <div className="space-y-2">
+            <textarea
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text)]"
+              rows={3}
+            />
+            <div className="flex gap-2 justify-end text-xs">
+              <button onClick={() => setEditing(false)} className="rounded px-2 py-1 bg-[var(--bg-secondary)] text-[var(--text-secondary)]">
+                取消
+              </button>
+              <button onClick={save} className="rounded px-2 py-1 bg-[var(--accent)] text-white">
+                保存并重生成
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div>{message.finalText}</div>
+            <div className="mt-2 flex items-center gap-2 opacity-80">
+              <button onClick={copy} className="p-1 hover:opacity-100" title="复制">
+                <Copy size={14} />
+              </button>
+              <button onClick={quote} className="p-1 hover:opacity-100" title="引用到输入框">
+                <Quote size={14} />
+              </button>
+              <button onClick={() => setEditing(true)} className="p-1 hover:opacity-100" title="编辑并重生成">
+                <Pencil size={14} />
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }

@@ -115,6 +115,12 @@ services:
       https_proxy: ${https_proxy:-}
       all_proxy: ${all_proxy:-}
     command: ["python", "-m", "agents.worker"]
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import sys; data=open('/proc/1/cmdline','rb').read(); sys.exit(0 if b'agents.worker' in data else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy

@@ -512,6 +512,7 @@ async def _save_trace(
     reasoning_steps: Optional[list[dict[str, Any]]] = None,
     execution_graph: Optional[dict[str, Any]] = None,
     parent_message_id: Optional[str] = None,
+    attachment_ids: Optional[list[str]] = None,
 ) -> None:
     try:
         async with AsyncSessionLocal() as db:
@@ -531,6 +532,15 @@ async def _save_trace(
                 execution_graph_json=(json.dumps(execution_graph, ensure_ascii=False) if execution_graph else None),
             )
             db.add(log)
+
+            # Link attachments to this trace log's user message
+            message_id = f"{log.id}_q"
+            if attachment_ids:
+                for aid in attachment_ids:
+                    r = await db.execute(select(Attachment).where(Attachment.id == aid, Attachment.session_id == session_id))
+                    att = r.scalar_one_or_none()
+                    if att is not None:
+                        att.message_id = message_id
 
             # P2: persist reasoning traces
             for i, step in enumerate(reasoning_steps or []):
@@ -1072,12 +1082,15 @@ async def chat(
                     if raw:
                         content = raw.decode() if isinstance(raw, bytes) else raw
                         pg_map[aid] = content
+            # Only apply the size cap to auto-loaded attachments — explicitly
+            # provided attachment_ids are always loaded in full.
+            explicit_ids = bool(req.attachment_ids)
             total_content_bytes = 0
             for aid in effective_attachment_ids:
                 if aid in pg_map:
                     content = pg_map[aid]
                     total_content_bytes += len(content.encode("utf-8"))
-                    if total_content_bytes > _MAX_AUTO_ATTACHMENT_CONTENT_BYTES:
+                    if not explicit_ids and total_content_bytes > _MAX_AUTO_ATTACHMENT_CONTENT_BYTES:
                         break
                     attachment_contexts.append({"attachment_id": aid, "content": content})
     
@@ -1213,7 +1226,7 @@ async def chat(
                     yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(exc)}}, ensure_ascii=False)}\n\n"
                     yield ": done\n\n"
 
-            asyncio.create_task(_save_trace(session_id, req.query, content, latency_ms, "sql_retrieval", 1.0, [], exec_graph, parent_message_id=req.parent_message_id))
+            asyncio.create_task(_save_trace(session_id, req.query, content, latency_ms, "sql_retrieval", 1.0, [], exec_graph, parent_message_id=req.parent_message_id, attachment_ids=req.attachment_ids))
             return StreamingResponse(
                 _sse_sql_retrieval(),
                 media_type="text/event-stream",
@@ -1338,7 +1351,7 @@ async def chat(
 
                 latency_ms = int((time.monotonic() - t0) * 1000)
                 asyncio.create_task(
-                    _save_trace(session_id, req.query, direct_summary, latency_ms, "database_direct", 0.9, [], exec_graph, parent_message_id=req.parent_message_id)
+                    _save_trace(session_id, req.query, direct_summary, latency_ms, "database_direct", 0.9, [], exec_graph, parent_message_id=req.parent_message_id, attachment_ids=req.attachment_ids)
                 )
                 yield ": done\n\n"
 
@@ -1497,6 +1510,7 @@ async def chat(
                     final_reasoning_steps,
                     final_execution_graph,
                     parent_message_id=req.parent_message_id,
+                    attachment_ids=req.attachment_ids,
                 )
             )
             if await _memory_learning_enabled(db, current_user.id):
@@ -1603,6 +1617,7 @@ async def chat(
                 "fallback",
                 0.0,
                 parent_message_id=req.parent_message_id,
+                attachment_ids=req.attachment_ids,
             )
         )
         return ChatResponse(
@@ -1647,6 +1662,7 @@ async def chat(
             result.metadata.get("steps") if isinstance(result.metadata, dict) else None,
             result.metadata.get("execution_graph") if isinstance(result.metadata, dict) else None,
             parent_message_id=req.parent_message_id,
+            attachment_ids=req.attachment_ids,
         )
     )
     if await _memory_learning_enabled(db, current_user.id):

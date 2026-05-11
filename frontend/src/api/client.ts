@@ -893,6 +893,7 @@ export interface AttachmentItem {
   status: 'pending' | 'uploading' | 'done' | 'error'
   serverId?: string
   contentHash?: string
+  contentSummary?: string
   isDuplicate?: boolean
   error?: string
 }
