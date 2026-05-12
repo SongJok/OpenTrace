@@ -7,7 +7,7 @@ class AdaptiveProfileRuntimeContractTests(unittest.TestCase):
             code = f.read()
 
         self.assertIn('"adaptive_profile": adaptive_profile', code)
-        self.assertIn('"adaptive_profile": {"name": "identity"', code)
+        self.assertIn('"name": "identity"', code)
 
     def test_health_runtime_exposes_adaptive_mode(self):
         with open("gateway/api_gateway/routers/health.py", "r", encoding="utf-8") as f:

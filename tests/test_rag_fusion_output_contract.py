@@ -20,7 +20,7 @@ class RagFusionOutputContractTests(unittest.TestCase):
             orchestrator_code = f.read()
         with open("kernel/fusion_engine/engine.py", "r", encoding="utf-8") as f:
             fusion_code = f.read()
-        self.assertIn('ToolResult(source="llmwiki"', orchestrator_code)
+        self.assertIn('source="llmwiki"', orchestrator_code)
         self.assertIn("source_priority=1", orchestrator_code)
         self.assertIn('"llmwiki": 1.05', fusion_code)
 

@@ -1,6 +1,7 @@
 """
 ORM Models — User, ChatSession, TraceLog.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -8,6 +9,7 @@ from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ARRAY
+
 try:
     from sqlalchemy import JSON
 except ImportError:
@@ -36,14 +38,12 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    sessions: Mapped[list["ChatSession"]] = relationship(
+    sessions: Mapped[list[ChatSession]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -62,22 +62,27 @@ class ChatSession(Base):
     display_title: Mapped[str] = mapped_column(String(255), nullable=True)
     turn_count: Mapped[int] = mapped_column(Integer, default=0)
     last_decision_type: Mapped[str] = mapped_column(String(50), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, nullable=False)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_active: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
-    archived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    archived_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
-    user: Mapped["User"] = relationship(back_populates="sessions")
-    trace_logs: Mapped[list["TraceLog"]] = relationship(
+    user: Mapped[User] = relationship(back_populates="sessions")
+    trace_logs: Mapped[list[TraceLog]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
     )
-    conversation_state: Mapped["ConversationState | None"] = relationship(
+    messages: Mapped[list[Message]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+    conversation_state: Mapped[ConversationState | None] = relationship(
         back_populates="session", uselist=False, passive_deletes=True
     )
-    attachments: Mapped[list["Attachment"]] = relationship(
+    attachments: Mapped[list[Attachment]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
     )
 
@@ -105,14 +110,55 @@ class TraceLog(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     reasoning_steps_json: Mapped[str] = mapped_column(Text, nullable=True)
     execution_graph_json: Mapped[str] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    session: Mapped["ChatSession"] = relationship(back_populates="trace_logs")
+    session: Mapped[ChatSession] = relationship(back_populates="trace_logs")
 
     def __repr__(self) -> str:
         return f"<TraceLog id={self.id} session={self.session_id}>"
+
+
+class Message(Base):
+    """Per-message storage — independent rows for user, assistant, tool, system messages.
+
+    Replaces the flat {role, content} dict history with structured per-message rows
+    that support tool_calls, tool responses, multimodal content, and version history.
+    TraceLog remains as the turn-level aggregate for backward compatibility.
+    """
+
+    __tablename__ = "messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    session_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    turn_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # system | user | assistant | tool
+    content: Mapped[str] = mapped_column(Text, nullable=True)  # nullable for tool-call-only msgs
+    tool_calls: Mapped[dict] = mapped_column(JSON, nullable=True)  # list of tool call dicts
+    tool_call_id: Mapped[str] = mapped_column(String(128), nullable=True)  # for tool response msgs
+    name: Mapped[str] = mapped_column(String(128), nullable=True)  # tool name
+    content_type: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="text"
+    )  # text | multimodal | tool_calls | tool_response
+    content_blocks: Mapped[dict] = mapped_column(JSON, nullable=True)  # for multimodal
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    parent_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    model: Mapped[str] = mapped_column(String(100), nullable=True)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="done"
+    )  # done | interrupted | streaming
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    session: Mapped[ChatSession] = relationship(back_populates="messages")
+
+    def __repr__(self) -> str:
+        return f"<Message id={self.id} role={self.role} session={self.session_id}>"
 
 
 class Document(Base):
@@ -128,21 +174,21 @@ class Document(Base):
     content: Mapped[str] = mapped_column(Text, nullable=True)  # 原始文本
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     version: Mapped[int] = mapped_column(Integer, default=1)
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|processing|ready|error
+    status: Mapped[str] = mapped_column(
+        String(20), default="pending"
+    )  # pending|processing|ready|error
     chunk_strategy: Mapped[int] = mapped_column(Integer, default=1)  # 1=context-aware, 2-8=reserved
     doc_metadata: Mapped[str] = mapped_column(Text, nullable=True)  # JSON string
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    owner: Mapped["User"] = relationship()
-    chunks: Mapped[list["DocumentChunk"]] = relationship(
+    owner: Mapped[User] = relationship()
+    chunks: Mapped[list[DocumentChunk]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )
-    llmwiki_entries: Mapped[list["DocumentLLMWiki"]] = relationship(
+    llmwiki_entries: Mapped[list[DocumentLLMWiki]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
     )
 
@@ -161,15 +207,17 @@ class DocumentChunk(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     # embedding stored as JSON string for compatibility, with optional pgvector column
     embedding_json: Mapped[str] = mapped_column(Text, nullable=True)
-    embedding_dims: Mapped[int] = mapped_column(Integer, nullable=False, default=settings.embedding_dims)
-    embedding_vector = mapped_column(Vector(settings.embedding_dims) if Vector else Text, nullable=True)
-    chunk_metadata: Mapped[str] = mapped_column(Text, nullable=True)  # JSON string
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+    embedding_dims: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=settings.embedding_dims
     )
+    embedding_vector = mapped_column(
+        Vector(settings.embedding_dims) if Vector else Text, nullable=True
+    )
+    chunk_metadata: Mapped[str] = mapped_column(Text, nullable=True)  # JSON string
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    document: Mapped["Document"] = relationship(back_populates="chunks")
-    llmwiki_entries: Mapped[list["DocumentLLMWiki"]] = relationship(
+    document: Mapped[Document] = relationship(back_populates="chunks")
+    llmwiki_entries: Mapped[list[DocumentLLMWiki]] = relationship(
         back_populates="chunk", cascade="all, delete-orphan"
     )
 
@@ -191,14 +239,16 @@ class DocumentLLMWiki(Base):
     answer: Mapped[str] = mapped_column(Text, nullable=False)
     keywords: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     embedding_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    embedding_dims: Mapped[int] = mapped_column(Integer, nullable=False, default=settings.embedding_dims)
-    embedding_vector = mapped_column(Vector(settings.embedding_dims) if Vector else Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+    embedding_dims: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=settings.embedding_dims
     )
+    embedding_vector = mapped_column(
+        Vector(settings.embedding_dims) if Vector else Text, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    document: Mapped["Document"] = relationship(back_populates="llmwiki_entries")
-    chunk: Mapped["DocumentChunk | None"] = relationship(back_populates="llmwiki_entries")
+    document: Mapped[Document] = relationship(back_populates="llmwiki_entries")
+    chunk: Mapped[DocumentChunk | None] = relationship(back_populates="llmwiki_entries")
 
     def __repr__(self) -> str:
         return f"<DocumentLLMWiki id={self.id} doc={self.document_id} chunk={self.chunk_id}>"
@@ -208,9 +258,7 @@ class RedisShadowKV(Base):
     """Shadow table for Redis data: dual-write + read fallback source."""
 
     __tablename__ = "redis_shadow_kv"
-    __table_args__ = (
-        UniqueConstraint("redis_db", "redis_key", name="uq_redis_shadow_db_key"),
-    )
+    __table_args__ = (UniqueConstraint("redis_db", "redis_key", name="uq_redis_shadow_db_key"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     redis_db: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
@@ -219,9 +267,7 @@ class RedisShadowKV(Base):
     payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     expire_at_ts: Mapped[float] = mapped_column(Float, nullable=True)
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -251,7 +297,9 @@ class ToolStat(Base):
     failure_count: Mapped[int] = mapped_column(Integer, default=0)
     avg_latency_ms: Mapped[float] = mapped_column(Float, default=0.0)
     last_error: Mapped[str] = mapped_column(Text, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -285,7 +333,9 @@ class UserMemory(Base):
     access_count: Mapped[int] = mapped_column(Integer, default=0)
     last_accessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     score: Mapped[float] = mapped_column(Float, default=0.5)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -296,7 +346,9 @@ class UserMemorySettings(Base):
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False, unique=True)
     memory_learning_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     preference_learning_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -307,7 +359,9 @@ class UserUiSettings(Base):
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False, unique=True)
     reasoning_default_expanded: Mapped[bool] = mapped_column(Boolean, default=True)
     graph_default_expanded: Mapped[bool] = mapped_column(Boolean, default=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -323,7 +377,9 @@ class TaskDefinition(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     last_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -382,14 +438,13 @@ class ConversationState(Base):
     last_results: Mapped[dict] = mapped_column(JSON, nullable=False, default=list)
     pending_clarification: Mapped[dict] = mapped_column(JSON, nullable=True)
     state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    state_extension: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    session: Mapped["ChatSession"] = relationship(back_populates="conversation_state")
+    session: Mapped[ChatSession] = relationship(back_populates="conversation_state")
 
 
 class AuditLog(Base):
@@ -410,14 +465,18 @@ class DataSource(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    source_type: Mapped[str] = mapped_column(String(20), nullable=False)  # postgres/mysql/clickhouse
+    source_type: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # postgres/mysql/clickhouse
     host: Mapped[str] = mapped_column(String(255), nullable=False)
     port: Mapped[int] = mapped_column(Integer, nullable=False)
     database: Mapped[str] = mapped_column(String(255), nullable=False)
     username: Mapped[str] = mapped_column(String(255), nullable=False)
     password_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -429,7 +488,9 @@ class DataSourceSchema(Base):
     schema_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     semantic_mappings: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     embedding: Mapped[str] = mapped_column(Text, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -473,15 +534,13 @@ class Attachment(Base):
     message_id: Mapped[str] = mapped_column(String(50), nullable=True)
     duplicate_of: Mapped[str] = mapped_column(String(36), nullable=True)
     state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    session: Mapped["ChatSession"] = relationship(back_populates="attachments")
-    user: Mapped["User"] = relationship()
+    session: Mapped[ChatSession] = relationship(back_populates="attachments")
+    user: Mapped[User] = relationship()
 
     def __repr__(self) -> str:
         return f"<Attachment id={self.id} filename={self.filename} session={self.session_id}>"
@@ -492,5 +551,7 @@ class SystemSetting(Base):
 
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

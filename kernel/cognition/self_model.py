@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from agents.registry import AgentRegistry
 from infra.config.settings import settings
@@ -42,7 +41,7 @@ class SelfModel:
     }
 
     def __init__(self) -> None:
-        self._state: Optional[SelfState] = None
+        self._state: SelfState | None = None
         self._agent_registry = AgentRegistry()
 
     def refresh_state(self) -> SelfState:

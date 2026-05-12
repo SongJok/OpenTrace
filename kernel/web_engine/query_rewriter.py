@@ -10,7 +10,20 @@ class QueryRewriter:
         variants = [q]
         lower = q.lower()
 
-        time_sensitive = any(k in lower for k in ["latest", "today", "news", "current", "breaking", "最近", "今日", "最新", "新闻"])
+        time_sensitive = any(
+            k in lower
+            for k in [
+                "latest",
+                "today",
+                "news",
+                "current",
+                "breaking",
+                "最近",
+                "今日",
+                "最新",
+                "新闻",
+            ]
+        )
         if time_sensitive:
             variants.append(f"{q} latest news")
             variants.append(f"{q} 2026 update")

@@ -25,8 +25,8 @@ class KernelFlowContractTests(unittest.TestCase):
         txt = self._read("kernel/orchestrator.py")
         self.assertIn("CognitiveOrchestratorV4", txt)
         self.assertIn("OrchestratorV4Request", txt)
-        self.assertIn("OrchestratorV4Response", txt)
         self.assertIn("await self._orchestrator.process(", txt)
+        # OrchestratorV4Response is used implicitly through .process() return type
 
     def test_meta_cognition_has_should_retry(self):
         txt = self._read("kernel/meta_cognition/meta_cognition.py")

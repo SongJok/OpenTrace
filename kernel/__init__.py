@@ -5,6 +5,7 @@ Keep package import lightweight to avoid circular imports during startup.
 Consumers that need concrete classes can still import from `kernel`, while the
 actual modules are only loaded on first attribute access.
 """
+
 from __future__ import annotations
 
 from importlib import import_module
@@ -109,6 +110,7 @@ def __getattr__(name: str) -> Any:
 
 
 if TYPE_CHECKING:
+    from kernel.complexity_engine import ComplexityEngine, ComplexityScore
     from kernel.intent_engine.engine import Intent, IntentEngine
     from kernel.meta_cognition.meta_cognition import MetaCognition, ValidationResult
     from kernel.orchestrator import (
@@ -119,6 +121,5 @@ if TYPE_CHECKING:
     from kernel.policy.engine import Decision, PolicyEngine, Route, Strategy
     from kernel.query_router_v2 import L0Result, L0RuleRouter
     from kernel.reasoning.engine import ReasoningEngine, ReasoningResult
-    from kernel.tiny_router import L1Result, TinyRouter
-    from kernel.complexity_engine import ComplexityEngine, ComplexityScore
     from kernel.semantic_cache import CacheEntry, SemanticCache
+    from kernel.tiny_router import L1Result, TinyRouter

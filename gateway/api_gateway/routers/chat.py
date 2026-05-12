@@ -3,22 +3,19 @@ Chat router — SSE streaming + sync chat via CognitiveKernel.
 All requests flow through the Cognitive Kernel (唯一中枢).
 Direct LLM calls are forbidden — only Kernel.run() / Kernel.stream().
 """
+
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import hashlib
 import json
+import os
 import time
 import uuid
+from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Any, AsyncIterator, Optional
-
-import os
-import shutil
-
-from execution.data.query_intents import is_database_question
-from infra.config.settings import settings
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import StreamingResponse
@@ -26,17 +23,37 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from execution.data.query_intents import is_database_question
 from gateway.api_gateway.routers.auth import get_current_user
 from infra.audit.logger import write_audit_log
+from infra.cache.redis_client import get_cache_redis
+from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
 from infra.guards.kernel_guard import require_kernel_entrypoint
 from infra.message_bus.cognitive_event_bus import cognitive_event_bus
 from infra.observability.logger import get_logger
 from infra.observability.request_context import get_log_context, set_user_session_context
-from infra.security.zero_trust import assess_query_risk, issue_permission_token, tool_anomaly_detector, validate_permission_token
-from infra.cache.redis_client import get_cache_redis
-from infra.storage.database import AsyncSessionLocal, db_session_dependency as get_db
-from infra.storage.models import Attachment, ChatSession, DataSource, DataSourceSchema, Feedback, ReasoningTrace, ToolStat, TraceLog, User, UserMemory, UserMemorySettings
+from infra.security.zero_trust import (
+    assess_query_risk,
+    issue_permission_token,
+    tool_anomaly_detector,
+    validate_permission_token,
+)
+from infra.storage.database import AsyncSessionLocal
+from infra.storage.database import db_session_dependency as get_db
+from infra.storage.models import (
+    Attachment,
+    ChatSession,
+    DataSource,
+    DataSourceSchema,
+    Feedback,
+    ReasoningTrace,
+    ToolStat,
+    TraceLog,
+    User,
+    UserMemory,
+    UserMemorySettings,
+)
 from kernel.protocol.events import SpanStage, trace_context_for_request
 from services.file_parser import parse_attachment_content
 
@@ -49,27 +66,30 @@ _ACTIVE_STREAM_CONTEXTS: dict[str, dict[str, Any]] = {}
 
 class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=8192)
-    session_id: Optional[str] = None
+    session_id: str | None = None
     stream: bool = False
     web_enabled: bool = False
-    request_id: Optional[str] = None
+    request_id: str | None = None
     graph_controls: dict[str, Any] = Field(default_factory=dict)
     enabled_skills: list[str] = Field(default_factory=list)
     disabled_skills: list[str] = Field(default_factory=list)
-    tool_permission_token: Optional[str] = None
+    tool_permission_token: str | None = None
     confirmation_granted: bool = False
-    data_source_id: Optional[str] = None
-    data_source_name: Optional[str] = None
+    data_source_id: str | None = None
+    data_source_name: str | None = None
     force_database: bool = False
-    force_mode: Optional[str] = Field(default=None, pattern="^(rag|data_query|data_analysis|anomaly_tracking|product|rule_engine|vision)$")
+    force_mode: str | None = Field(
+        default=None,
+        pattern="^(rag|data_query|data_analysis|anomaly_tracking|product|rule_engine|vision)$",
+    )
     # Multi-turn enhancement fields
-    clarify_context: Optional[str] = None
-    clarify_question_id: Optional[str] = None
-    parent_message_id: Optional[str] = None
+    clarify_context: str | None = None
+    clarify_question_id: str | None = None
+    parent_message_id: str | None = None
     attachment_ids: list[str] | None = None
-    reference_id: Optional[str] = None
-    reference_type: Optional[str] = None
-    state_version: Optional[int] = None
+    reference_id: str | None = None
+    reference_type: str | None = None
+    state_version: int | None = None
 
 
 class AttachmentUploadResponse(BaseModel):
@@ -83,11 +103,11 @@ class AttachmentInfo(BaseModel):
     id: str
     filename: str
     file_size: int
-    mime_type: Optional[str] = None
-    file_extension: Optional[str] = None
-    content_summary: Optional[str] = None
+    mime_type: str | None = None
+    file_extension: str | None = None
+    content_summary: str | None = None
     status: str
-    message_id: Optional[str] = None
+    message_id: str | None = None
     created_at: str
 
 
@@ -108,7 +128,7 @@ class ChatResponse(BaseModel):
     total_latency_ms: int = 0
     citations: list[dict[str, Any]] = Field(default_factory=list)
     annotations: list[dict[str, Any]] = Field(default_factory=list)
-    execution_graph: Optional[dict[str, Any]] = None
+    execution_graph: dict[str, Any] | None = None
     result_refs: list[dict[str, Any]] = Field(default_factory=list)
     state_version: int = 1
 
@@ -120,12 +140,12 @@ class ResumeRequest(BaseModel):
 
 class StopStreamRequest(BaseModel):
     session_id: str
-    request_id: Optional[str] = None
+    request_id: str | None = None
 
 
 class GraphControlRequest(BaseModel):
     session_id: str
-    request_id: Optional[str] = None
+    request_id: str | None = None
     action: str = Field(..., pattern="^(prune|expand)$")
     node_id: str = Field(..., min_length=1, max_length=128)
 
@@ -146,11 +166,11 @@ class EditRegenerateRequest(BaseModel):
 
 class ChatFeedbackRequest(BaseModel):
     session_id: str
-    chunk_id: Optional[str] = None
-    message_id: Optional[str] = None
+    chunk_id: str | None = None
+    message_id: str | None = None
     feedback_type: str = Field(..., pattern="^(like|dislike|none)$")
-    score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    correction: Optional[str] = Field(default=None, max_length=2048)
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
+    correction: str | None = Field(default=None, max_length=2048)
 
 
 async def _load_history_before_message(
@@ -187,8 +207,7 @@ async def _load_branch_checkpoint(
     """Load plan + results from a TraceLog for branching checkpoint reuse."""
     try:
         res = await db.execute(
-            select(TraceLog)
-            .where(TraceLog.id == message_id, TraceLog.session_id == session_id)
+            select(TraceLog).where(TraceLog.id == message_id, TraceLog.session_id == session_id)
         )
         log = res.scalar_one_or_none()
         if not log or not log.execution_graph_json:
@@ -234,8 +253,36 @@ async def _load_conversation_history(
     db: AsyncSession,
     session_id: str,
     limit: int = 10,
-) -> list[dict[str, str]]:
-    """Load recent conversation turns from trace logs for multi-turn context."""
+) -> list[dict[str, Any]]:
+    """Load recent conversation turns from messages (preferred) or trace logs (fallback)."""
+    try:
+        from infra.storage.models import Message as MessageModel
+
+        res = await db.execute(
+            select(MessageModel)
+            .where(MessageModel.session_id == session_id)
+            .order_by(MessageModel.created_at.desc())
+            .limit(limit * 2)
+        )
+        msg_rows = list(reversed(res.scalars().all()))
+        if msg_rows:
+            history: list[dict[str, Any]] = []
+            for m in msg_rows:
+                entry: dict[str, Any] = {"role": m.role}
+                if m.content is not None:
+                    entry["content"] = m.content
+                if m.tool_calls:
+                    entry["tool_calls"] = m.tool_calls
+                if m.tool_call_id:
+                    entry["tool_call_id"] = m.tool_call_id
+                if m.name:
+                    entry["name"] = m.name
+                history.append(entry)
+            return history
+    except Exception:
+        pass  # Message table may not exist yet — fall back to TraceLog
+
+    # Fallback: load from trace_logs
     try:
         res = await db.execute(
             select(TraceLog)
@@ -244,8 +291,7 @@ async def _load_conversation_history(
             .limit(limit)
         )
         logs = res.scalars().all()
-        # Reverse to chronological order (oldest first)
-        history: list[dict[str, str]] = []
+        history: list[dict[str, Any]] = []
         for log in reversed(logs):
             if log.query:
                 history.append({"role": "user", "content": log.query})
@@ -266,10 +312,19 @@ def _is_sql_retrieval_intent(query: str) -> bool:
     if "sql" not in q:
         return False
     sql_retrieval_keywords = [
-        "sql语句是什么", "sql是什么", "执行的sql",
-        "刚才的sql", "上一步的sql", "之前sql", "sql查询是什么",
-        "query sql", "what sql", "生成的sql",
-        "sql代码是什么", "查询sql", "本次查询的sql",
+        "sql语句是什么",
+        "sql是什么",
+        "执行的sql",
+        "刚才的sql",
+        "上一步的sql",
+        "之前sql",
+        "sql查询是什么",
+        "query sql",
+        "what sql",
+        "生成的sql",
+        "sql代码是什么",
+        "查询sql",
+        "本次查询的sql",
     ]
     return any(kw in q for kw in sql_retrieval_keywords)
 
@@ -285,12 +340,21 @@ def _is_sql_generation_intent(query: str) -> bool:
     if _is_sql_retrieval_intent(query):
         return False
     sql_gen_keywords = [
-        "帮我写一段sql", "帮我写个sql", "帮我写sql",
-        "写一个sql", "写一段sql", "写sql",
-        "生成sql", "生成一段sql",
-        "帮我写一段 sql", "帮我写个 sql",
-        "写一个 sql", "写一段 sql",
-        "create a sql", "write a sql", "generate sql",
+        "帮我写一段sql",
+        "帮我写个sql",
+        "帮我写sql",
+        "写一个sql",
+        "写一段sql",
+        "写sql",
+        "生成sql",
+        "生成一段sql",
+        "帮我写一段 sql",
+        "帮我写个 sql",
+        "写一个 sql",
+        "写一段 sql",
+        "create a sql",
+        "write a sql",
+        "generate sql",
     ]
     return any(kw in q for kw in sql_gen_keywords)
 
@@ -352,52 +416,60 @@ async def _get_previous_turn_sql(db: AsyncSession, session_id: str) -> str | Non
     return None
 
 
-async def _ensure_session(session_id: Optional[str], user: User, db: AsyncSession) -> str:
+async def _ensure_session(session_id: str | None, user: User, db: AsyncSession) -> str:
     if session_id:
         r = await db.execute(
-            select(ChatSession).where(
-                ChatSession.id == session_id, ChatSession.user_id == user.id
-            )
+            select(ChatSession).where(ChatSession.id == session_id, ChatSession.user_id == user.id)
         )
         if r.scalar_one_or_none():
             return session_id
     new_id = session_id or str(uuid.uuid4())
-    db.add(ChatSession(id=new_id, user_id=user.id, title="New conversation", display_title="New conversation"))
+    db.add(
+        ChatSession(
+            id=new_id, user_id=user.id, title="New conversation", display_title="New conversation"
+        )
+    )
     await db.commit()
     return new_id
 
 
-async def _load_user_memory_preferences(db: AsyncSession, user_id: str) -> tuple[list[str], list[str]]:
-    """Return (content_list, tags_list) from user preference memories."""
-    import json as _json
+async def _load_user_memory_preferences(
+    db: AsyncSession, user_id: str, *, session_id: str = ""
+) -> tuple[list[str], list[str], str]:
+    """Return (content_list, tags_list, layered_context_block) from user preference memories.
+
+    Uses PreferenceLayer priority: explicit > behavioral > project > session.
+    """
+    from kernel.preference_layers import (
+        PreferenceLayer,
+        build_layered_context_block,
+        classify_memories,
+    )
 
     r = await db.execute(
         select(UserMemory)
         .where(
             UserMemory.user_id == user_id,
-            UserMemory.memory_type == "semantic",
-            UserMemory.kind == "preference",
+            UserMemory.memory_type.in_(["semantic", "episodic"]),
+            UserMemory.kind.in_(
+                ["preference", "project_fact", "session_fact", "fact"]
+            ),
             UserMemory.enabled.is_(True),
         )
-        .order_by(UserMemory.pinned.desc(), UserMemory.updated_at.desc())
-        .limit(20)
+        .order_by(UserMemory.pinned.desc(), UserMemory.score.desc(), UserMemory.updated_at.desc())
+        .limit(30)
     )
     rows = r.scalars().all()
-    contents = [m.content for m in rows if m.content]
+    layered = classify_memories(rows, session_id=session_id)
+
+    contents = [lm.content for lm in layered if lm.layer == PreferenceLayer.EXPLICIT]
     tags: list[str] = []
-    for m in rows:
-        raw_tags = (m.tags_json or "").strip()
-        if not raw_tags:
-            continue
-        try:
-            parsed = _json.loads(raw_tags)
-            if isinstance(parsed, list):
-                for t in parsed:
-                    if isinstance(t, str) and t.strip():
-                        tags.append(t.strip())
-        except Exception:
-            pass
-    return contents, tags
+    for lm in layered:
+        tags.extend(lm.tags)
+
+    # Build structured context block from all layers
+    context_block = build_layered_context_block(layered)
+    return contents, tags, context_block
 
 
 def _database_intent(query: str) -> bool:
@@ -454,7 +526,9 @@ async def _load_data_source_context(
     if source is None:
         return {"data_source_id": None, "data_source_name": None, "schema": None}
 
-    rs = await db.execute(select(DataSourceSchema).where(DataSourceSchema.data_source_id == source.id))
+    rs = await db.execute(
+        select(DataSourceSchema).where(DataSourceSchema.data_source_id == source.id)
+    )
     schema_row = rs.scalar_one_or_none()
     schema_payload: dict[str, Any] | None = None
     if schema_row is not None:
@@ -478,17 +552,18 @@ async def _memory_learning_enabled(db: AsyncSession, user_id: str) -> bool:
     return True if s is None else bool(s.memory_learning_enabled)
 
 
-async def _save_user_memory_from_turn(user_id: str, query: str, response: str) -> None:
+async def _save_user_memory_from_turn(user_id: str, query: str, response: str, *, kind: str = "fact", metadata_json: str = "") -> None:
     async with AsyncSessionLocal() as db:
         memory = UserMemory(
             id=str(uuid.uuid4()),
             user_id=user_id,
             memory_type="episodic",
-            kind="fact",
+            kind=kind,
             title=(query[:64] + ("…" if len(query) > 64 else "")),
             content=f"Q: {query}\nA: {response}",
             enabled=True,
             pinned=False,
+            metadata_json=metadata_json,
         )
         db.add(memory)
         await db.commit()
@@ -509,10 +584,13 @@ async def _save_trace(
     latency_ms: int,
     decision_type: str = "kernel",
     validation_score: float = 1.0,
-    reasoning_steps: Optional[list[dict[str, Any]]] = None,
-    execution_graph: Optional[dict[str, Any]] = None,
-    parent_message_id: Optional[str] = None,
-    attachment_ids: Optional[list[str]] = None,
+    reasoning_steps: list[dict[str, Any]] | None = None,
+    execution_graph: dict[str, Any] | None = None,
+    parent_message_id: str | None = None,
+    attachment_ids: list[str] | None = None,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    model: str = "",
 ) -> None:
     try:
         async with AsyncSessionLocal() as db:
@@ -528,16 +606,56 @@ async def _save_trace(
                 decision_type=decision_type,
                 validation_score=validation_score,
                 latency_ms=latency_ms,
-                reasoning_steps_json=(json.dumps(reasoning_steps, ensure_ascii=False) if reasoning_steps else None),
-                execution_graph_json=(json.dumps(execution_graph, ensure_ascii=False) if execution_graph else None),
+                reasoning_steps_json=(
+                    json.dumps(reasoning_steps, ensure_ascii=False) if reasoning_steps else None
+                ),
+                execution_graph_json=(
+                    json.dumps(execution_graph, ensure_ascii=False) if execution_graph else None
+                ),
             )
             db.add(log)
+
+            # Also write structured Message rows (new format, parallel to TraceLog)
+            turn_id = log.id
+            try:
+                from infra.storage.models import Message as MessageModel
+
+                db.add(
+                    MessageModel(
+                        id=str(uuid.uuid4()),
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        role="user",
+                        content=query,
+                        content_type="text",
+                    )
+                )
+                db.add(
+                    MessageModel(
+                        id=str(uuid.uuid4()),
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        role="assistant",
+                        content=response,
+                        content_type="text",
+                        model=model or None,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        latency_ms=latency_ms,
+                    )
+                )
+            except Exception:
+                pass  # Message table may not exist yet
 
             # Link attachments to this trace log's user message
             message_id = f"{log.id}_q"
             if attachment_ids:
                 for aid in attachment_ids:
-                    r = await db.execute(select(Attachment).where(Attachment.id == aid, Attachment.session_id == session_id))
+                    r = await db.execute(
+                        select(Attachment).where(
+                            Attachment.id == aid, Attachment.session_id == session_id
+                        )
+                    )
                     att = r.scalar_one_or_none()
                     if att is not None:
                         att.message_id = message_id
@@ -627,9 +745,11 @@ async def _build_regenerate_query(db: AsyncSession, session_id: str) -> str:
     return latest.query
 
 
-async def _build_edit_regenerate_query(db: AsyncSession, session_id: str, message_id: str, new_content: str) -> str:
+async def _build_edit_regenerate_query(
+    db: AsyncSession, session_id: str, message_id: str, new_content: str
+) -> str:
     if message_id.endswith("_q"):
-        trace_id = message_id[: -2]
+        trace_id = message_id[:-2]
         res = await db.execute(
             select(TraceLog).where(TraceLog.id == trace_id, TraceLog.session_id == session_id)
         )
@@ -648,22 +768,70 @@ async def _build_edit_regenerate_query(db: AsyncSession, session_id: str, messag
 
 # ── Attachment upload ────────────────────────────────────────────────────────
 _ALLOWED_MIME_TYPES = {
-    "text/plain", "text/markdown", "text/csv", "text/tab-separated-values",
-    "application/pdf", "application/json",
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "text/tab-separated-values",
+    "application/pdf",
+    "application/json",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/vnd.ms-excel",
-    "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
     "image/svg+xml",
 }
 _ALLOWED_EXTENSIONS = {
-    ".txt", ".md", ".markdown", ".log", ".rst", ".csv", ".tsv", ".pdf", ".json", ".jsonl",
-    ".docx", ".xlsx", ".xls",
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java",
-    ".c", ".cpp", ".h", ".hpp", ".sql", ".sh", ".bash", ".yaml",
-    ".yml", ".toml", ".ini", ".cfg", ".conf", ".html", ".css",
-    ".scss", ".less", ".vue", ".svelte",
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg",
+    ".txt",
+    ".md",
+    ".markdown",
+    ".log",
+    ".rst",
+    ".csv",
+    ".tsv",
+    ".pdf",
+    ".json",
+    ".jsonl",
+    ".docx",
+    ".xlsx",
+    ".xls",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".sql",
+    ".sh",
+    ".bash",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".html",
+    ".css",
+    ".scss",
+    ".less",
+    ".vue",
+    ".svelte",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".svg",
 }
 _ATTACHMENT_TTL = 43200  # 12 hours
 
@@ -672,7 +840,7 @@ _ATTACHMENT_TTL = 43200  # 12 hours
 async def upload_attachment(
     file: UploadFile = File(...),
     session_id: str = Form(...),
-    message_id: Optional[str] = Form(None),
+    message_id: str | None = Form(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> AttachmentUploadResponse:
@@ -682,10 +850,14 @@ async def upload_attachment(
 
     # Validate session ownership
     session = await db.scalar(
-        select(ChatSession).where(ChatSession.id == session_id, ChatSession.user_id == current_user.id)
+        select(ChatSession).where(
+            ChatSession.id == session_id, ChatSession.user_id == current_user.id
+        )
     )
     if not session:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Session not found or access denied")
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code, message="Session not found or access denied"
+        )
 
     # Validate extension (fast-path rejection before reading file content)
     _, ext = os.path.splitext(file.filename or "")
@@ -734,7 +906,7 @@ async def upload_attachment(
 
     # Check for duplicate within the same session (same file uploaded again = new attachment)
     # We only flag content-level duplicate for informational purposes, never block
-    duplicate_of: Optional[str] = None
+    duplicate_of: str | None = None
     existing = await db.scalars(
         select(Attachment).where(
             Attachment.session_id == session_id,
@@ -763,10 +935,11 @@ async def upload_attachment(
 
     # Extract raw image data for VisionAgent (before file cleanup)
     from services.file_parser import get_image_raw_data
+
     raw_image = get_image_raw_data(file_path)  # (base64, mime) or None
 
-    image_base64: Optional[str] = None
-    image_mime: Optional[str] = None
+    image_base64: str | None = None
+    image_mime: str | None = None
     if raw_image:
         image_base64, image_mime = raw_image
 
@@ -796,6 +969,7 @@ async def upload_attachment(
     # Update ConversationState to track this attachment (fire-and-forget)
     try:
         from kernel.conversation_state import ConversationStateManager
+
         state_manager = ConversationStateManager()
         cs = await state_manager.get_or_create(session_id)
         if attachment_id not in cs.active_attachment_ids:
@@ -844,7 +1018,11 @@ def _warn_on_mime_mismatch(filename: str | None, ext: str, content_type: str) ->
         ".pdf": {"application/pdf", "application/octet-stream"},
         ".json": {"application/json", "text/", "application/octet-stream"},
         ".docx": {"application/vnd.openxmlformats-officedocument", "application/octet-stream"},
-        ".xlsx": {"application/vnd.openxmlformats-officedocument", "application/vnd.ms-excel", "application/octet-stream"},
+        ".xlsx": {
+            "application/vnd.openxmlformats-officedocument",
+            "application/vnd.ms-excel",
+            "application/octet-stream",
+        },
         ".png": {"image/png", "image/", "application/octet-stream"},
         ".jpg": {"image/jpeg", "image/", "application/octet-stream"},
         ".jpeg": {"image/jpeg", "image/", "application/octet-stream"},
@@ -871,16 +1049,20 @@ async def list_attachments(
 ) -> AttachmentListResponse:
     """List all active attachments for a session."""
     rows = (
-        await db.execute(
-            select(Attachment)
-            .where(
-                Attachment.session_id == session_id,
-                Attachment.user_id == current_user.id,
-                Attachment.status == "active",
+        (
+            await db.execute(
+                select(Attachment)
+                .where(
+                    Attachment.session_id == session_id,
+                    Attachment.user_id == current_user.id,
+                    Attachment.status == "active",
+                )
+                .order_by(Attachment.created_at.desc())
             )
-            .order_by(Attachment.created_at.desc())
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     return AttachmentListResponse(
         session_id=session_id,
@@ -916,7 +1098,9 @@ async def delete_attachment(
         )
     )
     if not att:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Attachment not found or access denied")
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code, message="Attachment not found or access denied"
+        )
 
     att.status = "deleted"
     att.updated_at = datetime.utcnow()
@@ -952,40 +1136,51 @@ async def chat(
     try:
         session_id = await _ensure_session(req.session_id, current_user, db)
         set_user_session_context(user_id=current_user.id, session_id=session_id)
-    
+
         # Load conversation history for multi-turn support
         conversation_history = await _load_conversation_history(db, session_id, limit=10)
-    
+
         # ── Feature ⑥: Conversation Branching ────────────────────────
         branch_checkpoint: dict[str, Any] | None = None
         is_branch_request = False
         if req.parent_message_id and settings.kernel_conversation_branching_enabled:
             # Roll back history to before the parent message
-            history_before = await _load_history_before_message(db, session_id, req.parent_message_id)
+            history_before = await _load_history_before_message(
+                db, session_id, req.parent_message_id
+            )
             if history_before:
                 conversation_history = history_before
             # Load checkpoint from the parent message
             branch_checkpoint = await _load_branch_checkpoint(db, session_id, req.parent_message_id)
             is_branch_request = True
         # ── End Conversation Branching ──────────────────────────────
-    
+
         from kernel.cognitive_kernel import KernelRequest
-    
+
         request_id = req.request_id or str(uuid.uuid4())
-        trace_ctx = trace_context_for_request(request_id, session_id=session_id, user_id=current_user.id)
-        user_preferences, user_preference_tags = await _load_user_memory_preferences(db, current_user.id)
-    
+        trace_ctx = trace_context_for_request(
+            request_id, session_id=session_id, user_id=current_user.id
+        )
+        user_preferences, user_preference_tags, pref_context_block = await _load_user_memory_preferences(
+            db, current_user.id, session_id=session_id
+        )
+
         risk = assess_query_risk(req.query)
         required_permissions = list(risk.required_permissions)
         if required_permissions:
-            if not req.tool_permission_token or not await validate_permission_token(session_id, req.tool_permission_token, required_permissions):
+            if not req.tool_permission_token or not await validate_permission_token(
+                session_id, req.tool_permission_token, required_permissions
+            ):
                 token = await issue_permission_token(session_id, required_permissions)
                 await write_audit_log(
                     user_id=current_user.id,
                     action="security.permission.issued",
                     resource_type="session",
                     resource_id=session_id,
-                    payload={"required_permissions": required_permissions, "risk_level": risk.risk_level},
+                    payload={
+                        "required_permissions": required_permissions,
+                        "risk_level": risk.risk_level,
+                    },
                 )
                 raise AppException(
                     ErrorCodes.PARAM_INVALID.code,
@@ -1017,27 +1212,64 @@ async def chat(
             "pruned_nodes": list((req.graph_controls or {}).get("pruned_nodes", [])),
             "expanded_nodes": list((req.graph_controls or {}).get("expanded_nodes", [])),
         }
-        data_source_context: dict[str, Any] = {"data_source_id": None, "data_source_name": None, "database": None, "source_type": None, "schema": None}
+        data_source_context: dict[str, Any] = {
+            "data_source_id": None,
+            "data_source_name": None,
+            "database": None,
+            "source_type": None,
+            "schema": None,
+        }
         data_source_id = (req.data_source_id or "").strip() or None
-        force_database = bool(req.force_database) or (_database_intent(req.query) and not _is_sql_generation_intent(req.query) and not _is_sql_retrieval_intent(req.query))
+        force_database = bool(req.force_database) or (
+            _database_intent(req.query)
+            and not _is_sql_generation_intent(req.query)
+            and not _is_sql_retrieval_intent(req.query)
+        )
         if force_database and not data_source_id:
-            data_source_context = await _load_data_source_context(db, current_user, None, req.query, force_database=True)
+            data_source_context = await _load_data_source_context(
+                db, current_user, None, req.query, force_database=True
+            )
         else:
-            data_source_context = await _load_data_source_context(db, current_user, data_source_id, None if data_source_id else req.query)
-    
+            data_source_context = await _load_data_source_context(
+                db, current_user, data_source_id, None if data_source_id else req.query
+            )
+
         if not data_source_context.get("data_source_id") and not force_database:
             q_lower = req.query.strip().lower()
             internal_intent = any(
                 k in q_lower
                 for k in [
-                    "文档", "手册", "知识库", "项目内", "系统内", "本项目", "内部", "代码", "配置", "规则", "说明", "根据文档", "从文档", "总结", "归纳", "读取", "附件", ".pdf", ".doc", ".docx", ".txt", ".md",
+                    "文档",
+                    "手册",
+                    "知识库",
+                    "项目内",
+                    "系统内",
+                    "本项目",
+                    "内部",
+                    "代码",
+                    "配置",
+                    "规则",
+                    "说明",
+                    "根据文档",
+                    "从文档",
+                    "总结",
+                    "归纳",
+                    "读取",
+                    "附件",
+                    ".pdf",
+                    ".doc",
+                    ".docx",
+                    ".txt",
+                    ".md",
                 ]
             )
             if internal_intent:
-                data_source_context = await _load_data_source_context(db, current_user, None, req.query)
+                data_source_context = await _load_data_source_context(
+                    db, current_user, None, req.query
+                )
         # Load previous turn context for multi-turn enhancement features
         prev_plan, prev_results = await _load_previous_turn_context(db, session_id)
-    
+
         # Load attachment content: PostgreSQL first, fall back to Redis.
         # When no attachment_ids provided, auto-include most recent active session attachments (capped).
         _MAX_AUTO_ATTACHMENTS = 10
@@ -1047,28 +1279,36 @@ async def chat(
         if not effective_attachment_ids:
             # Auto-include most recent active attachments for this session (capped)
             session_attachments = (
-                await db.execute(
-                    select(Attachment)
-                    .where(
-                        Attachment.session_id == session_id,
-                        Attachment.status == "active",
+                (
+                    await db.execute(
+                        select(Attachment)
+                        .where(
+                            Attachment.session_id == session_id,
+                            Attachment.status == "active",
+                        )
+                        .order_by(Attachment.created_at.desc())
+                        .limit(_MAX_AUTO_ATTACHMENTS)
                     )
-                    .order_by(Attachment.created_at.desc())
-                    .limit(_MAX_AUTO_ATTACHMENTS)
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             effective_attachment_ids = [att.id for att in session_attachments]
         if effective_attachment_ids:
             # Batch-load from PostgreSQL
             pg_attachments = (
-                await db.execute(
-                    select(Attachment).where(
-                        Attachment.session_id == session_id,
-                        Attachment.id.in_(effective_attachment_ids),
-                        Attachment.status == "active",
+                (
+                    await db.execute(
+                        select(Attachment).where(
+                            Attachment.session_id == session_id,
+                            Attachment.id.in_(effective_attachment_ids),
+                            Attachment.status == "active",
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             pg_map: dict[str, str] = {}
             for att in pg_attachments:
                 if att.content_text:
@@ -1090,21 +1330,34 @@ async def chat(
                 if aid in pg_map:
                     content = pg_map[aid]
                     total_content_bytes += len(content.encode("utf-8"))
-                    if not explicit_ids and total_content_bytes > _MAX_AUTO_ATTACHMENT_CONTENT_BYTES:
+                    if (
+                        not explicit_ids
+                        and total_content_bytes > _MAX_AUTO_ATTACHMENT_CONTENT_BYTES
+                    ):
                         break
                     attachment_contexts.append({"attachment_id": aid, "content": content})
-    
+
         # ── Load ConversationState for multi-turn reference resolution ──
         from kernel.conversation_state import ConversationStateManager
+
         state_manager = ConversationStateManager()
         conversation_state = await state_manager.get_or_create(session_id)
-    
+
         # Merge explicit attachment_ids into ConversationState so they persist across turns
-        if req.attachment_ids and any(aid not in conversation_state.active_attachment_ids for aid in req.attachment_ids):
-            new_ids = [aid for aid in req.attachment_ids if aid not in conversation_state.active_attachment_ids]
-            conversation_state.active_attachment_ids = [*conversation_state.active_attachment_ids, *new_ids]
+        if req.attachment_ids and any(
+            aid not in conversation_state.active_attachment_ids for aid in req.attachment_ids
+        ):
+            new_ids = [
+                aid
+                for aid in req.attachment_ids
+                if aid not in conversation_state.active_attachment_ids
+            ]
+            conversation_state.active_attachment_ids = [
+                *conversation_state.active_attachment_ids,
+                *new_ids,
+            ]
             asyncio.create_task(_save_conversation_state_async(state_manager, conversation_state))
-    
+
         kernel_request = KernelRequest(
             query=req.query,
             session_id=session_id,
@@ -1121,6 +1374,7 @@ async def chat(
                 "disabled_skills": req.disabled_skills,
                 "user_preferences": user_preferences,
                 "user_preference_tags": user_preference_tags,
+                "user_preference_context_block": pref_context_block,
                 "data_source_id": data_source_context["data_source_id"],
                 "data_source_name": data_source_context["data_source_name"],
                 "data_source_database": data_source_context.get("database"),
@@ -1140,7 +1394,6 @@ async def chat(
                 "attachment_contexts": attachment_contexts,
             },
         )
-    
 
     except AppException:
         raise
@@ -1197,6 +1450,20 @@ async def chat(
 
             # Non-streaming: return direct response
             if not req.stream:
+                # Save ConversationState for this fast path
+                state_patch = {
+                    "last_user_goal": req.query,
+                    "last_assistant_summary": content[:300],
+                    "last_plan": {"subtasks": [], "merge_strategy": "direct", "max_parallel": 0},
+                    "last_results": [
+                        {"agent_type": "data", "status": "success", "content": content[:300]}
+                    ],
+                }
+                updated_state = state_manager.apply_patch(conversation_state, state_patch)
+                updated_state = state_manager.advance_turn(updated_state, req.query, content)
+                state_manager.add_confidence(updated_state, updated_state.turn_sequence, 1.0)
+                updated_state = state_manager.compact(updated_state)
+                asyncio.create_task(_save_conversation_state_async(state_manager, updated_state))
                 return ChatResponse(
                     session_id=session_id,
                     content=content,
@@ -1209,6 +1476,7 @@ async def chat(
                     citations=[],
                     annotations=[],
                     execution_graph=exec_graph,
+                    state_version=updated_state.state_version,
                 )
 
             # Streaming: emit SSE events
@@ -1226,7 +1494,34 @@ async def chat(
                     yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(exc)}}, ensure_ascii=False)}\n\n"
                     yield ": done\n\n"
 
-            asyncio.create_task(_save_trace(session_id, req.query, content, latency_ms, "sql_retrieval", 1.0, [], exec_graph, parent_message_id=req.parent_message_id, attachment_ids=req.attachment_ids))
+            asyncio.create_task(
+                _save_trace(
+                    session_id,
+                    req.query,
+                    content,
+                    latency_ms,
+                    "sql_retrieval",
+                    1.0,
+                    [],
+                    exec_graph,
+                    parent_message_id=req.parent_message_id,
+                    attachment_ids=req.attachment_ids,
+                )
+            )
+            # Fire-and-forget: save ConversationState for fast path
+            sql_state_patch = {
+                "last_user_goal": req.query,
+                "last_assistant_summary": content[:300],
+                "last_plan": {"subtasks": [], "merge_strategy": "direct", "max_parallel": 0},
+                "last_results": [
+                    {"agent_type": "data", "status": "success", "content": content[:300]}
+                ],
+            }
+            sql_updated = state_manager.apply_patch(conversation_state, sql_state_patch)
+            sql_updated = state_manager.advance_turn(sql_updated, req.query, content)
+            state_manager.add_confidence(sql_updated, sql_updated.turn_sequence, 1.0)
+            sql_updated = state_manager.compact(sql_updated)
+            asyncio.create_task(_save_conversation_state_async(state_manager, sql_updated))
             return StreamingResponse(
                 _sse_sql_retrieval(),
                 media_type="text/event-stream",
@@ -1238,7 +1533,12 @@ async def chat(
             from gateway.api_gateway.routers.data import DataQueryRequest, data_query
 
             direct = await data_query(
-                DataQueryRequest(question=req.query, data_source_id=str(data_source_context["data_source_id"]), dry_run=False, sql=None),
+                DataQueryRequest(
+                    question=req.query,
+                    data_source_id=str(data_source_context["data_source_id"]),
+                    dry_run=False,
+                    sql=None,
+                ),
                 current_user=current_user,
                 db=db,
             )
@@ -1254,11 +1554,36 @@ async def chat(
                     "- 在「数据源」页面检查已连接的表和结构。\n"
                     "- 尝试使用更通用的查询条件，或指定具体的表名。"
                 )
-            exec_graph = {"route": "data_query", "data_source_id": data_source_context["data_source_id"], "sql": direct_sql, "rows": direct_rows[:20]}
+            exec_graph = {
+                "route": "data_query",
+                "data_source_id": data_source_context["data_source_id"],
+                "sql": direct_sql,
+                "rows": direct_rows[:20],
+            }
 
             # Non-streaming: return direct response
             if not req.stream:
                 latency_ms = int((time.monotonic() - t0) * 1000)
+                # Save ConversationState for this fast path
+                db_state_patch = {
+                    "last_user_goal": req.query,
+                    "last_assistant_summary": direct_summary[:300],
+                    "last_plan": {
+                        "subtasks": [
+                            {"agent_type": "data", "query": req.query, "params": {"data_source_id": data_source_context["data_source_id"]}}
+                        ],
+                        "merge_strategy": "direct",
+                        "max_parallel": 1,
+                    },
+                    "last_results": [
+                        {"agent_type": "data", "status": "success", "content": direct_summary[:300]}
+                    ],
+                }
+                db_updated = state_manager.apply_patch(conversation_state, db_state_patch)
+                db_updated = state_manager.advance_turn(db_updated, req.query, direct_summary)
+                state_manager.add_confidence(db_updated, db_updated.turn_sequence, 0.9)
+                db_updated = state_manager.compact(db_updated)
+                asyncio.create_task(_save_conversation_state_async(state_manager, db_updated))
                 return ChatResponse(
                     session_id=session_id,
                     content=direct_summary,
@@ -1271,6 +1596,7 @@ async def chat(
                     citations=[],
                     annotations=[],
                     execution_graph=exec_graph,
+                    state_version=db_updated.state_version,
                 )
 
             # Streaming: emit SSE events with direct query result (fast path)
@@ -1282,12 +1608,59 @@ async def chat(
                     try:
                         # Emit reasoning-like steps for UI feedback
                         yield_reasoning = [
-                            {"type": "reasoning_step", "data": {"id": "data_detect", "stage": "REASON", "content": "检测到数据查询请求，正在执行查询", "node_id": "node_data", "status": "done"}},
-                            {"type": "dag_node_start", "data": {"node_id": "data_0", "agent_type": "data", "depends_on": []}},
-                            {"type": "agent_start", "data": {"agent_type": "data", "task_id": "data_0", "query": req.query}},
-                            {"type": "agent_progress", "data": {"agent_type": "data", "task_id": "data_0", "progress": 50, "message": "执行中"}},
-                            {"type": "dag_node_complete", "data": {"node_id": "data_0", "agent_type": "data", "status": "success", "preview": str(direct_summary)[:200]}},
-                            {"type": "agent_complete", "data": {"agent_type": "data", "task_id": "data_0", "status": "success", "preview": str(direct_summary)[:200]}},
+                            {
+                                "type": "reasoning_step",
+                                "data": {
+                                    "id": "data_detect",
+                                    "stage": "REASON",
+                                    "content": "检测到数据查询请求，正在执行查询",
+                                    "node_id": "node_data",
+                                    "status": "done",
+                                },
+                            },
+                            {
+                                "type": "dag_node_start",
+                                "data": {
+                                    "node_id": "data_0",
+                                    "agent_type": "data",
+                                    "depends_on": [],
+                                },
+                            },
+                            {
+                                "type": "agent_start",
+                                "data": {
+                                    "agent_type": "data",
+                                    "task_id": "data_0",
+                                    "query": req.query,
+                                },
+                            },
+                            {
+                                "type": "agent_progress",
+                                "data": {
+                                    "agent_type": "data",
+                                    "task_id": "data_0",
+                                    "progress": 50,
+                                    "message": "执行中",
+                                },
+                            },
+                            {
+                                "type": "dag_node_complete",
+                                "data": {
+                                    "node_id": "data_0",
+                                    "agent_type": "data",
+                                    "status": "success",
+                                    "preview": str(direct_summary)[:200],
+                                },
+                            },
+                            {
+                                "type": "agent_complete",
+                                "data": {
+                                    "agent_type": "data",
+                                    "task_id": "data_0",
+                                    "status": "success",
+                                    "preview": str(direct_summary)[:200],
+                                },
+                            },
                         ]
                         for event in yield_reasoning:
                             await queue.put(event)
@@ -1295,19 +1668,23 @@ async def chat(
                         # Stream the answer character by character
                         content = direct_summary
                         for i in range(0, len(content), 24):
-                            await queue.put({"type": "delta", "data": {"text": content[i : i + 24]}})
+                            await queue.put(
+                                {"type": "delta", "data": {"text": content[i : i + 24]}}
+                            )
 
-                        await queue.put({
-                            "type": "final_answer",
-                            "data": {
-                                "content": content,
-                                "execution_graph": exec_graph,
-                                "citations": [],
-                                "annotations": [],
-                                "state_patch": None,
-                                "result_refs": [],
-                            },
-                        })
+                        await queue.put(
+                            {
+                                "type": "final_answer",
+                                "data": {
+                                    "content": content,
+                                    "execution_graph": exec_graph,
+                                    "citations": [],
+                                    "annotations": [],
+                                    "state_patch": None,
+                                    "result_refs": [],
+                                },
+                            }
+                        )
                     except Exception as exc:  # noqa: BLE001
                         await queue.put({"type": "error", "data": {"message": str(exc)}})
                     finally:
@@ -1351,8 +1728,39 @@ async def chat(
 
                 latency_ms = int((time.monotonic() - t0) * 1000)
                 asyncio.create_task(
-                    _save_trace(session_id, req.query, direct_summary, latency_ms, "database_direct", 0.9, [], exec_graph, parent_message_id=req.parent_message_id, attachment_ids=req.attachment_ids)
+                    _save_trace(
+                        session_id,
+                        req.query,
+                        direct_summary,
+                        latency_ms,
+                        "database_direct",
+                        0.9,
+                        [],
+                        exec_graph,
+                        parent_message_id=req.parent_message_id,
+                        attachment_ids=req.attachment_ids,
+                    )
                 )
+                # Fire-and-forget: save ConversationState
+                _db_stream_patch = {
+                    "last_user_goal": req.query,
+                    "last_assistant_summary": direct_summary[:300],
+                    "last_plan": {
+                        "subtasks": [
+                            {"agent_type": "data", "query": req.query, "params": {"data_source_id": data_source_context["data_source_id"]}}
+                        ],
+                        "merge_strategy": "direct",
+                        "max_parallel": 1,
+                    },
+                    "last_results": [
+                        {"agent_type": "data", "status": "success", "content": direct_summary[:300]}
+                    ],
+                }
+                _db_stream_state = state_manager.apply_patch(conversation_state, _db_stream_patch)
+                _db_stream_state = state_manager.advance_turn(_db_stream_state, req.query, direct_summary)
+                state_manager.add_confidence(_db_stream_state, _db_stream_state.turn_sequence, 0.9)
+                _db_stream_state = state_manager.compact(_db_stream_state)
+                asyncio.create_task(_save_conversation_state_async(state_manager, _db_stream_state))
                 yield ": done\n\n"
 
             return StreamingResponse(
@@ -1370,10 +1778,11 @@ async def chat(
             final_execution_graph: dict[str, Any] | None = None
             final_reasoning_steps: list[dict[str, Any]] = []
             final_state_patch: dict[str, Any] | None = None
+            final_state_persisted = False
             task_key = f"{session_id}:{request_id}"
 
             async def _runner() -> None:
-                nonlocal final_content, final_execution_graph, final_reasoning_steps, final_state_patch
+                nonlocal final_content, final_execution_graph, final_reasoning_steps, final_state_patch, final_state_persisted
                 try:
                     kernel = _get_kernel()
                     async for event in kernel.stream(kernel_request):
@@ -1384,7 +1793,9 @@ async def chat(
                             await cognitive_event_bus.publish(
                                 cognitive_event_bus.emit_execution(
                                     trace_id=trace_id,
-                                    span_id=trace_ctx.start_span(SpanStage.AGENT_EXECUTION, parent_span_id=gateway_span),
+                                    span_id=trace_ctx.start_span(
+                                        SpanStage.AGENT_EXECUTION, parent_span_id=gateway_span
+                                    ),
                                     parent_span_id=gateway_span,
                                     payload={"action": "reasoning_step", "data": data},
                                     session_id=session_id,
@@ -1403,10 +1814,44 @@ async def chat(
                                 pass  # captured, will be persisted below
                             else:
                                 final_state_patch = None
+                            final_state_version = conversation_state.state_version
+                            try:
+                                cs = await state_manager.load(session_id)
+                                if cs is None:
+                                    cs = conversation_state
+                                if final_state_patch is not None:
+                                    state_manager.apply_patch(cs, final_state_patch)
+                                state_manager.advance_turn(cs, req.query, final_content)
+                                score = data.get("validation_score", 0.85)
+                                try:
+                                    confidence = float(score)
+                                except (TypeError, ValueError):
+                                    confidence = 0.85
+                                state_manager.add_confidence(
+                                    cs,
+                                    cs.turn_sequence,
+                                    confidence,
+                                    components={"route": str(data.get("route") or "kernel_stream")},
+                                )
+                                state_manager.compact(cs)
+                                await state_manager.save(cs)
+                                final_state_version = cs.state_version
+                                final_state_persisted = True
+                            except Exception as state_exc:
+                                logger.warning(
+                                    "Failed to persist ConversationState before final stream event",
+                                    error=str(state_exc),
+                                )
+                            data["state_version"] = final_state_version
+                            metadata = data.get("metadata")
+                            if isinstance(metadata, dict) and "clarification" in metadata:
+                                data.setdefault("clarification", metadata.get("clarification"))
                             await cognitive_event_bus.publish(
                                 cognitive_event_bus.emit_evidence(
                                     trace_id=trace_id,
-                                    span_id=trace_ctx.start_span(SpanStage.FUSION, parent_span_id=gateway_span),
+                                    span_id=trace_ctx.start_span(
+                                        SpanStage.FUSION, parent_span_id=gateway_span
+                                    ),
                                     parent_span_id=gateway_span,
                                     payload={
                                         "action": "final_answer",
@@ -1425,9 +1870,15 @@ async def chat(
                     await cognitive_event_bus.publish(
                         cognitive_event_bus.emit_feedback(
                             trace_id=trace_id,
-                            span_id=trace_ctx.start_span(SpanStage.GATEWAY, parent_span_id=gateway_span),
+                            span_id=trace_ctx.start_span(
+                                SpanStage.GATEWAY, parent_span_id=gateway_span
+                            ),
                             parent_span_id=gateway_span,
-                            payload={"action": "stream_cancelled", "session_id": session_id, "request_id": request_id},
+                            payload={
+                                "action": "stream_cancelled",
+                                "session_id": session_id,
+                                "request_id": request_id,
+                            },
                             session_id=session_id,
                             request_id=request_id,
                             user_id=current_user.id,
@@ -1440,7 +1891,9 @@ async def chat(
                     await cognitive_event_bus.publish(
                         cognitive_event_bus.emit_critic(
                             trace_id=trace_id,
-                            span_id=trace_ctx.start_span(SpanStage.CRITIC, parent_span_id=gateway_span),
+                            span_id=trace_ctx.start_span(
+                                SpanStage.CRITIC, parent_span_id=gateway_span
+                            ),
                             parent_span_id=gateway_span,
                             payload={"action": "stream_error", "message": str(exc)},
                             session_id=session_id,
@@ -1484,6 +1937,23 @@ async def chat(
                 task.cancel()
                 with contextlib.suppress(Exception):
                     await task
+                # Save partial content as interrupted trace
+                if final_content:
+                    interrupted_content = final_content + "\n\n[回答中断]"
+                    asyncio.create_task(
+                        _save_trace(
+                            session_id,
+                            req.query,
+                            interrupted_content,
+                            int((time.monotonic() - t0) * 1000),
+                            "interrupted",
+                            1.0,
+                            final_reasoning_steps,
+                            final_execution_graph,
+                            parent_message_id=req.parent_message_id,
+                            attachment_ids=req.attachment_ids,
+                        )
+                    )
                 yield f"data: {json.dumps({'type': 'aborted', 'data': {'message': 'Cancelled by user'}}, ensure_ascii=False)}\n\n"
                 return
             except Exception as exc:  # noqa: BLE001
@@ -1514,10 +1984,17 @@ async def chat(
                 )
             )
             if await _memory_learning_enabled(db, current_user.id):
-                asyncio.create_task(_save_user_memory_from_turn(current_user.id, req.query, final_content))
+                asyncio.create_task(
+                    _save_user_memory_from_turn(current_user.id, req.query, final_content)
+                )
             tools_used = []
             try:
-                tools_used = [str(x) for x in (((final_execution_graph or {}).get("state") or {}).get("tools_used") or [])]
+                tools_used = [
+                    str(x)
+                    for x in (
+                        ((final_execution_graph or {}).get("state") or {}).get("tools_used") or []
+                    )
+                ]
             except Exception:
                 tools_used = []
             if tools_used:
@@ -1533,16 +2010,25 @@ async def chat(
                         )
                     )
             # ── Persist ConversationState for streaming path ──
-            if final_state_patch is not None:
+            if final_state_patch is not None and not final_state_persisted:
                 try:
                     # Reuse state_manager from outer scope; re-load for latest state
                     cs = await state_manager.load(session_id)
                     if cs:
                         state_manager.apply_patch(cs, final_state_patch)
+                        state_manager.advance_turn(cs, req.query, final_content)
+                        state_manager.add_confidence(
+                            cs,
+                            cs.turn_sequence,
+                            0.85,  # default confidence for stream path
+                            components={"route": "kernel_stream"},
+                        )
                         state_manager.compact(cs)
                         await state_manager.save(cs)
                 except Exception as state_exc:
-                    logger.warning("Failed to persist ConversationState in stream path", error=str(state_exc))
+                    logger.warning(
+                        "Failed to persist ConversationState in stream path", error=str(state_exc)
+                    )
             # ── End ConversationState persistence ─────────────────────
             yield ": done\n\n"
 
@@ -1574,14 +2060,24 @@ async def chat(
                 from gateway.api_gateway.routers.data import DataQueryRequest, data_query
 
                 direct = await data_query(
-                    DataQueryRequest(question=req.query, data_source_id=str(data_source_context["data_source_id"]), dry_run=False, sql=None),
+                    DataQueryRequest(
+                        question=req.query,
+                        data_source_id=str(data_source_context["data_source_id"]),
+                        dry_run=False,
+                        sql=None,
+                    ),
                     current_user=current_user,
                     db=db,
                 )
                 latency_ms = int((time.monotonic() - t0) * 1000)
                 return ChatResponse(
                     session_id=session_id,
-                    content=str(direct.get("summary") or direct.get("sql") or direct.get("rows") or "查询完成"),
+                    content=str(
+                        direct.get("summary")
+                        or direct.get("sql")
+                        or direct.get("rows")
+                        or "查询完成"
+                    ),
                     decision_type="database_fallback",
                     validation_score=0.85,
                     passed_validation=True,
@@ -1590,7 +2086,12 @@ async def chat(
                     total_latency_ms=latency_ms,
                     citations=[],
                     annotations=[],
-                    execution_graph={"route": "data_query", "data_source_id": data_source_context["data_source_id"], "sql": direct.get("sql"), "rows": direct.get("rows", [])[:20]},
+                    execution_graph={
+                        "route": "data_query",
+                        "data_source_id": data_source_context["data_source_id"],
+                        "sql": direct.get("sql"),
+                        "rows": direct.get("rows", [])[:20],
+                    },
                 )
             except Exception as db_exc:  # noqa: BLE001
                 logger.warning("Database fallback failed", error=str(db_exc))
@@ -1632,7 +2133,9 @@ async def chat(
         )
 
     latency_ms = int((time.monotonic() - t0) * 1000)
-    final_content = (result.content or "").strip() or "我已经完成了分析，但当前没有可直接展示的最终答案。请补充更多信息后再试。"
+    final_content = (
+        result.content or ""
+    ).strip() or "我已经完成了分析，但当前没有可直接展示的最终答案。请补充更多信息后再试。"
     await cognitive_event_bus.publish(
         cognitive_event_bus.emit_learning(
             trace_id=trace_id,
@@ -1663,16 +2166,46 @@ async def chat(
             result.metadata.get("execution_graph") if isinstance(result.metadata, dict) else None,
             parent_message_id=req.parent_message_id,
             attachment_ids=req.attachment_ids,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            model=(
+                result.model or result.metadata.get("model", "")
+                if isinstance(result.metadata, dict)
+                else ""
+            ),
         )
     )
     if await _memory_learning_enabled(db, current_user.id):
         asyncio.create_task(_save_user_memory_from_turn(current_user.id, req.query, final_content))
 
     # ── Persist state_patch to ConversationState ──
+    final_state_version = conversation_state.state_version
     if result.state_patch is not None:
         updated_state = state_manager.apply_patch(conversation_state, result.state_patch)
+        updated_state = state_manager.advance_turn(updated_state, req.query, final_content)
+        state_manager.add_confidence(
+            updated_state,
+            updated_state.turn_sequence,
+            result.validation_score,
+            components={
+                "fusion": result.validation_score,
+                "route": result.route,
+            },
+        )
         updated_state = state_manager.compact(updated_state)
+        final_state_version = updated_state.state_version
         asyncio.create_task(state_manager.save(updated_state))
+    else:
+        # Still advance turn counter even if no state_patch
+        conversation_state = state_manager.advance_turn(conversation_state, req.query, final_content)
+        state_manager.add_confidence(
+            conversation_state,
+            conversation_state.turn_sequence,
+            result.validation_score,
+            components={"route": result.route},
+        )
+        final_state_version = conversation_state.state_version
+        asyncio.create_task(state_manager.save(conversation_state))
     # ── End state persistence ──────────────────────────────────
 
     return ChatResponse(
@@ -1684,11 +2217,17 @@ async def chat(
         intent_category=result.intent_category,
         context_latency_ms=result.context_latency_ms,
         total_latency_ms=result.total_latency_ms,
-        citations=(result.metadata.get("citations", []) if isinstance(result.metadata, dict) else []),
-        annotations=(result.metadata.get("annotations", []) if isinstance(result.metadata, dict) else []),
-        execution_graph=(result.metadata.get("execution_graph") if isinstance(result.metadata, dict) else None),
+        citations=(
+            result.metadata.get("citations", []) if isinstance(result.metadata, dict) else []
+        ),
+        annotations=(
+            result.metadata.get("annotations", []) if isinstance(result.metadata, dict) else []
+        ),
+        execution_graph=(
+            result.metadata.get("execution_graph") if isinstance(result.metadata, dict) else None
+        ),
         result_refs=result.result_refs if isinstance(result.result_refs, list) else [],
-        state_version=conversation_state.state_version,
+        state_version=final_state_version,
     )
 
 
@@ -1705,7 +2244,9 @@ async def stop_chat_stream(
         )
     )
     if r.scalar_one_or_none() is None:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Session not found or no permission")
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code, message="Session not found or no permission"
+        )
 
     if req.request_id:
         task_key = f"{req.session_id}:{req.request_id}"
@@ -1737,7 +2278,9 @@ async def graph_control_chat_stream(
         )
     )
     if r.scalar_one_or_none() is None:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Session not found or no permission")
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code, message="Session not found or no permission"
+        )
 
     matched_keys: list[str] = []
     if req.request_id:
@@ -1803,9 +2346,13 @@ async def edit_and_regenerate_chat(
         )
     )
     if r.scalar_one_or_none() is None:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Session not found or no permission")
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code, message="Session not found or no permission"
+        )
 
-    query = await _build_edit_regenerate_query(db, req.session_id, req.message_id, req.new_content.strip())
+    query = await _build_edit_regenerate_query(
+        db, req.session_id, req.message_id, req.new_content.strip()
+    )
     chat_req = ChatRequest(
         query=query,
         session_id=req.session_id,
@@ -1833,7 +2380,9 @@ async def chat_feedback(
         )
     )
     if r.scalar_one_or_none() is None:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Session not found or no permission")
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code, message="Session not found or no permission"
+        )
 
     # Persist to Feedback model
     feedback = Feedback(
@@ -1884,9 +2433,8 @@ async def chat_feedback(
                 if req.score is not None:
                     try:
                         from infra.storage.models import UserMemory as UM
-                        r3 = await db.execute(
-                            select(UM).where(UM.metadata_json.contains(chunk_id))
-                        )
+
+                        r3 = await db.execute(select(UM).where(UM.metadata_json.contains(chunk_id)))
                         mem = r3.scalar_one_or_none()
                         if mem:
                             mem.score = req.score
@@ -1898,6 +2446,64 @@ async def chat_feedback(
             pass
 
     return {"status": "ok", "feedback_type": req.feedback_type}
+
+
+@router.get("/chat/messages/{message_id}/versions")
+async def get_message_versions(
+    message_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Get all versions of a message for the version tree UI."""
+    r = await db.execute(
+        select(Message).where(Message.id == message_id)
+    )
+    root = r.scalar_one_or_none()
+    if root is None:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Message not found")
+
+    # Walk up to root (oldest ancestor)
+    current = root
+    while current.parent_message_id:
+        r2 = await db.execute(
+            select(Message).where(Message.id == current.parent_message_id)
+        )
+        parent = r2.scalar_one_or_none()
+        if parent is None:
+            break
+        current = parent
+    root_msg = current
+
+    # Walk down to collect all versions
+    versions: list[dict] = []
+    queue = [root_msg]
+    visited: set[str] = set()
+    while queue:
+        msg = queue.pop(0)
+        if msg.id in visited:
+            continue
+        visited.add(msg.id)
+        versions.append({
+            "id": msg.id,
+            "version": msg.version,
+            "role": msg.role,
+            "content": msg.content[:200],
+            "created_at": msg.created_at.isoformat() if msg.created_at else None,
+            "parent_message_id": msg.parent_message_id,
+        })
+        # Get children
+        r3 = await db.execute(
+            select(Message).where(Message.parent_message_id == msg.id)
+        )
+        children = r3.scalars().all()
+        queue.extend(children)
+
+    return {
+        "message_id": message_id,
+        "root_id": root_msg.id,
+        "versions": versions,
+        "total_versions": len(versions),
+    }
 
 
 @router.post("/chat/resume", response_model=ChatResponse)

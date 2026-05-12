@@ -33,9 +33,7 @@ def build_explanation(
     )
 
     # Tables used
-    explanation.tables_used = [
-        t.split()[0] if " " in t else t for t in plan.tables
-    ]
+    explanation.tables_used = [t.split()[0] if " " in t else t for t in plan.tables]
 
     # Filters applied
     for f in plan.filters:

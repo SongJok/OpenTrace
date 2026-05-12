@@ -24,6 +24,7 @@ class DataQueryResult:
 @dataclass
 class SemanticContext:
     """Resolved semantic mappings for a query."""
+
     dimension_mappings: dict[str, dict[str, Any]] = field(default_factory=dict)
     metric_defs: dict[str, str] = field(default_factory=dict)
     time_macros: list[dict[str, Any]] = field(default_factory=list)
@@ -33,6 +34,7 @@ class SemanticContext:
 @dataclass
 class CandidateSQL:
     """A candidate SQL statement with ranking metadata."""
+
     sql: str
     score: float = 0.0
     features: dict[str, Any] = field(default_factory=dict)
@@ -42,6 +44,7 @@ class CandidateSQL:
 @dataclass
 class ValidationResult:
     """Result of post-execution validation."""
+
     passed: bool
     issues: list[str] = field(default_factory=list)
     severity: str = "info"  # info | warning | critical
@@ -50,6 +53,7 @@ class ValidationResult:
 @dataclass
 class EntityMapping:
     """A natural language mention mapped to a database table."""
+
     mention: str = ""
     mapped_table: str = ""
     confidence: float = 0.0
@@ -58,6 +62,7 @@ class EntityMapping:
 @dataclass
 class MetricMapping:
     """A natural language metric mapped to a column + aggregation."""
+
     mention: str = ""
     mapped_column: str = ""
     agg: str = ""  # SUM, COUNT, AVG, MAX, MIN, or empty for raw column
@@ -66,6 +71,7 @@ class MetricMapping:
 @dataclass
 class ParsedFilter:
     """A parsed filter condition."""
+
     field: str = ""
     operator: str = "="  # =, !=, >, <, >=, <=, LIKE, IN, >=
     value: str = ""
@@ -75,6 +81,7 @@ class ParsedFilter:
 @dataclass
 class SemanticParseResult:
     """Structured semantic parsing output from SemanticParser."""
+
     entities: list[EntityMapping] = field(default_factory=list)
     metrics: list[MetricMapping] = field(default_factory=list)
     filters: list[ParsedFilter] = field(default_factory=list)
@@ -87,6 +94,7 @@ class SemanticParseResult:
 @dataclass
 class Explanation:
     """Human-readable explanation of a query."""
+
     understood_query: str = ""
     tables_used: list[str] = field(default_factory=list)
     filters_applied: list[str] = field(default_factory=list)

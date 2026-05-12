@@ -3,10 +3,11 @@ RL Policy Engine — Rule + Bandit + LLM hybrid with reward feedback loop.
 
 Reward formula: R = α·correctness + β·user_feedback - γ·latency - δ·cost
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from infra.observability.logger import get_logger
 from infra.observability.tracer import get_tracer
@@ -16,17 +17,17 @@ from kernel.policy.engine import Decision, Route, Strategy
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
 
-_ALPHA = 1.0   # correctness
-_BETA  = 0.5   # user feedback
-_GAMMA = 0.1   # latency penalty
+_ALPHA = 1.0  # correctness
+_BETA = 0.5  # user feedback
+_GAMMA = 0.1  # latency penalty
 _DELTA = 0.05  # cost penalty
 
 _ACTION_MAP: dict[str, tuple[Route, Strategy]] = {
-    "FAST":        (Route.FAST,        Strategy.DIRECT),
-    "REASON_COT":  (Route.REASON,      Strategy.COT),
-    "REASON_TOT":  (Route.REASON,      Strategy.TOT),
-    "RAG":         (Route.TOOL,        Strategy.RAG),
-    "TOOL":        (Route.TOOL,        Strategy.SEARCH),
+    "FAST": (Route.FAST, Strategy.DIRECT),
+    "REASON_COT": (Route.REASON, Strategy.COT),
+    "REASON_TOT": (Route.REASON, Strategy.TOT),
+    "RAG": (Route.TOOL, Strategy.RAG),
+    "TOOL": (Route.TOOL, Strategy.SEARCH),
     "MULTI_AGENT": (Route.MULTI_AGENT, Strategy.COT),
 }
 
@@ -43,7 +44,7 @@ class PolicyState:
     language: str = "en"
 
     @classmethod
-    def from_intent(cls, intent: Any, context: Any = None) -> "PolicyState":
+    def from_intent(cls, intent: Any, context: Any = None) -> PolicyState:
         complexity = getattr(intent, "complexity", 0.5)
         uncertainty = 1.0 - abs(complexity - 0.5) * 2
         return cls(
@@ -95,8 +96,8 @@ class RLPolicyEngine:
 
     def __init__(
         self,
-        bandit: Optional[BanditPolicy] = None,
-        rule_engine: Optional[Any] = None,
+        bandit: BanditPolicy | None = None,
+        rule_engine: Any | None = None,
     ) -> None:
         self.bandit = bandit or BanditPolicy(mode="ucb1")
         self._rule_engine = rule_engine
@@ -105,6 +106,7 @@ class RLPolicyEngine:
     def _get_rule_engine(self):
         if self._rule_engine is None:
             from kernel.policy.engine import PolicyEngine
+
             self._rule_engine = PolicyEngine(use_llm_fallback=False)
         return self._rule_engine
 
@@ -137,7 +139,9 @@ class RLPolicyEngine:
 
             logger.debug("RL decision", action=action, confidence=round(confidence, 3), n=count)
             return Decision(
-                route=route, strategy=strategy, confidence=confidence,
+                route=route,
+                strategy=strategy,
+                confidence=confidence,
                 rationale=f"bandit:{action} n={count}",
             )
 
@@ -170,6 +174,7 @@ class RLPolicyEngine:
         # Async save every 20 pulls
         if self.bandit._total_pulls % 20 == 0:
             import asyncio
+
             asyncio.create_task(self.bandit.save())
         return reward
 

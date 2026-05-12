@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 
 from kernel.data_cognition.types import CandidateSQL, SemanticContext, SemanticParseResult
 
@@ -56,8 +55,13 @@ class SQLRanker:
             return []
         for c in candidates:
             c.score = self._score(
-                c, semantic_ctx, schema_hint,
-                unmapped_terms, result_rows, has_empty_semantics, parse_result,
+                c,
+                semantic_ctx,
+                schema_hint,
+                unmapped_terms,
+                result_rows,
+                has_empty_semantics,
+                parse_result,
             )
         return sorted(candidates, key=lambda c: c.score, reverse=True)
 
@@ -78,7 +82,10 @@ class SQLRanker:
         if parse_result:
             semantic_score = self._semantic_score(sql, parse_result)
             # Blend with base score: semantic score is the primary signal
-            score = score * (1 - self.WEIGHT_INTENT_COVERAGE - self.WEIGHT_COLUMN_ACCURACY) + semantic_score
+            score = (
+                score * (1 - self.WEIGHT_INTENT_COVERAGE - self.WEIGHT_COLUMN_ACCURACY)
+                + semantic_score
+            )
 
         # === LEGACY FORM-BASED SCORING (secondary) ===
 
@@ -117,7 +124,15 @@ class SQLRanker:
 
         if ctx and ctx.time_macros:
             has_time_filter = any(
-                kw in sql for kw in ("interval", "date_sub", "dateadd", "now()", "current_date", "current_timestamp")
+                kw in sql
+                for kw in (
+                    "interval",
+                    "date_sub",
+                    "dateadd",
+                    "now()",
+                    "current_date",
+                    "current_timestamp",
+                )
             )
             if not has_time_filter:
                 score -= 0.08
@@ -189,7 +204,15 @@ class SQLRanker:
         # 4. Time filter correctness
         if parse_result.time_window and parse_result.time_window.get("days"):
             has_time = any(
-                kw in lowered for kw in ("date_sub", "dateadd", "interval", "now()", "current_date", "current_timestamp")
+                kw in lowered
+                for kw in (
+                    "date_sub",
+                    "dateadd",
+                    "interval",
+                    "now()",
+                    "current_date",
+                    "current_timestamp",
+                )
             )
             col_hint = parse_result.time_window.get("column_hint", "")
             if has_time:

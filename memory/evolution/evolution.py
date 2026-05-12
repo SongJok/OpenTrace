@@ -14,6 +14,7 @@ from typing import Any, Optional
 from infra.cache.redis_client import get_memory_redis
 from infra.observability.logger import get_logger
 from infra.observability.tracer import get_tracer
+from kernel.json_parser import parse_llm_json
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
 
@@ -89,9 +90,9 @@ class MemoryCompressor:
             role=LLMRole.COMPRESS, temperature=0.0, max_tokens=512,
         )
         try:
-            m = re.search(r"\{.*\}", resp.content, re.DOTALL)
-            if m:
-                return json.loads(m.group(0)).get("clusters", [])
+            parsed = parse_llm_json(resp.content)
+            if parsed and isinstance(parsed, dict):
+                return parsed.get("clusters", [])
         except Exception:  # noqa: BLE001
             pass
         return [{"theme": "general", "summary": "", "ids": list(range(len(memories)))}]
@@ -148,11 +149,11 @@ class MemoryEvolution:
     def _parse(
         self, text: str, cases: list[dict[str, Any]]
     ) -> tuple[Optional[MemoryPattern], Optional[MemorySkill]]:
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if not m:
+        parsed = parse_llm_json(text)
+        if not parsed or not isinstance(parsed, dict):
             return None, None
         try:
-            d = json.loads(m.group(0))
+            d = parsed
             pid = str(uuid.uuid4())[:8]
             pattern = MemoryPattern(
                 pattern_id=pid,

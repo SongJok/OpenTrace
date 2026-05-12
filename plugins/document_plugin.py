@@ -11,6 +11,8 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from kernel.json_parser import parse_llm_json
+
 from sqlalchemy import delete, or_, select, text
 
 from infra.config.settings import settings
@@ -73,14 +75,10 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
         except Exception:
             pass
 
-    match = re.search(r"\{[\s\S]*\}", text_value)
-    if not match:
+    parsed = parse_llm_json(text_value)
+    if parsed is None:
         return None
-    try:
-        parsed = json.loads(match.group(0))
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _normalize_keywords(keywords: Any, fallback_text: str) -> list[str]:

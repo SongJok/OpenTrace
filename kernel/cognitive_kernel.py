@@ -17,6 +17,7 @@ Cognitive Kernel — 系统唯一中枢入口（认知内核 v2，生产级）
   Step 6: meta_cognition — 质量门控（三级）
   Step 7: memory.store() — 异步写回（不阻塞响应）
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -24,21 +25,23 @@ import json
 import re
 import time
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass, field
-from typing import Any, AsyncIterator, Optional
+from typing import Any
 
 from infra.config.settings import settings
 from infra.observability.logger import get_logger
-from infra.observability.runtime_metrics import runtime_metrics_store
 from infra.observability.tracer import get_tracer
 from kernel.cognition.self_model import SelfModel
 from kernel.cognition.types import CapabilityLevel, TaskDomain
 from kernel.identity.system_identity import CANONICAL_IDENTITY_RESPONSE, is_identity_user_query
+from kernel.json_parser import parse_llm_json
 from kernel.protocol.events import trace_context_for_request
 from memory.working_memory.working_memory import (
     cache_identity_answer,
     get_cached_identity_answer,
     get_or_create_session_memory,
+    load_or_create_session_memory,
 )
 
 logger = get_logger(__name__)
@@ -80,12 +83,26 @@ async def _emit_streaming_answer(
     yield {"type": "final_answer", "data": final_data}
 
 
+def _context_hash(history: list[dict[str, Any]] | None) -> str:
+    """Build a short fingerprint of recent conversation turns for context-aware caching."""
+    if not history:
+        return ""
+    recent = history[-6:]
+    parts = []
+    for m in recent:
+        content = str(m.get("content", ""))[:80]
+        parts.append(f"{m.get('role', '?')}:{content}")
+    import hashlib
+
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
+
+
 @dataclass
 class KernelRequest:
     query: str
     session_id: str = ""
     user_id: str = ""
-    history: list[dict[str, str]] = field(default_factory=list)
+    history: list[dict[str, Any]] = field(default_factory=list)
     stream: bool = False
     web_enabled: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -108,6 +125,9 @@ class KernelResponse:
     metadata: dict[str, Any] = field(default_factory=dict)
     state_patch: dict[str, Any] | None = None
     result_refs: list[dict[str, Any]] = field(default_factory=list)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    model: str = ""
 
 
 class CognitiveKernel:
@@ -136,76 +156,87 @@ class CognitiveKernel:
     def _get_intent_engine(self):
         if self._intent_engine is None:
             from kernel.intent_engine.engine import IntentEngine
+
             self._intent_engine = IntentEngine()
         return self._intent_engine
 
     def _get_policy_engine(self):
         if self._policy_engine is None:
             from kernel.policy.engine import PolicyEngine
+
             self._policy_engine = PolicyEngine()
         return self._policy_engine
 
     def _get_reasoning_engine(self):
         if self._reasoning_engine is None:
             from kernel.reasoning.engine import ReasoningEngine
+
             self._reasoning_engine = ReasoningEngine()
         return self._reasoning_engine
 
     def _get_meta_cognition(self):
         if self._meta_cognition is None:
             from kernel.meta_cognition.meta_cognition import MetaCognition
+
             self._meta_cognition = MetaCognition()
         return self._meta_cognition
 
     def _get_memory_router(self):
         if self._memory_router is None:
             from memory.memory_router.router import get_memory_router
+
             self._memory_router = get_memory_router()
         return self._memory_router
 
     def _get_prompt_engine(self):
         from kernel.prompt_engine.cognitive_prompt import get_prompt_engine
+
         return get_prompt_engine()
 
     def _get_gateway(self):
         from model.model_gateway.gateway import get_model_gateway
+
         return get_model_gateway()
 
     # ── V5 Routing Tier lazy singletons ───────────────────────────────
     def _get_l0_router(self):
         if not hasattr(self, "_l0_router") or self._l0_router is None:
             from kernel.query_router_v2 import L0RuleRouter
+
             self._l0_router = L0RuleRouter()
         return self._l0_router
 
     def _get_semantic_cache(self):
         if not hasattr(self, "_semantic_cache") or self._semantic_cache is None:
             from kernel.semantic_cache import SemanticCache
+
             self._semantic_cache = SemanticCache()
         return self._semantic_cache
 
     def _get_complexity_engine(self):
         if not hasattr(self, "_complexity_engine") or self._complexity_engine is None:
             from kernel.complexity_engine import ComplexityEngine
+
             self._complexity_engine = ComplexityEngine()
         return self._complexity_engine
 
     def _get_tiny_router(self):
         if not hasattr(self, "_tiny_router") or self._tiny_router is None:
             from kernel.tiny_router import TinyRouter
+
             self._tiny_router = TinyRouter()
         return self._tiny_router
 
     def _get_context_composer(self):
         if not hasattr(self, "_context_composer") or self._context_composer is None:
             from kernel.context_composer import ContextComposer
+
             self._context_composer = ContextComposer()
         return self._context_composer
 
     # ── Main entry point ──────────────────────────────────────────────
     async def run(self, request: KernelRequest) -> KernelResponse:
         """同步执行：支持 v1/v2 编排器分流。"""
-        from kernel.orchestrator import CognitiveOrchestrator, OrchestratorRequest
 
         t0 = time.monotonic()
         with tracer.start_as_current_span("cognitive_kernel.run") as span:
@@ -216,6 +247,10 @@ class CognitiveKernel:
                 user_id=request.user_id,
             )
             is_multi = self._is_multi_question(request.query)
+
+            # Recover WorkingMemory from Redis if process was restarted
+            if sid:
+                await load_or_create_session_memory(sid)
 
             # ── Working memory identity cache (fastest path) ──────────
             if sid and is_identity_user_query(request.query) and not is_multi:
@@ -254,12 +289,19 @@ class CognitiveKernel:
                 # L0: Rule Router (zero-LLM, <1ms)
                 if settings.kernel_l0_rule_router_enabled:
                     l0_result = await self._get_l0_router().route(
-                        request.query, sid, is_multi=is_multi
+                        request.query,
+                        sid,
+                        is_multi=is_multi,
+                        conversation_history=request.history,
                     )
                     if l0_result.hit and l0_result.answer is not None:
                         if l0_result.route == "force_mode":
                             identity_prompt = self.self_model.get_identity_prompt()
-                            from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+                            from kernel.orchestrator_v4 import (
+                                CognitiveOrchestratorV4,
+                                OrchestratorV4Request,
+                            )
+
                             orchestrator_v4 = CognitiveOrchestratorV4(
                                 timeout_sec=int(settings.kernel_agent_timeout_sec),
                                 max_parallel=int(settings.kernel_agent_max_parallel),
@@ -297,9 +339,15 @@ class CognitiveKernel:
                             )
 
                         # ── Enriched identity via MinShort 0.6B ──────────
-                        if l0_result.route == "identity" and settings.kernel_enriched_identity_enabled:
+                        if (
+                            l0_result.route == "identity"
+                            and settings.kernel_enriched_identity_enabled
+                        ):
                             try:
-                                from kernel.identity.enriched_identity import generate_enriched_identity
+                                from kernel.identity.enriched_identity import (
+                                    generate_enriched_identity,
+                                )
+
                                 wm_turns = []
                                 if sid:
                                     try:
@@ -315,7 +363,9 @@ class CognitiveKernel:
                                 l0_result.answer = enriched
                                 l0_result.metadata["enriched"] = True
                             except Exception as exc:
-                                logger.debug("Enriched identity failed, using canned", error=str(exc))
+                                logger.debug(
+                                    "Enriched identity failed, using canned", error=str(exc)
+                                )
 
                         if l0_result.route in ("identity", "faq") and sid:
                             cache_identity_answer(sid, request.query, l0_result.answer)
@@ -336,7 +386,8 @@ class CognitiveKernel:
 
                 # L0.5: Semantic Cache
                 if settings.kernel_semantic_cache_enabled and not is_multi:
-                    cached = await self._get_semantic_cache().lookup(request.query)
+                    ctx_hash = _context_hash(request.history)
+                    cached = await self._get_semantic_cache().lookup(request.query, ctx_hash)
                     if cached and cached.answer:
                         total_ms = int((time.monotonic() - t0) * 1000)
                         return KernelResponse(
@@ -355,7 +406,13 @@ class CognitiveKernel:
 
                 # L1: Complexity Engine + Tiny Router
                 if settings.kernel_l1_tiny_router_enabled and not is_multi:
-                    complexity = self._get_complexity_engine().assess(request.query)
+                    complexity = self._get_complexity_engine().assess(
+                        request.query,
+                        conversation_context={
+                            "history_length": len(request.history),
+                            "session_id": request.session_id,
+                        },
+                    )
                     if complexity.recommended_pipeline in ("L0", "L1"):
                         l1_result = await self._get_tiny_router().route(
                             request.query, request.history
@@ -414,6 +471,10 @@ class CognitiveKernel:
                         f"user: {t.content}" if t.role == "user" else f"assistant: {t.content}"
                         for t in wm.get_turns(last_n=8)
                     ] + request.metadata.get("user_preferences", [])
+                    # Inject layered preference context block
+                    pref_block = request.metadata.get("user_preference_context_block", "")
+                    if pref_block:
+                        keyword_chunks.append(pref_block)
                 except Exception:
                     pass
 
@@ -454,7 +515,10 @@ class CognitiveKernel:
                         intent_complexity="guarded",
                         context_latency_ms=0,
                         total_latency_ms=total_ms,
-                        metadata={"capability_assessment": asdict(assessment), "identity_guard": True},
+                        metadata={
+                            "capability_assessment": asdict(assessment),
+                            "identity_guard": True,
+                        },
                     )
                 return KernelResponse(
                     content=(
@@ -476,21 +540,47 @@ class CognitiveKernel:
 
             identity_prompt = self.self_model.get_identity_prompt()
 
-            # ── Feature ①: ContextComposer — compress long histories ──
-            composed_ctx = None
+            # ── Feature ①: ContextAssembler — unified context assembly ──
+            assembled_ctx = None
             if bool(settings.kernel_context_composer_enabled) and request.history:
                 try:
-                    composer = self._get_context_composer()
-                    composed_ctx = await composer.compose(
-                        history=request.history,
-                        current_query=request.query,
-                        session_id=request.session_id,
+                    from kernel.context_assembler import get_context_assembler
+                    from kernel.turn_context import TurnContext
+
+                    assembler = get_context_assembler()
+
+                    # Build minimal TurnContext for the assembler
+                    tctx = TurnContext(
+                        query=request.query,
+                        session_id=request.session_id or "",
+                        user_id=request.user_id or "",
+                        recent_history=request.history,
+                        memory_context=memory_context,
+                        attachment_contexts=request.metadata.get("attachment_contexts", []),
+                        conversation_state=request.conversation_state,
+                        metadata=request.metadata,
                     )
+                    assembled_ctx = await assembler.assemble(tctx)
+                    if assembled_ctx.structured_summary:
+                        span.set_attribute(
+                            "context.summary_sections",
+                            len(assembled_ctx.structured_summary.to_text()),
+                        )
+                    span.set_attribute("context.compressed", assembled_ctx.compressed)
+                    span.set_attribute("context.total_tokens", assembled_ctx.total_tokens)
                 except Exception:
-                    composed_ctx = None
-            effective_history = composed_ctx.recent_turns if (composed_ctx and composed_ctx.compressed) else request.history
-            memory_injection_query = composed_ctx.memory_injection_query if composed_ctx else request.query
-            # ── End ContextComposer ────────────────────────────────────────
+                    assembled_ctx = None
+
+            effective_history = (
+                assembled_ctx.recent_turns
+                if (assembled_ctx and assembled_ctx.compressed)
+                else request.history
+            )
+            memory_injection_query = (
+                assembled_ctx.memory_injection_query if assembled_ctx else request.query
+            )
+            conversation_summary = assembled_ctx.summary_block if assembled_ctx else ""
+            # ── End ContextAssembler ────────────────────────────────────────
 
             from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
 
@@ -508,7 +598,22 @@ class CognitiveKernel:
                         **request.metadata,
                         "web_enabled": request.web_enabled,
                         "memory_injection_query": memory_injection_query,
-                        "composed_context": composed_ctx.__dict__ if composed_ctx else None,
+                        "conversation_summary": conversation_summary,
+                        "assembled_context": (
+                            {
+                                "summary_block": assembled_ctx.summary_block,
+                                "memory_block": assembled_ctx.memory_block,
+                                "attachment_block": assembled_ctx.attachment_block,
+                                "state_block": assembled_ctx.state_block,
+                                "total_tokens": assembled_ctx.total_tokens,
+                                "compressed": assembled_ctx.compressed,
+                            }
+                            if assembled_ctx
+                            else None
+                        ),
+                        "composed_context": (
+                            assembled_ctx.__dict__ if assembled_ctx else None
+                        ),
                         "identity_prompt": identity_prompt,
                         "memory_context": memory_context,
                     },
@@ -522,7 +627,11 @@ class CognitiveKernel:
 
             # Store in semantic cache for future hits
             if settings.kernel_semantic_cache_enabled and resp.content:
-                await self._get_semantic_cache().store(request.query, resp.content)
+                await self._get_semantic_cache().store(
+                    request.query,
+                    resp.content,
+                    _context_hash(request.history),
+                )
 
             # ── Save turns to WorkingMemory + EpisodicMemory ────────────
             if settings.kernel_memory_context_enabled and sid and resp.content:
@@ -534,10 +643,13 @@ class CognitiveKernel:
                     pass
                 try:
                     from memory.episodic_memory.episodic_memory import EpisodicMemory
+
                     episodic = EpisodicMemory(sid)
                     await episodic.record(
                         "turn",
-                        json.dumps({"q": request.query, "a": resp.content[:500]}, ensure_ascii=False),
+                        json.dumps(
+                            {"q": request.query, "a": resp.content[:500]}, ensure_ascii=False
+                        ),
                     )
                 except Exception:
                     pass
@@ -549,6 +661,19 @@ class CognitiveKernel:
                         query=request.query,
                         answer=resp.content[:2000],
                         metadata={"user_id": request.user_id, "route": resp.route},
+                    )
+                except Exception:
+                    pass
+                # Semantic history indexing (best-effort)
+                try:
+                    from kernel.history_retriever import SemanticHistoryRetriever
+
+                    turn_no = len(request.history) // 2 + 1
+                    await SemanticHistoryRetriever().index_turn(
+                        sid,
+                        turn_no,
+                        request.query,
+                        resp.content,
                     )
                 except Exception:
                     pass
@@ -586,6 +711,9 @@ class CognitiveKernel:
                 },
                 state_patch=resp.state_patch,
                 result_refs=resp.result_refs,
+                prompt_tokens=getattr(resp, "prompt_tokens", 0),
+                completion_tokens=getattr(resp, "completion_tokens", 0),
+                model=getattr(resp, "model", ""),
             )
 
     # ── Streaming ─────────────────────────────────────────────────────
@@ -594,12 +722,25 @@ class CognitiveKernel:
         sid = request.session_id
         is_multi = self._is_multi_question(request.query)
 
+        # Recover WorkingMemory from Redis if process was restarted
+        if sid:
+            await load_or_create_session_memory(sid)
+
         if sid and is_identity_user_query(request.query) and not is_multi:
             cached = get_cached_identity_answer(sid)
             if cached:
                 async for event in _emit_streaming_answer(
                     cached,
-                    reasoning_step={"type": "reasoning_step", "data": {"id": "identity_reason", "stage": "REASON", "content": "命中身份记忆，直接返回缓存答案", "node_id": "node_identity", "status": "done"}},
+                    reasoning_step={
+                        "type": "reasoning_step",
+                        "data": {
+                            "id": "identity_reason",
+                            "stage": "REASON",
+                            "content": "命中身份记忆，直接返回缓存答案",
+                            "node_id": "node_identity",
+                            "status": "done",
+                        },
+                    },
                 ):
                     yield event
                 return
@@ -620,18 +761,29 @@ class CognitiveKernel:
         elif settings.kernel_v5_routing_enabled:
             # L0: Rule Router
             if settings.kernel_l0_rule_router_enabled:
-                l0_result = await self._get_l0_router().route(
-                    request.query, sid, is_multi=is_multi
-                )
+                l0_result = await self._get_l0_router().route(request.query, sid, is_multi=is_multi)
                 if l0_result.hit and l0_result.answer is not None:
                     if l0_result.route == "force_mode":
                         # Slash command — re-enter as force_mode via orchestrator
-                        from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+                        from kernel.orchestrator_v4 import (
+                            CognitiveOrchestratorV4,
+                            OrchestratorV4Request,
+                        )
+
                         orchestrator = CognitiveOrchestratorV4(
                             timeout_sec=int(settings.kernel_agent_timeout_sec),
                             max_parallel=int(settings.kernel_agent_max_parallel),
                         )
-                        yield {"type": "reasoning_step", "data": {"id": "l0_slash", "stage": "ROUTE", "content": f"L0 斜杠命令: {l0_result.force_mode}", "node_id": "node_l0", "status": "done"}}
+                        yield {
+                            "type": "reasoning_step",
+                            "data": {
+                                "id": "l0_slash",
+                                "stage": "ROUTE",
+                                "content": f"L0 斜杠命令: {l0_result.force_mode}",
+                                "node_id": "node_l0",
+                                "status": "done",
+                            },
+                        }
                         async for event in orchestrator.stream(
                             OrchestratorV4Request(
                                 query=l0_result.answer,
@@ -654,6 +806,7 @@ class CognitiveKernel:
                     if l0_result.route == "identity" and settings.kernel_enriched_identity_enabled:
                         try:
                             from kernel.identity.enriched_identity import generate_enriched_identity
+
                             wm_turns = []
                             if sid:
                                 try:
@@ -669,11 +822,22 @@ class CognitiveKernel:
                             l0_result.answer = enriched
                             l0_result.metadata["enriched"] = True
                         except Exception as exc:
-                            logger.debug("Enriched identity failed (stream), using canned", error=str(exc))
+                            logger.debug(
+                                "Enriched identity failed (stream), using canned", error=str(exc)
+                            )
 
                     async for event in _emit_streaming_answer(
                         l0_result.answer,
-                        reasoning_step={"type": "reasoning_step", "data": {"id": "l0_route", "stage": "ROUTE", "content": f"L0 规则匹配: {l0_result.route}", "node_id": "node_l0", "status": "done"}},
+                        reasoning_step={
+                            "type": "reasoning_step",
+                            "data": {
+                                "id": "l0_route",
+                                "stage": "ROUTE",
+                                "content": f"L0 规则匹配: {l0_result.route}",
+                                "node_id": "node_l0",
+                                "status": "done",
+                            },
+                        },
                     ):
                         yield event
                     return
@@ -684,7 +848,16 @@ class CognitiveKernel:
                 if cached and cached.answer:
                     async for event in _emit_streaming_answer(
                         cached.answer,
-                        reasoning_step={"type": "reasoning_step", "data": {"id": "cache_hit", "stage": "ROUTE", "content": "语义缓存命中", "node_id": "node_cache", "status": "done"}},
+                        reasoning_step={
+                            "type": "reasoning_step",
+                            "data": {
+                                "id": "cache_hit",
+                                "stage": "ROUTE",
+                                "content": "语义缓存命中",
+                                "node_id": "node_cache",
+                                "status": "done",
+                            },
+                        },
                     ):
                         yield event
                     return
@@ -697,7 +870,16 @@ class CognitiveKernel:
                     if l1_result.route != "complex" and l1_result.answer:
                         async for event in _emit_streaming_answer(
                             l1_result.answer,
-                            reasoning_step={"type": "reasoning_step", "data": {"id": "l1_route", "stage": "ROUTE", "content": f"L1 路由: {l1_result.route}", "node_id": "node_l1", "status": "done"}},
+                            reasoning_step={
+                                "type": "reasoning_step",
+                                "data": {
+                                    "id": "l1_route",
+                                    "stage": "ROUTE",
+                                    "content": f"L1 路由: {l1_result.route}",
+                                    "node_id": "node_l1",
+                                    "status": "done",
+                                },
+                            },
                         ):
                             yield event
                         return
@@ -759,21 +941,43 @@ class CognitiveKernel:
                     logger.debug("MemoryRouter.retrieve failed (stream)", error=str(exc))
         # ── End Memory Context Injection ─────────────────────────────────
 
-        # ── Feature ①: ContextComposer — compress long histories (stream path) ──
-        composed_ctx_stream = None
+        # ── Feature ①: ContextAssembler — unified context (stream path) ──
+        assembled_ctx_stream = None
         if bool(settings.kernel_context_composer_enabled) and request.history:
             try:
-                composer = self._get_context_composer()
-                composed_ctx_stream = await composer.compose(
-                    history=request.history,
-                    current_query=request.query,
-                    session_id=request.session_id,
+                from kernel.context_assembler import get_context_assembler
+                from kernel.turn_context import TurnContext
+
+                assembler = get_context_assembler()
+                tctx = TurnContext(
+                    query=request.query,
+                    session_id=request.session_id or "",
+                    user_id=request.user_id or "",
+                    recent_history=request.history,
+                    memory_context=memory_context_stream,
+                    attachment_contexts=request.metadata.get("attachment_contexts", []),
+                    conversation_state=request.conversation_state,
+                    metadata=request.metadata,
                 )
+                assembled_ctx_stream = await assembler.assemble(tctx)
+                if assembled_ctx_stream and assembled_ctx_stream.structured_summary:
+                    span.set_attribute(
+                        "context.summary_sections",
+                        len(assembled_ctx_stream.structured_summary.to_text()),
+                    )
             except Exception:
-                composed_ctx_stream = None
-        effective_history_stream = composed_ctx_stream.recent_turns if (composed_ctx_stream and composed_ctx_stream.compressed) else request.history
-        memory_injection_query_stream = composed_ctx_stream.memory_injection_query if composed_ctx_stream else request.query
-        # ── End ContextComposer ────────────────────────────────────────────
+                assembled_ctx_stream = None
+
+        effective_history_stream = (
+            assembled_ctx_stream.recent_turns
+            if (assembled_ctx_stream and assembled_ctx_stream.compressed)
+            else request.history
+        )
+        memory_injection_query_stream = (
+            assembled_ctx_stream.memory_injection_query if assembled_ctx_stream else request.query
+        )
+        conversation_summary_stream = assembled_ctx_stream.summary_block if assembled_ctx_stream else ""
+        # ── End ContextAssembler ────────────────────────────────────────────
 
         from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
 
@@ -794,7 +998,22 @@ class CognitiveKernel:
                         "web_enabled": request.web_enabled,
                         "memory_context": memory_context_stream,
                         "memory_injection_query": memory_injection_query_stream,
-                        "composed_context": composed_ctx_stream.__dict__ if composed_ctx_stream else None,
+                        "conversation_summary": conversation_summary_stream,
+                        "assembled_context": (
+                            {
+                                "summary_block": assembled_ctx_stream.summary_block,
+                                "memory_block": assembled_ctx_stream.memory_block,
+                                "attachment_block": assembled_ctx_stream.attachment_block,
+                                "state_block": assembled_ctx_stream.state_block,
+                                "total_tokens": assembled_ctx_stream.total_tokens,
+                                "compressed": assembled_ctx_stream.compressed,
+                            }
+                            if assembled_ctx_stream
+                            else None
+                        ),
+                        "composed_context": (
+                            assembled_ctx_stream.__dict__ if assembled_ctx_stream else None
+                        ),
                     },
                     trace_ctx=trace_ctx,
                     conversation_state=request.conversation_state,
@@ -821,10 +1040,13 @@ class CognitiveKernel:
                     pass
                 try:
                     from memory.episodic_memory.episodic_memory import EpisodicMemory
+
                     episodic = EpisodicMemory(sid)
                     await episodic.record(
                         "turn",
-                        json.dumps({"q": request.query, "a": final_content[:500]}, ensure_ascii=False),
+                        json.dumps(
+                            {"q": request.query, "a": final_content[:500]}, ensure_ascii=False
+                        ),
                     )
                 except Exception:
                     pass
@@ -836,6 +1058,19 @@ class CognitiveKernel:
                         query=request.query,
                         answer=final_content[:2000],
                         metadata={"user_id": request.user_id},
+                    )
+                except Exception:
+                    pass
+                # Semantic history indexing (best-effort, stream path)
+                try:
+                    from kernel.history_retriever import SemanticHistoryRetriever
+
+                    turn_no = len(request.history) // 2 + 1
+                    await SemanticHistoryRetriever().index_turn(
+                        sid,
+                        turn_no,
+                        request.query,
+                        final_content,
                     )
                 except Exception:
                     pass
@@ -859,9 +1094,19 @@ class CognitiveKernel:
 
     # ── Active Memory Detection ──────────────────────────────────────
     _ACTIVE_MEMORY_PATTERNS = [
-        "记住", "记下", "记录下来", "别忘了", "提醒我",
-        "我更喜欢", "我喜欢", "我偏好", "我习惯", "我常用",
-        "保存下来", "存下来", "记录下来",
+        "记住",
+        "记下",
+        "记录下来",
+        "别忘了",
+        "提醒我",
+        "我更喜欢",
+        "我喜欢",
+        "我偏好",
+        "我习惯",
+        "我常用",
+        "保存下来",
+        "存下来",
+        "记录下来",
     ]
 
     def _detect_active_memory_intent(self, query: str) -> str | None:
@@ -881,9 +1126,7 @@ class CognitiveKernel:
                     return content
         return q if len(q) > 5 else None
 
-    async def _persist_active_memory(
-        self, user_id: str, content: str, session_id: str
-    ) -> None:
+    async def _persist_active_memory(self, user_id: str, content: str, session_id: str) -> None:
         """Write a user memory fact to the database."""
         try:
             from infra.storage.database import AsyncSessionLocal
@@ -913,7 +1156,20 @@ class CognitiveKernel:
     def _classify_intent_domain(self, query: str) -> TaskDomain:
         q = (query or "").lower()
         # SQL generation intent (user wants to *write* SQL, not execute)
-        if any(k in q for k in ["帮我写一段sql", "帮我写个sql", "帮我写sql", "写一个sql", "写一段sql", "写sql", "生成sql", "sql语句", "sql代码"]):
+        if any(
+            k in q
+            for k in [
+                "帮我写一段sql",
+                "帮我写个sql",
+                "帮我写sql",
+                "写一个sql",
+                "写一段sql",
+                "写sql",
+                "生成sql",
+                "sql语句",
+                "sql代码",
+            ]
+        ):
             return TaskDomain.GENERAL_QA
         if any(k in q for k in ["查询", "统计", "报表", "销量", "订单", "数据库"]):
             return TaskDomain.DATA_QUERY
@@ -927,19 +1183,93 @@ class CognitiveKernel:
 
     # ── Multi-question detection ────────────────────────────────────────
     _MULTI_Q_HINTS = [
-        "第一个", "第二个", "第三个", "第一", "第二", "第三",
-        "并告诉我", "同时告诉我", "另外", "此外", "还有",
-        "再分析", "再查询", "再告诉我",
+        "第一个",
+        "第二个",
+        "第三个",
+        "第一",
+        "第二",
+        "第三",
+        "并告诉我",
+        "同时告诉我",
+        "另外",
+        "此外",
+        "还有",
+        "再分析",
+        "再查询",
+        "再告诉我",
     ]
-    _DOMAIN_DATA_KW = ["查询", "统计", "报表", "销量", "订单", "数据库", "sql", "表", "字段", "列", "聚合", "分组", "金额", "收入", "分布", "图表"]
-    _DOMAIN_RAG_KW = ["文档", "手册", "知识库", "总结", "归纳", "pdf", "doc", "附件", "政策", "规范", "记忆", "读取", ".pdf", ".doc", ".docx"]
-    _DOMAIN_WEB_KW = ["最新", "新闻", "今天", "实时", "联网", "搜索", "weather", "气温", "降雨", "资讯"]
+    _DOMAIN_DATA_KW = [
+        "查询",
+        "统计",
+        "报表",
+        "销量",
+        "订单",
+        "数据库",
+        "sql",
+        "表",
+        "字段",
+        "列",
+        "聚合",
+        "分组",
+        "金额",
+        "收入",
+        "分布",
+        "图表",
+    ]
+    _DOMAIN_RAG_KW = [
+        "文档",
+        "手册",
+        "知识库",
+        "总结",
+        "归纳",
+        "pdf",
+        "doc",
+        "附件",
+        "政策",
+        "规范",
+        "记忆",
+        "读取",
+        ".pdf",
+        ".doc",
+        ".docx",
+    ]
+    _DOMAIN_WEB_KW = [
+        "最新",
+        "新闻",
+        "今天",
+        "实时",
+        "联网",
+        "搜索",
+        "weather",
+        "气温",
+        "降雨",
+        "资讯",
+    ]
     _DOMAIN_TOOL_KW = ["时间", "几点", "天气", "计算", "代码", "执行", "翻译", "画图"]
-    _FACTUAL_Q_PATTERNS = ["首都", "国家", "哪里", "是谁", "哪个", "什么时候", "多少", "多大", "多远", "什么", "位于", "属于"]
+    _FACTUAL_Q_PATTERNS = [
+        "首都",
+        "国家",
+        "哪里",
+        "是谁",
+        "哪个",
+        "什么时候",
+        "多少",
+        "多大",
+        "多远",
+        "什么",
+        "位于",
+        "属于",
+    ]
 
     def _classify_sub_question_domain(self, text: str) -> str:
         t = (text or "").lower()
-        scores = {"data_query": 0, "document_retrieval": 0, "web_search": 0, "tool_execution": 0, "general_qa": 0}
+        scores = {
+            "data_query": 0,
+            "document_retrieval": 0,
+            "web_search": 0,
+            "tool_execution": 0,
+            "general_qa": 0,
+        }
         for kw in self._DOMAIN_DATA_KW:
             if kw in t:
                 scores["data_query"] += 1
@@ -1045,10 +1375,10 @@ class CognitiveKernel:
                 max_tokens=400,
             )
             text = (resp.content or "").strip()
-            m = re.search(r"\{.*\}", text, re.DOTALL)
-            if not m:
+            parsed = parse_llm_json(text)
+            if not parsed or not isinstance(parsed, dict):
                 return None
-            data = json.loads(m.group(0))
+            data = parsed
             questions = data.get("questions", [])
             if isinstance(questions, list) and len(questions) >= 2:
                 # Apply keyword heuristic to validate/override LLM domains
@@ -1058,12 +1388,16 @@ class CognitiveKernel:
                         text_val = q_data.get("text", "")
                         llm_domain = q_data.get("domain", "general_qa")
                         heuristic_domain = self._classify_sub_question_domain(text_val)
-                        final_domain = heuristic_domain if heuristic_domain != "general_qa" else llm_domain
-                        result.append({
-                            "id": q_data.get("id", f"q{i+1}"),
-                            "text": text_val,
-                            "domain": final_domain,
-                        })
+                        final_domain = (
+                            heuristic_domain if heuristic_domain != "general_qa" else llm_domain
+                        )
+                        result.append(
+                            {
+                                "id": q_data.get("id", f"q{i+1}"),
+                                "text": text_val,
+                                "domain": final_domain,
+                            }
+                        )
                 return result if len(result) >= 2 else None
         except Exception:
             pass
@@ -1092,9 +1426,7 @@ class CognitiveKernel:
             return "simple"
         return str(complexity)
 
-    async def _select_tools(
-        self, query: str, complexity: str, web_enabled: bool
-    ) -> list[str]:
+    async def _select_tools(self, query: str, complexity: str, web_enabled: bool) -> list[str]:
         """Step 3: 工具选择（PLANNING 小模型）。失败时回退到启发式规则。"""
         from model.llm_adapter.base import LLMMessage
         from model.model_gateway.gateway import LLMRole
@@ -1109,9 +1441,9 @@ class CognitiveKernel:
                 temperature=0.0,
                 max_tokens=100,
             )
-            m = re.search(r"\{.*?\}", resp.content, re.DOTALL)
-            if m:
-                data = json.loads(m.group(0))
+            parsed = parse_llm_json(resp.content)
+            if parsed and isinstance(parsed, dict):
+                data = parsed
                 tools = data.get("tools", [])
                 if isinstance(tools, list):
                     out = [str(t) for t in tools if t]
@@ -1159,7 +1491,7 @@ class CognitiveKernel:
         """Use DAG engine for plugin parallelism with fallback."""
         try:
             from execution.dag_engine.engine import DAGEngine
-            from execution.dag_engine.graph import Task, ResourceType
+            from execution.dag_engine.graph import ResourceType, Task
 
             tasks: list[Task] = []
             for p in plugins:
@@ -1181,7 +1513,11 @@ class CognitiveKernel:
                 )
 
             results = await DAGEngine().execute(tasks, context={})
-            out = [v for k, v in results.items() if not k.startswith("__err_") and hasattr(v, "content")]
+            out = [
+                v
+                for k, v in results.items()
+                if not k.startswith("__err_") and hasattr(v, "content")
+            ]
             return out
         except Exception as exc:  # noqa: BLE001
             logger.debug("DAG plugin execution fallback", error=str(exc))
@@ -1190,8 +1526,7 @@ class CognitiveKernel:
                 return_exceptions=True,
             )
             return [
-                r for r in plugin_results
-                if not isinstance(r, Exception) and hasattr(r, "content")
+                r for r in plugin_results if not isinstance(r, Exception) and hasattr(r, "content")
             ]
 
     async def _publish_event(self, channel: str, payload: dict[str, Any]) -> None:

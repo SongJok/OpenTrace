@@ -6,29 +6,34 @@ Meta-Cognition — three-tier quality control:
 
 Also performs hallucination risk detection.
 """
+
 from __future__ import annotations
 
-import json
-import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 from infra.observability.logger import get_logger
 from infra.observability.tracer import get_tracer
 from kernel.identity.system_identity import build_system_identity
+from kernel.json_parser import parse_llm_json
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
 
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
 
-EVAL_SYSTEM = build_system_identity("""\
+EVAL_SYSTEM = build_system_identity(
+    """\
 You are a strict quality evaluator. Rate the answer quality.
 Respond ONLY with JSON:
 {"score": 0.0-1.0, "hallucination_risk": 0.0-1.0, "reason": "...", "issues": ["..."]}
-""")
+"""
+)
 
-REFINE_SYSTEM = build_system_identity("Improve the following answer based on the feedback. Return only the improved answer.")
+REFINE_SYSTEM = build_system_identity(
+    "Improve the following answer based on the feedback. Return only the improved answer."
+)
 
 
 @dataclass
@@ -64,7 +69,7 @@ class MetaCognition:
         self,
         query: str,
         result: Any,
-        retry_fn: Optional[Callable] = None,
+        retry_fn: Callable | None = None,
     ) -> ValidationResult:
         with tracer.start_as_current_span("meta_cognition.validate") as span:
             current = result
@@ -81,8 +86,12 @@ class MetaCognition:
                 # Tier 1: Accept
                 if score >= self.high_threshold:
                     return ValidationResult(
-                        passed=True, score=score, reason=reason,
-                        final_answer=current, hallucination_risk=h_risk, issues=issues,
+                        passed=True,
+                        score=score,
+                        reason=reason,
+                        final_answer=current,
+                        hallucination_risk=h_risk,
+                        issues=issues,
                     )
 
                 # Tier 2: Refine
@@ -108,13 +117,13 @@ class MetaCognition:
 
             # score/h_risk are guaranteed assigned by the loop above (min 1 iteration)
         return ValidationResult(
-                passed=score >= self.low_threshold,  # type: ignore[possibly-undefined]
-                score=score,  # type: ignore[possibly-undefined]
-                reason=reason,  # type: ignore[possibly-undefined]
-                final_answer=current,
-                hallucination_risk=h_risk,  # type: ignore[possibly-undefined]
-                issues=issues,  # type: ignore[possibly-undefined]
-            )
+            passed=score >= self.low_threshold,  # type: ignore[possibly-undefined]
+            score=score,  # type: ignore[possibly-undefined]
+            reason=reason,  # type: ignore[possibly-undefined]
+            final_answer=current,
+            hallucination_risk=h_risk,  # type: ignore[possibly-undefined]
+            issues=issues,  # type: ignore[possibly-undefined]
+        )
 
     async def _score(self, query: str, answer: str) -> tuple[float, float, str, list[str]]:
         try:
@@ -127,9 +136,9 @@ class MetaCognition:
                 temperature=0.0,
                 max_tokens=200,
             )
-            match = re.search(r"\{.*\}", resp.content, re.DOTALL)
-            if match:
-                d = json.loads(match.group(0))
+            parsed = parse_llm_json(resp.content)
+            if parsed and isinstance(parsed, dict):
+                d = parsed
                 return (
                     float(d.get("score", 0.5)),
                     float(d.get("hallucination_risk", 0.0)),

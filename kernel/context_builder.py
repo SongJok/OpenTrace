@@ -6,14 +6,15 @@ ContextBuilder — 并行统一上下文构建
 - 每个来源带 metadata、confidence、source_type
 - 合并后按 score 排序，截取 top_k
 """
+
 from __future__ import annotations
 
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
-from infra.metadata.unified_metadata import make_memory_metadata, make_web_metadata, UnifiedMetadata
+from infra.metadata.unified_metadata import UnifiedMetadata, make_memory_metadata, make_web_metadata
 from infra.observability.logger import get_logger
 
 logger = get_logger(__name__)
@@ -22,7 +23,7 @@ logger = get_logger(__name__)
 @dataclass
 class ContextChunk:
     content: str
-    source_type: str          # memory | document | knowledge | web | tool
+    source_type: str  # memory | document | knowledge | web | tool
     score: float = 1.0
     confidence: float = 1.0
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -51,9 +52,7 @@ class UnifiedContext:
             parts.append(f"[{label}](conf={chunk.confidence:.2f})\n{chunk.content[:600]}")
         if self.chat_history:
             recent = self.chat_history[-6:]
-            hist = "\n".join(
-                f"{h['role']}: {h['content'][:200]}" for h in recent
-            )
+            hist = "\n".join(f"{h['role']}: {h['content'][:200]}" for h in recent)
             parts.append(f"[HISTORY]\n{hist}")
         return "\n\n---\n\n".join(parts)
 
@@ -73,19 +72,23 @@ class ContextBuilder:
     def _normalize_metadata(
         self,
         source_type: str,
-        raw: Optional[dict[str, Any]],
+        raw: dict[str, Any] | None,
         user_id: str = "",
-        defaults: Optional[dict[str, Any]] = None,
+        defaults: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         data = dict(raw or {})
         if defaults:
             for k, v in defaults.items():
                 data.setdefault(k, v)
 
-        meta = UnifiedMetadata.from_dict(data) if data else UnifiedMetadata(
-            type=source_type,
-            owner=user_id,
-            source="system",
+        meta = (
+            UnifiedMetadata.from_dict(data)
+            if data
+            else UnifiedMetadata(
+                type=source_type,
+                owner=user_id,
+                source="system",
+            )
         )
         if not meta.type:
             meta.type = source_type
@@ -96,6 +99,7 @@ class ContextBuilder:
     def _get_memory_router(self):
         if self._memory_router is None:
             from memory.memory_router.router import MemoryRouter
+
             self._memory_router = MemoryRouter()
         return self._memory_router
 
@@ -142,10 +146,10 @@ class ContextBuilder:
         self,
         query: str,
         session_id: str = "",
-        history: Optional[list[dict[str, str]]] = None,
+        history: list[dict[str, str]] | None = None,
         user_id: str = "",
         enable_web: bool = False,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> UnifiedContext:
         t0 = time.monotonic()
         history = history or []
@@ -163,10 +167,10 @@ class ContextBuilder:
             return_exceptions=True,
         )
 
-        memory_chunks   = results[0] if isinstance(results[0], list) else []
-        doc_chunks      = results[1] if isinstance(results[1], list) else []
-        know_chunks     = results[2] if isinstance(results[2], list) else []
-        web_chunks      = results[3] if isinstance(results[3], list) else []
+        memory_chunks = results[0] if isinstance(results[0], list) else []
+        doc_chunks = results[1] if isinstance(results[1], list) else []
+        know_chunks = results[2] if isinstance(results[2], list) else []
+        web_chunks = results[3] if isinstance(results[3], list) else []
 
         latency = int((time.monotonic() - t0) * 1000)
         logger.info(
@@ -203,7 +207,9 @@ class ContextBuilder:
                         "memory",
                         c.metadata,
                         user_id=user_id,
-                        defaults=make_memory_metadata(owner=user_id, session_id=session_id).to_dict(),
+                        defaults=make_memory_metadata(
+                            owner=user_id, session_id=session_id
+                        ).to_dict(),
                     ),
                 )
                 for c in chunks
@@ -215,7 +221,10 @@ class ContextBuilder:
     async def _fetch_documents(self, query: str, user_id: str) -> list[ContextChunk]:
         try:
             from plugins.document_plugin import DocumentPlugin
-            result = await DocumentPlugin().search_chunks(query=query, user_id=user_id, top_k=self.top_k)
+
+            result = await DocumentPlugin().search_chunks(
+                query=query, user_id=user_id, top_k=self.top_k
+            )
             return [
                 ContextChunk(
                     content=c.content,
@@ -239,6 +248,7 @@ class ContextBuilder:
         try:
             from memory.semantic_memory.semantic_memory import InMemorySemanticStore
             from model.embedding.base import get_embedder
+
             store = InMemorySemanticStore(embedder=get_embedder())
             chunks = await store.search(query, top_k=self.top_k)
             return [
@@ -263,6 +273,7 @@ class ContextBuilder:
     async def _fetch_web(self, query: str, user_id: str) -> list[ContextChunk]:
         try:
             from plugins.web_plugin import WebPlugin
+
             chunks = await WebPlugin().search_chunks(query)
             return [
                 ContextChunk(
@@ -282,4 +293,3 @@ class ContextBuilder:
         except Exception as exc:
             logger.debug("Web fetch failed", error=str(exc))
             return []
- 

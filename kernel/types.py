@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -54,8 +54,8 @@ class ExecutionNode(BaseModel):
     status: ExecutionNodeStatus = ExecutionNodeStatus.PENDING
     input: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -73,18 +73,18 @@ class ExecutionGraph(BaseModel):
 class AgentStep(BaseModel):
     step_id: str
     step_type: StepType
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     status: StepStatus = StepStatus.PENDING
     input: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
-    reasoning_chain: Optional[str] = None
+    reasoning_chain: str | None = None
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
-    observation: Optional[str] = None
-    reflection_score: Optional[float] = None
-    error: Optional[str] = None
+    observation: str | None = None
+    reflection_score: float | None = None
+    error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-    execution_node_id: Optional[str] = None
+    execution_node_id: str | None = None
 
 
 class AgentState(BaseModel):
@@ -93,7 +93,7 @@ class AgentState(BaseModel):
     query: str
     steps: list[AgentStep] = Field(default_factory=list)
     current_step_index: int = 0
-    final_response: Optional[str] = None
+    final_response: str | None = None
     context: dict[str, Any] = Field(default_factory=dict)
     checkpoints: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)

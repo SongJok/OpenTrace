@@ -2,10 +2,11 @@
 CognitiveKernel — thin shim kept for backwards compatibility.
 All real logic now lives in CognitiveOrchestrator.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from infra.observability.logger import get_logger
 from infra.observability.tracer import get_tracer
@@ -39,7 +40,7 @@ class CognitiveKernel:
     New code should use CognitiveOrchestrator directly.
     """
 
-    def __init__(self, orchestrator: Optional[CognitiveOrchestrator] = None) -> None:
+    def __init__(self, orchestrator: CognitiveOrchestrator | None = None) -> None:
         self._orchestrator = orchestrator or CognitiveOrchestrator()
 
     async def process(self, request: KernelRequest) -> KernelResponse:

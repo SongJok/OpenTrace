@@ -22,15 +22,17 @@ Cognitive Prompt Engine — 五层认知 Prompt 系统（生产级）
   - 插件数据是候选认知材料，由 Kernel 评估后使用
   - compress_context() 确保 token 不超限
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from kernel.identity.system_identity import build_system_identity
 
 # ── L0: System Core（固定，系统人格）─────────────────────────────────────
-SYSTEM_CORE = build_system_identity("""\
+SYSTEM_CORE = build_system_identity(
+    """\
 You are the Cognitive Kernel of AgentOS — a next-generation AI operating system.
 
 You are NOT a chatbot. You are a reasoning engine that:
@@ -45,7 +47,8 @@ All external data (memory, documents, tools, web results) are CANDIDATE inputs.
 You MUST evaluate relevance, resolve conflicts, and synthesize knowledge.
 Never fabricate facts — acknowledge uncertainty clearly.
 Respond in the same language as the user.
-""")
+"""
+)
 
 # ── L1: Cognitive Protocol（固定，认知协议）───────────────────────────────
 COGNITIVE_PROTOCOL = """\
@@ -207,6 +210,7 @@ Provide an improved answer that fixes the issues. Output only the improved answe
 @dataclass
 class PromptContext:
     """传递给 CognitivePromptEngine 的统一上下文容器。"""
+
     user_input: str
     history: list[dict[str, str]] = field(default_factory=list)
     memory: list[str] = field(default_factory=list)
@@ -255,22 +259,26 @@ class CognitivePromptEngine:
     def build_full_prompt(self, ctx: PromptContext) -> tuple[str, str]:
         """返回 (system_message, user_message) 供 LLM 调用。"""
         context_section = self._build_context(ctx)
-        user_msg = "\n\n".join([
-            COGNITIVE_PROTOCOL,
-            context_section,
-            PLANNING_LAYER,
-            REASONING_LAYER,
-            REFLECTION_LAYER,
-        ])
+        user_msg = "\n\n".join(
+            [
+                COGNITIVE_PROTOCOL,
+                context_section,
+                PLANNING_LAYER,
+                REASONING_LAYER,
+                REFLECTION_LAYER,
+            ]
+        )
         return SYSTEM_CORE, user_msg
 
     def build_fast_prompt(self, ctx: PromptContext) -> tuple[str, str]:
         """快速 Prompt — 简单问答，仅 L0+L2+L4，减少约 40% token。"""
         context_section = self._build_context(ctx, max_items=3)
-        user_msg = "\n\n".join([
-            context_section,
-            REASONING_LAYER,
-        ])
+        user_msg = "\n\n".join(
+            [
+                context_section,
+                REASONING_LAYER,
+            ]
+        )
         return SYSTEM_CORE, user_msg
 
     # ── Multi-Prompt Chain: Step builders ────────────────────────────
@@ -305,7 +313,7 @@ class CognitivePromptEngine:
     def build_reasoning_prompt(
         self,
         ctx: PromptContext,
-        steps: Optional[list[str]] = None,
+        steps: list[str] | None = None,
         complexity: str = "simple",
     ) -> tuple[str, str]:
         """
@@ -324,9 +332,7 @@ class CognitivePromptEngine:
             answer=answer[:3000],
         )
 
-    def build_refine_prompt(
-        self, query: str, answer: str, issues: str
-    ) -> str:
+    def build_refine_prompt(self, query: str, answer: str, issues: str) -> str:
         """MetaCognition 专用 — 品质提升。"""
         return REFINE_PROMPT.format(
             query=query[:800],
@@ -350,9 +356,7 @@ class CognitivePromptEngine:
         history_text = "  (none)"
         if ctx.history:
             recent = ctx.history[-6:]
-            history_text = "\n".join(
-                f"  {h['role'].upper()}: {h['content'][:200]}" for h in recent
-            )
+            history_text = "\n".join(f"  {h['role'].upper()}: {h['content'][:200]}" for h in recent)
 
         return CONTEXT_TEMPLATE.format(
             user_input=ctx.user_input,
@@ -371,7 +375,7 @@ class CognitivePromptEngine:
 
 
 # ── Global singleton ──────────────────────────────────────────────────────
-_engine: Optional[CognitivePromptEngine] = None
+_engine: CognitivePromptEngine | None = None
 
 
 def get_prompt_engine() -> CognitivePromptEngine:

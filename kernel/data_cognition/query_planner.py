@@ -85,10 +85,12 @@ class QueryPlanner:
         # Apply time window filter from semantics
         if semantics.time_window and semantics.time_window.get("days"):
             days = semantics.time_window["days"]
-            plan.filters.append(FilterSpec(
-                expr=f"__TIME_FILTER__{days}__",
-                is_having=False,
-            ))
+            plan.filters.append(
+                FilterSpec(
+                    expr=f"__TIME_FILTER__{days}__",
+                    is_having=False,
+                )
+            )
 
         # Store time column hint in metadata for SQLBuilder
         if semantics.time_window and semantics.time_window.get("column_hint"):
@@ -112,16 +114,22 @@ class QueryPlanner:
         if not tables_info:
             tables_info = f"Tables: {', '.join(tables)}\n"
 
-        metrics_info = ", ".join(
-            f"{m.mention}→{m.mapped_column}({m.agg})" for m in semantics.metrics
-        ) if semantics.metrics else "(none)"
-        filters_info = ", ".join(
-            f"{f.field or '?'}{f.operator}{f.value}" for f in semantics.filters
-        ) if semantics.filters else "(none)"
+        metrics_info = (
+            ", ".join(f"{m.mention}→{m.mapped_column}({m.agg})" for m in semantics.metrics)
+            if semantics.metrics
+            else "(none)"
+        )
+        filters_info = (
+            ", ".join(f"{f.field or '?'}{f.operator}{f.value}" for f in semantics.filters)
+            if semantics.filters
+            else "(none)"
+        )
 
         error_feedback = ""
         if previous_errors:
-            error_feedback = "\nPREVIOUS ERRORS TO FIX:\n" + "\n".join(f"- {e}" for e in previous_errors)
+            error_feedback = "\nPREVIOUS ERRORS TO FIX:\n" + "\n".join(
+                f"- {e}" for e in previous_errors
+            )
 
         prompt = (
             "You are a query planner. Convert the user question and semantic analysis into a "
@@ -134,7 +142,7 @@ class QueryPlanner:
             "- JOIN on_clause must reference columns from both tables\n"
             f"{error_feedback}"
             "\nRequired JSON structure:\n"
-            '{\n'
+            "{\n"
             '  "tables": ["table_name or table_name alias"],\n'
             '  "joins": [{"left_table": "t1", "right_table": "t2", "join_type": "INNER", "on_clause": "t1.id = t2.ref_id"}],\n'
             '  "projections": [{"expr": "column or AGG(column)", "alias": "name", "agg_func": "SUM/COUNT/AVG/MAX/MIN/"}],\n'
@@ -142,7 +150,7 @@ class QueryPlanner:
             '  "group_by": ["column"],\n'
             '  "order_by": [{"expr": "column", "direction": "DESC/ASC"}],\n'
             '  "limit": 100\n'
-            '}\n\n'
+            "}\n\n"
             f"Available tables:\n{tables_info}"
             f"Schema summary:\n{schema_summary}\n"
             f"User question: {query}\n"
@@ -156,7 +164,10 @@ class QueryPlanner:
             gw = get_model_gateway()
             resp = await gw.complete(
                 messages=[
-                    LLMMessage(role="system", content="You output ONLY valid JSON objects representing a logical query plan. No SQL. No explanation."),
+                    LLMMessage(
+                        role="system",
+                        content="You output ONLY valid JSON objects representing a logical query plan. No SQL. No explanation.",
+                    ),
                     LLMMessage(role="user", content=prompt),
                 ],
                 role=LLMRole.PLANNING,
@@ -174,7 +185,10 @@ class QueryPlanner:
         return None
 
     def _validate_plan(
-        self, plan: LogicalPlan, tables: list[str], table_columns: dict[str, list[str]],
+        self,
+        plan: LogicalPlan,
+        tables: list[str],
+        table_columns: dict[str, list[str]],
     ) -> list[str]:
         """Validate a LogicalPlan against available schema. Returns list of issues."""
         issues: list[str] = []
@@ -217,7 +231,10 @@ class QueryPlanner:
         return issues
 
     def _build_plan_from_dict(
-        self, data: dict[str, Any], tables: list[str], table_columns: dict[str, list[str]],
+        self,
+        data: dict[str, Any],
+        tables: list[str],
+        table_columns: dict[str, list[str]],
     ) -> LogicalPlan:
         """Convert LLM output dict into a LogicalPlan."""
         plan_tables = data.get("tables", [])
@@ -228,20 +245,24 @@ class QueryPlanner:
         for p in data.get("projections", []):
             expr = p.get("expr", "")
             if expr:
-                projections.append(Projection(
-                    expr=expr,
-                    alias=p.get("alias", ""),
-                    agg_func=p.get("agg_func", ""),
-                ))
+                projections.append(
+                    Projection(
+                        expr=expr,
+                        alias=p.get("alias", ""),
+                        agg_func=p.get("agg_func", ""),
+                    )
+                )
 
         joins: list[JoinSpec] = []
         for j in data.get("joins", []):
-            joins.append(JoinSpec(
-                left_table=j.get("left_table", ""),
-                right_table=j.get("right_table", ""),
-                join_type=j.get("join_type", "INNER"),
-                on_clause=j.get("on_clause", ""),
-            ))
+            joins.append(
+                JoinSpec(
+                    left_table=j.get("left_table", ""),
+                    right_table=j.get("right_table", ""),
+                    join_type=j.get("join_type", "INNER"),
+                    on_clause=j.get("on_clause", ""),
+                )
+            )
 
         filters: list[FilterSpec] = []
         for f in data.get("filters", []):
@@ -253,9 +274,12 @@ class QueryPlanner:
         for o in data.get("order_by", []):
             expr = o.get("expr", "")
             if expr:
-                order_by.append(OrderBySpec(
-                    expr=expr, direction=o.get("direction", "DESC"),
-                ))
+                order_by.append(
+                    OrderBySpec(
+                        expr=expr,
+                        direction=o.get("direction", "DESC"),
+                    )
+                )
 
         limit = data.get("limit", 0)
         if not limit or limit > 1000:
@@ -269,11 +293,17 @@ class QueryPlanner:
             group_by=data.get("group_by", []),
             order_by=order_by,
             limit=limit,
-            having=[FilterSpec(expr=h.get("expr", "")) for h in data.get("having", []) if h.get("expr")],
+            having=[
+                FilterSpec(expr=h.get("expr", "")) for h in data.get("having", []) if h.get("expr")
+            ],
         )
 
     def _fallback_plan(
-        self, semantics: SemanticParseResult, tables: list[str], query: str, dialect: SQLDialectSpec | None,
+        self,
+        semantics: SemanticParseResult,
+        tables: list[str],
+        query: str,
+        dialect: SQLDialectSpec | None,
     ) -> LogicalPlan:
         """Create a fallback plan when LLM generation fails.
 
@@ -285,9 +315,13 @@ class QueryPlanner:
         # Build projections from detected metrics
         for m in semantics.metrics:
             if m.agg and m.mapped_column:
-                projections.append(Projection(
-                    expr=f"{m.agg}({m.mapped_column})", alias=m.mention, agg_func=m.agg,
-                ))
+                projections.append(
+                    Projection(
+                        expr=f"{m.agg}({m.mapped_column})",
+                        alias=m.mention,
+                        agg_func=m.agg,
+                    )
+                )
 
         # If no metrics, try entity columns
         if not projections:
@@ -316,7 +350,11 @@ class QueryPlanner:
         return LogicalPlan(
             tables=plan_tables,
             projections=projections,
-            filters=[FilterSpec(expr=f"{f.field} {f.operator} '{f.value}'") for f in semantics.filters if f.field],
+            filters=[
+                FilterSpec(expr=f"{f.field} {f.operator} '{f.value}'")
+                for f in semantics.filters
+                if f.field
+            ],
             group_by=semantics.group_by,
             limit=semantics.limit if semantics.limit else 100,
             metadata=metadata,

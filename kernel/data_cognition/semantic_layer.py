@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 from typing import Any
 
 from kernel.data_cognition.sql_dialect import SQLDialectSpec
@@ -90,7 +89,9 @@ class SemanticLayer:
                 result[name] = sql
         return result
 
-    def _resolve_time_macros(self, query: str, dialect: SQLDialectSpec | None = None) -> list[dict[str, Any]]:
+    def _resolve_time_macros(
+        self, query: str, dialect: SQLDialectSpec | None = None
+    ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for tm in self._time_macros:
             if tm.pattern not in query:
@@ -99,12 +100,14 @@ class SemanticLayer:
                 sql = tm.sql_template
             else:
                 sql = self._build_time_filter(tm, dialect)
-            results.append({
-                "pattern": tm.pattern,
-                "column": tm.column,
-                "table": tm.table,
-                "sql": sql,
-            })
+            results.append(
+                {
+                    "pattern": tm.pattern,
+                    "column": tm.column,
+                    "table": tm.table,
+                    "sql": sql,
+                }
+            )
         return results
 
     def _build_time_filter(self, tm: TimeMacroDef, dialect: SQLDialectSpec | None) -> str:
@@ -118,7 +121,9 @@ class SemanticLayer:
             return f" WHERE {col} >= now() - INTERVAL {days} DAY"
         return f" WHERE {col} >= DATE_SUB(NOW(), INTERVAL {days} DAY)"
 
-    def _build_sql_fragments(self, ctx: SemanticContext, dialect: SQLDialectSpec | None) -> list[str]:
+    def _build_sql_fragments(
+        self, ctx: SemanticContext, dialect: SQLDialectSpec | None
+    ) -> list[str]:
         fragments: list[str] = []
         for dim_name, info in ctx.dimension_mappings.items():
             for cond in info.get("conditions", []):
@@ -140,19 +145,24 @@ class SemanticLayer:
             {"type": "date_range", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "column": str|None}
         """
         # Absolute date range: "2024年1月15日到2024年3月20日"
-        m = re.search(r"(\d{4})[年-](\d{1,2})[月-](\d{1,2})\s*(?:到|至|~|-)\s*(\d{4})[年-](\d{1,2})[月-](\d{1,2})", query)
+        m = re.search(
+            r"(\d{4})[年-](\d{1,2})[月-](\d{1,2})\s*(?:到|至|~|-)\s*(\d{4})[年-](\d{1,2})[月-](\d{1,2})",
+            query,
+        )
         if m:
             return {
                 "type": "date_range",
                 "start": f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}",
                 "end": f"{m.group(4)}-{int(m.group(5)):02d}-{int(m.group(6)):02d}",
-                "column": None, "raw": m.group(0),
+                "column": None,
+                "raw": m.group(0),
             }
 
         # Month range: "2024年1月到2024年6月"
         m = re.search(r"(\d{4})[年-](\d{1,2})月\s*(?:到|至|~|-)\s*(\d{4})[年-](\d{1,2})月", query)
         if m:
             import calendar
+
             start_year, start_month = int(m.group(1)), int(m.group(2))
             end_year, end_month = int(m.group(3)), int(m.group(4))
             _, start_last = calendar.monthrange(start_year, start_month)
@@ -161,7 +171,8 @@ class SemanticLayer:
                 "type": "date_range",
                 "start": f"{start_year}-{start_month:02d}-01",
                 "end": f"{end_year}-{end_month:02d}-{end_last}",
-                "column": None, "raw": m.group(0),
+                "column": None,
+                "raw": m.group(0),
             }
 
         patterns = [
@@ -187,6 +198,7 @@ class SemanticLayer:
                 return {"type": "time_window", "days": unit_map, "column": None, "raw": m.group(0)}
             if mode == "month_offset":
                 from datetime import datetime
+
                 now = datetime.now()
                 month = now.month + unit_map
                 year = now.year
@@ -197,10 +209,17 @@ class SemanticLayer:
                     month -= 12
                     year += 1
                 import calendar
+
                 _, last_day = calendar.monthrange(year, month)
                 start = f"{year}-{month:02d}-01"
                 end = f"{year}-{month:02d}-{last_day}"
-                return {"type": "date_range", "start": start, "end": end, "column": None, "raw": m.group(0)}
+                return {
+                    "type": "date_range",
+                    "start": start,
+                    "end": end,
+                    "column": None,
+                    "raw": m.group(0),
+                }
             n = int(m.group(1))
             unit = m.group(2) if m.lastindex and m.lastindex >= 2 else "天"
             days = n * (unit_map.get(unit, 1) if isinstance(unit_map, dict) else 1)
@@ -211,7 +230,13 @@ class SemanticLayer:
         m = re.search(r"(\d{4})[年-](\d{1,2})[月-](\d{1,2})", query)
         if m:
             date_str = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-            return {"type": "date_exact", "start": date_str, "end": date_str, "column": None, "raw": m.group(0)}
+            return {
+                "type": "date_exact",
+                "start": date_str,
+                "end": date_str,
+                "column": None,
+                "raw": m.group(0),
+            }
 
         return None
 

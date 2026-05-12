@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Copy, RotateCcw, Quote, Pencil, GitBranch, ShieldCheck, FileText, FileCode, FileSpreadsheet, FileImage } from 'lucide-react'
-import { Message, useChatStore, type ExecutionGraphData } from '../store/chat'
+import { Copy, RotateCcw, Quote, Pencil, GitBranch, ShieldCheck, FileText, FileCode, FileSpreadsheet, FileImage, ChevronDown, ChevronUp, Cpu, Zap, Timer, ThumbsUp, ThumbsDown, GitFork } from 'lucide-react'
+import { Message, useChatStore, type ExecutionGraphData, type ToolCallBlock } from '../store/chat'
 import { getTraceVisibility } from '../store/theme'
-import { apiBranchConversation, apiGetMessages, apiPatchMessage, type ReasoningStep } from '../api/client'
+import { apiBranchConversation, apiGetMessages, apiPatchMessage, apiSubmitFeedback, apiGetMessageVersions, type ReasoningStep } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import MarkdownMessage from './MarkdownMessage'
 import MultiQuestionCards from './MultiQuestionCards'
@@ -10,6 +10,7 @@ import { parseMultiQuestionCards } from '../utils/parseMultiQuestion'
 import ReasoningChain from './ReasoningChain'
 import ExecutionGraphPanel from './ExecutionGraphPanel'
 import DagTimeline, { type DagTimelineItem } from './DagTimeline'
+import MessageVersionTree from './MessageVersionTree'
 import { CardShell } from './CardShell'
 import { DarkPanel } from './ui/DarkPanel'
 import { t } from '../i18n'
@@ -562,12 +563,9 @@ export default function ChatMessage({ message }: { message: Message }) {
 
   return (
     <FinalMessage
-      messageId={message.id}
-      content={message.finalText}
+      message={message}
       steps={steps}
       executionGraph={executionGraph}
-      citations={message.citations}
-      annotations={message.annotations}
       showRegenerate={isLastAssistant}
     />
   )
@@ -849,22 +847,17 @@ function TimeCard({ data }: { data: any }) {
 }
 
 function FinalMessage({
-  messageId,
-  content,
+  message,
   steps,
   executionGraph,
-  citations,
-  annotations,
   showRegenerate,
 }: {
-  messageId: string
-  content: string
+  message: Message
   steps: ReasoningStep[]
   executionGraph: ExecutionGraphData | null
-  citations?: Array<{ id: number; title: string; url: string; snippet?: string }>
-  annotations?: Array<{ id: string; text: string; annotation?: { level: string; source_type: string; confidence: number; caveats?: string[]; citations?: Array<{ id: string; source_name: string; snippet?: string; url?: string }> } | null }>
   showRegenerate: boolean
 }) {
+  const { id: messageId, finalText: content, citations, annotations, tool_calls, prompt_tokens, completion_tokens, model, decision_type } = message
   const showReasoning = getTraceVisibility('reasoning')
   const showDag = getTraceVisibility('dag')
   const showExecutionGraph = getTraceVisibility('executionGraph')
@@ -875,6 +868,19 @@ function FinalMessage({
   const setMessages = useChatStore((s) => s.setMessages)
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(content)
+  const [showMetadata, setShowMetadata] = useState(false)
+  const [feedback, setFeedback] = useState<'like' | 'dislike' | 'none'>('none')
+  const [showVersionTree, setShowVersionTree] = useState(false)
+  const [versionData, setVersionData] = useState<any>(null)
+
+  const handleFeedback = async (type: 'like' | 'dislike') => {
+    if (!activeId) return
+    const newType = feedback === type ? 'none' : type
+    setFeedback(newType)
+    try {
+      await apiSubmitFeedback(token, activeId, messageId, newType)
+    } catch { /* silent */ }
+  }
 
   const copy = async () => {
     await navigator.clipboard.writeText(content)
@@ -927,6 +933,7 @@ function FinalMessage({
     try { return parseMultiQuestionCards(content) } catch { return null }
   }, [content])
   const displayContent = useMemo(() => stripJsonBlocks(content), [content])
+  const hasTokenInfo = (prompt_tokens ?? 0) > 0 || (completion_tokens ?? 0) > 0
 
   const dagTimeline = useMemo<DagTimelineItem[]>(() => {
     const nodes = Array.isArray(executionGraph?.nodes) ? executionGraph.nodes : []
@@ -1160,6 +1167,43 @@ function FinalMessage({
         </div>
       ) : null}
 
+      {/* Tool call cards */}
+      {Array.isArray(tool_calls) && tool_calls.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {tool_calls.map((tc) => <ToolCallCard key={tc.id} toolCall={tc} />)}
+        </div>
+      )}
+
+      {/* Interrupted status */}
+      {decision_type === 'interrupted' || message.status === 'interrupted' ? (
+        <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-700">
+          回答中断 — 部分内容已保存
+        </div>
+      ) : null}
+
+      {/* Token metadata footer */}
+      {hasTokenInfo && (
+        <div className="mt-2 border-t border-[var(--border)] pt-1.5">
+          <button
+            type="button"
+            onClick={() => setShowMetadata((v) => !v)}
+            className="flex items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--text)] transition-colors"
+          >
+            <Cpu size={11} />
+            <span>{(prompt_tokens ?? 0) + (completion_tokens ?? 0)} tokens</span>
+            {model ? <span className="opacity-60">· {model}</span> : null}
+            {showMetadata ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+          </button>
+          {showMetadata && (
+            <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[10px] text-[var(--text-secondary)]">
+              <div>Prompt: {prompt_tokens ?? 0}</div>
+              <div>Completion: {completion_tokens ?? 0}</div>
+              {model ? <div className="col-span-2">Model: {model}</div> : null}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="mt-2 flex items-center gap-2 text-[var(--text-secondary)]">
         <button onClick={copy} className="p-1 hover:text-[var(--text)]" title={t('chat.copy')}>
           <Copy size={14} />
@@ -1173,12 +1217,109 @@ function FinalMessage({
         <button onClick={() => void branchHere()} className="p-1 hover:text-[var(--text)]" title={t('chat.branch')}>
           <GitBranch size={14} />
         </button>
+        <button
+          onClick={() => { void handleFeedback('like') }}
+          className={`p-1 hover:text-[var(--text)] ${feedback === 'like' ? 'text-emerald-500' : ''}`}
+          title="有帮助"
+        >
+          <ThumbsUp size={14} />
+        </button>
+        <button
+          onClick={() => { void handleFeedback('dislike') }}
+          className={`p-1 hover:text-[var(--text)] ${feedback === 'dislike' ? 'text-red-500' : ''}`}
+          title="无帮助"
+        >
+          <ThumbsDown size={14} />
+        </button>
+        <button
+          onClick={async () => {
+            if (showVersionTree) { setShowVersionTree(false); return }
+            try {
+              const data = await apiGetMessageVersions(token, messageId)
+              setVersionData(data)
+              setShowVersionTree(true)
+            } catch { setShowVersionTree(false) }
+          }}
+          className={`p-1 hover:text-[var(--text)] ${showVersionTree ? 'text-violet-500' : ''}`}
+          title="版本历史"
+        >
+          <GitFork size={14} />
+        </button>
         {showRegenerate ? (
           <button onClick={regenerate} className="p-1 hover:text-[var(--text)]" title={t('chat.regenerate')}>
             <RotateCcw size={14} />
           </button>
         ) : null}
       </div>
+      {showVersionTree && versionData?.versions?.length > 1 ? (
+        <MessageVersionTree versions={versionData.versions} currentId={messageId} />
+      ) : null}
+    </div>
+  )
+}
+
+
+function ToolCallCard({ toolCall }: { toolCall: ToolCallBlock }) {
+  const [expanded, setExpanded] = useState(false)
+  const statusColor = toolCall.status === 'error' ? 'border-red-300 bg-red-50'
+    : toolCall.status === 'interrupted' ? 'border-amber-300 bg-amber-50'
+    : toolCall.status === 'retrying' ? 'border-blue-300 bg-blue-50'
+    : toolCall.status === 'running' ? 'border-amber-300 bg-amber-50 animate-pulse'
+    : toolCall.status === 'success' ? 'border-emerald-300 bg-emerald-50'
+    : 'border-slate-300 bg-slate-50'
+
+  const statusLabel = toolCall.status === 'running' ? '执行中...'
+    : toolCall.status === 'error' ? '失败'
+    : toolCall.status === 'interrupted' ? '已中断'
+    : toolCall.status === 'retrying' ? '重试中...'
+    : toolCall.status === 'success' ? '完成'
+    : '等待中'
+
+  let argsPreview = ''
+  try {
+    if (toolCall.function?.arguments) {
+      const parsed = JSON.parse(toolCall.function.arguments)
+      argsPreview = Object.entries(parsed).map(([k, v]) => `${k}=${String(v).slice(0, 40)}`).join(', ')
+    }
+  } catch {
+    argsPreview = String(toolCall.function?.arguments || '').slice(0, 80)
+  }
+
+  return (
+    <div className={`rounded-lg border ${statusColor} px-3 py-2 text-xs`}>
+      <button
+        type="button"
+        className="flex items-center justify-between w-full gap-2"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-medium text-[var(--text)]">{toolCall.function?.name || 'tool_call'}</span>
+          <span className="text-[var(--text-secondary)] truncate">{argsPreview}</span>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="text-[var(--text-secondary)]">{statusLabel}</span>
+          {toolCall.duration_ms ? <span className="text-[var(--text-secondary)]">{toolCall.duration_ms}ms</span> : null}
+          {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </div>
+      </button>
+      {expanded && (
+        <div className="mt-2 space-y-1.5">
+          <pre className="whitespace-pre-wrap break-all text-[var(--text-secondary)]">
+            {(() => {
+              try {
+                return JSON.stringify(JSON.parse(toolCall.function?.arguments || '{}'), null, 2)
+              } catch {
+                return toolCall.function?.arguments || ''
+              }
+            })()}
+          </pre>
+          {toolCall.result ? (
+            <div className="rounded border border-[var(--border)] bg-[var(--surface)] p-2 text-[var(--text)]">
+              {toolCall.result}
+            </div>
+          ) : null}
+        </div>
+      )}
     </div>
   )
 }

@@ -21,7 +21,7 @@ class Stage7StreamFallbackSyncContractTests(unittest.TestCase):
     def test_chat_response_schema_has_sync_structured_fields(self):
         txt = (ROOT / "gateway/api_gateway/routers/chat.py").read_text(encoding="utf-8")
         self.assertIn("annotations: list[dict[str, Any]]", txt)
-        self.assertIn("execution_graph: Optional[dict[str, Any]]", txt)
+        self.assertIn("execution_graph: dict[str, Any] | None", txt)
         self.assertIn("_database_intent", txt)
         self.assertIn("force_database", txt)
         self.assertIn("data_source_context", txt)

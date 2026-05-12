@@ -28,7 +28,11 @@ class FusionEngine:
         if profile_name == "speed":
             return 0.05 if source in {"time", "weather", "web_search"} else 0.0
         if profile_name == "quality":
-            return 0.08 if source in {"sql", "document"} else 0.03 if source in {"web_search", "search"} else 0.0
+            return (
+                0.08
+                if source in {"sql", "document"}
+                else 0.03 if source in {"web_search", "search"} else 0.0
+            )
         return 0.0
 
     def _render_context(self, picked: dict[str, ToolResult]) -> str:
@@ -46,7 +50,9 @@ class FusionEngine:
         lines: list[str] = []
         for src, r in picked.items():
             text = str(r.data)
-            if src == "document" and (text.strip().startswith("{") or "'chunks'" in text or '"chunks"' in text):
+            if src == "document" and (
+                text.strip().startswith("{") or "'chunks'" in text or '"chunks"' in text
+            ):
                 text = "未检索到可直接引用的内部文档内容。"
             label = _source_labels.get(src, src.upper())
             lines.append(f"[{label}] {text[:1200]}")
@@ -72,15 +78,27 @@ class FusionEngine:
         conflicts: list[str] = []
         for r in input_data.results:
             key = (r.source or "unknown").lower()
-            evidence_map.append({"source": key, "confidence": r.confidence, "preview": str(r.data)[:300]})
+            evidence_map.append(
+                {"source": key, "confidence": r.confidence, "preview": str(r.data)[:300]}
+            )
             if key not in picked:
                 picked[key] = r
                 continue
             prev = picked[key]
             if str(prev.data) != str(r.data):
                 conflicts.append(f"conflict:{key}")
-                prev_score = (prev.confidence or 0.5) + self._weight(key) + self._freshness_bonus(key, profile) + self._priority_bonus(prev)
-                curr_score = (r.confidence or 0.5) + self._weight(key) + self._freshness_bonus(key, profile) + self._priority_bonus(r)
+                prev_score = (
+                    (prev.confidence or 0.5)
+                    + self._weight(key)
+                    + self._freshness_bonus(key, profile)
+                    + self._priority_bonus(prev)
+                )
+                curr_score = (
+                    (r.confidence or 0.5)
+                    + self._weight(key)
+                    + self._freshness_bonus(key, profile)
+                    + self._priority_bonus(r)
+                )
                 if curr_score > prev_score:
                     alternates.append(f"[{key}] {str(prev.data)[:500]}")
                     picked[key] = r
@@ -92,7 +110,10 @@ class FusionEngine:
         if diversity_mode and len(picked) > 1:
             ordered = sorted(
                 picked.items(),
-                key=lambda item: (item[1].confidence or 0.5) + self._weight(item[0]) + self._freshness_bonus(item[0], profile) + self._priority_bonus(item[1]),
+                key=lambda item: (item[1].confidence or 0.5)
+                + self._weight(item[0])
+                + self._freshness_bonus(item[0], profile)
+                + self._priority_bonus(item[1]),
                 reverse=True,
             )
             picked = dict(ordered[:4])
@@ -100,10 +121,24 @@ class FusionEngine:
         merged_context = self._render_context(picked)
         conf = 0.0
         if picked:
-            weight_sum = sum(self._weight(src) + self._freshness_bonus(src, profile) + self._priority_bonus(r) for src, r in picked.items())
+            weight_sum = sum(
+                self._weight(src) + self._freshness_bonus(src, profile) + self._priority_bonus(r)
+                for src, r in picked.items()
+            )
             if weight_sum <= 0:
                 weight_sum = float(len(picked))
-            conf = sum((r.confidence or 0.5) * (self._weight(src) + self._freshness_bonus(src, profile) + self._priority_bonus(r)) for src, r in picked.items()) / weight_sum
+            conf = (
+                sum(
+                    (r.confidence or 0.5)
+                    * (
+                        self._weight(src)
+                        + self._freshness_bonus(src, profile)
+                        + self._priority_bonus(r)
+                    )
+                    for src, r in picked.items()
+                )
+                / weight_sum
+            )
             if profile_name == "quality" and len(picked) >= 2:
                 conf = min(1.0, conf + 0.05)
             conf = max(0.0, min(1.0, conf))

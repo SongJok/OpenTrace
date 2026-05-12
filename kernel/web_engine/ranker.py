@@ -12,7 +12,9 @@ class Ranker:
             score = 0.0
             if q and q in (r.title + " " + r.snippet).lower():
                 score += 1.0
-            if any(h in url for h in [".gov", ".edu", "reuters", "apnews", "bbc", "nytimes", "wsj"]):
+            if any(
+                h in url for h in [".gov", ".edu", "reuters", "apnews", "bbc", "nytimes", "wsj"]
+            ):
                 score += 1.2
             if any(k in url for k in ["news", "blog", "official"]):
                 score += 0.4

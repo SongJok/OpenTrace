@@ -119,6 +119,8 @@ class ConversationOut(BaseModel):
     created_at: str
     last_active: str
     archived_at: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    pinned: bool = False
 
 
 class MessageOut(BaseModel):
@@ -131,10 +133,18 @@ class MessageOut(BaseModel):
     reasoning_steps: list[dict] = Field(default_factory=list)
     execution_graph: Optional[dict] = None
     attachments: list[dict] = Field(default_factory=list)
+    tool_calls: Optional[list[dict]] = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    model: Optional[str] = None
+    version: int = 1
+    status: str = "done"
 
 
 class UpdateConversationRequest(BaseModel):
-    title: str = Field(..., min_length=1, max_length=255)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    tags: Optional[list[str]] = None
+    pinned: Optional[bool] = None
 
 
 class ArchiveConversationRequest(BaseModel):
@@ -184,6 +194,8 @@ async def list_conversations(
             created_at=s.created_at.isoformat(),
             last_active=s.last_active.isoformat(),
             archived_at=s.archived_at.isoformat() if s.archived_at else None,
+            tags=list(getattr(s, "tags", []) or []),
+            pinned=bool(getattr(s, "pinned", False)),
         )
         for s in sessions
     ]
@@ -210,6 +222,8 @@ async def create_conversation(
         created_at=session.created_at.isoformat(),
         last_active=session.last_active.isoformat(),
         archived_at=None,
+        tags=[],
+        pinned=False,
     )
 
 
@@ -230,9 +244,14 @@ async def update_conversation(
     if not session:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation not found")
 
-    title = req.title.strip()
-    session.display_title = title
-    session.title = title
+    if req.title is not None:
+        title = req.title.strip()
+        session.display_title = title
+        session.title = title
+    if req.tags is not None:
+        session.tags = list(req.tags)
+    if req.pinned is not None:
+        session.pinned = req.pinned
     await db.commit()
     await db.refresh(session)
 
@@ -242,6 +261,8 @@ async def update_conversation(
         turn_count=session.turn_count,
         created_at=session.created_at.isoformat(),
         last_active=session.last_active.isoformat(),
+        tags=list(getattr(session, "tags", []) or []),
+        pinned=bool(getattr(session, "pinned", False)),
         archived_at=session.archived_at.isoformat() if session.archived_at else None,
     )
 

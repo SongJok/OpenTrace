@@ -1,11 +1,11 @@
 """
 Promt Engine — template management for system and user prompts.
 """
+
 from __future__ import annotations
 
 from string import Template
 from typing import Any
-
 
 PROMPTS: dict[str, str] = {
     "system_default": (
@@ -16,12 +16,8 @@ PROMPTS: dict[str, str] = {
         "Use the following retrieved context to answer the question.\n"
         "Context:\n$context\n\nQuestion: $question"
     ),
-    "summarize": (
-        "Summarize the following text concisely, preserving key facts:\n\n$text"
-    ),
-    "tool_result": (
-        "Tool '$tool_name' returned:\n$result\n\nContinue with the original task."
-    ),
+    "summarize": ("Summarize the following text concisely, preserving key facts:\n\n$text"),
+    "tool_result": ("Tool '$tool_name' returned:\n$result\n\nContinue with the original task."),
 }
 
 

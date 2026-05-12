@@ -2,17 +2,22 @@
 Backward compatibility wrapper for orchestrator_v4.
 Exports v4 classes under the old names for legacy imports.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
-from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request, OrchestratorV4Response
+from kernel.orchestrator_v4 import (
+    CognitiveOrchestratorV4,
+    OrchestratorV4Request,
+)
 
 
 @dataclass
 class OrchestratorRequest:
     """Legacy request type, compatible with v4."""
+
     query: str
     session_id: str = ""
     user_id: str = ""
@@ -23,6 +28,7 @@ class OrchestratorRequest:
 @dataclass
 class OrchestratorResponse:
     """Legacy response type, compatible with v4."""
+
     content: str
     route: str
     strategy: str = "direct"

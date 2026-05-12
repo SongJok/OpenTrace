@@ -10,15 +10,25 @@ from model.model_gateway.gateway import LLMRole, get_model_gateway
 class QueryRewriter:
     """Query rewrite for recall robustness and quality improvement."""
 
-    async def rewrite(self, query: str) -> str:
+    async def rewrite(
+        self,
+        query: str,
+        history: list[dict[str, str]] | None = None,
+        conversation_state: Any = None,
+    ) -> str:
         q = (query or "").strip()
         if not q:
             return q
-        # 先做最小实现：去多空格与常见前缀噪声
+        # Clean whitespace and noise prefixes
         q = " ".join(q.split())
         for prefix in ["请你", "麻烦", "帮我"]:
             if q.startswith(prefix):
-                q = q[len(prefix):].strip()
+                q = q[len(prefix) :].strip()
+
+        # Resolve deictic references using conversation context
+        if history and _has_deictic(q):
+            q = _resolve_deictic(q, history, conversation_state)
+
         return q
 
     async def rewrite_with_rag_context(
@@ -57,7 +67,7 @@ class QueryRewriter:
             # Prioritize original query terms, then chunk terms
             orig_set = set(orig_terms)
             chunk_only = [t for t in all_terms if t not in orig_set]
-            all_terms = orig_terms + chunk_only[:max_terms - len(orig_terms)]
+            all_terms = orig_terms + chunk_only[: max_terms - len(orig_terms)]
 
         # Build improved query
         improved = " ".join(all_terms)
@@ -65,9 +75,7 @@ class QueryRewriter:
         # If LLM query refinement is enabled and we have enough context
         if getattr(settings, "enable_llm_query_refinement", False) and rag_chunks:
             try:
-                improved = await self._llm_refine_query(
-                    original_query, rag_chunks[:2], improved
-                )
+                improved = await self._llm_refine_query(original_query, rag_chunks[:2], improved)
             except Exception:
                 # Fall back to term-based improvement
                 pass
@@ -131,3 +139,58 @@ Improved query:"""
             return term_based_query
 
         return refined
+
+
+# ── Deictic resolution helpers ─────────────────────────────────────────────
+
+_DEICTIC_PATTERNS = [
+    (r"(它|它们|他|她|其)", "that entity"),
+    (r"(这个|那个|这些|那些)", "that one"),
+    (r"前(一[个次]|[面面]的|文)?[提说到]", "previous mention"),
+    (r"(刚[才刚]的|上一次|上[一-]?[个次])", "previous turn"),
+    (r"第[一二三四五六七八九十\d]+[个条]", "numbered reference"),
+]
+
+
+def _has_deictic(query: str) -> bool:
+    for pattern, _ in _DEICTIC_PATTERNS:
+        if __import__("re").search(pattern, query):
+            return True
+    return False
+
+
+def _resolve_deictic(
+    query: str,
+    history: list[dict[str, str]],
+    conversation_state: Any = None,
+) -> str:
+    """Inject context from recent conversation to resolve pronoun references."""
+    # Extract entities from recent assistant responses
+    recent_entities: list[str] = []
+    for msg in reversed(history[-6:]):
+        if msg.get("role") == "assistant":
+            content = str(msg.get("content", ""))
+            # Extract entities: quoted strings, proper nouns, data terms
+            entities = __import__("re").findall(
+                r'(?:["“]([^"”]+)["”]|([一-鿿]{2,6}(?:销量|订单|利润|数据|指标|报表|查询|增长|下降)))',
+                content,
+            )
+            for e in entities:
+                name = e[0] or e[1]
+                if name and name not in recent_entities:
+                    recent_entities.append(name)
+            if recent_entities:
+                break
+
+    # Check conversation state for active topic/entities
+    if conversation_state:
+        active_topic = getattr(conversation_state, "active_topic", "")
+        if active_topic and active_topic not in query:
+            recent_entities.insert(0, active_topic)
+
+    if not recent_entities:
+        return query
+
+    # Append resolved context as a terse suffix
+    context_hint = "; ".join(recent_entities[:3])
+    return f"{query}（前文涉及: {context_hint}）"

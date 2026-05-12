@@ -15,14 +15,19 @@ from kernel.epistemology.evidence import (
 
 
 class ContentAnnotator:
-    def annotate_model_response(self, content: str, context_sources: list[dict[str, Any]] | None = None) -> AnnotatedResponse:
+    def annotate_model_response(
+        self, content: str, context_sources: list[dict[str, Any]] | None = None
+    ) -> AnnotatedResponse:
         annotation = EvidenceAnnotation(
             level=EvidenceLevel.INFERENCE,
             source_type=SourceType.MODEL_INFERENCE,
             citations=[],
             confidence=0.7,
         )
-        return AnnotatedResponse(fragments=[AnnotatedContent(text=content, annotation=annotation)], metadata={"agent_type": "model"})
+        return AnnotatedResponse(
+            fragments=[AnnotatedContent(text=content, annotation=annotation)],
+            metadata={"agent_type": "model"},
+        )
 
     def annotate_agent_result(
         self,
@@ -73,8 +78,13 @@ class ContentAnnotator:
                     )
                 )
 
-        anno = EvidenceAnnotation(level=level, source_type=source, citations=citation_objs, confidence=confidence)
-        return AnnotatedResponse(fragments=[AnnotatedContent(text=content, annotation=anno)], metadata={"agent_type": agent_type})
+        anno = EvidenceAnnotation(
+            level=level, source_type=source, citations=citation_objs, confidence=confidence
+        )
+        return AnnotatedResponse(
+            fragments=[AnnotatedContent(text=content, annotation=anno)],
+            metadata={"agent_type": agent_type},
+        )
 
     def merge_responses(self, responses: list[AnnotatedResponse]) -> AnnotatedResponse:
         frags = []

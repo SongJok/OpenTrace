@@ -8,6 +8,7 @@ from typing import Any
 
 from infra.observability.logger import get_logger
 from infra.observability.tracer import get_tracer
+from kernel.json_parser import parse_llm_json
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
 
@@ -54,17 +55,12 @@ class Critic:
             return self._parse(resp.content)
 
     def _parse(self, text: str) -> CriticResult:
-        import json, re  # noqa: E401
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            try:
-                data = json.loads(match.group(0))
-                score = float(data.get("score", 0.5))
-                return CriticResult(
-                    score=score,
-                    feedback=data.get("feedback", ""),
-                    ok=data.get("ok", score >= self.threshold),
-                )
-            except Exception:  # noqa: BLE001
-                pass
+        parsed = parse_llm_json(text)
+        if parsed and isinstance(parsed, dict):
+            score = float(parsed.get("score", 0.5))
+            return CriticResult(
+                score=score,
+                feedback=parsed.get("feedback", ""),
+                ok=parsed.get("ok", score >= self.threshold),
+            )
         return CriticResult(score=0.5, feedback=text.strip()[:200], ok=False)

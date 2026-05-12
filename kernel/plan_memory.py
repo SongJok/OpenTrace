@@ -31,7 +31,7 @@ class PlanMemory:
     def recent_successful_plans(self, query_type: str, limit: int = 3) -> list[PlanMemoryRecord]:
         with self._lock:
             items = [r for r in self._records if r.query_type == query_type and r.score >= 0.7]
-        return items[-max(1, limit):]
+        return items[-max(1, limit) :]
 
 
 plan_memory = PlanMemory()

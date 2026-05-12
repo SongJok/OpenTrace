@@ -1,25 +1,25 @@
 from __future__ import annotations
 
-import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from kernel.data_cognition.sql_dialect import SQLDialectSpec
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
-from kernel.data_cognition.sql_dialect import SQLDialectSpec
 
 
 @dataclass
 class RewriteAttempt:
     """Record of a single SQL rewrite attempt."""
+
     attempt_num: int
     original_sql: str
     error: str
     rewritten_sql: str | None
     success: bool
     error_category: str = ""
-    timestamp: float = field(default_factory=lambda: __import__('time').time())
+    timestamp: float = field(default_factory=lambda: __import__("time").time())
 
 
 class SQLRewriter:
@@ -144,38 +144,56 @@ class SQLRewriter:
         last_error = unique_errors[-1].lower() if unique_errors else ""
 
         if "syntax" in last_error or "parse" in last_error:
-            suggestions.append({
-                "action": "manual_fix", "label": "手动修正 SQL",
-                "description": "语法错误，可手动调整查询语句",
-                "hint": "检查括号匹配、关键字拼写、表名/列名引用",
-            })
+            suggestions.append(
+                {
+                    "action": "manual_fix",
+                    "label": "手动修正 SQL",
+                    "description": "语法错误，可手动调整查询语句",
+                    "hint": "检查括号匹配、关键字拼写、表名/列名引用",
+                }
+            )
         elif "permission" in last_error or "access denied" in last_error:
-            suggestions.append({
-                "action": "contact_admin", "label": "联系管理员",
-                "description": "权限不足，需要管理员协助",
-                "hint": "请提供 trace_id 以便快速定位问题",
-            })
+            suggestions.append(
+                {
+                    "action": "contact_admin",
+                    "label": "联系管理员",
+                    "description": "权限不足，需要管理员协助",
+                    "hint": "请提供 trace_id 以便快速定位问题",
+                }
+            )
         elif "connection" in last_error or "timeout" in last_error:
-            suggestions.append({
-                "action": "retry_later", "label": "稍后重试",
-                "description": "数据库连接问题，请稍后重试",
-                "hint": "检查数据库服务状态或网络连通性",
-            })
+            suggestions.append(
+                {
+                    "action": "retry_later",
+                    "label": "稍后重试",
+                    "description": "数据库连接问题，请稍后重试",
+                    "hint": "检查数据库服务状态或网络连通性",
+                }
+            )
         elif "column" in last_error or "table" in last_error:
-            suggestions.append({
-                "action": "manual_fix", "label": "手动修正 SQL",
-                "description": "表或列不存在，可手动调整引用",
-                "hint": "确认表名/列名拼写，或检查数据库结构",
-            })
+            suggestions.append(
+                {
+                    "action": "manual_fix",
+                    "label": "手动修正 SQL",
+                    "description": "表或列不存在，可手动调整引用",
+                    "hint": "确认表名/列名拼写，或检查数据库结构",
+                }
+            )
         else:
-            suggestions.append({
-                "action": "manual_fix", "label": "手动修正 SQL",
-                "description": "查询执行失败，可手动调整",
-            })
-            suggestions.append({
-                "action": "contact_admin", "label": "联系管理员",
-                "description": "如需技术支持，请联系管理员",
-            })
+            suggestions.append(
+                {
+                    "action": "manual_fix",
+                    "label": "手动修正 SQL",
+                    "description": "查询执行失败，可手动调整",
+                }
+            )
+            suggestions.append(
+                {
+                    "action": "contact_admin",
+                    "label": "联系管理员",
+                    "description": "如需技术支持，请联系管理员",
+                }
+            )
 
         return {
             "trace_id": self.trace_id,

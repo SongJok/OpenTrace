@@ -1,11 +1,12 @@
 """
 Reasoning Engine — three-mode reasoning: Direct, CoT, Tree-of-Thought.
 """
+
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from infra.observability.logger import get_logger
 from infra.observability.tracer import get_tracer
@@ -16,11 +17,13 @@ from model.model_gateway.gateway import LLMRole, get_model_gateway
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
 
-_COT_SYSTEM = build_system_identity("""\
+_COT_SYSTEM = build_system_identity(
+    """\
 Think step-by-step. Structure your response as:
 <thinking>...reasoning steps...</thinking>
 <answer>...final answer...</answer>
-""")
+"""
+)
 
 _DIRECT_SYSTEM = build_system_identity(
     "You are a precise, helpful assistant. Answer directly and accurately."
@@ -67,7 +70,7 @@ class ReasoningEngine:
         context: str = "",
         strategy: str = "COT",
         temperature: float = 0.2,
-        system_override: Optional[str] = None,
+        system_override: str | None = None,
     ) -> ReasoningResult:
         with tracer.start_as_current_span("reasoning_engine.run") as span:
             span.set_attribute("strategy", strategy)
@@ -88,39 +91,51 @@ class ReasoningEngine:
         query: str,
         context: str,
         temperature: float,
-        system_override: Optional[str] = None,
+        system_override: str | None = None,
     ) -> ReasoningResult:
         system_prompt = system_override or _DIRECT_SYSTEM
         messages = [LLMMessage(role="system", content=system_prompt)]
         if context:
             messages.append(LLMMessage(role="user", content=f"Context:\n{context}"))
         messages.append(LLMMessage(role="user", content=query))
-        resp = await self._gateway.complete(messages=messages, role=LLMRole.QUERY, temperature=temperature)
-        return ReasoningResult(thinking="", answer=enforce_identity(resp.content), strategy="DIRECT",
-                               metadata={"tokens": resp.total_tokens})
+        resp = await self._gateway.complete(
+            messages=messages, role=LLMRole.QUERY, temperature=temperature
+        )
+        return ReasoningResult(
+            thinking="",
+            answer=enforce_identity(resp.content),
+            strategy="DIRECT",
+            metadata={"tokens": resp.total_tokens},
+        )
 
     async def _cot(
         self,
         query: str,
         context: str,
         temperature: float,
-        system_override: Optional[str] = None,
+        system_override: str | None = None,
     ) -> ReasoningResult:
         system_prompt = system_override or _COT_SYSTEM
         messages = [LLMMessage(role="system", content=system_prompt)]
         if context:
             messages.append(LLMMessage(role="user", content=f"Context:\n{context}"))
         messages.append(LLMMessage(role="user", content=query))
-        resp = await self._gateway.complete(messages=messages, role=LLMRole.QUERY, temperature=temperature)
+        resp = await self._gateway.complete(
+            messages=messages, role=LLMRole.QUERY, temperature=temperature
+        )
         thinking, answer = self._parse_tags(resp.content)
-        return ReasoningResult(thinking=thinking, answer=enforce_identity(answer), strategy="COT",
-                               metadata={"tokens": resp.total_tokens})
+        return ReasoningResult(
+            thinking=thinking,
+            answer=enforce_identity(answer),
+            strategy="COT",
+            metadata={"tokens": resp.total_tokens},
+        )
 
     async def _tot(
         self,
         query: str,
         context: str,
-        system_override: Optional[str] = None,
+        system_override: str | None = None,
     ) -> ReasoningResult:
         ctx_prefix = f"Context: {context[:500]}\n" if context else ""
 
@@ -150,9 +165,7 @@ class ReasoningEngine:
         if not approaches:
             return await self._cot(query, context, temperature=0.3)
 
-        judge_prompt = _TOT_JUDGE.format(
-            query=query, approaches="\n\n".join(approaches)
-        )
+        judge_prompt = _TOT_JUDGE.format(query=query, approaches="\n\n".join(approaches))
         judge_system = system_override or _COT_SYSTEM
         judge_resp = await self._gateway.complete(
             messages=[
@@ -172,6 +185,7 @@ class ReasoningEngine:
 
     def _parse_tags(self, text: str) -> tuple[str, str]:
         import re
+
         thinking = ""
         answer = text
         t = re.search(r"<thinking>(.*?)</thinking>", text, re.DOTALL)

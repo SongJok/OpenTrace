@@ -15,7 +15,7 @@ class Phase1AdaptiveModeContractTests(unittest.TestCase):
             code = f.read()
 
         self.assertIn("def _get_adaptive_profile", code)
-        self.assertIn("adaptive_profile = self._get_adaptive_profile(req.query, user_tags=user_tags)", code)
+        self.assertIn("adaptive_profile = self._get_adaptive_profile(req.query, user_tags=all_tags)", code)
         self.assertIn('"rag_min_score"', code)
         self.assertIn('"draft_threshold"', code)
 

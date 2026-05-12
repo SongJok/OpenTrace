@@ -1,8 +1,9 @@
 """System identity and persona enforcement for all model calls."""
+
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from collections.abc import Iterable
 
 from model.llm_adapter.base import LLMMessage
 
@@ -66,7 +67,9 @@ def merge_system_identity(messages: list[LLMMessage]) -> list[LLMMessage]:
         else:
             non_system_messages.append(message)
 
-    merged.append(LLMMessage(role="system", content=build_system_identity("\n\n".join(system_parts))))
+    merged.append(
+        LLMMessage(role="system", content=build_system_identity("\n\n".join(system_parts)))
+    )
     merged.extend(non_system_messages)
     return merged
 

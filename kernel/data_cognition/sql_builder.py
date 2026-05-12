@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from kernel.data_cognition.logical_plan import FilterSpec, JoinSpec, LogicalPlan
+from kernel.data_cognition.logical_plan import JoinSpec, LogicalPlan
 from kernel.data_cognition.sql_dialect import SQLDialectSpec, render_time_window
 
 
@@ -21,7 +21,9 @@ class SQLBuilder:
 
     def build(self, plan: LogicalPlan, dialect: SQLDialectSpec | None = None) -> str:
         """Build SQL string from LogicalPlan."""
-        dialect = dialect or SQLDialectSpec(name="mysql", schema_name="information_schema", supports_interval_days=False)
+        dialect = dialect or SQLDialectSpec(
+            name="mysql", schema_name="information_schema", supports_interval_days=False
+        )
 
         select = self._build_select(plan, dialect)
         from_clause = self._build_from(plan, dialect)
@@ -66,7 +68,9 @@ class SQLBuilder:
         # First table as base
         first = plan.tables[0]
         alias = self._extract_alias(first)
-        from_parts = [f"{self._escape_ident(first.split()[0], dialect)} {self._escape_ident(alias, dialect)}"]
+        from_parts = [
+            f"{self._escape_ident(first.split()[0], dialect)} {self._escape_ident(alias, dialect)}"
+        ]
 
         # Add joins
         for join in plan.joins:
@@ -86,10 +90,14 @@ class SQLBuilder:
         return " ".join(from_parts)
 
     def _resolve_join_on_clause(
-        self, join: JoinSpec, plan: LogicalPlan, dialect: SQLDialectSpec,
+        self,
+        join: JoinSpec,
+        plan: LogicalPlan,
+        dialect: SQLDialectSpec,
     ) -> str:
         """Resolve a missing on_clause using table relationship graph."""
         from kernel.data_cognition.table_graph import TableRelationshipGraph
+
         graph = TableRelationshipGraph()
         table_cols = plan.metadata.get("table_columns", {})
         for table, columns in table_cols.items():
@@ -202,9 +210,19 @@ class SQLBuilder:
             return plan.metadata["time_column"]
 
         # Common datetime column names across databases
-        common_time_cols = {"created_at", "updated_at", "create_time", "update_time",
-                            "order_time", "pay_time", "date", "time", "timestamp",
-                            "created_time", "modified_at"}
+        common_time_cols = {
+            "created_at",
+            "updated_at",
+            "create_time",
+            "update_time",
+            "order_time",
+            "pay_time",
+            "date",
+            "time",
+            "timestamp",
+            "created_time",
+            "modified_at",
+        }
 
         # Priority 2: check filters for column references
         for f in plan.filters:

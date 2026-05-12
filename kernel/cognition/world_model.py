@@ -107,8 +107,27 @@ class WorldModel:
 
         # 2) 时间语义补充（中英文）
         for phrase in [
-            "今天", "昨日", "昨天", "本周", "上周", "本月", "上月", "本季度", "上季度", "今年", "去年",
-            "today", "yesterday", "this week", "last week", "this month", "last month", "this quarter", "last quarter", "this year", "last year",
+            "今天",
+            "昨日",
+            "昨天",
+            "本周",
+            "上周",
+            "本月",
+            "上月",
+            "本季度",
+            "上季度",
+            "今年",
+            "去年",
+            "today",
+            "yesterday",
+            "this week",
+            "last week",
+            "this month",
+            "last month",
+            "this quarter",
+            "last quarter",
+            "this year",
+            "last year",
         ]:
             if phrase.lower() in q.lower():
                 g = self.ground(phrase)
@@ -155,7 +174,11 @@ class WorldModel:
         if p in {"今天", "today"}:
             return {
                 "canonical_name": "today",
-                "mappings": {"time_expr": "today", "start_date": str(today), "end_date": str(today)},
+                "mappings": {
+                    "time_expr": "today",
+                    "start_date": str(today),
+                    "end_date": str(today),
+                },
                 "alternatives": ["当日"],
             }
         if p in {"昨天", "昨日", "yesterday"}:
@@ -170,19 +193,31 @@ class WorldModel:
             start = end - timedelta(days=6)
             return {
                 "canonical_name": "last_week",
-                "mappings": {"time_expr": "last_week", "start_date": str(start), "end_date": str(end)},
+                "mappings": {
+                    "time_expr": "last_week",
+                    "start_date": str(start),
+                    "end_date": str(end),
+                },
             }
         if p in {"本周", "this week"}:
             start = today - timedelta(days=today.weekday())
             return {
                 "canonical_name": "this_week",
-                "mappings": {"time_expr": "this_week", "start_date": str(start), "end_date": str(today)},
+                "mappings": {
+                    "time_expr": "this_week",
+                    "start_date": str(start),
+                    "end_date": str(today),
+                },
             }
         if p in {"本月", "this month"}:
             start = today.replace(day=1)
             return {
                 "canonical_name": "this_month",
-                "mappings": {"time_expr": "this_month", "start_date": str(start), "end_date": str(today)},
+                "mappings": {
+                    "time_expr": "this_month",
+                    "start_date": str(start),
+                    "end_date": str(today),
+                },
             }
         if p in {"上月", "last month"}:
             first_this_month = today.replace(day=1)
@@ -190,7 +225,11 @@ class WorldModel:
             start_last_month = end_last_month.replace(day=1)
             return {
                 "canonical_name": "last_month",
-                "mappings": {"time_expr": "last_month", "start_date": str(start_last_month), "end_date": str(end_last_month)},
+                "mappings": {
+                    "time_expr": "last_month",
+                    "start_date": str(start_last_month),
+                    "end_date": str(end_last_month),
+                },
             }
         if p in {"上季度", "上一季度", "last quarter"}:
             return {
@@ -207,14 +246,22 @@ class WorldModel:
             start = today.replace(month=1, day=1)
             return {
                 "canonical_name": "this_year",
-                "mappings": {"time_expr": "this_year", "start_date": str(start), "end_date": str(today)},
+                "mappings": {
+                    "time_expr": "this_year",
+                    "start_date": str(start),
+                    "end_date": str(today),
+                },
             }
         if p in {"去年", "last year"}:
             start = date(today.year - 1, 1, 1)
             end = date(today.year - 1, 12, 31)
             return {
                 "canonical_name": "last_year",
-                "mappings": {"time_expr": "last_year", "start_date": str(start), "end_date": str(end)},
+                "mappings": {
+                    "time_expr": "last_year",
+                    "start_date": str(start),
+                    "end_date": str(end),
+                },
             }
 
         return None

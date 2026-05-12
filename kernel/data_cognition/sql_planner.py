@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from kernel.data_cognition.sql_dialect import SQLDialectSpec
 from kernel.data_cognition.table_graph import TableRelationshipGraph
 from kernel.data_cognition.types import CandidateSQL
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
-from kernel.data_cognition.sql_dialect import SQLDialectSpec
 
 
 @dataclass
@@ -21,8 +21,10 @@ class SQLPlanner:
     def __init__(self) -> None:
         self.table_graph = TableRelationshipGraph()
 
-    async def plan(self, question: str, schema_hint: str = "", dialect: SQLDialectSpec | None = None) -> PlannedSQL:
-        dialect_name = dialect.name if dialect else 'generic'
+    async def plan(
+        self, question: str, schema_hint: str = "", dialect: SQLDialectSpec | None = None
+    ) -> PlannedSQL:
+        dialect_name = dialect.name if dialect else "generic"
         prompt = (
             "You are a senior Text2SQL planner. Generate a single safe SQL query. "
             "Only output SQL. Use SELECT/WITH only and include LIMIT. "
@@ -43,10 +45,15 @@ class SQLPlanner:
         sql = (resp.content or "").strip().strip("`")
         tables = self.table_graph.infer_tables_from_schema_hint(schema_hint)
         join_steps = self.table_graph.find_path_for_tables(tables)
-        join_path = [f"{step.left_table}.{step.left_key}={step.right_table}.{step.right_key}" for step in join_steps]
+        join_path = [
+            f"{step.left_table}.{step.left_key}={step.right_table}.{step.right_key}"
+            for step in join_steps
+        ]
         if join_path:
             sql = self._ensure_join_metadata(sql, join_path)
-        return PlannedSQL(sql=sql, join_path=join_path, metadata={"dialect": dialect_name, "tables": tables})
+        return PlannedSQL(
+            sql=sql, join_path=join_path, metadata={"dialect": dialect_name, "tables": tables}
+        )
 
     async def generate_candidates(
         self,
@@ -57,7 +64,7 @@ class SQLPlanner:
         semantic_fragments: list[str] | None = None,
     ) -> list[CandidateSQL]:
         """Generate multiple candidate SQL statements via varied sampling."""
-        dialect_name = dialect.name if dialect else 'generic'
+        dialect_name = dialect.name if dialect else "generic"
         fragment_hint = ""
         if semantic_fragments:
             fragment_hint = "\nSemantic hints: " + " | ".join(semantic_fragments)
@@ -107,7 +114,10 @@ class SQLPlanner:
 
             tables = self.table_graph.infer_tables_from_schema_hint(schema_hint)
             join_steps = self.table_graph.find_path_for_tables(tables)
-            join_path = [f"{step.left_table}.{step.left_key}={step.right_table}.{step.right_key}" for step in join_steps]
+            join_path = [
+                f"{step.left_table}.{step.left_key}={step.right_table}.{step.right_key}"
+                for step in join_steps
+            ]
 
             candidates.append(
                 CandidateSQL(

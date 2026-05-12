@@ -9,8 +9,8 @@ from kernel.data_cognition.logical_plan import LogicalPlan
 from kernel.data_cognition.sql_builder import SQLBuilder
 from kernel.data_cognition.sql_dialect import SQLDialectSpec
 from kernel.data_cognition.sql_reflector import SQLReflector
-from kernel.data_cognition.sql_validator import SQLValidationError, SQLValidator
 from kernel.data_cognition.sql_rewriter import SQLRewriter
+from kernel.data_cognition.sql_validator import SQLValidationError, SQLValidator
 
 
 class QueryExecutor:
@@ -74,7 +74,13 @@ class QueryExecutor:
                     if attempt >= self._max_retries:
                         raise self._enhanced_error(last_error, rewriter)
                     rewritten_sql, _ = await self._attempt_rewrite(
-                        "", last_error, query, schema_hint, dialect, rewriter, attempt + 1,
+                        "",
+                        last_error,
+                        query,
+                        schema_hint,
+                        dialect,
+                        rewriter,
+                        attempt + 1,
                     )
                     continue
 
@@ -86,7 +92,13 @@ class QueryExecutor:
                 if attempt >= self._max_retries:
                     raise self._enhanced_error(last_error, rewriter)
                 rewritten_sql, _ = await self._attempt_rewrite(
-                    sql, last_error, query, schema_hint, dialect, rewriter, attempt + 1,
+                    sql,
+                    last_error,
+                    query,
+                    schema_hint,
+                    dialect,
+                    rewriter,
+                    attempt + 1,
                 )
                 continue
 
@@ -108,7 +120,13 @@ class QueryExecutor:
                 if attempt >= self._max_retries:
                     raise self._enhanced_error(last_error, rewriter)
                 rewritten_sql, _ = await self._attempt_rewrite(
-                    safe_sql, last_error, query, schema_hint, dialect, rewriter, attempt + 1,
+                    safe_sql,
+                    last_error,
+                    query,
+                    schema_hint,
+                    dialect,
+                    rewriter,
+                    attempt + 1,
                 )
                 continue
 
@@ -144,9 +162,17 @@ class QueryExecutor:
         """Use LLM to rewrite SQL based on error feedback. Returns corrected SQL or None."""
         try:
             new_sql = await rewriter.rewrite(
-                current_sql, error, schema_hint, dialect, attempt_num=attempt_num,
+                current_sql,
+                error,
+                schema_hint,
+                dialect,
+                attempt_num=attempt_num,
             )
-            if new_sql and len(new_sql) > 5 and new_sql.strip().lower().startswith(("select", "with")):
+            if (
+                new_sql
+                and len(new_sql) > 5
+                and new_sql.strip().lower().startswith(("select", "with"))
+            ):
                 return new_sql, rewriter.attempts
         except Exception:
             pass

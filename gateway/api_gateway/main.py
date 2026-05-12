@@ -32,6 +32,7 @@ from gateway.api_gateway.routers import (
 )
 from infra.message_bus.subscribers import memory_event_subscriber
 from infra.errors import AppException, ErrorCodes
+from infra.storage.database import ensure_runtime_schema
 
 
 app = FastAPI(title="OpenTrace API", version="0.1.0")
@@ -90,6 +91,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 @app.on_event("startup")
 async def startup_event() -> None:
     global _subscriber_task
+    await ensure_runtime_schema()
     if _subscriber_task is None or _subscriber_task.done():
         _subscriber_task = asyncio.create_task(memory_event_subscriber.start())
 

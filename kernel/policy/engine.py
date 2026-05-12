@@ -2,17 +2,17 @@
 Policy Engine — hybrid rule + LLM cognitive router.
 Reads runtime strategy overrides pushed by LearningEngine.
 """
+
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from infra.observability.logger import get_logger
 from infra.observability.tracer import get_tracer
 from kernel.identity.system_identity import build_system_identity
+from kernel.json_parser import parse_llm_json
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
 
@@ -53,7 +53,8 @@ class DecisionType(str, Enum):
     MULTI_AGENT = "MULTI_AGENT"
 
 
-POLICY_SYSTEM = build_system_identity("""\
+POLICY_SYSTEM = build_system_identity(
+    """\
 你是一个决策引擎。根据以下信息，决定是否需要调用工具（文档检索、Web搜索、代码执行）或者直接回答。
 
 规则：
@@ -65,10 +66,23 @@ POLICY_SYSTEM = build_system_identity("""\
 
 输出 JSON ONLY：
 {"route": "FAST|REASON|TOOL|MULTI_AGENT", "strategy": "DIRECT|COT|TOT|RAG|SEARCH", "confidence": 0.0-1.0, "rationale": "...", "tool_calls": [{"tool": "...", "query": "..."}], "final_answer": "..."}
-""")
+"""
+)
 
-_TOOL_KW = ["search", "look up", "find", "latest", "current", "today",
-            "calculate", "compute", "fetch", "weather", "price", "news"]
+_TOOL_KW = [
+    "search",
+    "look up",
+    "find",
+    "latest",
+    "current",
+    "today",
+    "calculate",
+    "compute",
+    "fetch",
+    "weather",
+    "price",
+    "news",
+]
 _SEARCH_KW = ["search", "find", "latest", "look up", "news", "weather"]
 
 
@@ -107,7 +121,9 @@ class PolicyEngine:
             decision = self._apply_depth_override(decision)
             span.set_attribute("policy.route", decision.route.value)
             span.set_attribute("policy.strategy", decision.strategy.value)
-            logger.debug("Policy decision", route=decision.route.value, strategy=decision.strategy.value)
+            logger.debug(
+                "Policy decision", route=decision.route.value, strategy=decision.strategy.value
+            )
             return decision
 
     def _apply_depth_override(self, decision: Decision) -> Decision:
@@ -118,7 +134,7 @@ class PolicyEngine:
             decision.rationale += " [learning:deep→TOT]"
         return decision
 
-    def _fast_rules(self, intent: Any, context: Any = None) -> Optional[Decision]:
+    def _fast_rules(self, intent: Any, context: Any = None) -> Decision | None:
         if hasattr(intent, "raw_query"):
             query = intent.raw_query.lower()
             complexity: float = getattr(intent, "complexity", 0.5)
@@ -144,7 +160,9 @@ class PolicyEngine:
                 if getattr(c, "source_type", "") == "document"
             ]
             if doc_scores and max(doc_scores) < 0.7:
-                return Decision(route=Route.TOOL, strategy=Strategy.RAG, rationale="Low document confidence")
+                return Decision(
+                    route=Route.TOOL, strategy=Strategy.RAG, rationale="Low document confidence"
+                )
 
         if multi_step and complexity > 0.6:
             return Decision(route=Route.MULTI_AGENT, strategy=Strategy.COT, rationale="Multi-step")
@@ -182,10 +200,10 @@ class PolicyEngine:
         return self._parse_llm(resp.content)
 
     def _parse_llm(self, text: str) -> Decision:
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
+        parsed = parse_llm_json(text)
+        if parsed and isinstance(parsed, dict):
             try:
-                d = json.loads(m.group(0))
+                d = parsed
                 return Decision(
                     route=Route(d.get("route", "REASON").upper()),
                     strategy=Strategy(d.get("strategy", "COT").upper()),
@@ -202,4 +220,8 @@ class PolicyEngine:
 
     def decide_sync(self, intent: Any) -> Decision:
         d = self._fast_rules(intent, None)
-        return self._apply_depth_override(d) if d else Decision(route=Route.REASON, strategy=Strategy.COT)
+        return (
+            self._apply_depth_override(d)
+            if d
+            else Decision(route=Route.REASON, strategy=Strategy.COT)
+        )

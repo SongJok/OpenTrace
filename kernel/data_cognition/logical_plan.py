@@ -10,6 +10,7 @@ from typing import Any
 @dataclass
 class Projection:
     """A SELECT expression with optional alias."""
+
     expr: str
     alias: str = ""
     agg_func: str = ""  # SUM, COUNT, AVG, MAX, MIN, COUNT_DISTINCT
@@ -18,6 +19,7 @@ class Projection:
 @dataclass
 class JoinSpec:
     """A JOIN clause."""
+
     left_table: str
     right_table: str
     join_type: str = "INNER"  # INNER, LEFT, RIGHT
@@ -27,6 +29,7 @@ class JoinSpec:
 @dataclass
 class FilterSpec:
     """A WHERE/HAVING condition."""
+
     expr: str
     is_having: bool = False  # True for post-aggregation filters
 
@@ -34,6 +37,7 @@ class FilterSpec:
 @dataclass
 class OrderBySpec:
     """An ORDER BY clause entry."""
+
     expr: str
     direction: str = "DESC"  # ASC, DESC
 
@@ -46,6 +50,7 @@ class LogicalPlan:
     This is the core intermediate representation (IR) between semantic parsing
     and SQL generation. LLM produces this structure, not raw SQL strings.
     """
+
     tables: list[str] = field(default_factory=list)  # [(table, alias), ...] stored as "table alias"
     joins: list[JoinSpec] = field(default_factory=list)
     projections: list[Projection] = field(default_factory=list)
@@ -72,8 +77,7 @@ class LogicalPlan:
                 for j in self.joins
             ],
             "projections": [
-                {"expr": p.expr, "alias": p.alias, "agg_func": p.agg_func}
-                for p in self.projections
+                {"expr": p.expr, "alias": p.alias, "agg_func": p.agg_func} for p in self.projections
             ],
             "filters": [{"expr": f.expr, "is_having": f.is_having} for f in self.filters],
             "group_by": self.group_by,
@@ -111,8 +115,7 @@ class LogicalPlan:
             for o in data.get("order_by", [])
         ]
         having = [
-            FilterSpec(expr=h.get("expr", ""), is_having=True)
-            for h in data.get("having", [])
+            FilterSpec(expr=h.get("expr", ""), is_having=True) for h in data.get("having", [])
         ]
         return cls(
             tables=data.get("tables", []),
@@ -130,7 +133,9 @@ class LogicalPlan:
     def from_json(cls, raw: str) -> LogicalPlan:
         return cls.from_dict(json.loads(raw))
 
-    def validate(self, available_tables: set[str], available_columns: dict[str, set[str]]) -> list[str]:
+    def validate(
+        self, available_tables: set[str], available_columns: dict[str, set[str]]
+    ) -> list[str]:
         """Validate plan against available schema. Returns list of issues."""
         issues: list[str] = []
 

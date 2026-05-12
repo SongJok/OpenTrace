@@ -2,6 +2,7 @@
 Bandit Policy — ε-greedy + UCB1 multi-armed bandit for online strategy selection.
 Persists arm statistics to Redis so learning survives restarts.
 """
+
 from __future__ import annotations
 
 import json
@@ -9,7 +10,7 @@ import math
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from infra.cache.redis_client import get_memory_redis
 from infra.observability.logger import get_logger
@@ -63,19 +64,17 @@ class BanditPolicy:
 
     def __init__(
         self,
-        actions: Optional[list[str]] = None,
+        actions: list[str] | None = None,
         epsilon: float = 0.1,
         mode: str = "ucb1",  # "epsilon_greedy" | "ucb1"
     ) -> None:
         self.actions = actions or ACTIONS
         self.epsilon = epsilon
         self.mode = mode
-        self._arms: dict[str, ArmStats] = {
-            a: ArmStats(action=a) for a in self.actions
-        }
+        self._arms: dict[str, ArmStats] = {a: ArmStats(action=a) for a in self.actions}
         self._total_pulls: int = 0
 
-    def select(self, available_actions: Optional[list[str]] = None) -> str:
+    def select(self, available_actions: list[str] | None = None) -> str:
         """Select the best action. Exploration vs exploitation based on mode."""
         actions = available_actions or self.actions
         if not actions:
@@ -88,14 +87,14 @@ class BanditPolicy:
     def _epsilon_greedy_select(self, actions: list[str]) -> str:
         if random.random() < self.epsilon:
             return random.choice(actions)
-        return max(actions, key=lambda a: self._arms[a].mean_reward
-                   if a in self._arms else 0.0)
+        return max(actions, key=lambda a: self._arms[a].mean_reward if a in self._arms else 0.0)
 
     def _ucb1_select(self, actions: list[str]) -> str:
         return max(
             actions,
-            key=lambda a: self._arms[a].ucb1(self._total_pulls)
-            if a in self._arms else float("inf"),
+            key=lambda a: (
+                self._arms[a].ucb1(self._total_pulls) if a in self._arms else float("inf")
+            ),
         )
 
     def update(self, action: str, reward: float) -> None:
@@ -104,9 +103,13 @@ class BanditPolicy:
             self._arms[action] = ArmStats(action=action)
         self._arms[action].update(reward)
         self._total_pulls += 1
-        logger.debug("Bandit update", action=action, reward=round(reward, 3),
-                     mean=round(self._arms[action].mean_reward, 3),
-                     count=self._arms[action].count)
+        logger.debug(
+            "Bandit update",
+            action=action,
+            reward=round(reward, 3),
+            mean=round(self._arms[action].mean_reward, 3),
+            count=self._arms[action].count,
+        )
 
     def get_stats(self) -> dict[str, dict[str, Any]]:
         return {
@@ -122,19 +125,21 @@ class BanditPolicy:
         """Persist arm statistics to Redis."""
         try:
             r = await get_memory_redis()
-            payload = json.dumps({
-                "arms": {
-                    a: {
-                        "count": s.count,
-                        "total_reward": s.total_reward,
-                        "mean_reward": s.mean_reward,
-                        "last_updated": s.last_updated,
-                    }
-                    for a, s in self._arms.items()
-                },
-                "total_pulls": self._total_pulls,
-                "saved_at": time.time(),
-            })
+            payload = json.dumps(
+                {
+                    "arms": {
+                        a: {
+                            "count": s.count,
+                            "total_reward": s.total_reward,
+                            "mean_reward": s.mean_reward,
+                            "last_updated": s.last_updated,
+                        }
+                        for a, s in self._arms.items()
+                    },
+                    "total_pulls": self._total_pulls,
+                    "saved_at": time.time(),
+                }
+            )
             await r.setex(BANDIT_KEY, BANDIT_TTL, payload)
             logger.debug("Bandit stats saved", total_pulls=self._total_pulls)
         except Exception as exc:  # noqa: BLE001

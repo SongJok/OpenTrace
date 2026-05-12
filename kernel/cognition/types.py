@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 
 class CapabilityLevel(Enum):
@@ -33,7 +33,7 @@ class CapabilityAssessment:
     required_agents: list[str]
     expected_latency_ms: int
     constraints: list[str] = field(default_factory=list)
-    fallback_strategy: Optional[str] = None
+    fallback_strategy: str | None = None
     reasoning: str = ""
 
 
@@ -44,9 +44,9 @@ class SelfState:
     available_tools: list[str]
     connected_data_sources: list[dict[str, str]]
     model_routing: dict[str, str]
-    rate_limit_remaining: Optional[int] = None
+    rate_limit_remaining: int | None = None
     degraded_mode: bool = False
-    degraded_reason: Optional[str] = None
+    degraded_reason: str | None = None
 
 
 @dataclass

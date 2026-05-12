@@ -63,8 +63,12 @@ class PlanAgent:
                 )
         return terms
 
-    async def generate_plan(self, user_query: str, context: dict[str, Any] | None = None) -> TaskPlan:
-        adaptive_profile = (context or {}).get("adaptive_profile") if isinstance(context, dict) else {}
+    async def generate_plan(
+        self, user_query: str, context: dict[str, Any] | None = None
+    ) -> TaskPlan:
+        adaptive_profile = (
+            (context or {}).get("adaptive_profile") if isinstance(context, dict) else {}
+        )
         if not isinstance(adaptive_profile, dict):
             adaptive_profile = {}
         prompt = (
@@ -80,10 +84,11 @@ class PlanAgent:
         # Inject clarification context if available (Feature ⑤)
         metadata = (context or {}).get("metadata", {}) if isinstance(context, dict) else {}
         clarify_context = (
-            (context or {}).get("clarify_context")
-            if isinstance(context, dict)
+            ((context or {}).get("clarify_context") if isinstance(context, dict) else None)
+            or metadata.get("clarify_context")
+            if isinstance(metadata, dict)
             else None
-        ) or metadata.get("clarify_context") if isinstance(metadata, dict) else None
+        )
         if clarify_context and isinstance(clarify_context, str) and clarify_context.strip():
             clarify_part = (
                 f"\n用户基于上一轮的追问补充了以下信息：{clarify_context.strip()}\n"
@@ -92,8 +97,14 @@ class PlanAgent:
             prompt += clarify_part
 
         # Inject dialogue state if available (Feature ②)
-        dialogue_state = (context or {}).get("dialogue_state") if isinstance(context, dict) else None
-        if dialogue_state and isinstance(dialogue_state, dict) and dialogue_state.get("referenced_previous_result"):
+        dialogue_state = (
+            (context or {}).get("dialogue_state") if isinstance(context, dict) else None
+        )
+        if (
+            dialogue_state
+            and isinstance(dialogue_state, dict)
+            and dialogue_state.get("referenced_previous_result")
+        ):
             dst_part = (
                 f"\n对话状态追踪结果：\n"
                 f"- 当前话题域：{dialogue_state.get('active_domain', 'general_qa')}\n"
@@ -108,12 +119,17 @@ class PlanAgent:
                 user_query = resolved
 
         # ── Multi-turn: inject conversation history ──
-        conversation_history = (context or {}).get("conversation_history") if isinstance(context, dict) else None
-        if conversation_history and isinstance(conversation_history, list) and len(conversation_history) > 0:
+        conversation_history = (
+            (context or {}).get("conversation_history") if isinstance(context, dict) else None
+        )
+        if (
+            conversation_history
+            and isinstance(conversation_history, list)
+            and len(conversation_history) > 0
+        ):
             recent = conversation_history[-6:]
             history_text = "\n".join(
-                f"[{h.get('role', '?')}]: {str(h.get('content', ''))[:200]}"
-                for h in recent
+                f"[{h.get('role', '?')}]: {str(h.get('content', ''))[:200]}" for h in recent
             )
             prompt += (
                 f"\n最近的对话历史（用于理解上下文和用户意图）：\n{history_text}\n"
@@ -122,7 +138,9 @@ class PlanAgent:
             )
 
         # ── Multi-turn: inject ConversationState context ──
-        conv_state = (context or {}).get("conversation_state") if isinstance(context, dict) else None
+        conv_state = (
+            (context or {}).get("conversation_state") if isinstance(context, dict) else None
+        )
         if conv_state and isinstance(conv_state, dict):
             cs_parts = []
             if conv_state.get("active_topic"):
@@ -133,12 +151,14 @@ class PlanAgent:
                 cs_parts.append(f"- 活跃数据源：{conv_state['active_data_source_id']}")
             last_plan = conv_state.get("last_plan")
             if isinstance(last_plan, dict) and last_plan.get("subtasks"):
-                prev_agents = [s.get("agent_type", "?") for s in last_plan["subtasks"] if isinstance(s, dict)]
+                prev_agents = [
+                    s.get("agent_type", "?") for s in last_plan["subtasks"] if isinstance(s, dict)
+                ]
                 if prev_agents:
                     cs_parts.append(f"- 上一轮使用的 Agent：{', '.join(prev_agents)}")
             if cs_parts:
                 prompt += (
-                    f"\n当前会话状态：\n" + "\n".join(cs_parts) + "\n"
+                    "\n当前会话状态：\n" + "\n".join(cs_parts) + "\n"
                     "如果用户是在延续当前话题，优先沿用上轮的 Agent 和参数配置。"
                 )
 
@@ -181,8 +201,15 @@ class PlanAgent:
             has = {s.agent_type for s in sts}
             profile_name = str(adaptive_profile.get("name", "balanced") or "balanced")
             profile_defaults = get_profile_defaults(profile_name)
-            min_agents = 1 if profile_name == "speed" else 2 if profile_name in {"quality", "identity"} else 1
-            desired_max_parallel = int(adaptive_profile.get("max_parallel", profile_defaults.get("max_parallel", 3)) or profile_defaults.get("max_parallel", 3))
+            min_agents = (
+                1
+                if profile_name == "speed"
+                else 2 if profile_name in {"quality", "identity"} else 1
+            )
+            desired_max_parallel = int(
+                adaptive_profile.get("max_parallel", profile_defaults.get("max_parallel", 3))
+                or profile_defaults.get("max_parallel", 3)
+            )
 
             for s in sts:
                 if s.agent_type == "data":
@@ -191,10 +218,56 @@ class PlanAgent:
                         p["data_source_id"] = selected_data_source_id
                     s.params = p
 
-            doc_intent = any(k in q for k in ["文档", "手册", "知识库", "根据文档", "从文档", "政策", "规范", "记忆", "读取", "读一下", "总结", "归纳", "提炼", "上传文档", "附件", ".pdf", ".doc", ".docx", ".txt", ".md", "pdf", "docx"])
-            web_intent = any(k in q for k in ["新闻", "实时", "最新", "今天", "联网", "搜索", "天气", "气温", "降雨"])
-            data_intent = is_database_question(user_query) or any(k in q for k in ["分布", "订单", "用户", "销量", "饼图", "柱状图"])
-            tool_intent = any(k in q for k in ["时间", "几点", "计算", "图表", "代码", "执行", "sql", "查询", "tool", "天气", "分析"])
+            doc_intent = any(
+                k in q
+                for k in [
+                    "文档",
+                    "手册",
+                    "知识库",
+                    "根据文档",
+                    "从文档",
+                    "政策",
+                    "规范",
+                    "记忆",
+                    "读取",
+                    "读一下",
+                    "总结",
+                    "归纳",
+                    "提炼",
+                    "上传文档",
+                    "附件",
+                    ".pdf",
+                    ".doc",
+                    ".docx",
+                    ".txt",
+                    ".md",
+                    "pdf",
+                    "docx",
+                ]
+            )
+            web_intent = any(
+                k in q
+                for k in ["新闻", "实时", "最新", "今天", "联网", "搜索", "天气", "气温", "降雨"]
+            )
+            data_intent = is_database_question(user_query) or any(
+                k in q for k in ["分布", "订单", "用户", "销量", "饼图", "柱状图"]
+            )
+            tool_intent = any(
+                k in q
+                for k in [
+                    "时间",
+                    "几点",
+                    "计算",
+                    "图表",
+                    "代码",
+                    "执行",
+                    "sql",
+                    "查询",
+                    "tool",
+                    "天气",
+                    "分析",
+                ]
+            )
 
             if doc_intent and "rag" not in has:
                 sts.append(
@@ -204,8 +277,12 @@ class PlanAgent:
                         params={
                             "top_k": 8,
                             "sources": ["documents", "semantic_memory"],
-                            "min_evidence_score": float(getattr(settings, "rag_min_evidence_score", 0.65)),
-                            "fallback_to_web": bool(getattr(settings, "rag_auto_fallback_to_web", True)),
+                            "min_evidence_score": float(
+                                getattr(settings, "rag_min_evidence_score", 0.65)
+                            ),
+                            "fallback_to_web": bool(
+                                getattr(settings, "rag_auto_fallback_to_web", True)
+                            ),
                         },
                         priority="high",
                     )
@@ -215,7 +292,13 @@ class PlanAgent:
                 sts.append(SubTask(agent_type="web", query=user_query))
                 has.add("web")
             if data_intent and selected_data_source_id and "data" not in has:
-                sts.append(SubTask(agent_type="data", query=user_query, params={"data_source_id": selected_data_source_id}))
+                sts.append(
+                    SubTask(
+                        agent_type="data",
+                        query=user_query,
+                        params={"data_source_id": selected_data_source_id},
+                    )
+                )
                 has.add("data")
             if data_intent and selected_data_source_id and "data" in has:
                 for s in sts:
@@ -233,7 +316,12 @@ class PlanAgent:
                         SubTask(
                             agent_type="rag",
                             query=user_query,
-                            params={"top_k": 8, "sources": ["documents", "semantic_memory"], "min_evidence_score": 0.65, "fallback_to_web": True},
+                            params={
+                                "top_k": 8,
+                                "sources": ["documents", "semantic_memory"],
+                                "min_evidence_score": 0.65,
+                                "fallback_to_web": True,
+                            },
                             priority="high",
                         )
                     )
@@ -248,11 +336,23 @@ class PlanAgent:
 
             if len(sts) < min_agents:
                 if doc_intent and "rag" not in has:
-                    sts.append(SubTask(agent_type="rag", query=user_query, params={"top_k": 8, "sources": ["documents", "semantic_memory"]}))
+                    sts.append(
+                        SubTask(
+                            agent_type="rag",
+                            query=user_query,
+                            params={"top_k": 8, "sources": ["documents", "semantic_memory"]},
+                        )
+                    )
                 elif web_intent and "web" not in has:
                     sts.append(SubTask(agent_type="web", query=user_query, priority="normal"))
                 elif data_intent and selected_data_source_id and "data" not in has:
-                    sts.append(SubTask(agent_type="data", query=user_query, params={"data_source_id": selected_data_source_id}))
+                    sts.append(
+                        SubTask(
+                            agent_type="data",
+                            query=user_query,
+                            params={"data_source_id": selected_data_source_id},
+                        )
+                    )
 
             return sts, desired_max_parallel
 
@@ -265,12 +365,39 @@ class PlanAgent:
             subtasks, max_parallel = _ensure_rules(subtasks)
             if not subtasks:
                 raise ValueError("empty subtasks")
-            plan = TaskPlan(subtasks=subtasks, merge_strategy=merge_strategy, max_parallel=max_parallel, adaptive_profile=get_profile_defaults(str(adaptive_profile.get("name", "balanced") or "balanced")))
+            plan = TaskPlan(
+                subtasks=subtasks,
+                merge_strategy=merge_strategy,
+                max_parallel=max_parallel,
+                adaptive_profile=get_profile_defaults(
+                    str(adaptive_profile.get("name", "balanced") or "balanced")
+                ),
+            )
         except Exception:
             subtasks: list[SubTask] = []
             if any(k in q for k in ["行业", "新闻", "搜索", "web", "联网"]):
                 subtasks.append(SubTask(agent_type="web", query=user_query))
-            if any(k in q for k in ["文档", "手册", "知识库", "历史记录", "记忆", "政策", "规范", "读取", "总结", "归纳", ".pdf", ".doc", ".docx", ".txt", "pdf", "docx"]):
+            if any(
+                k in q
+                for k in [
+                    "文档",
+                    "手册",
+                    "知识库",
+                    "历史记录",
+                    "记忆",
+                    "政策",
+                    "规范",
+                    "读取",
+                    "总结",
+                    "归纳",
+                    ".pdf",
+                    ".doc",
+                    ".docx",
+                    ".txt",
+                    "pdf",
+                    "docx",
+                ]
+            ):
                 subtasks.append(
                     SubTask(
                         agent_type="rag",
@@ -278,16 +405,41 @@ class PlanAgent:
                         params={
                             "top_k": 8,
                             "sources": ["documents", "semantic_memory"],
-                            "min_evidence_score": float(getattr(settings, "rag_min_evidence_score", 0.65)),
-                            "fallback_to_web": bool(getattr(settings, "rag_auto_fallback_to_web", True)),
+                            "min_evidence_score": float(
+                                getattr(settings, "rag_min_evidence_score", 0.65)
+                            ),
+                            "fallback_to_web": bool(
+                                getattr(settings, "rag_auto_fallback_to_web", True)
+                            ),
                         },
                         priority="high",
                     )
                 )
-            if any(k in q for k in ["时间", "几点", "天气", "计算", "图表", "代码", "执行", "sql", "查询", "tool"]):
+            if any(
+                k in q
+                for k in [
+                    "时间",
+                    "几点",
+                    "天气",
+                    "计算",
+                    "图表",
+                    "代码",
+                    "执行",
+                    "sql",
+                    "查询",
+                    "tool",
+                ]
+            ):
                 subtasks.append(SubTask(agent_type="tool", query=user_query))
             subtasks, max_parallel = _ensure_rules(subtasks)
-            plan = TaskPlan(subtasks=subtasks, merge_strategy="prioritized", max_parallel=max_parallel, adaptive_profile=get_profile_defaults(str(adaptive_profile.get("name", "balanced") or "balanced")))
+            plan = TaskPlan(
+                subtasks=subtasks,
+                merge_strategy="prioritized",
+                max_parallel=max_parallel,
+                adaptive_profile=get_profile_defaults(
+                    str(adaptive_profile.get("name", "balanced") or "balanced")
+                ),
+            )
 
         def _attach_dependencies(sts: list[SubTask]) -> list[SubTask]:
             if not sts:
@@ -346,12 +498,14 @@ class PlanAgent:
         if agent_type == "data" and selected_data_source_id:
             params["data_source_id"] = selected_data_source_id
         elif agent_type == "rag":
-            params.update({
-                "top_k": 8,
-                "sources": ["documents", "semantic_memory"],
-                "min_evidence_score": 0.65,
-                "fallback_to_web": True,
-            })
+            params.update(
+                {
+                    "top_k": 8,
+                    "sources": ["documents", "semantic_memory"],
+                    "min_evidence_score": 0.65,
+                    "fallback_to_web": True,
+                }
+            )
         elif agent_type == "web":
             params["fallback_to_web"] = True
         return params
@@ -360,7 +514,9 @@ class PlanAgent:
         self, sub_questions: list[dict[str, str]], context: dict[str, Any] | None = None
     ) -> TaskPlan:
         """Generate a multi-question TaskPlan with ordered subtasks."""
-        adaptive_profile = (context or {}).get("adaptive_profile") if isinstance(context, dict) else {}
+        adaptive_profile = (
+            (context or {}).get("adaptive_profile") if isinstance(context, dict) else {}
+        )
         if not isinstance(adaptive_profile, dict):
             adaptive_profile = {}
 
@@ -379,20 +535,29 @@ class PlanAgent:
         )
         context_hints = []
         if selected_data_source_id:
-            context_hints.append(f"- 已配置数据源(data_source_id={selected_data_source_id})，data_query 类问题应使用 data agent")
+            context_hints.append(
+                f"- 已配置数据源(data_source_id={selected_data_source_id})，data_query 类问题应使用 data agent"
+            )
         else:
             context_hints.append("- 未配置数据源，data_query 类问题应降级为 tool agent")
         if not has_rag:
-            context_hints.append("- RAG agent 当前不可用，document_retrieval 类问题应降级为 tool agent")
+            context_hints.append(
+                "- RAG agent 当前不可用，document_retrieval 类问题应降级为 tool agent"
+            )
 
         # ── Multi-turn: inject conversation history ──
-        conversation_history = (context or {}).get("conversation_history") if isinstance(context, dict) else None
+        conversation_history = (
+            (context or {}).get("conversation_history") if isinstance(context, dict) else None
+        )
         history_hint = ""
-        if conversation_history and isinstance(conversation_history, list) and len(conversation_history) > 0:
+        if (
+            conversation_history
+            and isinstance(conversation_history, list)
+            and len(conversation_history) > 0
+        ):
             recent = conversation_history[-6:]
             history_text = "\n".join(
-                f"[{h.get('role', '?')}]: {str(h.get('content', ''))[:200]}"
-                for h in recent
+                f"[{h.get('role', '?')}]: {str(h.get('content', ''))[:200]}" for h in recent
             )
             history_hint = (
                 f"\n最近的对话历史：\n{history_text}\n"
@@ -400,7 +565,9 @@ class PlanAgent:
             )
 
         # ── Multi-turn: inject ConversationState context ──
-        conv_state = (context or {}).get("conversation_state") if isinstance(context, dict) else None
+        conv_state = (
+            (context or {}).get("conversation_state") if isinstance(context, dict) else None
+        )
         conv_state_hint = ""
         if conv_state and isinstance(conv_state, dict):
             cs_parts = []
@@ -410,12 +577,14 @@ class PlanAgent:
                 cs_parts.append(f"- 活跃数据源：{conv_state['active_data_source_id']}")
             last_plan = conv_state.get("last_plan")
             if isinstance(last_plan, dict) and last_plan.get("subtasks"):
-                prev_agents = [s.get("agent_type", "?") for s in last_plan["subtasks"] if isinstance(s, dict)]
+                prev_agents = [
+                    s.get("agent_type", "?") for s in last_plan["subtasks"] if isinstance(s, dict)
+                ]
                 if prev_agents:
                     cs_parts.append(f"- 上一轮使用的 Agent：{', '.join(prev_agents)}")
             if cs_parts:
                 conv_state_hint = (
-                    f"\n当前会话状态：\n" + "\n".join(cs_parts) + "\n"
+                    "\n当前会话状态：\n" + "\n".join(cs_parts) + "\n"
                     "如果子问题是在延续当前话题，优先沿用上轮的 Agent 和参数配置。\n"
                 )
 
@@ -426,8 +595,8 @@ class PlanAgent:
             "- 根据每个子问题的 domain 选择 agent_type\n"
             f"{chr(10).join(context_hints) if context_hints else ''}\n"
             "- query 字段可以改写原问题使其更精准，也可以保持原样\n"
-            "- 如果 rag agent 可用，为文档检索类问题添加 params: {\"top_k\": 8, \"sources\": [\"documents\", \"semantic_memory\"]}\n"
-            "- 如果 data agent 可用且有数据源，为数据查询类问题添加 params: {\"data_source_id\": \"...\"}\n"
+            '- 如果 rag agent 可用，为文档检索类问题添加 params: {"top_k": 8, "sources": ["documents", "semantic_memory"]}\n'
+            '- 如果 data agent 可用且有数据源，为数据查询类问题添加 params: {"data_source_id": "..."}\n'
             '- 输出 JSON：{"subtasks": [{"agent_type": "rag", "query": "...", "params": {}}]}\n'
             f"{history_hint}"
             f"{conv_state_hint}"
@@ -438,8 +607,10 @@ class PlanAgent:
         try:
             gw = get_model_gateway()
             resp = await gw.complete(
-                [LLMMessage(role="system", content=prompt),
-                 LLMMessage(role="user", content=json.dumps(sub_questions, ensure_ascii=False))],
+                [
+                    LLMMessage(role="system", content=prompt),
+                    LLMMessage(role="user", content=json.dumps(sub_questions, ensure_ascii=False)),
+                ],
                 role=LLMRole.PLANNING,
                 temperature=0.0,
                 max_tokens=500,
@@ -454,7 +625,9 @@ class PlanAgent:
                 agent_type = st_data.get("agent_type", "tool")
                 st_params = dict(st_data.get("params", {}))
                 if not st_params:
-                    st_params = self._build_params_for_agent(agent_type, sq or {}, selected_data_source_id)
+                    st_params = self._build_params_for_agent(
+                        agent_type, sq or {}, selected_data_source_id
+                    )
                 subtasks.append(
                     SubTask(
                         agent_type=agent_type,
@@ -479,7 +652,9 @@ class PlanAgent:
                     SubTask(
                         agent_type=agent_type,
                         query=sq.get("text", ""),
-                        params=self._build_params_for_agent(agent_type, sq, selected_data_source_id),
+                        params=self._build_params_for_agent(
+                            agent_type, sq, selected_data_source_id
+                        ),
                         sub_question_id=sq.get("id", f"q{i+1}"),
                         display_order=i + 1,
                         priority="high" if i == 0 else "normal",
@@ -495,7 +670,9 @@ class PlanAgent:
             subtasks=subtasks,
             merge_strategy="prioritized",
             max_parallel=min(5, len(subtasks)),
-            adaptive_profile=get_profile_defaults(str(adaptive_profile.get("name", "balanced") or "balanced")),
+            adaptive_profile=get_profile_defaults(
+                str(adaptive_profile.get("name", "balanced") or "balanced")
+            ),
             is_multi_question=True,
         )
 
@@ -510,10 +687,23 @@ class PlanAgent:
 
         # Reference words that imply dependency on previous results
         _DEP_REFERENCES = [
-            "它们", "这些", "上述", "其", "该产品", "该结果",
-            "基于以上", "根据以上", "根据上述", "在此基础上",
-            "based on the above", "based on that", "these",
-            "its", "their", "the above", "those results",
+            "它们",
+            "这些",
+            "上述",
+            "其",
+            "该产品",
+            "该结果",
+            "基于以上",
+            "根据以上",
+            "根据上述",
+            "在此基础上",
+            "based on the above",
+            "based on that",
+            "these",
+            "its",
+            "their",
+            "the above",
+            "those results",
         ]
 
         for sq in sub_questions:

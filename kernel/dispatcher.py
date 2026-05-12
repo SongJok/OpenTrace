@@ -9,7 +9,7 @@ from infra.config.settings import settings
 from infra.message_bus.agent_bus import AgentMessageBus, AgentTaskEnvelope
 from kernel.dag_plan import DagNode, DagPlan
 from kernel.dag_scheduler import DagScheduler
-from kernel.plan_agent import TaskPlan, SubTask
+from kernel.plan_agent import SubTask, TaskPlan
 
 
 class RuntimeSupervisor:
@@ -71,11 +71,18 @@ class Dispatcher:
         self.bus_enabled = bus_enabled
         self.bus = AgentMessageBus(namespace=bus_namespace)
         self.max_retry = int(settings.kernel_agent_max_retry if max_retry is None else max_retry)
-        enabled = settings.kernel_agent_runtime_supervisor_enabled if runtime_supervisor_enabled is None else runtime_supervisor_enabled
+        enabled = (
+            settings.kernel_agent_runtime_supervisor_enabled
+            if runtime_supervisor_enabled is None
+            else runtime_supervisor_enabled
+        )
         self.supervisor = RuntimeSupervisor(enabled=bool(enabled))
 
     async def dispatch(
-        self, plan: TaskPlan, event_cb=None, previous_results: list[AgentResult] | None = None,
+        self,
+        plan: TaskPlan,
+        event_cb=None,
+        previous_results: list[AgentResult] | None = None,
     ) -> list[AgentResult]:
         # ── Feature ⑥: DAG Checkpoint Reuse ──────────────────────────
         # If previous_results are provided (from conversation branching),
@@ -111,18 +118,31 @@ class Dispatcher:
         return await self._dispatch_inner(plan, event_cb)
 
     async def _dispatch_inner(self, plan: TaskPlan, event_cb=None) -> list[AgentResult]:
-        if bool(settings.kernel_agent_dag_scheduling_enabled) and any(getattr(s, "depends_on", []) for s in plan.subtasks):
+        if bool(settings.kernel_agent_dag_scheduling_enabled) and any(
+            getattr(s, "depends_on", []) for s in plan.subtasks
+        ):
             dag_nodes = [
                 DagNode(
-                    node_id=getattr(st, "params", {}).get("node_id") or f"node_{idx}_{st.agent_type}",
+                    node_id=getattr(st, "params", {}).get("node_id")
+                    or f"node_{idx}_{st.agent_type}",
                     agent_type=st.agent_type,
                     query=st.query,
-                    params={**(st.params or {}), "session_id": (st.params or {}).get("session_id", ""), "user_id": (st.params or {}).get("user_id", "")},
+                    params={
+                        **(st.params or {}),
+                        "session_id": (st.params or {}).get("session_id", ""),
+                        "user_id": (st.params or {}).get("user_id", ""),
+                    },
                     depends_on=list(getattr(st, "depends_on", []) or []),
                 )
                 for idx, st in enumerate(plan.subtasks)
             ]
-            dag_result = await DagScheduler(self.registry, timeout_sec=self.timeout_sec).execute(DagPlan(nodes=dag_nodes, speculative_execution=bool(settings.kernel_agent_speculative_execution_enabled)), event_cb=event_cb)
+            dag_result = await DagScheduler(self.registry, timeout_sec=self.timeout_sec).execute(
+                DagPlan(
+                    nodes=dag_nodes,
+                    speculative_execution=bool(settings.kernel_agent_speculative_execution_enabled),
+                ),
+                event_cb=event_cb,
+            )
             return dag_result.results
 
         return await self._execute_parallel(plan.subtasks)
@@ -133,7 +153,10 @@ class Dispatcher:
         results: list[AgentResult] = []
 
         if high_priority_tasks:
-            high_results = await asyncio.gather(*[self._run_one(asyncio.Semaphore(1), st) for st in high_priority_tasks], return_exceptions=True)
+            high_results = await asyncio.gather(
+                *[self._run_one(asyncio.Semaphore(1), st) for st in high_priority_tasks],
+                return_exceptions=True,
+            )
             for st, res in zip(high_priority_tasks, high_results):
                 agent_result = self._coerce_result(res, st.agent_type)
                 results.append(agent_result)
@@ -144,13 +167,18 @@ class Dispatcher:
                             SubTask(
                                 agent_type="web",
                                 query=st.query,
-                                params={"fallback_reason": "rag_insufficient", "fallback_source_task": st.params.get("node_id", "")},
+                                params={
+                                    "fallback_reason": "rag_insufficient",
+                                    "fallback_source_task": st.params.get("node_id", ""),
+                                },
                             )
                         )
 
         if normal_tasks:
             sem = asyncio.Semaphore(max(1, len(normal_tasks), 1))
-            normal_raw = await asyncio.gather(*[self._run_one(sem, st) for st in normal_tasks], return_exceptions=True)
+            normal_raw = await asyncio.gather(
+                *[self._run_one(sem, st) for st in normal_tasks], return_exceptions=True
+            )
             for st, res in zip(normal_tasks, normal_raw):
                 results.append(self._coerce_result(res, st.agent_type))
 
@@ -160,8 +188,20 @@ class Dispatcher:
         if isinstance(raw, AgentResult):
             return raw
         if isinstance(raw, Exception):
-            return AgentResult(task_id=str(uuid.uuid4()), agent_type=agent_type, status="error", content="", error=str(raw))
-        return AgentResult(task_id=str(uuid.uuid4()), agent_type=agent_type, status="error", content="", error="invalid result")
+            return AgentResult(
+                task_id=str(uuid.uuid4()),
+                agent_type=agent_type,
+                status="error",
+                content="",
+                error=str(raw),
+            )
+        return AgentResult(
+            task_id=str(uuid.uuid4()),
+            agent_type=agent_type,
+            status="error",
+            content="",
+            error="invalid result",
+        )
 
     def _is_rag_quality_sufficient(self, result: AgentResult, task: SubTask) -> bool:
         chunks = result.metadata.get("chunks", []) if isinstance(result.metadata, dict) else []
@@ -242,15 +282,27 @@ class Dispatcher:
                     metadata=data.get("metadata") or {},
                     error=data.get("error"),
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # If the message bus worker is unavailable, degrade to in-process execution
                 # so RAG/Text2SQL do not silently fail into web-only answers.
                 if bool(getattr(settings, "kernel_agent_bus_require_worker", False)):
-                    return AgentResult(task_id=msg.task_id, agent_type=subtask.agent_type, status="timeout", content="", error="timeout")
+                    return AgentResult(
+                        task_id=msg.task_id,
+                        agent_type=subtask.agent_type,
+                        status="timeout",
+                        content="",
+                        error="timeout",
+                    )
                 pass
 
         agent = self.registry.get_agent(subtask.agent_type)
         try:
             return await asyncio.wait_for(agent.execute(msg), timeout=self.timeout_sec)
-        except asyncio.TimeoutError:
-            return AgentResult(task_id=msg.task_id, agent_type=subtask.agent_type, status="timeout", content="", error="timeout")
+        except TimeoutError:
+            return AgentResult(
+                task_id=msg.task_id,
+                agent_type=subtask.agent_type,
+                status="timeout",
+                content="",
+                error="timeout",
+            )

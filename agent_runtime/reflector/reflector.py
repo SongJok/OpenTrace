@@ -8,6 +8,7 @@ from typing import Any
 
 from infra.observability.logger import get_logger
 from infra.observability.tracer import get_tracer
+from kernel.json_parser import parse_llm_json
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
 
@@ -53,16 +54,11 @@ class Reflector:
             return self._parse(resp.content)
 
     def _parse(self, text: str) -> ReflectionResult:
-        import json, re  # noqa: E401
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            try:
-                data = json.loads(match.group(0))
-                return ReflectionResult(
-                    strengths=data.get("strengths", []),
-                    improvements=data.get("improvements", []),
-                    lesson=data.get("lesson", ""),
-                )
-            except Exception:  # noqa: BLE001
-                pass
+        parsed = parse_llm_json(text)
+        if parsed and isinstance(parsed, dict):
+            return ReflectionResult(
+                strengths=parsed.get("strengths", []),
+                improvements=parsed.get("improvements", []),
+                lesson=parsed.get("lesson", ""),
+            )
         return ReflectionResult(strengths=[], improvements=[], lesson=text.strip()[:200])

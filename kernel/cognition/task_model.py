@@ -25,7 +25,9 @@ class TaskModel:
         self.state.open_questions = [query]
         self.state.last_updated_at = datetime.now()
 
-    def add_hypothesis(self, statement: str, confidence: float = 0.6, source: str = "inference") -> None:
+    def add_hypothesis(
+        self, statement: str, confidence: float = 0.6, source: str = "inference"
+    ) -> None:
         hid = f"h_{len(self.state.hypotheses)+1}"
         self.state.hypotheses.append(
             Hypothesis(id=hid, statement=statement, confidence=confidence, source=source)

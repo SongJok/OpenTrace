@@ -6,7 +6,6 @@ from typing import Any
 
 from infra.config.settings import settings
 
-
 DEFAULT_PROFILES: dict[str, dict[str, Any]] = {
     "speed": {
         "draft_threshold": 0.65,

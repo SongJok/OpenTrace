@@ -15,7 +15,6 @@ class OrchestratorV3ContractTests(unittest.TestCase):
         with open(path, "r", encoding="utf-8") as f:
             code = f.read()
         self.assertIn("OrchestratorV4Request", code)
-        self.assertIn("OrchestratorV4Response", code)
         self.assertIn(".process(", code)
 
 

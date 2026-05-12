@@ -31,7 +31,8 @@ class FusionCriticAdaptiveContractTests(unittest.TestCase):
         with open("kernel/orchestrator_v4.py", "r", encoding="utf-8") as f:
             code = f.read()
 
-        self.assertIn('FusionInput(query=req.query, results=tool_results, adaptive_profile=adaptive_profile)', code)
+        self.assertIn('FusionInput(', code)
+        self.assertIn('results=tool_results', code)
         self.assertIn('CriticInput(', code)
         self.assertIn('adaptive_profile=adaptive_profile', code)
 

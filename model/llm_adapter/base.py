@@ -1,19 +1,24 @@
 """
 Base LLM Adapter — every provider implements this interface.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Optional
+from typing import Any
 
 
 @dataclass
 class LLMMessage:
     role: str  # system | user | assistant | tool
-    content: str | list[dict[str, Any]]  # str for text, list for multimodal (e.g. [{"type":"image_url",...}, {"type":"text",...}])
-    name: Optional[str] = None
-    tool_call_id: Optional[str] = None
+    content: str | list[dict[str, Any]] | None = (
+        None  # str for text, list for multimodal, None for tool-call-only msgs
+    )
+    name: str | None = None
+    tool_call_id: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None  # assistant tool_calls per OpenAI spec
 
 
 @dataclass

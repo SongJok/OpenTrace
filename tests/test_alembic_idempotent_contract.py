@@ -22,6 +22,26 @@ class AlembicIdempotentContractTests(unittest.TestCase):
                 f"{name} should check existing columns/indexes before altering",
             )
 
+    def test_runtime_schema_guard_covers_chat_session_columns(self):
+        p = ROOT / "infra" / "storage" / "database.py"
+        code = p.read_text(encoding="utf-8")
+        self.assertIn("ensure_runtime_schema", code)
+        for column in [
+            "display_title",
+            "turn_count",
+            "last_decision_type",
+            "tags",
+            "pinned",
+            "archived_at",
+        ]:
+            self.assertIn(f"ADD COLUMN IF NOT EXISTS {column}", code)
+
+    def test_api_startup_runs_runtime_schema_guard(self):
+        p = ROOT / "gateway" / "api_gateway" / "main.py"
+        code = p.read_text(encoding="utf-8")
+        self.assertIn("ensure_runtime_schema", code)
+        self.assertIn("await ensure_runtime_schema()", code)
+
 
 if __name__ == "__main__":
     unittest.main()

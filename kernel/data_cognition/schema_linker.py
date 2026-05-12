@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from kernel.data_cognition.table_graph import TableRelationshipGraph
@@ -16,7 +15,9 @@ class SchemaLinker:
     """Links user mentions to actual database tables and columns."""
 
     def __init__(
-        self, schema_summary: str = "", table_names: list[str] | None = None,
+        self,
+        schema_summary: str = "",
+        table_names: list[str] | None = None,
         table_columns: dict[str, list[str]] | None = None,
         column_synonyms: dict[str, list[str]] | None = None,
     ) -> None:
@@ -37,7 +38,9 @@ class SchemaLinker:
             )
 
     async def link_entities(
-        self, query: str, table_columns: dict[str, list[str]] | None = None,
+        self,
+        query: str,
+        table_columns: dict[str, list[str]] | None = None,
     ) -> list[EntityMapping]:
         """Map natural language mentions in query to database tables."""
         entities: list[EntityMapping] = []
@@ -56,7 +59,9 @@ class SchemaLinker:
         return entities
 
     async def link_columns(
-        self, mention: str, table_candidates: list[str] | None = None,
+        self,
+        mention: str,
+        table_candidates: list[str] | None = None,
         table_columns: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Map a mention to database columns with similarity scoring.
@@ -75,19 +80,26 @@ class SchemaLinker:
                     results.append({"table": table, "column": col, "similarity": 1.0})
                 elif mention_lower in col.lower() or col.lower() in mention_lower:
                     score = len(mention_lower) / max(len(col), len(mention_lower))
-                    results.append({"table": table, "column": col, "similarity": round(score * 0.7, 2)})
+                    results.append(
+                        {"table": table, "column": col, "similarity": round(score * 0.7, 2)}
+                    )
 
         # 2. Synonym match
         for syn, standard_name in self._build_synonym_index().items():
             if syn in mention_lower:
                 for table in candidates:
                     for col in cols.get(table, []):
-                        if col.lower() == standard_name.lower() or standard_name.lower() in col.lower():
+                        if (
+                            col.lower() == standard_name.lower()
+                            or standard_name.lower() in col.lower()
+                        ):
                             results.append({"table": table, "column": col, "similarity": 0.85})
 
         # 3. LLM fallback if no match
         if not results and self._schema_summary:
-            results = await self._llm_link_columns(mention, table_candidates=candidates, table_columns=cols)
+            results = await self._llm_link_columns(
+                mention, table_candidates=candidates, table_columns=cols
+            )
 
         # Sort by similarity descending, deduplicate
         seen = set()
@@ -112,22 +124,40 @@ class SchemaLinker:
         metrics: list[MetricMapping] = []
 
         metric_patterns = {
-            "销售额": ("total_amount", "SUM"), "金额": ("amount", "SUM"),
-            "订单数": ("id", "COUNT"), "订单量": ("id", "COUNT"), "订单": ("id", "COUNT"),
-            "用户数": ("id", "COUNT"), "用户量": ("id", "COUNT"),
-            "平均": ("", "AVG"), "总数": ("", "COUNT"), "合计": ("", "SUM"),
-            "最大": ("", "MAX"), "最小": ("", "MIN"),
-            "revenue": ("total_amount", "SUM"), "sales": ("total_amount", "SUM"),
-            "amount": ("amount", "SUM"), "total": ("amount", "SUM"),
-            "count": ("id", "COUNT"), "number": ("id", "COUNT"),
-            "average": ("", "AVG"), "avg": ("", "AVG"),
-            "max": ("", "MAX"), "min": ("", "MIN"),
-            "profit": ("profit", "SUM"), "cost": ("cost", "SUM"),
-            "price": ("price", "AVG"), "quantity": ("quantity", "SUM"),
-            "退款": ("refund_amount", "SUM"), "退款率": ("refund_rate", "AVG"),
-            "复购": ("repurchase_count", "COUNT"), "复购率": ("repurchase_rate", "AVG"),
-            "销量": ("quantity", "SUM"), "客单价": ("amount", "AVG"),
-            "转化率": ("conversion_rate", "AVG"), "毛利率": ("margin_rate", "AVG"),
+            "销售额": ("total_amount", "SUM"),
+            "金额": ("amount", "SUM"),
+            "订单数": ("id", "COUNT"),
+            "订单量": ("id", "COUNT"),
+            "订单": ("id", "COUNT"),
+            "用户数": ("id", "COUNT"),
+            "用户量": ("id", "COUNT"),
+            "平均": ("", "AVG"),
+            "总数": ("", "COUNT"),
+            "合计": ("", "SUM"),
+            "最大": ("", "MAX"),
+            "最小": ("", "MIN"),
+            "revenue": ("total_amount", "SUM"),
+            "sales": ("total_amount", "SUM"),
+            "amount": ("amount", "SUM"),
+            "total": ("amount", "SUM"),
+            "count": ("id", "COUNT"),
+            "number": ("id", "COUNT"),
+            "average": ("", "AVG"),
+            "avg": ("", "AVG"),
+            "max": ("", "MAX"),
+            "min": ("", "MIN"),
+            "profit": ("profit", "SUM"),
+            "cost": ("cost", "SUM"),
+            "price": ("price", "AVG"),
+            "quantity": ("quantity", "SUM"),
+            "退款": ("refund_amount", "SUM"),
+            "退款率": ("refund_rate", "AVG"),
+            "复购": ("repurchase_count", "COUNT"),
+            "复购率": ("repurchase_rate", "AVG"),
+            "销量": ("quantity", "SUM"),
+            "客单价": ("amount", "AVG"),
+            "转化率": ("conversion_rate", "AVG"),
+            "毛利率": ("margin_rate", "AVG"),
         }
         query_lower = query.lower()
         # Sort by length descending to match longer phrases first
@@ -142,7 +172,9 @@ class SchemaLinker:
         return metrics
 
     async def _llm_link_entities(
-        self, query: str, table_columns: dict[str, list[str]] | None = None,
+        self,
+        query: str,
+        table_columns: dict[str, list[str]] | None = None,
     ) -> list[EntityMapping]:
         """Use LLM to link entities when rules fail, with full schema context."""
         cols = table_columns or self._table_columns
@@ -156,12 +188,21 @@ class SchemaLinker:
             f"Available schema:\n{schema_context}\n"
             f"Question: {query}"
         )
-        return await _call_llm_json_array(prompt, EntityMapping, [
-            ("mention", str), ("mapped_table", str), ("confidence", float),
-        ], primary_field="mention")
+        return await _call_llm_json_array(
+            prompt,
+            EntityMapping,
+            [
+                ("mention", str),
+                ("mapped_table", str),
+                ("confidence", float),
+            ],
+            primary_field="mention",
+        )
 
     async def _llm_link_columns(
-        self, mention: str, table_candidates: list[str] | None,
+        self,
+        mention: str,
+        table_candidates: list[str] | None,
         table_columns: dict[str, list[str]],
     ) -> list[dict[str, Any]]:
         """Use LLM to find matching columns for a mention."""
@@ -178,7 +219,9 @@ class SchemaLinker:
             gw = get_model_gateway()
             resp = await gw.complete(
                 messages=[
-                    LLMMessage(role="system", content="You output ONLY valid JSON arrays. No explanation."),
+                    LLMMessage(
+                        role="system", content="You output ONLY valid JSON arrays. No explanation."
+                    ),
                     LLMMessage(role="user", content=prompt),
                 ],
                 role=LLMRole.PLANNING,
@@ -189,8 +232,11 @@ class SchemaLinker:
             data = json.loads(raw)
             if isinstance(data, list):
                 return [
-                    {"table": e.get("table", ""), "column": e.get("column", ""),
-                     "similarity": float(e.get("similarity", 0.5))}
+                    {
+                        "table": e.get("table", ""),
+                        "column": e.get("column", ""),
+                        "similarity": float(e.get("similarity", 0.5)),
+                    }
                     for e in data
                     if e.get("column")
                 ]
@@ -208,9 +254,16 @@ class SchemaLinker:
             f"Schema:\n{schema_context}\n"
             f"Question: {query}"
         )
-        return await _call_llm_json_array(prompt, MetricMapping, [
-            ("mention", str), ("mapped_column", str), ("agg", str),
-        ], primary_field="mention")
+        return await _call_llm_json_array(
+            prompt,
+            MetricMapping,
+            [
+                ("mention", str),
+                ("mapped_column", str),
+                ("agg", str),
+            ],
+            primary_field="mention",
+        )
 
     def infer_join_path(self, tables: list[str]) -> list[str]:
         """Infer join path between tables using foreign key graph."""
@@ -246,7 +299,9 @@ def _clean_json_response(content: str | None) -> str:
 
 
 async def _call_llm_json_array(
-    prompt: str, result_cls: type, fields: list[tuple[str, type]],
+    prompt: str,
+    result_cls: type,
+    fields: list[tuple[str, type]],
     primary_field: str = "mention",
 ) -> Any:
     """Call LLM for JSON array output with validation and auto-retry."""
@@ -255,7 +310,9 @@ async def _call_llm_json_array(
         gw = get_model_gateway()
         resp = await gw.complete(
             messages=[
-                LLMMessage(role="system", content="You output ONLY valid JSON arrays. No explanation."),
+                LLMMessage(
+                    role="system", content="You output ONLY valid JSON arrays. No explanation."
+                ),
                 LLMMessage(role="user", content=prompt),
             ],
             role=LLMRole.PLANNING,

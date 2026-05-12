@@ -22,7 +22,7 @@ export interface ExecutionGraphData {
   state?: Record<string, unknown>
 }
 
-export type MessageStatus = 'streaming' | 'done'
+export type MessageStatus = 'streaming' | 'done' | 'interrupted'
 
 export interface MessageAttachment {
   id: string
@@ -52,9 +52,20 @@ export interface MessageAnnotation {
   } | null
 }
 
+export interface ToolCallBlock {
+  id: string
+  function: {
+    name: string
+    arguments: string
+  }
+  status?: 'pending' | 'running' | 'success' | 'error' | 'interrupted' | 'retrying'
+  result?: string
+  duration_ms?: number
+}
+
 export interface Message {
   id: string
-  role: 'user' | 'assistant' | 'system'
+  role: 'user' | 'assistant' | 'system' | 'tool'
   status: MessageStatus
   streamText: string
   finalText: string
@@ -65,6 +76,10 @@ export interface Message {
   citations?: CitationItem[]
   annotations?: MessageAnnotation[]
   attachments?: MessageAttachment[]
+  prompt_tokens?: number
+  completion_tokens?: number
+  model?: string
+  tool_calls?: ToolCallBlock[]
 }
 
 export interface Conversation {
@@ -74,6 +89,8 @@ export interface Conversation {
   created_at: string
   last_active: string
   archived_at?: string | null
+  tags?: string[]
+  pinned?: boolean
 }
 
 interface ChatState {
@@ -137,10 +154,11 @@ function asDoneMessage(raw: any): Message {
     ? (raw.execution_graph as ExecutionGraphData)
     : null
   const attachments = Array.isArray(raw?.attachments) ? raw.attachments as MessageAttachment[] : undefined
+  const status = (raw?.decision_type === 'interrupted' || raw?.status === 'interrupted') ? 'interrupted' as const : 'done' as const
   return {
     id: String(raw?.id ?? `m_${Date.now()}`),
     role: (raw?.role ?? 'assistant') as Message['role'],
-    status: 'done',
+    status,
     streamText: '',
     finalText: text,
     decision_type: raw?.decision_type,
@@ -148,6 +166,10 @@ function asDoneMessage(raw: any): Message {
     reasoning_steps: reasoningSteps,
     execution_graph: executionGraph,
     attachments,
+    prompt_tokens: typeof raw?.prompt_tokens === 'number' ? raw.prompt_tokens : undefined,
+    completion_tokens: typeof raw?.completion_tokens === 'number' ? raw.completion_tokens : undefined,
+    model: typeof raw?.model === 'string' ? raw.model : undefined,
+    tool_calls: Array.isArray(raw?.tool_calls) ? raw.tool_calls as ToolCallBlock[] : undefined,
   }
 }
 

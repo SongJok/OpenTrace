@@ -28,7 +28,10 @@ from kernel.data_cognition.types import (
 # Time-related filter patterns for automatic filter extraction
 _TIME_FILTER_PATTERNS = [
     (r"(?:最近|近|过去|前)\s*(\d+)\s*(?:个)?([年月天日周])", "relative_days"),
-    (r"(\d{4})[年-](\d{1,2})[月-](\d{1,2})\s*(?:到|至|~|-)\s*(\d{4})[年-](\d{1,2})[月-](\d{1,2})", "date_range"),
+    (
+        r"(\d{4})[年-](\d{1,2})[月-](\d{1,2})\s*(?:到|至|~|-)\s*(\d{4})[年-](\d{1,2})[月-](\d{1,2})",
+        "date_range",
+    ),
     (r"(\d{4})[年-](\d{1,2})[月-](\d{1,2})", "date_exact"),
     (r"(\d{4})[年-](\d{1,2})[月]", "month"),
     (r"(\d{4})年", "year"),
@@ -39,12 +42,26 @@ _TIME_UNIT_DAYS = {"天": 1, "日": 1, "周": 7, "月": 30, "年": 365}
 
 # Comparison operator mapping (Chinese → SQL)
 _COMPARISON_OPS = {
-    "大于": ">", "高于": ">", "超过": ">", "多于": ">", "以上": ">=",
-    "小于": "<", "低于": "<", "少于": "<", "以下": "<=", "不超过": "<=",
-    "等于": "=", "为": "=", "是": "=", "是": "=",
-    "不等于": "!=", "不是": "!=",
-    "大于等于": ">=", "小于等于": "<=",
-    "至少": ">=", "最多": "<=",
+    "大于": ">",
+    "高于": ">",
+    "超过": ">",
+    "多于": ">",
+    "以上": ">=",
+    "小于": "<",
+    "低于": "<",
+    "少于": "<",
+    "以下": "<=",
+    "不超过": "<=",
+    "等于": "=",
+    "为": "=",
+    "是": "=",
+    "是": "=",
+    "不等于": "!=",
+    "不是": "!=",
+    "大于等于": ">=",
+    "小于等于": "<=",
+    "至少": ">=",
+    "最多": "<=",
 }
 
 # Filter value patterns
@@ -96,7 +113,10 @@ _ENTITY_FILTER_PATTERNS = [
     # "已发货" "未完成" - status values
     (r"(?:状态(?:为|是|等于)?)?(已发货|已取消|未完成|已完成|待支付|已退款|已关闭)", "status"),
     # City/entity mentions: "北京" "上海" followed by business words
-    (r"(北京|上海|广州|深圳|杭州|成都|重庆|武汉|西安|南京|天津|苏州|长沙|青岛|郑州|大连|沈阳|济南|哈尔滨|福州|昆明|厦门|南昌|贵阳|太原|南宁|乌鲁木齐|兰州)(?:的|地区|城市)?", "location"),
+    (
+        r"(北京|上海|广州|深圳|杭州|成都|重庆|武汉|西安|南京|天津|苏州|长沙|青岛|郑州|大连|沈阳|济南|哈尔滨|福州|昆明|厦门|南昌|贵阳|太原|南宁|乌鲁木齐|兰州)(?:的|地区|城市)?",
+        "location",
+    ),
 ]
 
 # Cache configuration
@@ -106,11 +126,14 @@ CACHE_TTL_SECONDS = getattr(settings, "semantic_parse_cache_ttl", 24 * 3600)  # 
 
 def _make_cache_key(query: str, schema_version: str, table_names: tuple[str, ...]) -> str:
     """Generate deterministic cache key from query and schema context."""
-    payload = json.dumps({
-        "q": query.strip().lower(),
-        "sv": schema_version,
-        "tn": sorted(table_names),
-    }, sort_keys=True)
+    payload = json.dumps(
+        {
+            "q": query.strip().lower(),
+            "sv": schema_version,
+            "tn": sorted(table_names),
+        },
+        sort_keys=True,
+    )
     hash_digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
     return f"{CACHE_PREFIX}:{hash_digest}"
 
@@ -118,9 +141,18 @@ def _make_cache_key(query: str, schema_version: str, table_names: tuple[str, ...
 def _serialize_result(result: SemanticParseResult) -> dict[str, Any]:
     """Serialize SemanticParseResult to JSON-serializable dict."""
     return {
-        "entities": [{"mention": e.mention, "mapped_table": e.mapped_table, "confidence": e.confidence} for e in result.entities],
-        "metrics": [{"mention": m.mention, "mapped_column": m.mapped_column, "agg": m.agg} for m in result.metrics],
-        "filters": [{"field": f.field, "operator": f.operator, "value": f.value, "value_type": f.value_type} for f in result.filters],
+        "entities": [
+            {"mention": e.mention, "mapped_table": e.mapped_table, "confidence": e.confidence}
+            for e in result.entities
+        ],
+        "metrics": [
+            {"mention": m.mention, "mapped_column": m.mapped_column, "agg": m.agg}
+            for m in result.metrics
+        ],
+        "filters": [
+            {"field": f.field, "operator": f.operator, "value": f.value, "value_type": f.value_type}
+            for f in result.filters
+        ],
         "group_by": result.group_by,
         "order_by": result.order_by,
         "limit": result.limit,
@@ -151,7 +183,7 @@ class SemanticParser:
     - Filter extraction (WHERE conditions)
     - Time intent extraction
     - Group/order/limit inference
-    
+
     Features:
     - Redis caching for repeated queries with same schema context
     - Prometheus metrics for cache hit rate and latency monitoring
@@ -167,7 +199,8 @@ class SemanticParser:
         table_columns: dict[str, list[str]] | None = None,
     ) -> None:
         self._schema_linker = SchemaLinker(
-            schema_summary=schema_summary, table_names=table_names or [],
+            schema_summary=schema_summary,
+            table_names=table_names or [],
             table_columns=table_columns or {},
         )
         self._semantic_layer = SemanticLayer(semantic_config or {})
@@ -214,11 +247,13 @@ class SemanticParser:
             pass
 
     def check_structured_intent(
-        self, query: str, table_names: list[str], database_name: str,
+        self,
+        query: str,
+        table_names: list[str],
+        database_name: str,
         dialect: SQLDialectSpec | None = None,
     ) -> str | None:
         """Fast-path: detect metadata queries (table_count, table_list, table_schema) and return SQL directly."""
-        from execution.data.query_intents import build_structured_database_query
 
         result = build_structured_database_query(
             query,
@@ -229,7 +264,9 @@ class SemanticParser:
         return result.sql if result else None
 
     async def parse(
-        self, query: str, dialect: SQLDialectSpec | None = None,
+        self,
+        query: str,
+        dialect: SQLDialectSpec | None = None,
     ) -> SemanticParseResult:
         """Parse a natural language query into structured semantic representation."""
         # Try cache first
@@ -277,7 +314,7 @@ class SemanticParser:
             match = re.search(pattern, query)
             if match:
                 val = match.group(1)
-                if self._is_time_reference(query[max(0, match.start() - 4):match.end()]):
+                if self._is_time_reference(query[max(0, match.start() - 4) : match.end()]):
                     continue
                 if vtype == "number" and not re.match(r"^\d", val):
                     val = str(_chinese_num_to_int(val))
@@ -286,12 +323,19 @@ class SemanticParser:
         # Extract entity-based filters: "北京的订单" → location=北京
         for pattern, ftype in _ENTITY_FILTER_PATTERNS:
             for match in re.finditer(pattern, query):
-                if self._is_time_reference(query[max(0, match.start() - 4):match.end()]):
+                if self._is_time_reference(query[max(0, match.start() - 4) : match.end()]):
                     continue
                 val = match.group(1).strip()
                 if len(val) < 1 or val in ("的",):
                     continue
-                filters.append(ParsedFilter(field="", operator="LIKE" if ftype in ("location", "entity_value") else "=", value=val, value_type=ftype))
+                filters.append(
+                    ParsedFilter(
+                        field="",
+                        operator="LIKE" if ftype in ("location", "entity_value") else "=",
+                        value=val,
+                        value_type=ftype,
+                    )
+                )
 
         # Extract multi-condition connectors (AND/OR)
         # If query contains "和""与""且""或", mark subsequent conditions
@@ -334,7 +378,7 @@ class SemanticParser:
                 field = ""
                 # Extract sort field from immediate context (skip time expressions)
                 context_start = max(0, match.start() - 6)
-                context = query[context_start:match.start()].strip()
+                context = query[context_start : match.start()].strip()
                 if context and not self._is_time_reference(context):
                     field = context.rstrip("的")
                 orders.append({"field": field, "direction": direction})
@@ -416,9 +460,22 @@ class SemanticParser:
 
 def _chinese_num_to_int(text: str) -> int:
     """Convert simple Chinese numerals to integers (supports 一-十百千万)."""
-    cn_map = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
-              "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
-              "百": 100, "千": 1000, "万": 10000, "零": 0}
+    cn_map = {
+        "一": 1,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+        "百": 100,
+        "千": 1000,
+        "万": 10000,
+        "零": 0,
+    }
     if text in cn_map:
         return cn_map[text]
     # Simple composite: "三十" = 30, "五百" = 500

@@ -16,7 +16,7 @@ if (typeof window !== 'undefined') {
   }
 }
 
-export type ReasoningStage = 'ROUTE' | 'REASON' | 'DECIDE' | 'EXECUTE' | 'OBSERVE' | 'REFLECT' | 'PLAN' | 'ACT' | 'DRAFT' | 'CRITIC' | 'REWRITE' | 'FINAL' | 'FUSION' | 'EVIDENCE'
+export type ReasoningStage = 'ROUTE' | 'REASON' | 'DECIDE' | 'EXECUTE' | 'OBSERVE' | 'REFLECT' | 'PLAN' | 'ACT' | 'DRAFT' | 'CRITIC' | 'REWRITE' | 'FINAL' | 'FUSION' | 'EVIDENCE' | 'STEP'
 export type ReasoningStatus = 'pending' | 'running' | 'done'
 export type ToolRunStatus = 'idle' | 'running' | 'success' | 'error'
 
@@ -219,6 +219,33 @@ export async function apiPatchMessage(token: string, id: string, payload: any): 
 export async function apiBranchConversation(token: string, id: string, messageId: string): Promise<any> {
   const res = await apiFetch(`/conversations/${id}/branch`, { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ message_id: messageId }) })
   if (!res.ok) throw new Error('Failed to branch conversation')
+  return res.json()
+}
+
+export async function apiGetMessageVersions(token: string, messageId: string): Promise<any> {
+  const res = await apiFetch(`/chat/messages/${messageId}/versions`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error('Failed to get message versions')
+  return res.json()
+}
+
+export async function apiSubmitFeedback(
+  token: string,
+  sessionId: string,
+  messageId: string | null,
+  feedbackType: 'like' | 'dislike' | 'none',
+  score?: number,
+): Promise<any> {
+  const res = await apiFetch('/chat/feedback', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({
+      session_id: sessionId,
+      message_id: messageId,
+      feedback_type: feedbackType,
+      score: score ?? (feedbackType === 'like' ? 1.0 : feedbackType === 'dislike' ? 0.0 : undefined),
+    }),
+  })
+  if (!res.ok) throw new Error('Failed to submit feedback')
   return res.json()
 }
 

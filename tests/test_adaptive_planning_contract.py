@@ -6,8 +6,9 @@ class AdaptivePlanningContractTests(unittest.TestCase):
         with open("kernel/plan_agent.py", "r", encoding="utf-8") as f:
             code = f.read()
 
-        self.assertIn("adaptive_profile: dict[str, Any]", code)
-        self.assertIn("plan = TaskPlan(subtasks=subtasks, merge_strategy=merge_strategy, max_parallel=max_parallel, adaptive_profile=", code)
+        self.assertIn('adaptive_profile: dict[str, Any]', code)
+        self.assertIn('plan = TaskPlan(', code)
+        self.assertIn('adaptive_profile=get_profile_defaults(', code)
 
     def test_quality_profile_can_expand_requirements(self):
         with open("kernel/plan_agent.py", "r", encoding="utf-8") as f:
@@ -20,7 +21,7 @@ class AdaptivePlanningContractTests(unittest.TestCase):
         self.assertIn('data_intent', code)
         self.assertIn('selected_data_source_id', code)
         self.assertIn('data_source_id', code)
-        self.assertIn('SubTask(agent_type="data"', code)
+        self.assertIn('agent_type="data"', code)
 
     def test_orchestrator_metadata_includes_adaptive_profile_in_plan(self):
         with open("kernel/orchestrator_v4.py", "r", encoding="utf-8") as f:

@@ -270,6 +270,11 @@ class AppSettings(BaseSettings):
     kernel_compress_trigger_tokens: int = 3000
     kernel_compress_keep_recent_turns: int = 5
 
+    # Token budget (used by kernel/token_counter.py)
+    context_window_max_tokens: int = 8192
+    context_max_history_tokens: int = 4096
+    context_keep_recent_turns_min: int = 2
+
     # Feature ③ Memory Value Feedback Loop
     kernel_memory_value_scoring_enabled: bool = True
     kernel_memory_feedback_like_bonus: float = 0.3

@@ -26,7 +26,9 @@ class SQLReflector:
 
         # Non-empty check
         if not rows:
-            issues.append("query returned 0 rows — may indicate incorrect filtering or no matching data")
+            issues.append(
+                "query returned 0 rows — may indicate incorrect filtering or no matching data"
+            )
 
         # Null value check for first row
         if rows:
@@ -42,7 +44,9 @@ class SQLReflector:
                 if isinstance(v, (int, float)) and v < 0:
                     issues.append(f"column '{k}' returned negative value ({v}) — may be anomalous")
                 if isinstance(v, (int, float)) and v > 1_000_000_000:
-                    issues.append(f"column '{k}' returned extremely large value ({v}) — possible cartesian product")
+                    issues.append(
+                        f"column '{k}' returned extremely large value ({v}) — possible cartesian product"
+                    )
 
         # Time consistency check
         if semantic_ctx and semantic_ctx.time_macros:

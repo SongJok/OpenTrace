@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
-import uuid
+from typing import Any
 
 
 class EvidenceLevel(Enum):
@@ -33,7 +33,7 @@ class Citation:
     source_type: SourceType
     source_name: str
     content_snippet: str
-    url: Optional[str] = None
+    url: str | None = None
 
 
 @dataclass
@@ -49,8 +49,8 @@ class EvidenceAnnotation:
 class AnnotatedContent:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     text: str = ""
-    annotation: Optional[EvidenceAnnotation] = None
-    render_hint: Optional[dict[str, Any]] = None
+    annotation: EvidenceAnnotation | None = None
+    render_hint: dict[str, Any] | None = None
 
     def to_text(self) -> str:
         if not self.annotation:

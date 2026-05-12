@@ -19,6 +19,7 @@ const stageIconMap: Record<ReasoningStep['stage'], string> = {
   FINAL: '✅',
   FUSION: '🔄',
   EVIDENCE: '📋',
+  STEP: '📊',
 }
 
 const toolIconMap: Record<string, string> = {

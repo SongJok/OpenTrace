@@ -4,23 +4,24 @@ Intent Engine — dedicated structured intent parser.
 Parses raw user queries into a rich Intent object using a small LLM call.
 Falls back to heuristic parsing when LLM is unavailable.
 """
+
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from infra.observability.logger import get_logger
 from infra.observability.tracer import get_tracer
 from kernel.identity.system_identity import build_system_identity
+from kernel.json_parser import parse_llm_json
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
 
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
 
-INTENT_SYSTEM = build_system_identity("""\
+INTENT_SYSTEM = build_system_identity(
+    """\
 You are an intent classifier. Analyse the user query and return JSON ONLY:
 {
   "category": "qa|search|task|analysis|creative|code|math|other",
@@ -33,7 +34,8 @@ You are an intent classifier. Analyse the user query and return JSON ONLY:
   "keywords": ["..."]
 }
 No explanation, no markdown, JSON only.
-""")
+"""
+)
 
 
 @dataclass
@@ -68,7 +70,7 @@ class IntentEngine:
     async def parse(
         self,
         query: str,
-        session_context: Optional[dict[str, Any]] = None,
+        session_context: dict[str, Any] | None = None,
     ) -> Intent:
         with tracer.start_as_current_span("intent_engine.parse") as span:
             span.set_attribute("query.length", len(query))
@@ -97,13 +99,13 @@ class IntentEngine:
         self,
         query: str,
         text: str,
-        session_context: Optional[dict[str, Any]],
+        session_context: dict[str, Any] | None,
     ) -> Intent:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
+        parsed = parse_llm_json(text)
+        if not parsed or not isinstance(parsed, dict):
             return self._heuristic(query, session_context)
         try:
-            d = json.loads(match.group(0))
+            d = parsed
             return Intent(
                 raw_query=query,
                 category=d.get("category", "qa"),
@@ -119,16 +121,26 @@ class IntentEngine:
         except Exception:  # noqa: BLE001
             return self._heuristic(query, session_context)
 
-    def _heuristic(self, query: str, session_context: Optional[dict[str, Any]]) -> Intent:
+    def _heuristic(self, query: str, session_context: dict[str, Any] | None) -> Intent:
         q = query.lower()
-        multi_step = any(w in q for w in ["then", "after", "step", "first", "next", "finally", "lastly"])
-        requires_tools = any(w in q for w in ["search", "calculate", "run", "execute", "fetch", "find", "look up"])
-        requires_knowledge = any(w in q for w in ["what", "who", "where", "when", "explain", "why", "how", "tell me"])
+        multi_step = any(
+            w in q for w in ["then", "after", "step", "first", "next", "finally", "lastly"]
+        )
+        requires_tools = any(
+            w in q for w in ["search", "calculate", "run", "execute", "fetch", "find", "look up"]
+        )
+        requires_knowledge = any(
+            w in q for w in ["what", "who", "where", "when", "explain", "why", "how", "tell me"]
+        )
         is_code = any(w in q for w in ["code", "function", "class", "implement", "debug", "error"])
         is_math = any(w in q for w in ["calculate", "solve", "equation", "compute", "integral"])
 
-        category = "code" if is_code else ("math" if is_math else ("search" if requires_tools else "qa"))
-        complexity = min(1.0, len(query) / 400 + (0.3 if multi_step else 0.0) + (0.2 if requires_tools else 0.0))
+        category = (
+            "code" if is_code else ("math" if is_math else ("search" if requires_tools else "qa"))
+        )
+        complexity = min(
+            1.0, len(query) / 400 + (0.3 if multi_step else 0.0) + (0.2 if requires_tools else 0.0)
+        )
 
         return Intent(
             raw_query=query,

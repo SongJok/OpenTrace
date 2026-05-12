@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from kernel.context.query_rewriter import QueryRewriter
-from kernel.context.context_ranker import ContextRanker
 from kernel.context.context_compressor import ContextCompressor
+from kernel.context.context_ranker import ContextRanker
+from kernel.context.query_rewriter import QueryRewriter
 from kernel.context_builder import ContextBuilder
 
 
@@ -31,8 +31,13 @@ class ContextPipeline:
         history: list[dict[str, str]] | None = None,
         enable_web: bool = False,
         metadata: dict[str, object] | None = None,
+        conversation_state: Any = None,
     ) -> ContextPipelineResult:
-        rewritten = await self.rewriter.rewrite(query)
+        rewritten = await self.rewriter.rewrite(
+            query,
+            history=history,
+            conversation_state=conversation_state,
+        )
         unified = await self.builder.build(
             query=rewritten,
             session_id=session_id,
@@ -49,3 +54,13 @@ class ContextPipeline:
             compressed_context=compressed,
             build_latency_ms=unified.build_latency_ms,
         )
+
+
+_context_pipeline: ContextPipeline | None = None
+
+
+def get_context_pipeline() -> ContextPipeline:
+    global _context_pipeline
+    if _context_pipeline is None:
+        _context_pipeline = ContextPipeline()
+    return _context_pipeline

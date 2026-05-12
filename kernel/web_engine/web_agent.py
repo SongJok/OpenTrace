@@ -21,7 +21,9 @@ class WebAgent:
         if not queries:
             return WebContext()
 
-        batches = await asyncio.gather(*[self.search_client.search(q, top_k=5) for q in queries], return_exceptions=True)
+        batches = await asyncio.gather(
+            *[self.search_client.search(q, top_k=5) for q in queries], return_exceptions=True
+        )
 
         merged: list[SearchResult] = []
         seen_urls: set[str] = set()
