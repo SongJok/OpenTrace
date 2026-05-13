@@ -3,14 +3,136 @@ Admin router — system management endpoints.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+import asyncio
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from evolution.learning.learning import learning_engine
+from gateway.api_gateway.routers.auth import (
+    _generate_temp_password,
+    _hash,
+    get_current_user,
+)
+from infra.errors import AppException, ErrorCodes
+from infra.notifications.mailer import notify_user_approved
 from infra.observability.logger import get_logger
+from infra.storage.database import db_session_dependency as get_db
+from infra.storage.models import User
 from tools.registry.registry import registry
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Admin auth dependency
+# ---------------------------------------------------------------------------
+async def get_current_admin_user(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    if current_user.role != "admin":
+        raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="管理员权限不足")
+    return current_user
+
+
+# ---------------------------------------------------------------------------
+# User management endpoints
+# ---------------------------------------------------------------------------
+@router.get("/admin/users")
+async def list_users(
+    status: str | None = Query(None),
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """List all users, optionally filtered by status."""
+    stmt = select(User).order_by(User.created_at.desc())
+    if status:
+        stmt = stmt.where(User.status == status)
+    result = await db.execute(stmt)
+    users = result.scalars().all()
+    return {
+        "users": [
+            {
+                "id": u.id,
+                "email": u.email,
+                "display_name": u.display_name,
+                "status": u.status,
+                "role": u.role,
+                "is_superuser": u.is_superuser,
+                "created_at": u.created_at.isoformat(),
+            }
+            for u in users
+        ]
+    }
+
+
+@router.post("/admin/users/{user_id}/approve")
+async def approve_user(
+    user_id: str,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Approve a pending user — generate password and send email."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="User not found")
+    if user.status != "pending":
+        raise AppException(ErrorCodes.USER_ALREADY_PROCESSED.code)
+
+    password = _generate_temp_password()
+    user.hashed_password = _hash(password)
+    user.status = "active"
+    user.approved_at = datetime.now(timezone.utc)
+    user.approved_by = current_user.id
+    await db.commit()
+
+    try:
+        asyncio.create_task(notify_user_approved(user.email, password))
+    except Exception:
+        logger.warning("Failed to schedule approval email", email=user.email)
+
+    logger.info("User approved", user_id=user.id, by=current_user.email)
+    return {"message": "用户已通过审核"}
+
+
+@router.post("/admin/users/{user_id}/disable")
+async def disable_user(
+    user_id: str,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Disable a user account."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="User not found")
+    user.status = "disabled"
+    await db.commit()
+    logger.info("User disabled", user_id=user.id, by=current_user.email)
+    return {"message": "用户已被禁用"}
+
+
+@router.post("/admin/users/{user_id}/enable")
+async def enable_user(
+    user_id: str,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Re-enable a disabled user."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="User not found")
+    if user.status != "disabled":
+        raise AppException(ErrorCodes.USER_ALREADY_PROCESSED.code)
+    user.status = "active"
+    await db.commit()
+    logger.info("User enabled", user_id=user.id, by=current_user.email)
+    return {"message": "用户已启用"}
 
 
 @router.get("/admin/tools")

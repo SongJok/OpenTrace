@@ -25,6 +25,13 @@ class ErrorCodes:
     AUTH_INTERNAL_ERROR = ErrorSpec(104002, 500, "认证内部错误")
     AUTH_UNKNOWN = ErrorSpec(105001, 500, "认证未知错误")
 
+    # Registration (02)
+    REGISTRATION_DISABLED = ErrorSpec(2003, 403, "注册功能已关闭")
+    REGISTRATION_EMAIL_DOMAIN_DENIED = ErrorSpec(2004, 403, "该邮箱域名不允许注册")
+    REGISTRATION_PENDING = ErrorSpec(2005, 403, "账户尚未通过审核，请联系管理员")
+    REGISTRATION_DISABLED_ACCOUNT = ErrorSpec(2006, 403, "账户已被禁用，请联系管理员")
+    USER_ALREADY_PROCESSED = ErrorSpec(2007, 400, "该用户已被处理，无需重复操作")
+
     # Chat (02)
     LLM_SERVICE_UNAVAILABLE = ErrorSpec(204001, 503, "LLM 服务不可用")
     LLM_CALL_FAILED = ErrorSpec(204002, 500, "LLM 调用失败")

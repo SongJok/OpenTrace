@@ -488,7 +488,6 @@ async def _load_data_source_context(
         r = await db.execute(
             select(DataSource).where(
                 DataSource.id == data_source_id,
-                DataSource.user_id == current_user.id,
             )
         )
         source = r.scalar_one_or_none()
@@ -499,7 +498,6 @@ async def _load_data_source_context(
         if q:
             r = await db.execute(
                 select(DataSource)
-                .where(DataSource.user_id == current_user.id)
                 .order_by(DataSource.created_at.desc())
             )
             candidates = r.scalars().all()
@@ -518,7 +516,7 @@ async def _load_data_source_context(
     if source is None and force_database:
         r = await db.execute(
             select(DataSource)
-            .where(DataSource.user_id == current_user.id, DataSource.status == "active")
+            .where(DataSource.status == "active")
             .order_by(DataSource.updated_at.desc())
             .limit(1)
         )

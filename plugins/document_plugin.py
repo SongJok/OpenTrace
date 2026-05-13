@@ -361,9 +361,6 @@ class DocumentPlugin(BasePlugin):
     async def search_chunks(self, query: str, user_id: str, top_k: int = 6) -> list["ContextChunk"]:
         from kernel.context_builder import ContextChunk
 
-        if not user_id:
-            return []
-
         try:
             candidates = await fetch_document_candidates(user_id=user_id, query=query, limit=200)
             if not candidates:
@@ -392,7 +389,7 @@ class DocumentPlugin(BasePlugin):
     async def search_llmwiki(self, query: str, user_id: str, top_k: int = 3) -> list["ContextChunk"]:
         from kernel.context_builder import ContextChunk
 
-        if not settings.llmwiki_enabled or not user_id:
+        if not settings.llmwiki_enabled:
             return []
         if not await _has_table("document_llmwiki"):
             return []
@@ -411,7 +408,6 @@ class DocumentPlugin(BasePlugin):
             stmt = (
                 select(DocumentLLMWiki, Document.title)
                 .join(Document, DocumentLLMWiki.document_id == Document.id)
-                .where(Document.owner_id == user_id)
                 .where(Document.status == "ready")
             )
             if terms:

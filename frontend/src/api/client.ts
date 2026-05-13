@@ -163,7 +163,63 @@ export async function apiLogin(email: string, password: string): Promise<any> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   })
-  if (!res.ok) throw new Error('Login failed')
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as any
+    throw new Error(err.message || err.detail || 'Login failed')
+  }
+  return res.json()
+}
+
+export async function apiRegister(email: string, displayName?: string): Promise<{ message: string; email: string }> {
+  const res = await apiFetch('/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, display_name: displayName }),
+  })
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as any
+    throw new Error(err.message || err.detail || 'Registration failed')
+  }
+  return res.json()
+}
+
+export async function apiGetCurrentUser(token: string): Promise<any> {
+  const res = await apiFetch('/auth/me', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error('Failed to get current user')
+  return res.json()
+}
+
+export async function apiListUsers(token: string, status?: string): Promise<any> {
+  const qs = status ? `?status=${encodeURIComponent(status)}` : ''
+  const res = await apiFetch(`/admin/users${qs}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error('Failed to list users')
+  return res.json()
+}
+
+export async function apiApproveUser(token: string, userId: string): Promise<any> {
+  const res = await apiFetch(`/admin/users/${userId}/approve`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error('Failed to approve user')
+  return res.json()
+}
+
+export async function apiDisableUser(token: string, userId: string): Promise<any> {
+  const res = await apiFetch(`/admin/users/${userId}/disable`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error('Failed to disable user')
+  return res.json()
+}
+
+export async function apiEnableUser(token: string, userId: string): Promise<any> {
+  const res = await apiFetch(`/admin/users/${userId}/enable`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error('Failed to enable user')
   return res.json()
 }
 

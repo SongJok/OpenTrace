@@ -148,6 +148,15 @@ class SMTPSettings(BaseSettings):
     smtp_from: str = ""
 
 
+class RegistrationSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    registration_enabled: bool = True
+    registration_allowed_email_domain: str = "tuwan.com"
+    admin_email: str = "songts@tuwan.com"
+    password_prefix: str = "tuwan"
+
+
 class OTelSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -324,6 +333,7 @@ class Settings(
     RerankSettings,
     JWTSettings,
     SMTPSettings,
+    RegistrationSettings,
     OTelSettings,
 ):
     """Unified settings object — single source of truth."""

@@ -5,6 +5,8 @@ import { applyTheme, useThemeStore } from './store/theme'
 import ChatPage from './pages/ChatPage'
 import DocumentsPage from './pages/DocumentsPage'
 import LoginPage from './pages/LoginPage'
+import RegisterPage from './pages/RegisterPage'
+import PermissionsPage from './pages/PermissionsPage'
 import SettingsPage from './pages/SettingsPage'
 import TasksPage from './pages/TasksPage'
 import AuditPage from './pages/AuditPage'
@@ -83,6 +85,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={token ? <Navigate to="/chat" replace /> : <LoginPage />} />
+      <Route path="/register" element={token ? <Navigate to="/chat" replace /> : <RegisterPage />} />
 
       <Route path="/" element={<Navigate to="/chat" replace />} />
       <Route path="/chat" element={<Protected><ChatPage /></Protected>} />
@@ -95,6 +98,7 @@ export default function App() {
       <Route path="/databases" element={<Protected><DatabasesRoute /></Protected>} />
       <Route path="/skills" element={<Protected><SkillsRoute /></Protected>} />
       <Route path="/rules" element={<Protected><RulesRoute /></Protected>} />
+      <Route path="/permissions" element={<Protected><PermissionsPage /></Protected>} />
 
       <Route path="*" element={<Navigate to={token ? '/chat' : '/login'} replace />} />
     </Routes>

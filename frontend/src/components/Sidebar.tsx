@@ -20,6 +20,7 @@ import {
   Database,
   Wrench,
   FileCode,
+  ShieldCheck,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
@@ -78,6 +79,7 @@ export default function Sidebar() {
 
   const token = useAuthStore((s) => s.token)!
   const displayName = useAuthStore((s) => s.displayName)
+  const role = useAuthStore((s) => s.role)
   const logout = useAuthStore((s) => s.logout)
   const store = useChatStore()
   const navigate = useNavigate()
@@ -225,6 +227,14 @@ export default function Sidebar() {
         >
           <Wrench size={16} className="cartoon-icon icon-skills" />
         </button>
+        {role === 'admin' && (
+          <button
+            onClick={() => navigate('/permissions')}
+            className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+          >
+            <ShieldCheck size={16} className="cartoon-icon icon-permissions" />
+          </button>
+        )}
         <button
           onClick={() => navigate('/settings')}
           className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
@@ -361,6 +371,9 @@ export default function Sidebar() {
           <NavButton icon={<Plug size={15} className="cartoon-icon icon-integrations" />} label={t('nav.integrations')} onClick={() => navigate('/integrations')} />
           <NavButton icon={<Wrench size={15} className="cartoon-icon icon-skills" />} label="Skills" onClick={() => navigate('/skills')} />
           <NavButton icon={<FileCode size={15} className="cartoon-icon icon-rules" />} label="规则" onClick={() => navigate('/rules')} />
+          {role === 'admin' && (
+            <NavButton icon={<ShieldCheck size={15} className="cartoon-icon icon-permissions" />} label="权限" onClick={() => navigate('/permissions')} />
+          )}
           <NavButton icon={<Settings size={15} className="cartoon-icon icon-settings" />} label={t('nav.settings')} onClick={() => navigate('/settings')} />
         </div>
       </div>

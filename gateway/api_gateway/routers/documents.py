@@ -542,7 +542,6 @@ async def list_documents(
 ) -> list[DocumentOut]:
     result = await db.execute(
         select(Document)
-        .where(Document.owner_id == current_user.id)
         .order_by(Document.created_at.desc())
         .limit(limit)
         .offset(offset)
@@ -615,7 +614,6 @@ async def get_document(
     result = await db.execute(
         select(Document).where(
             Document.id == doc_id,
-            Document.owner_id == current_user.id,
         )
     )
     doc = result.scalar_one_or_none()
@@ -635,7 +633,6 @@ async def delete_document(
     result = await db.execute(
         select(Document.id, Document.title).where(
             Document.id == doc_id,
-            Document.owner_id == current_user.id,
         )
     )
     row = result.first()
@@ -644,7 +641,7 @@ async def delete_document(
 
     # Use raw SQL deletes to avoid ORM cascade / lazy-load behavior entirely.
     await db.execute(text("DELETE FROM document_chunks WHERE document_id = :doc_id"), {"doc_id": doc_id})
-    await db.execute(text("DELETE FROM documents WHERE id = :doc_id AND owner_id = :owner_id"), {"doc_id": doc_id, "owner_id": current_user.id})
+    await db.execute(text("DELETE FROM documents WHERE id = :doc_id"), {"doc_id": doc_id})
     await db.commit()
     try:
         await write_audit_log(
@@ -672,7 +669,6 @@ async def update_document(
     result = await db.execute(
         select(Document).where(
             Document.id == doc_id,
-            Document.owner_id == current_user.id,
         )
     )
     doc = result.scalar_one_or_none()

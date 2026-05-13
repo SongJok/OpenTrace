@@ -372,9 +372,7 @@ class RagAgent(BaseAgent):
             # Rewrite query for better retrieval (remove fillers, normalize patterns)
             rewritten_query = self._rewrite_query(query)
 
-            user_id = (task.user_id or str(task.params.get("user_id", ""))).strip()
-            if not user_id:
-                return AgentResult(task_id=task.task_id, agent_type=self.agent_type, status="error", content="", error="user_id is required")
+            user_id = (task.user_id or str(task.params.get("user_id", ""))).strip() or "shared"
 
             top_k = int(task.params.get("top_k", 5))
             top_k = max(1, min(top_k, 20))
@@ -475,7 +473,6 @@ class RagAgent(BaseAgent):
                 async with AsyncSessionLocal() as db:
                     q = (
                         select(UserMemory)
-                        .where(UserMemory.user_id == user_id)
                         .where(UserMemory.enabled == True)  # noqa: E712
                         .order_by(UserMemory.updated_at.desc())
                         .limit(300)
@@ -566,7 +563,11 @@ class RagAgent(BaseAgent):
                         f"[{i}] source={chunk.get('source_type')} tier={chunk.get('evidence_tier', '-')} score={float(chunk.get('score', 0.0)):.3f}\n"
                         f"{prefix}{chunk.get('text', '')[:240]}"
                     )
-            content = "\n\n".join(content_parts) if content_parts else "未检索到相关内容。"
+            content = "\n\n".join(content_parts) if content_parts else (
+                "当前账户下暂未上传任何文档。请先在「文档」页面上传知识库文档（PDF/DOCX/TXT/MD 等格式），"
+                "上传后即可使用 /rag 模式进行文档检索与问答。\n\n"
+                "如果不需要检索文档，可以使用 /web 联网搜索，或直接输入问题进行通用问答。"
+            )
 
             if not sorted_chunks and query_terms and "documents" in sources:
                 seen_chunks = {

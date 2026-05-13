@@ -68,7 +68,6 @@ async def fetch_document_candidates(user_id: str, query: str, limit: int = 200) 
         stmt = (
             select(DocumentChunk, Document.title)
             .join(Document, DocumentChunk.document_id == Document.id)
-            .where(Document.owner_id == user_id)
             .where(Document.status == "ready")
         )
         if terms:
@@ -195,7 +194,6 @@ async def _fetch_document_candidates_vector(user_id: str, query: str, limit: int
             stmt = (
                 select(DocumentChunk, Document.title)
                 .join(Document, DocumentChunk.document_id == Document.id)
-                .where(Document.owner_id == user_id)
                 .where(Document.status == "ready")
                 .order_by(DocumentChunk.embedding_vector.l2_distance(query_embedding))
                 .limit(limit)
@@ -207,7 +205,6 @@ async def _fetch_document_candidates_vector(user_id: str, query: str, limit: int
                 stmt = (
                     select(DocumentChunk, Document.title)
                     .join(Document, DocumentChunk.document_id == Document.id)
-                    .where(Document.owner_id == user_id)
                     .where(Document.status == "ready")
                     .where(DocumentChunk.embedding_json.is_not(None))
                     .limit(limit)
@@ -225,7 +222,6 @@ async def fetch_document_candidates_fallback(user_id: str, query: str, limit: in
         stmt = (
             select(DocumentChunk, Document.title)
             .join(Document, DocumentChunk.document_id == Document.id)
-            .where(Document.owner_id == user_id)
             .where(Document.status.in_(["ready", "processing", "pending"]))
         )
         if terms:

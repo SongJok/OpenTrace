@@ -1,14 +1,16 @@
 import { useState, FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/auth'
 import { apiLogin } from '../api/client'
 import { t } from '../i18n'
 
 export default function LoginPage() {
-  const [email, setEmail] = useState('songts@tuwan.com')
-  const [password, setPassword] = useState('123456')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const login = useAuthStore((s) => s.login)
+  const navigate = useNavigate()
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -16,7 +18,7 @@ export default function LoginPage() {
     setLoading(true)
     try {
       const data = await apiLogin(email, password)
-      login(data.access_token, data.user_id, data.email, data.display_name)
+      login(data.access_token, data.user_id, data.email, data.display_name, data.role)
     } catch (err: any) {
       setError(err.message)
     } finally {
@@ -67,6 +69,15 @@ export default function LoginPage() {
             {loading ? t('login.submitting') : t('login.submit')}
           </button>
         </form>
+
+        <p className="text-center mt-5">
+          <button
+            onClick={() => navigate('/register')}
+            className="text-sm text-[#8e8ea0] hover:text-[#10a37f] transition-colors"
+          >
+            {t('login.registerLink')}
+          </button>
+        </p>
       </div>
     </div>
   )

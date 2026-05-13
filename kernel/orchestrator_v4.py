@@ -2199,6 +2199,20 @@ class CognitiveOrchestratorV4:
         elif has_document and rag_chunks_count == 0 and force_mode == "rag":
             # Explicit force_mode="rag" but no documents found — tell the user directly
             answer = f"我在知识库中仔细搜索了一下，但没有找到与「{req.query}」直接相关的文档。建议试试上传相关文档，或者切换到其他查询模式再试。"
+        elif not has_document and force_mode == "rag":
+            # force_mode="rag" but user has no documents at all — return RAG agent's helpful message
+            rag_result = next((r for r in agent_results if r.agent_type == "rag"), None)
+            answer = (
+                (rag_result.content or "").strip()
+                if rag_result and rag_result.status == "success"
+                else ""
+            )
+            if not answer:
+                answer = (
+                    "当前账户下暂未上传任何文档。请先在「文档」页面上传知识库文档"
+                    "（PDF/DOCX/TXT/MD 等格式），上传后即可使用 /rag 模式进行文档检索与问答。\n\n"
+                    "如果不需要检索文档，可以使用 /web 联网搜索，或直接输入问题进行通用问答。"
+                )
         else:
             answer = ""
             has_data = any(r.agent_type == "data" and r.status == "success" for r in agent_results)

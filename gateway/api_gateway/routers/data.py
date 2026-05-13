@@ -52,7 +52,6 @@ async def data_query(
     r = await db.execute(
         select(DataSource).where(
             DataSource.id == req.data_source_id,
-            DataSource.user_id == current_user.id,
         )
     )
     source = r.scalar_one_or_none()
@@ -252,7 +251,6 @@ async def data_schema(
     r = await db.execute(
         select(DataSource).where(
             DataSource.id == data_source_id,
-            DataSource.user_id == current_user.id,
         )
     )
     source = r.scalar_one_or_none()

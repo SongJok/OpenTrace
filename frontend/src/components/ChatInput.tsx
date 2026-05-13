@@ -168,20 +168,34 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
     const loadSelectedDataSource = async () => {
       try {
         const raw = localStorage.getItem('opentrace:selected_data_source')
-        if (raw) {
-          const parsed = JSON.parse(raw)
-          if (parsed?.id) setSelectedDataSourceId(String(parsed.id))
-          if (parsed?.name) setSelectedDataSourceName(String(parsed.name))
-        }
         const list = await apiListDatabases(token)
         setDataSourceOptions(list.map((x) => ({ id: x.id, name: x.name })))
-        if (!list.length) return
-        const current = raw ? JSON.parse(raw) : null
-        if (!current?.id) {
+
+        // Resolve selected data source: prefer saved one if it still belongs to this user
+        let resolvedId = ''
+        let resolvedName = ''
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw)
+            if (parsed?.id && list.some((db) => db.id === parsed.id)) {
+              resolvedId = parsed.id
+              resolvedName = parsed.name || ''
+            }
+          } catch { /* malformed JSON, ignore */ }
+        }
+
+        if (!resolvedId && list.length > 0) {
           const first = list[0]
-          setSelectedDataSourceId(first.id)
-          setSelectedDataSourceName(first.name)
-          localStorage.setItem('opentrace:selected_data_source', JSON.stringify({ id: first.id, name: first.name }))
+          resolvedId = first.id
+          resolvedName = first.name
+        }
+
+        setSelectedDataSourceId(resolvedId)
+        setSelectedDataSourceName(resolvedName)
+        if (resolvedId) {
+          localStorage.setItem('opentrace:selected_data_source', JSON.stringify({ id: resolvedId, name: resolvedName }))
+        } else {
+          localStorage.removeItem('opentrace:selected_data_source')
         }
       } catch {
         // ignore

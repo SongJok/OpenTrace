@@ -180,7 +180,7 @@ async def create_database(req: DataSourceCreateRequest, current_user: User = Dep
 @router.patch("/databases/{database_id}")
 async def update_database(database_id: str, req: DataSourceUpdateRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
     host = _validate_database_host(req.host)
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id, DataSource.user_id == current_user.id))
+    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
     x = r.scalar_one_or_none()
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
@@ -198,7 +198,7 @@ async def update_database(database_id: str, req: DataSourceUpdateRequest, curren
 
 @router.get("/databases")
 async def list_databases(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
-    r = await db.execute(select(DataSource).where(DataSource.user_id == current_user.id).order_by(DataSource.created_at.desc()))
+    r = await db.execute(select(DataSource).order_by(DataSource.created_at.desc()))
     items = r.scalars().all()
     payloads = []
     for x in items:
@@ -235,7 +235,7 @@ async def list_databases(current_user: User = Depends(get_current_user), db: Asy
 
 @router.get("/databases/{database_id}")
 async def get_database(database_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id, DataSource.user_id == current_user.id))
+    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
     x = r.scalar_one_or_none()
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
@@ -253,7 +253,7 @@ async def get_database(database_id: str, current_user: User = Depends(get_curren
 
 @router.delete("/databases/{database_id}")
 async def delete_database(database_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id, DataSource.user_id == current_user.id))
+    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
     x = r.scalar_one_or_none()
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
@@ -265,7 +265,7 @@ async def delete_database(database_id: str, current_user: User = Depends(get_cur
 
 @router.post("/databases/{database_id}/test-connection")
 async def test_connection(database_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id, DataSource.user_id == current_user.id))
+    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
     x = r.scalar_one_or_none()
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
@@ -294,7 +294,7 @@ async def test_connection(database_id: str, current_user: User = Depends(get_cur
 
 @router.post("/databases/{database_id}/sync-schema")
 async def sync_schema(database_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id, DataSource.user_id == current_user.id))
+    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
     x = r.scalar_one_or_none()
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
@@ -389,7 +389,7 @@ class SemanticMappingUpdate(BaseModel):
 async def query_database(database_id: str, req: DatabaseQueryRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
     from gateway.api_gateway.routers.data import DataQueryRequest, data_query
 
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id, DataSource.user_id == current_user.id))
+    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
     x = r.scalar_one_or_none()
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
@@ -435,7 +435,7 @@ async def query_database(database_id: str, req: DatabaseQueryRequest, current_us
 
 @router.get("/databases/{database_id}/schema")
 async def get_database_schema(database_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id, DataSource.user_id == current_user.id))
+    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
     x = r.scalar_one_or_none()
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
@@ -458,7 +458,7 @@ async def analyze_database(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id, DataSource.user_id == current_user.id))
+    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
     x = r.scalar_one_or_none()
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
@@ -554,7 +554,7 @@ async def get_semantic_config(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Get semantic mappings for a data source."""
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id, DataSource.user_id == current_user.id))
+    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
     x = r.scalar_one_or_none()
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
@@ -576,7 +576,7 @@ async def update_semantic_config(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Update semantic mappings for a data source."""
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id, DataSource.user_id == current_user.id))
+    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
     x = r.scalar_one_or_none()
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
@@ -663,7 +663,7 @@ async def auto_extract_semantic(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Auto-extract semantic mappings from table/column comments."""
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id, DataSource.user_id == current_user.id))
+    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
     x = r.scalar_one_or_none()
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")

@@ -6,7 +6,8 @@ interface AuthState {
   userId: string | null
   email: string | null
   displayName: string | null
-  login: (token: string, userId: string, email: string, displayName?: string | null) => void
+  role: string | null
+  login: (token: string, userId: string, email: string, displayName?: string | null, role?: string | null) => void
   logout: () => void
 }
 
@@ -17,9 +18,14 @@ export const useAuthStore = create<AuthState>()(
       userId: null,
       email: null,
       displayName: null,
-      login: (token, userId, email, displayName) =>
-        set({ token, userId, email, displayName: displayName ?? email }),
-      logout: () => set({ token: null, userId: null, email: null, displayName: null }),
+      role: null,
+      login: (token, userId, email, displayName, role) =>
+        set({ token, userId, email, displayName: displayName ?? email, role: role ?? 'user' }),
+      logout: () => {
+        // Clear per-user localStorage keys to prevent cross-user data leaks
+        localStorage.removeItem('opentrace:selected_data_source')
+        set({ token: null, userId: null, email: null, displayName: null, role: null })
+      },
     }),
     { name: 'opentrace-auth' }
   )
