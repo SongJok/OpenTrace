@@ -650,7 +650,7 @@ function UserMessage({ message }: { message: Message }) {
       )}
 
       {/* Text bubble */}
-      <div className="max-w-[85%] rounded-3xl border border-[var(--border)] bg-[var(--surface)] px-5 py-3 text-[15px] leading-relaxed text-[var(--text)] shadow-[0_10px_30px_rgba(0,0,0,0.08)]">
+      <div className="w-fit max-w-[85%] rounded-3xl border border-[var(--border)] bg-[var(--surface)] px-5 py-3 text-[15px] leading-relaxed text-[var(--text)] shadow-[0_10px_30px_rgba(0,0,0,0.08)]">
         {editing ? (
           <div className="space-y-2">
             <textarea
@@ -670,7 +670,7 @@ function UserMessage({ message }: { message: Message }) {
           </div>
         ) : (
           <>
-            <div>{message.finalText}</div>
+            <div className="whitespace-pre-wrap break-words">{message.finalText}</div>
             <div className="mt-2 flex items-center gap-2 opacity-80">
               <button onClick={copy} className="p-1 hover:opacity-100" title="复制">
                 <Copy size={14} />
@@ -767,15 +767,12 @@ function StreamingMessage({ text }: { text: string }) {
   }, [text])
   const visibleText = stripped || ' '
   return (
-    <div className="flex items-start gap-3">
-      <span className="mt-2 inline-block h-2.5 w-2.5 flex-shrink-0 rounded-full bg-black/90 animate-pulse shadow-[0_0_0_1px_rgba(0,0,0,0.08)]" aria-hidden="true" />
-      <div className="min-w-0 flex-1 text-[15px] leading-relaxed text-[var(--text)]">
+    <div className="min-w-0 flex-1 text-[15px] leading-relaxed text-[var(--text)]">
         <span className="whitespace-pre-wrap break-words">
           {visibleText}
           <span className="ml-0.5 inline-block h-[1.05em] w-[1px] translate-y-[2px] bg-black/90 animate-pulse" aria-hidden="true" />
         </span>
       </div>
-    </div>
   )
 }
 

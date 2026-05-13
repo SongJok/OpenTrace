@@ -2,6 +2,7 @@ import { useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef }
 import { useChatStore, type Message } from '../store/chat'
 import TypingIndicator from './TypingIndicator'
 import ChatMessage from './ChatMessage'
+import { QuestionerAvatar, ResponderAvatar } from './Avatar'
 
 export interface MessageListHandle {
   scrollToBottom: () => void
@@ -87,14 +88,16 @@ export default MessageList
 function MessageBubble({ msg }: { msg: Message }) {
   if (msg.role === 'user') {
     return (
-      <div className="flex items-start justify-end group animate-fade-in py-2">
+      <div className="flex items-start justify-end group animate-fade-in py-2 gap-3">
         <ChatMessage message={msg} />
+        <QuestionerAvatar />
       </div>
     )
   }
 
   return (
-    <div className="flex items-start animate-fade-in py-2">
+    <div className="flex items-start animate-fade-in py-2 gap-3">
+      <ResponderAvatar />
       <div className="flex-1 min-w-0 prose text-[15px] leading-relaxed">
         <ChatMessage message={msg} />
         {msg.status === 'streaming' && <span className="animate-blink text-[#10a37f] ml-0.5">▋</span>}
