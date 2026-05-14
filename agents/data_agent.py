@@ -25,7 +25,54 @@ from kernel.data_cognition.sql_validator import SQLValidationError, SQLValidator
 from kernel.data_cognition.types import CandidateSQL, SemanticContext
 
 
+# ── DataAgent V2 wrapper ──────────────────────────────────────────────────
+
 class DataAgent(BaseAgent):
+    """DataAgent with V2 support via feature flag.
+
+    When DATA_AGENT_V2_ENABLED=false (default), delegates to DataAgentV1.
+    When enabled, delegates to DataAgentV2Supervisor with V1 fallback on error.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("data")
+        self._v1: DataAgentV1 | None = None
+        self._v2_enabled = bool(getattr(settings, "data_agent_v2_enabled", False))
+        self._v2_fallback = bool(getattr(settings, "data_agent_v2_fallback_to_v1", True))
+
+    async def execute(self, task: TaskMessage) -> AgentResult:
+        if not self._v2_enabled:
+            return await self._get_v1().execute(task)
+
+        try:
+            from agents.data_agent_v2.supervisor import DataAgentV2Supervisor
+            supervisor = DataAgentV2Supervisor()
+            result = await supervisor.execute(task)
+            return result
+        except Exception as exc:
+            if self._v2_fallback:
+                # LowConfidenceError: V2 completed but result quality was poor
+                from agents.data_agent_v2.types import LowConfidenceError
+                if isinstance(exc, LowConfidenceError):
+                    pass  # V1 fallback below — confidence was too low
+                return await self._get_v1().execute(task)
+            return AgentResult(
+                task_id=task.task_id,
+                agent_type=self.agent_type,
+                status="error",
+                content="",
+                error=f"DataAgent V2 failed: {exc}",
+            )
+
+    def _get_v1(self) -> DataAgentV1:
+        if self._v1 is None:
+            self._v1 = DataAgentV1()
+        return self._v1
+
+
+# ── DataAgent V1 (original implementation, preserved intact) ──────────────
+
+class DataAgentV1(BaseAgent):
     def __init__(self) -> None:
         super().__init__("data")
         self.validator = SQLValidator(default_limit=100)

@@ -65,6 +65,7 @@ class Dispatcher:
         bus_namespace: str = "opentrace:agent",
         max_retry: int | None = None,
         runtime_supervisor_enabled: bool | None = None,
+        max_parallel: int = 5,
     ) -> None:
         self.registry = registry
         self.timeout_sec = timeout_sec
@@ -77,6 +78,7 @@ class Dispatcher:
             else runtime_supervisor_enabled
         )
         self.supervisor = RuntimeSupervisor(enabled=bool(enabled))
+        self.max_parallel = max_parallel
 
     async def dispatch(
         self,
@@ -136,7 +138,11 @@ class Dispatcher:
                 )
                 for idx, st in enumerate(plan.subtasks)
             ]
-            dag_result = await DagScheduler(self.registry, timeout_sec=self.timeout_sec).execute(
+            dag_result = await DagScheduler(
+                self.registry,
+                timeout_sec=self.timeout_sec,
+                max_parallel=self.max_parallel,
+            ).execute(
                 DagPlan(
                     nodes=dag_nodes,
                     speculative_execution=bool(settings.kernel_agent_speculative_execution_enabled),
@@ -153,8 +159,9 @@ class Dispatcher:
         results: list[AgentResult] = []
 
         if high_priority_tasks:
+            high_sem = asyncio.Semaphore(self.max_parallel)
             high_results = await asyncio.gather(
-                *[self._run_one(asyncio.Semaphore(1), st) for st in high_priority_tasks],
+                *[self._run_one(high_sem, st) for st in high_priority_tasks],
                 return_exceptions=True,
             )
             for st, res in zip(high_priority_tasks, high_results):
@@ -175,7 +182,7 @@ class Dispatcher:
                         )
 
         if normal_tasks:
-            sem = asyncio.Semaphore(max(1, len(normal_tasks), 1))
+            sem = asyncio.Semaphore(self.max_parallel)
             normal_raw = await asyncio.gather(
                 *[self._run_one(sem, st) for st in normal_tasks], return_exceptions=True
             )

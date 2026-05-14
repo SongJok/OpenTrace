@@ -42,6 +42,18 @@ class CandidateSQL:
 
 
 @dataclass
+class LogicalPlan:
+    """Logical query plan — intermediate representation between intent and SQL."""
+    tables: list[str] = field(default_factory=list)
+    columns: list[str] = field(default_factory=list)
+    conditions: list[str] = field(default_factory=list)
+    group_by: list[str] = field(default_factory=list)
+    order_by: list[str] = field(default_factory=list)
+    limit: int | None = None
+    joins: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
 class ValidationResult:
     """Result of post-execution validation."""
 

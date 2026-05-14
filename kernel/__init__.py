@@ -101,7 +101,13 @@ _EXPORTS = {
 def __getattr__(name: str) -> Any:
     target = _EXPORTS.get(name)
     if target is None:
-        raise AttributeError(f"module 'kernel' has no attribute {name!r}")
+        # Fall back to submodule import (e.g. kernel.orchestrator)
+        try:
+            mod = import_module(f"kernel.{name}")
+            globals()[name] = mod
+            return mod
+        except ModuleNotFoundError:
+            raise AttributeError(f"module 'kernel' has no attribute {name!r}")
     module_name, attr_name = target
     module = import_module(module_name)
     value = getattr(module, attr_name)

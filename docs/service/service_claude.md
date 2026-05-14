@@ -2,7 +2,7 @@
 
 > 本文档是 OpenTrace 项目的唯一权威技术参考，涵盖架构设计、API 接口、配置说明、数据流程、部署方案和开发指南。
 >
-> 最后更新：2026-05-12
+> 最后更新：2026-05-14
 
 ---
 
@@ -22,6 +22,7 @@
 12. [记忆系统（Memory System）](#12-记忆系统memory-system)
 13. [执行平面（Execution Plane）](#13-执行平面execution-plane)
 14. [数据认知层（Data Cognition）](#14-数据认知层data-cognition)
+  - [14b. DataAgent V2（企业级认知数据智能体）](#14b-dataagent-v2企业级认知数据智能体)
 15. [基础设施层（Infrastructure）](#15-基础设施层infrastructure)
 16. [安全与防护（Safety）](#16-安全与防护safety)
 17. [技能系统（Skills）](#17-技能系统skills)
@@ -1564,6 +1565,298 @@ Redis 键格式：
 | `text2sql_default_limit` | 100 | 默认 LIMIT |
 | `text2sql_join_inference_enabled` | true | JOIN 推断 |
 | `text2sql_max_join_depth` | 3 | 最大 JOIN 深度 |
+
+---
+
+## 14b. DataAgent V2（企业级认知数据智能体）
+
+> **设计目标**：将 Text2SQL 从"LLM 黑盒推理"升级为"知识资产驱动的认知系统"。
+> 核心转变：LLM 不再负责记住业务逻辑，而是负责理解和编排。所有业务真相存储在可治理、可审计、可版本化的知识资产中。
+
+**文件**：`agents/data_agent_v2/`（25 个文件，~15,000 行）
+
+### 14b.1 三层架构
+
+```
+用户查询
+    │
+    ▼
+┌─────────────────────────────────────────────┐
+│  Knowledge Layer（知识层）                   │
+│  KnowledgeRetrieverAgent                     │
+│  → 检索 metric_definitions / schema_metadata │
+│  → 检索 table_relationships / analytical_skills│
+│  → 将"业务真相"注入推理层                     │
+└──────────────┬──────────────────────────────┘
+               ▼
+┌─────────────────────────────────────────────┐
+│  Reasoning Layer（推理层）9 个 Sub-Agent     │
+│  Intent → Entity → Metric → Time → Join     │
+│  → Semantic → Planner → Compiler → Verifier │
+└──────────────┬──────────────────────────────┘
+               ▼
+┌─────────────────────────────────────────────┐
+│  Learning Layer（学习层）4 个 Sub-Agent      │
+│  FeedbackCollector → PatternExtractor        │
+│  → KnowledgeUpdater → MetricRefiner          │
+└─────────────────────────────────────────────┘
+```
+
+### 14b.2 知识资产表（6 张新表 + 2 张增强表）
+
+**新增表**：
+
+| 表名 | 用途 | 关键字段 |
+|------|------|---------|
+| `metric_definitions` | 指标定义目录 | name, formula, underlying_columns, agg_function, business_definition, unit, category, sensitivity, version, status |
+| `schema_metadata` | 增强 Schema 元数据 | business_name, semantic_type, value_map, is_time_column, time_grain, is_metric_column, is_dimension_column, lifecycle_stage, sample_values |
+| `table_relationships` | 表关系 DAG | left_table/column, right_table/column, join_type, cardinality, amplification_risk, is_verified, usage_count, success_rate |
+| `analytical_skills` | 分析技能库 | skill_type, required_intent_types, plan_template, sql_template, visualization_hint, parameters_schema, examples |
+| `query_patterns` | 查询模式记忆（自学习核心） | pattern_hash (SHA256), query_template, intent_type, entities, metrics, successful_sql, success_count, avg_confidence |
+| `metric_lineage` | 指标血缘 | metric_id → depends_on_metric_id / depends_on_column, transformation, lineage_type (base/derived/composite) |
+
+**增强表**：
+
+| 表名 | 新增字段 |
+|------|---------|
+| `data_source_schemas` | auto_metadata, relationship_hints, last_analyzed_at |
+| `feedback` | agent_trace_id, corrected_metric_id, corrected_sql, learning_applied |
+
+**迁移文件**：`alembic/versions/20260513_data_agent_v2_knowledge_tables.py`  
+所有 DDL 均包含幂等检查（`_table_exists` / `_column_exists`）。
+
+**审计表**（2026-05-14 新增）：
+
+| 表名 | 用途 | 关键字段 |
+|------|------|---------|
+| `cognitive_events` | 认知管线审计追踪 | trace_id (UUID), query_id, step, node_id, status (start/success/error/skipped), payload (JSONB), duration_ms |
+
+**迁移文件**：`alembic/versions/20260514_cognitive_events.py`  
+通过 `DATA_AGENT_V2_COGNITIVE_EVENTS_ENABLED` 控制写入（默认 `false`），Supervisor 在 6 个关键步骤记录事件（knowledge_layer / dag_execute / sql_execute / reflection / circuit_breaker / complete）。
+
+### 14b.3 Agent 列表（13 个 Sub-Agent + Supervisor）
+
+**Knowledge Layer**：
+
+| Agent | 文件 | 说明 |
+|-------|------|------|
+| KnowledgeRetrieverAgent | `knowledge_retriever.py` | 根据意图检索指标定义、Schema 元数据、表关系、分析技能 |
+
+**Reasoning Layer（9 个）**：
+
+| Agent | 文件 | 说明 |
+|-------|------|------|
+| IntentAgent | `intent_agent.py` | NL → 结构化分析意图（复用 check_structured_intent 快速路径） |
+| EntityAgent | `entity_agent.py` | 实体识别与关系建模（从 schema_metadata + table_relationships） |
+| MetricAgent | `metric_agent.py` | 指标定义推理（从 metric_definitions 精确匹配） |
+| TimeReasoningAgent | `time_reasoning_agent.py` | 时间推理（从 schema_metadata.is_time_column + time_macros） |
+| JoinAgent | `join_agent.py` | 连接路径推理（table_relationships 优先，TableGraph BFS 兜底） |
+| SemanticAgent | `semantic_agent.py` | 业务语义解析（整合 Knowledge Layer 输出） |
+| PlannerAgent | `planner_agent.py` | 查询 DAG 生成（注入 analysis_skill 的 plan_template） |
+| SQLCompilerAgent | `sql_compiler_agent.py` | SQL 编译（确定性，复用 SQLBuilder） |
+| VerificationAgent | `verification_agent.py` | 多维验证（语法 + 语义 + 业务口径 + 统计验证） |
+
+**Quality & Learning Layer（4 个）**：
+
+| Agent | 文件 | 说明 |
+|-------|------|------|
+| ReflectionAgent | `reflection_agent.py` | 执行后反思修复（3 轮重试，ErrorClassifier 分类） |
+| FeedbackCollectorAgent | `feedback_collector.py` | 捕获用户纠正/点赞/补充（8 种反馈类型） |
+| PatternExtractorAgent | `pattern_extractor.py` | 从成功查询中提取 query_patterns（SHA256 hash） |
+| KnowledgeUpdaterAgent | `knowledge_updater.py` | 将反馈转化为知识资产更新 |
+| MetricRefinerAgent | `metric_refiner.py` | 从用户纠正中提取指标公式修正（draft 版本 + 人工审批） |
+
+**Advanced Analytics（Phase 4，3 个）**：
+
+| Agent | 文件 | 说明 |
+|-------|------|------|
+| StatisticalAgent | `statistical_agent.py` | IQR 异常检测、趋势分析（Spearman-like）、分组对比、描述统计 |
+| InsightAgent | `insight_agent.py` | NL 洞察生成（LLM + 启发式 fallback） |
+| VisualizationAgent | `visualization_agent.py` | 智能图表推荐（12 种图表类型，INTENT_CHART_MAP + 评分系统） |
+
+**引擎**：
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| SkillsEngine | `skills_engine.py` | 解析 analytical_skills.plan_template，扩展 DAG 参数化技能步骤 |
+| DAG Builder | `dag_builder.py` | 5 层拓扑 DAG，依赖顺序执行，28 个特性开关驱动的 Agent 启用 |
+| ErrorClassifier | `error_classifier.py` | 23 种错误类别，4 个错误域，修复策略可通过 `repair_strategies.json` 外部覆盖 |
+| repair_strategies.json | `repair_strategies.json` | P1 优化：23 种修复策略的 JSON 配置快照，启动时加载覆盖内置 `DEFAULT_REPAIR_STRATEGIES` |
+| DataCriticAdapter | `data_critic.py` | 可解释置信度评估 + 质量反馈 |
+| Supervisor | `supervisor.py` | 轻量协调器（~820 行），11 步管线编排 + 置信度断路器 + 认知事件审计 |
+
+### 14b.4 Supervisor 管线（11 步 + 事件审计）
+
+```
+ 1. init_context          → 从 TaskMessage 初始化 CognitiveContext（30+ 字段）
+ 2. load_datasource_metadata → 从 data_source_schemas 加载表/列/schema
+ 3. knowledge_layer       → KnowledgeRetrieverAgent 检索知识资产  [→ audit event]
+ 4. pattern_hit check     → SHA256 hash 匹配 → 命中则跳过推理，直接执行缓存 SQL
+ 5. build DAG             → get_enabled_agents() + build_cognitive_dag()
+ 5b. expand_skills        → SkillsEngine 展开技能模板到 DAG 节点
+ 5c. execute_dag          → kernel/dag_scheduler.DagScheduler 并行调度  [→ audit event]
+ 6. execute_sql           → QueryExecutor.run_with_retry（max 2 轮反射修复） [→ audit event]
+ 7. reflection            → ReflectionAgent 观察结果 → 诊断 → 修复  [→ audit event]
+ 7b. advanced_analytics   → StatisticalAgent → InsightAgent → VisualizationAgent
+ 8. build_final_result    → AgentResult + 置信度计算 + 证据收集
+ 8b. circuit_breaker      → 置信度 < 0.40 且 fallback 开启 → 回退 V1  [→ audit event]
+ 9. critic                → DataCriticAdapter 可解释置信度
+10. learning_pipeline     → 反馈收集 → 模式提取 → 知识更新
+11. complete              → 总耗时/置信度/状态审计  [→ audit event]
+```
+
+**置信度计算公式**：base 0.60 + sql(+0.10) + rows(+0.10) + 多行(+0.05) + metrics(+0.05) + entities(+0.05) + verification_pass(+0.05) + stats(+0.03) + insights(+0.03) + visualization(+0.02) − high_severity_issues(−0.02 × count)。最终 clamp 到 [0.1, 0.99]。
+
+**置信度断路器**（P0 优化）：置信度低于 `DATA_AGENT_V2_CONFIDENCE_THRESHOLD`（默认 0.40）时，抛出 `LowConfidenceError`，`DataAgent` 包装器捕获后回退到 V1 管线执行。避免 V2 在低质量结果上强行返回。
+
+### 14b.5 自学习闭环
+
+```
+用户查询 → Knowledge Layer → Reasoning Layer → SQL 执行
+    │                                                │
+    │    ┌───────────────────────────────────────────┘
+    ▼    ▼
+┌───────────────────┐
+│ 反馈学习           │
+│ • 纠正 SQL        → 更新 query_patterns
+│ • 纠正指标定义     → 更新 metric_definitions (draft)
+│ • 纠正表关系       → 更新 table_relationships.success_rate
+│ • 点赞成功查询     → 提升 pattern success_count
+│ • 新增分析技能     → 创建 analytical_skill
+│ • 关系验证         → 标记 amplification_risk
+└───────────────────┘
+    │
+    ▼
+下次查询受益（更准确的指标/关系/模式）
+```
+
+**快速路径**：`query_patterns` SHA256 hash 匹配 → 跳过全部推理（Knowledge + Reasoning 层），直接执行缓存 SQL，延迟 < 100ms。
+
+### 14b.6 配置项（32 个特性开关）
+
+```bash
+# DataAgent V2 总开关
+DATA_AGENT_V2_ENABLED=false                    # 总开关
+DATA_AGENT_V2_FALLBACK_TO_V1=true              # 失败/低质量回退 V1
+DATA_AGENT_V2_CONFIDENCE_THRESHOLD=0.40        # P0: 置信度断路器阈值，低于此值回退 V1
+
+# Knowledge Layer
+DATA_AGENT_V2_KNOWLEDGE_RETRIEVER_ENABLED=true
+DATA_AGENT_V2_USE_METRIC_DEFINITIONS=true
+DATA_AGENT_V2_USE_SCHEMA_METADATA=true
+DATA_AGENT_V2_USE_TABLE_RELATIONSHIPS=true
+DATA_AGENT_V2_USE_ANALYTICAL_SKILLS=true
+
+# Reasoning Layer（分阶段启用）
+DATA_AGENT_V2_INTENT_ENABLED=true
+DATA_AGENT_V2_ENTITY_ENABLED=true
+DATA_AGENT_V2_METRIC_ENABLED=true
+DATA_AGENT_V2_TIME_ENABLED=true
+DATA_AGENT_V2_JOIN_ENABLED=true
+DATA_AGENT_V2_SEMANTIC_ENABLED=true
+DATA_AGENT_V2_PLANNER_ENABLED=true
+DATA_AGENT_V2_COMPILER_ENABLED=true
+DATA_AGENT_V2_VERIFIER_ENABLED=true
+DATA_AGENT_V2_REFLECTION_ENABLED=true
+
+# DAG 并行
+DATA_AGENT_V2_DAG_PARALLEL_ENABLED=true
+DATA_AGENT_V2_SUPERVISOR_MAX_RETRIES=2
+
+# Learning Layer
+DATA_AGENT_V2_LEARNING_ENABLED=false
+DATA_AGENT_V2_PATTERN_MEMORY_ENABLED=false
+DATA_AGENT_V2_AUTO_METRIC_REFINEMENT_ENABLED=false
+DATA_AGENT_V2_AUTO_SCHEMA_ENRICHMENT_ENABLED=false
+
+# Advanced Analytics
+DATA_AGENT_V2_STATISTICAL_ENABLED=false
+DATA_AGENT_V2_INSIGHT_ENABLED=false
+DATA_AGENT_V2_VISUALIZATION_ENABLED=false
+DATA_AGENT_V2_SKILL_EXECUTION_ENABLED=false
+DATA_AGENT_V2_CRITIC_ENABLED=true
+DATA_AGENT_V2_REPAIR_STRATEGIES_PATH=""         # P1: 修复策略 JSON 配置文件路径（留空使用内置默认值）
+DATA_AGENT_V2_COGNITIVE_EVENTS_ENABLED=false    # P2: 认知事件审计写入
+```
+
+### 14b.7 API 端点（3 个新 Router）
+
+| Router | 前缀 | 说明 |
+|--------|------|------|
+| `metrics.py` | `/api/v1/metrics` | 指标定义 CRUD（metric_definitions 表） |
+| `table_relationships.py` | `/api/v1/table-relationships` | 表关系管理（table_relationships 表） |
+| `analytical_skills.py` | `/api/v1/analytical-skills` | 分析技能管理（analytical_skills 表） |
+
+### 14b.8 引导脚本（3 个）
+
+| 脚本 | 用途 |
+|------|------|
+| `scripts/sync_schema_metadata.py` | 从 information_schema.columns 自动填充 schema_metadata（11 种语义类型推断） |
+| `scripts/sync_table_relationships.py` | 从 information_schema 提取 FK 约束填充 table_relationships |
+| `scripts/migrate_metrics.py` | 从 data_source_schemas.semantic_mappings 迁移指标到 metric_definitions |
+
+### 14b.9 前端组件（3 个）
+
+| 组件 | 文件 | 说明 |
+|------|------|------|
+| MetricDefinitionEditor | `MetricDefinitionEditor.tsx` | 指标定义 CRUD 模态框（formula/agg_function/unit/category/business_definition） |
+| TableRelationGraph | `TableRelationGraph.tsx` | SVG DAG 可视化（BFS 拓扑分层布局，颜色编码节点，绿/灰边区分验证状态） |
+| SkillTemplateEditor | `SkillTemplateEditor.tsx` | 分析技能编辑（DAG 步骤拖拽、参数 schema 构建器、SQL 模板编辑器） |
+| DataTableChart | `DataTableChart.tsx` | 12 种图表类型渲染（对接 VisualizationAgent 推荐结果） |
+
+### 14b.10 测试体系（146 个测试）
+
+| 测试文件 | 测试数 | 覆盖范围 |
+|---------|--------|---------|
+| `test_data_agent_v2_agent_contract.py` | 82 | 全部 13 个 Agent + 知识表模型 + API Router + 引导脚本合约 |
+| `test_data_agent_v2_supervisor_contract.py` | 21 | Supervisor 管线 + DAG 拓扑 + 特性开关 + CognitiveContext 字段 |
+| `test_statistical_agent_unit.py` | 25 | 数值列发现、描述统计、IQR 异常检测、趋势分析、分组对比 |
+| `test_data_agent_v2_deterministic_agents_unit.py` | 25 | VisualizationAgent 推荐/列类型推断、SkillsEngine DAG 展开/参数解析、PatternExtractor hash 确定性 |
+
+**测试数据**（`tests/fixtures/`）：
+
+| 文件 | 内容 |
+|------|------|
+| `metrics.sql` | 21 个预定义指标（GMV/ARPU/DAU/MAU/留存率/转化率/复购率等） |
+| `schema_metadata.sql` | 39 列 × 6 表（users/orders/sessions/documents/products/order_items） |
+| `relationships.sql` | 10 条表关系（6 FK 验证 + 4 推断） |
+| `queries.json` | 50 个标注查询（NL → 预期 SQL/指标/实体/时间窗） |
+
+### 14b.11 协议类型
+
+**CognitiveContext**（`agents/data_agent_v2/types.py`）：30+ 字段的 dataclass，在 Sub-Agent 间通过 `TaskMessage.params["cognitive_context"]` 传递。覆盖四层：
+
+| 层 | 字段 |
+|----|------|
+| Knowledge | pattern_hit, matched_skills, metric_definitions, schema_metadata_entries, table_relationships, skill_templates |
+| Reasoning | intent, entities, metrics, time_window, join_path, semantic_parse_result, logical_plan, compiled_sql, verification_report |
+| Learning | learning_signals, feedback_classification, extracted_patterns |
+| Analytics | execution_rows, statistical_report, insights, visualization_config, trend_report, outlier_report |
+
+### 14b.12 与 V1 的兼容性
+
+- `agents/data_agent.py` 保留 V1 实现为 `DataAgentV1`，`DataAgent` 作为 V1/V2 包装器
+- `DataAgentV2Supervisor` 通过 `DATA_AGENT_V2_ENABLED` 开关控制
+- `DATA_AGENT_V2_FALLBACK_TO_V1=true` 时，V2 异常或低置信度（< 阈值）自动回退 V1
+- 所有现有测试继续针对 V1 运行，V2 测试独立管理
+- DAG 调度复用 `kernel/dag_scheduler.DagScheduler`，SQL 编译复用 `SQLBuilder`，验证复用 `SQLValidator`
+
+### 14b.13 2026-05-14 代码审查优化（4 项）
+
+| # | 优先级 | 优化项 | 涉及文件 |
+|---|--------|--------|---------|
+| P0 | A.1 | 置信度断路器 + V1 回退 | `types.py`（LowConfidenceError）、`supervisor.py`、`data_agent.py`、`settings.py` |
+| P1 | A.2 | DAG 调度复用 kernel/dag_scheduler | `supervisor.py`（_execute_dag 重写）、`dag_builder.py`（to_dag_plan） |
+| P1 | A.3 | 修复策略 JSON 外部化 | `error_classifier.py`、`repair_strategies.json`（新建） |
+| P2 | A.4 | 认知事件审计表 | `alembic/versions/20260514_cognitive_events.py`（新建）、`models.py`、`supervisor.py`（_record_event） |
+
+**A.1 置信度断路器**：`_compute_confidence()` 原本只计算不决策，新增在 `_build_final_result()` 后检查置信度 < `DATA_AGENT_V2_CONFIDENCE_THRESHOLD`（默认 0.40），触发 `LowConfidenceError` → `DataAgent` 捕获后回退 V1。解决了 V2 在低质量结果上强行返回的问题。
+
+**A.2 DAG 调度复用**：`_execute_dag()` 原有手动拓扑循环（串行，每次重建 ready 列表），重写为使用 `kernel/dag_scheduler.DagScheduler`（asyncio.Semaphore 并行 + asyncio.wait 事件驱动 + timeout 保护）。通过 `_V2BridgeRegistry` 适配器桥接 V2 的 `AGENT_REGISTRY`（str → class）到 kernel 的 `AgentRegistry` 接口。
+
+**A.3 修复策略外部化**：`REPAIR_STRATEGIES` 改名为 `DEFAULT_REPAIR_STRATEGIES`，`ErrorClassifier.__init__()` 启动时从 `repair_strategies.json` 加载覆盖策略（JSON 覆盖同名 key，新 key 追加，`_comment` 和无效 key 静默跳过）。`data_agent_v2_repair_strategies_path` 配置 JSON 路径。
+
+**A.4 认知事件审计表**：新建 `cognitive_events` 表（trace_id + step + status + payload + duration_ms），`CognitiveEvent` ORM 模型，Supervisor 在 6 个关键步骤前后写事件。通过 `data_agent_v2_cognitive_events_enabled`（默认 false）控制，事件写入失败不影响管线。
 
 ---
 

@@ -27,7 +27,7 @@ import {
   type DataSourceItem,
 } from '../api/client'
 
-type TabKey = 'tables' | 'query' | 'analysis' | 'settings'
+type TabKey = 'tables' | 'query' | 'analysis' | 'settings' | 'metrics' | 'relationships' | 'skills'
 
 export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((s) => s.token)!
@@ -51,6 +51,11 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const [editingDimension, setEditingDimension] = useState<{ name: string; column: string; table: string }>({ name: '', column: '', table: '' })
   const [editingMetric, setEditingMetric] = useState<{ name: string; expression: string }>({ name: '', expression: '' })
   const [editingTimeMacro, setEditingTimeMacro] = useState<{ keyword: string; column: string; days: number }>({ keyword: '', column: '', days: 7 })
+
+  // DataAgent V2 knowledge asset state
+  const [metricsList, setMetricsList] = useState<any[]>([])
+  const [relationshipsList, setRelationshipsList] = useState<any[]>([])
+  const [skillsList, setSkillsList] = useState<any[]>([])
 
   const [form, setForm] = useState({
     name: '',
@@ -103,6 +108,10 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
         time_macros: x?.time_macros || [],
       }))
       .catch(() => setSemanticConfig({ dimensions: {}, metrics: {}, time_macros: [] }))
+    // Load DataAgent V2 knowledge assets
+    apiFetch(`/api/v1/metrics?data_source_id=${selected.id}`, token).then((x) => setMetricsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setMetricsList([]))
+    apiFetch(`/api/v1/table-relationships?data_source_id=${selected.id}`, token).then((x) => setRelationshipsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setRelationshipsList([]))
+    apiFetch(`/api/v1/analytical-skills`, token).then((x) => setSkillsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setSkillsList([]))
   }, [selected?.id, token])
 
   useEffect(() => {
@@ -453,6 +462,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                 <TabButton active={activeTab === 'tables'} onClick={() => setActiveTab('tables')} icon={<Table2 size={14} />} label="Tables" />
                 <TabButton active={activeTab === 'query'} onClick={() => setActiveTab('query')} icon={<Search size={14} />} label="Query" />
                 <TabButton active={activeTab === 'analysis'} onClick={() => setActiveTab('analysis')} icon={<BarChart3 size={14} />} label="Analysis" />
+                <TabButton active={activeTab === 'metrics'} onClick={() => setActiveTab('metrics')} icon={<BarChart3 size={14} />} label="指标定义" />
+                <TabButton active={activeTab === 'relationships'} onClick={() => setActiveTab('relationships')} icon={<Table2 size={14} />} label="表关系" />
+                <TabButton active={activeTab === 'skills'} onClick={() => setActiveTab('skills')} icon={<Zap size={14} />} label="分析技能" />
                 <TabButton active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} icon={<Settings2 size={14} />} label="Settings" />
               </div>
 
@@ -547,6 +559,90 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                       ))}
                     </div>
                   ) : null}
+                </div>
+              ) : null}
+
+              {activeTab === 'metrics' ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">指标定义</h3>
+                    <span className="text-xs text-[var(--text-secondary)]">{metricsList.length} 个</span>
+                  </div>
+                  {metricsList.length === 0 ? (
+                    <p className="text-xs text-[var(--text-secondary)] py-4 text-center">该数据源暂无指标定义。可在"Settings → 语义层配置"中先配置度量映射，或通过管理 API 创建。</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {metricsList.map((m: any, idx: number) => (
+                        <div key={m.id || idx} className="rounded border border-[var(--border)] p-3 space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-medium">{m.name}</span>
+                            {m.status ? <span className={`px-1.5 py-0.5 rounded text-[10px] ${m.status === 'published' ? 'bg-green-500/20 text-green-400' : m.status === 'draft' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-gray-500/20 text-gray-400'}`}>{m.status}</span> : null}
+                          </div>
+                          {m.formula ? <div className="text-xs font-mono text-[var(--text-secondary)]">{m.formula}</div> : null}
+                          {m.business_definition ? <p className="text-xs text-[var(--text-secondary)]">{m.business_definition}</p> : null}
+                          {m.unit ? <span className="text-[10px] text-[var(--text-secondary)]">单位: {m.unit}</span> : null}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              {activeTab === 'relationships' ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">表关系</h3>
+                    <span className="text-xs text-[var(--text-secondary)]">{relationshipsList.length} 条</span>
+                  </div>
+                  {relationshipsList.length === 0 ? (
+                    <p className="text-xs text-[var(--text-secondary)] py-4 text-center">该数据源暂无表关系定义。可通过管理 API 或运行 scripts/sync_table_relationships.py 引导脚本创建。</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {relationshipsList.map((r: any, idx: number) => (
+                        <div key={r.id || idx} className="rounded border border-[var(--border)] p-2 text-xs space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-medium">{r.left_table}.{r.left_column}</span>
+                            <span className="text-[var(--accent)]">&rarr;</span>
+                            <span className="font-mono font-medium">{r.right_table}.{r.right_column}</span>
+                            <span className="text-[var(--text-secondary)]">({r.join_type || 'LEFT'})</span>
+                          </div>
+                          <div className="flex gap-3">
+                            {r.cardinality ? <span className="text-[var(--text-secondary)]">基数: {r.cardinality}</span> : null}
+                            {r.is_verified ? <span className="text-green-400">已验证</span> : <span className="text-yellow-400">未验证</span>}
+                            {r.amplification_risk ? <span className={r.amplification_risk === 'high' ? 'text-red-400' : 'text-[var(--text-secondary)]'}>放大风险: {r.amplification_risk}</span> : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              {activeTab === 'skills' ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">分析技能库</h3>
+                    <span className="text-xs text-[var(--text-secondary)]">{skillsList.length} 个</span>
+                  </div>
+                  {skillsList.length === 0 ? (
+                    <p className="text-xs text-[var(--text-secondary)] py-4 text-center">暂无分析技能定义。可通过管理 API 创建或初始化预置技能。</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {skillsList.map((s: any, idx: number) => (
+                        <div key={s.id || idx} className="rounded border border-[var(--border)] p-3 space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-medium">{s.name}</span>
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] ${s.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'}`}>{s.status || 'active'}</span>
+                          </div>
+                          {s.description ? <p className="text-xs text-[var(--text-secondary)]">{s.description}</p> : null}
+                          <div className="flex gap-2 text-xs">
+                            {s.skill_type ? <span className="text-[var(--text-secondary)]">类型: {s.skill_type}</span> : null}
+                            {s.visualization_hint ? <span className="text-[var(--text-secondary)]">图表: {s.visualization_hint}</span> : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ) : null}
 
@@ -663,4 +759,10 @@ function TabButton({ active, onClick, icon, label }: { active: boolean; onClick:
       {label}
     </button>
   )
+}
+
+async function apiFetch(url: string, token: string): Promise<any> {
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  if (!res.ok) throw new Error(`API ${res.status}`)
+  return res.json()
 }

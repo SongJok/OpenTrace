@@ -195,7 +195,8 @@ async def _load_history_before_message(
             if log.response:
                 history.append({"role": "assistant", "content": log.response})
         return history
-    except Exception:
+    except Exception as exc:
+        logger.warning("Chat API operation failed", error=str(exc))
         return []
 
 
@@ -220,7 +221,8 @@ async def _load_branch_checkpoint(
             "agent_results": graph.get("agent_results", []),
             "message_id": message_id,
         }
-    except Exception:
+    except Exception as exc:
+        logger.warning("Chat API operation failed", error=str(exc))
         return None
 
 
@@ -245,7 +247,8 @@ async def _load_previous_turn_context(
         plan = graph.get("plan")
         agent_results = graph.get("agent_results", [])
         return plan, agent_results
-    except Exception:
+    except Exception as exc:
+        logger.warning("Chat API operation failed", error=str(exc))
         return None, []
 
 
@@ -279,7 +282,7 @@ async def _load_conversation_history(
                     entry["name"] = m.name
                 history.append(entry)
             return history
-    except Exception:
+    except Exception as exc:
         pass  # Message table may not exist yet — fall back to TraceLog
 
     # Fallback: load from trace_logs
@@ -298,7 +301,8 @@ async def _load_conversation_history(
             if log.response:
                 history.append({"role": "assistant", "content": log.response})
         return history
-    except Exception:
+    except Exception as exc:
+        logger.warning("Chat API operation failed", error=str(exc))
         return []
 
 
@@ -411,8 +415,8 @@ async def _get_previous_turn_sql(db: AsyncSession, session_id: str) -> str | Non
                                         return str(sql)
             except (json.JSONDecodeError, TypeError):
                 continue
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Chat API operation failed", error=str(exc))
     return None
 
 
@@ -532,7 +536,7 @@ async def _load_data_source_context(
     if schema_row is not None:
         try:
             schema_payload = json.loads(schema_row.schema_json or "{}")
-        except Exception:
+        except Exception as exc:
             schema_payload = None
 
     return {
@@ -571,8 +575,8 @@ async def _save_conversation_state_async(state_manager, cs) -> None:
     """Fire-and-forget ConversationState save, never raises."""
     try:
         await state_manager.save(cs)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Chat API operation failed", error=str(exc))
 
 
 async def _save_trace(
@@ -642,7 +646,7 @@ async def _save_trace(
                         latency_ms=latency_ms,
                     )
                 )
-            except Exception:
+            except Exception as exc:
                 pass  # Message table may not exist yet
 
             # Link attachments to this trace log's user message
@@ -666,7 +670,7 @@ async def _save_trace(
                 score_raw = step.get("score")
                 try:
                     score = float(score_raw) if score_raw is not None else None
-                except Exception:
+                except Exception as exc:
                     score = None
                 db.add(
                     ReasoningTrace(
@@ -697,7 +701,7 @@ async def _save_trace(
                         latency_v = n.get("latency_ms")
                         try:
                             avg_latency_ms = float(latency_v) if latency_v is not None else 0.0
-                        except Exception:
+                        except Exception as exc:
                             avg_latency_ms = 0.0
                         db.add(
                             ToolStat(
@@ -1128,8 +1132,8 @@ async def chat(
             raise AppException(ErrorCodes.PARAM_INVALID.code, message=f"Blocked: {guard.reason}")
     except AppException:
         raise
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Chat API operation failed", error=str(exc))
 
     try:
         session_id = await _ensure_session(req.session_id, current_user, db)
@@ -1993,7 +1997,7 @@ async def chat(
                         ((final_execution_graph or {}).get("state") or {}).get("tools_used") or []
                     )
                 ]
-            except Exception:
+            except Exception as exc:
                 tools_used = []
             if tools_used:
                 tool_anomaly_detector.record(tools_used)
@@ -2415,8 +2419,8 @@ async def chat_feedback(
                 graph = json.loads(trace.execution_graph_json)
                 if isinstance(graph, dict):
                     chunk_id = graph.get("memory_chunk_id")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Chat API operation failed", error=str(exc))
 
     if chunk_id:
         try:
@@ -2438,10 +2442,10 @@ async def chat_feedback(
                             mem.score = req.score
                             mem.access_count = (mem.access_count or 0) + 1
                             await db.commit()
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except Exception as exc:
+                        logger.warning("Chat API operation failed", error=str(exc))
+        except Exception as exc:
+            logger.warning("Chat API operation failed", error=str(exc))
 
     return {"status": "ok", "feedback_type": req.feedback_type}
 

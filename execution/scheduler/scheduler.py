@@ -118,4 +118,8 @@ class TaskScheduler:
                     self._queue.task_done()
 
 
-scheduler = TaskScheduler()
+from infra.config.settings import settings
+
+scheduler = TaskScheduler(
+    max_concurrent=int(getattr(settings, "kernel_agent_max_parallel", 4))
+)

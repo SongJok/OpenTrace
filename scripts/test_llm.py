@@ -22,8 +22,12 @@ async def main():
     import httpx
 
     print("Testing DashScope API...")
+    api_key = os.getenv("DASHSCOPE_API_KEY", "")
+    if not api_key:
+        print("Error: DASHSCOPE_API_KEY environment variable not set")
+        return False
     client = AsyncOpenAI(
-        api_key="sk-03d982083aca40bb973ab70b8facc5e1",
+        api_key=api_key,
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         timeout=30,
         http_client=httpx.AsyncClient(trust_env=False),

@@ -38,6 +38,26 @@ export function setTraceVisibility(key: keyof typeof TRACE_VISIBILITY_KEYS, valu
   }
 }
 
+const SHOW_AVATARS_KEY = 'opentrace:ui.showAvatars'
+
+export function getShowAvatars(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(SHOW_AVATARS_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function setShowAvatars(value: boolean) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(SHOW_AVATARS_KEY, value ? '1' : '0')
+  } catch {
+    // localStorage not available
+  }
+}
+
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set, get) => ({

@@ -14,9 +14,8 @@ env/
 
 .env
 !.env.example
-!SERVICE.md
 !CLAUDE.md
-!SERVICE_CODEX.md
+!docs/
 
 .idea/
 .vscode/

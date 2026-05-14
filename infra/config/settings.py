@@ -133,7 +133,7 @@ class RerankSettings(BaseSettings):
 class JWTSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    jwt_secret: str = "opentrace-jwt-secret-change-in-production"
+    jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 10080
 
@@ -152,9 +152,9 @@ class RegistrationSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     registration_enabled: bool = True
-    registration_allowed_email_domain: str = "tuwan.com"
-    admin_email: str = "songts@tuwan.com"
-    password_prefix: str = "tuwan"
+    registration_allowed_email_domain: str = "example.com"
+    admin_email: str = "admin@example.com"
+    password_prefix: str = ""
 
 
 class OTelSettings(BaseSettings):
@@ -171,7 +171,7 @@ class AppSettings(BaseSettings):
 
     app_name: str = "opentrace"
     app_env: Literal["development", "staging", "production"] = "development"
-    app_secret_key: str = "opentrace-secret-key-change-in-production-32bytes"
+    app_secret_key: str = ""
     app_host: str = "0.0.0.0"
     app_port: int = 14100
     debug: bool = False
@@ -229,7 +229,7 @@ class AppSettings(BaseSettings):
     cognition_lexicon_json: str = ""
 
     # Text2SQL / Databases
-    data_secret_key: str = "opentrace-data-secret-change-me"
+    data_secret_key: str = ""
     docker_host_alias: str = "host.docker.internal"
     text2sql_enabled: bool = True
     text2sql_max_retry: int = 2
@@ -316,6 +316,44 @@ class AppSettings(BaseSettings):
     # ── NER-based PII masking ──────────────────────────────────────────
     kernel_ner_masking_enabled: bool = True
     kernel_ner_masking_entity_types: str = "EMAIL,PHONE_CN,PHONE_INTL,CREDIT_CARD,ID_CN,IP_ADDRESS,PERSON_CN,LOCATION_CN,ORG_CN"
+
+    # ── DataAgent V2 — Cognitive Data Core ────────────────────────────
+    data_agent_v2_enabled: bool = False
+    data_agent_v2_fallback_to_v1: bool = True
+    # Knowledge Layer
+    data_agent_v2_knowledge_retriever_enabled: bool = True
+    data_agent_v2_use_metric_definitions: bool = True
+    data_agent_v2_use_schema_metadata: bool = True
+    data_agent_v2_use_table_relationships: bool = True
+    data_agent_v2_use_analytical_skills: bool = True
+    # Reasoning Layer Sub-Agents
+    data_agent_v2_intent_enabled: bool = True
+    data_agent_v2_entity_enabled: bool = True
+    data_agent_v2_metric_enabled: bool = True
+    data_agent_v2_time_enabled: bool = True
+    data_agent_v2_join_enabled: bool = True
+    data_agent_v2_semantic_enabled: bool = True
+    data_agent_v2_planner_enabled: bool = True
+    data_agent_v2_compiler_enabled: bool = True
+    data_agent_v2_verifier_enabled: bool = True
+    data_agent_v2_reflection_enabled: bool = True
+    data_agent_v2_critic_enabled: bool = True
+    # DAG & Supervisor
+    data_agent_v2_dag_parallel_enabled: bool = True
+    data_agent_v2_supervisor_max_retries: int = 2
+    data_agent_v2_confidence_threshold: float = 0.40  # P0: circuit breaker
+    data_agent_v2_repair_strategies_path: str = ""  # P1: externalized repair strategies JSON
+    data_agent_v2_cognitive_events_enabled: bool = False  # P2: audit trail
+    # Learning Layer (Phase 3)
+    data_agent_v2_learning_enabled: bool = False
+    data_agent_v2_pattern_memory_enabled: bool = False
+    data_agent_v2_auto_metric_refinement_enabled: bool = False
+    data_agent_v2_auto_schema_enrichment_enabled: bool = False
+    # Advanced Analysis (Phase 4)
+    data_agent_v2_statistical_enabled: bool = False
+    data_agent_v2_insight_enabled: bool = False
+    data_agent_v2_visualization_enabled: bool = False
+    data_agent_v2_skill_execution_enabled: bool = False
 
     # ── Canary testing & auto-rollback ────────────────────────────────
     kernel_canary_auto_rollback_enabled: bool = True

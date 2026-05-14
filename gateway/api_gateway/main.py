@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 
 from gateway.api_gateway.routers import (
     admin,
+    analytical_skills,
     audit,
     auth,
     chat,
@@ -24,9 +25,11 @@ from gateway.api_gateway.routers import (
     feedback,
     health,
     memories,
+    metrics,
     rules,
     sandbox,
     skills,
+    table_relationships,
     tasks,
     ui_settings,
 )
@@ -127,3 +130,6 @@ app.include_router(feedback.router, prefix="/api/v1", tags=["feedback"])
 app.include_router(sandbox.router, prefix="/api/v1", tags=["sandbox"])
 app.include_router(admin.router, prefix="/api/v1", tags=["admin"])
 app.include_router(rules.router, prefix="/api/v1", tags=["rules"])
+app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
+app.include_router(table_relationships.router, prefix="/api/v1", tags=["table-relationships"])
+app.include_router(analytical_skills.router, prefix="/api/v1", tags=["analytical-skills"])

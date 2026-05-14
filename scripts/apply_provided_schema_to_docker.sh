@@ -10,7 +10,7 @@ SQL_FILE="$PROJECT_DIR/scripts/sql/provided_schema.sql"
 
 DOCKER_PG_SERVICE="${DOCKER_PG_SERVICE:-postgres}"
 DOCKER_PG_USER="${DOCKER_PG_USER:-postgres}"
-DOCKER_PG_PASSWORD="${DOCKER_PG_PASSWORD:-950514abc}"
+DOCKER_PG_PASSWORD="${DOCKER_PG_PASSWORD:-}"
 DOCKER_PG_DB="${DOCKER_PG_DB:-opentrace_v2}"
 
 echo "== OpenTrace: apply provided schema to docker postgres =="

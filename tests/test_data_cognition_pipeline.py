@@ -330,8 +330,8 @@ class TestQueryExecutor(unittest.TestCase):
 
 class TestConfidenceScoring(unittest.TestCase):
     def test_pipeline_mode_higher_base(self):
-        from agents.data_agent import DataAgent
-        agent = DataAgent()
+        from agents.data_agent import DataAgentV1
+        agent = DataAgentV1()
 
         # Pipeline with rows and semantic context
         ctx = SemanticContext(
@@ -343,24 +343,24 @@ class TestConfidenceScoring(unittest.TestCase):
         self.assertGreaterEqual(score, 0.90)
 
     def test_llm_direct_mode_lower_base(self):
-        from agents.data_agent import DataAgent
-        agent = DataAgent()
+        from agents.data_agent import DataAgentV1
+        agent = DataAgentV1()
 
         # LLM direct with no semantic context
         score = agent._compute_confidence([], None, mode="llm_direct")
         self.assertEqual(score, 0.60)  # base only
 
     def test_empty_result_lower_confidence(self):
-        from agents.data_agent import DataAgent
-        agent = DataAgent()
+        from agents.data_agent import DataAgentV1
+        agent = DataAgentV1()
 
         ctx = SemanticContext()
         score = agent._compute_confidence([], ctx, mode="pipeline")
         self.assertLess(score, 0.85)
 
     def test_multiple_rows_boost_confidence(self):
-        from agents.data_agent import DataAgent
-        agent = DataAgent()
+        from agents.data_agent import DataAgentV1
+        agent = DataAgentV1()
 
         rows = [{"a": i} for i in range(10)]
         ctx = SemanticContext(

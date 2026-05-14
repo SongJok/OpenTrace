@@ -17,16 +17,19 @@ class DagExecutionResult:
 
 
 class DagScheduler:
-    def __init__(self, registry: AgentRegistry, timeout_sec: int = 30) -> None:
+    def __init__(
+        self, registry: AgentRegistry, timeout_sec: int = 30, max_parallel: int = 5
+    ) -> None:
         self.registry = registry
         self.timeout_sec = timeout_sec
+        self.max_parallel = max_parallel
 
     async def execute(self, plan: DagPlan, event_cb: Any | None = None) -> DagExecutionResult:
         pending = {n.node_id: n for n in plan.nodes}
         completed: dict[str, AgentResult] = {}
         results: list[AgentResult] = []
         inflight: dict[str, asyncio.Task[AgentResult]] = {}
-        sem = asyncio.Semaphore(max(1, len(plan.nodes)))
+        sem = asyncio.Semaphore(self.max_parallel)
 
         async def run_node(node: DagNode) -> AgentResult:
             async with sem:

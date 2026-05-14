@@ -8,7 +8,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: 950514abc
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
       POSTGRES_DB: opentrace_v2
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -59,8 +59,8 @@ services:
       - net.ipv6.conf.all.disable_ipv6=1
       - net.ipv6.conf.default.disable_ipv6=1
     environment:
-      DATABASE_URL: postgresql://postgres:950514abc@postgres:5432/opentrace_v2
-      TOKEN_DB_URL: postgresql://postgres:950514abc@postgres:5432/opentrace_v2
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/opentrace_v2
+      TOKEN_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/opentrace_v2
       REDIS_URL: redis://redis:6379/10
       TRACE_ENABLED: ${TRACE_ENABLED:-false}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
@@ -103,8 +103,8 @@ services:
       - net.ipv6.conf.all.disable_ipv6=1
       - net.ipv6.conf.default.disable_ipv6=1
     environment:
-      DATABASE_URL: postgresql://postgres:950514abc@postgres:5432/opentrace_v2
-      TOKEN_DB_URL: postgresql://postgres:950514abc@postgres:5432/opentrace_v2
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/opentrace_v2
+      TOKEN_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/opentrace_v2
       REDIS_URL: redis://redis:6379/10
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1,host.docker.internal,.aliyuncs.com,dashscope.aliyuncs.com}
       no_proxy: ${no_proxy:-localhost,127.0.0.1,::1,host.docker.internal,.aliyuncs.com,dashscope.aliyuncs.com}

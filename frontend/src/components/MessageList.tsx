@@ -10,10 +10,11 @@ export interface MessageListHandle {
 
 interface MessageListProps {
   onScrollStateChange?: (isAtBottom: boolean) => void
+  showAvatars?: boolean
 }
 
 const MessageList = forwardRef<MessageListHandle, MessageListProps>(function MessageList(
-  { onScrollStateChange },
+  { onScrollStateChange, showAvatars = false },
   ref,
 ) {
   const activeId = useChatStore((s) => s.activeId)
@@ -68,7 +69,7 @@ const MessageList = forwardRef<MessageListHandle, MessageListProps>(function Mes
           对话内容将按任务、证据和执行链路自动整理展示
         </div>
         {items.map((msg) => (
-          <MessageBubble key={`${msg.id}-${msg.status}`} msg={msg} />
+          <MessageBubble key={`${msg.id}-${msg.status}`} msg={msg} showAvatar={showAvatars} />
         ))}
 
         {streaming && items[items.length - 1]?.role !== 'assistant' && (
@@ -85,19 +86,19 @@ const MessageList = forwardRef<MessageListHandle, MessageListProps>(function Mes
 
 export default MessageList
 
-function MessageBubble({ msg }: { msg: Message }) {
+function MessageBubble({ msg, showAvatar }: { msg: Message; showAvatar?: boolean }) {
   if (msg.role === 'user') {
     return (
       <div className="flex items-start justify-end group animate-fade-in py-2 gap-3">
         <ChatMessage message={msg} />
-        <QuestionerAvatar />
+        {showAvatar && <QuestionerAvatar />}
       </div>
     )
   }
 
   return (
     <div className="flex items-start animate-fade-in py-2 gap-3">
-      <ResponderAvatar />
+      {showAvatar && <ResponderAvatar />}
       <div className="flex-1 min-w-0 prose text-[15px] leading-relaxed">
         <ChatMessage message={msg} />
         {msg.status === 'streaming' && <span className="animate-blink text-[#10a37f] ml-0.5">▋</span>}

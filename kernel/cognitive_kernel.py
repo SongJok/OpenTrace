@@ -352,8 +352,8 @@ class CognitiveKernel:
                                 if sid:
                                     try:
                                         wm_turns = get_or_create_session_memory(sid).to_messages()
-                                    except Exception:
-                                        pass
+                                    except Exception as exc:
+                                        logger.warning("Working memory fetch failed", error=str(exc))
                                 enriched = await generate_enriched_identity(
                                     query=request.query,
                                     user_id=request.user_id,
@@ -461,8 +461,8 @@ class CognitiveKernel:
                                 episodic_chunks.append(str(inner)[:500])
                         except (json.JSONDecodeError, TypeError):
                             episodic_chunks.append(str(e.get("content", ""))[:500])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Episodic memory fetch failed", error=str(exc))
 
                 # Working memory turns (in-process, always available)
                 try:
@@ -475,8 +475,8 @@ class CognitiveKernel:
                     pref_block = request.metadata.get("user_preference_context_block", "")
                     if pref_block:
                         keyword_chunks.append(pref_block)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Working memory turns fetch failed", error=str(exc))
 
                 # Semantic memory retrieval (combines all sources)
                 if episodic_chunks or keyword_chunks:
@@ -568,7 +568,8 @@ class CognitiveKernel:
                         )
                     span.set_attribute("context.compressed", assembled_ctx.compressed)
                     span.set_attribute("context.total_tokens", assembled_ctx.total_tokens)
-                except Exception:
+                except Exception as exc:
+                    logger.warning("Context assembler failed", error=str(exc))
                     assembled_ctx = None
 
             effective_history = (
@@ -639,8 +640,8 @@ class CognitiveKernel:
                     wm = get_or_create_session_memory(sid)
                     wm.add_turn("user", request.query)
                     wm.add_turn("assistant", resp.content)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Working memory add_turn failed", error=str(exc))
                 try:
                     from memory.episodic_memory.episodic_memory import EpisodicMemory
 
@@ -651,8 +652,8 @@ class CognitiveKernel:
                             {"q": request.query, "a": resp.content[:500]}, ensure_ascii=False
                         ),
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Episodic turn recording failed", error=str(exc))
                 # Async semantic write-back (non-blocking, fire-and-forget)
                 try:
                     router = self._get_memory_router()
@@ -662,8 +663,8 @@ class CognitiveKernel:
                         answer=resp.content[:2000],
                         metadata={"user_id": request.user_id, "route": resp.route},
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Semantic write-back to memory router failed", error=str(exc))
                 # Semantic history indexing (best-effort)
                 try:
                     from kernel.history_retriever import SemanticHistoryRetriever
@@ -675,8 +676,8 @@ class CognitiveKernel:
                         request.query,
                         resp.content,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Semantic history indexing failed", error=str(exc))
             # ── End turn saving ──────────────────────────────────────────
 
             # ── Feature ③: Active Memory Detection ─────────────────────
@@ -811,8 +812,8 @@ class CognitiveKernel:
                             if sid:
                                 try:
                                     wm_turns = get_or_create_session_memory(sid).to_messages()
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    logger.warning("Working memory fetch failed (stream)", error=str(exc))
                             enriched = await generate_enriched_identity(
                                 query=request.query,
                                 user_id=request.user_id,
@@ -911,8 +912,8 @@ class CognitiveKernel:
                             episodic_chunks_stream.append(str(inner)[:500])
                     except (json.JSONDecodeError, TypeError):
                         episodic_chunks_stream.append(str(e.get("content", ""))[:500])
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Episodic memory fetch failed (stream)", error=str(exc))
 
             # Working memory turns (in-process, always available)
             try:
@@ -921,8 +922,8 @@ class CognitiveKernel:
                     f"user: {t.content}" if t.role == "user" else f"assistant: {t.content}"
                     for t in wm.get_turns(last_n=8)
                 ] + request.metadata.get("user_preferences", [])
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Working memory turns fetch failed (stream)", error=str(exc))
 
             # Semantic memory retrieval
             if episodic_chunks_stream or keyword_chunks_stream:
@@ -965,7 +966,8 @@ class CognitiveKernel:
                         "context.summary_sections",
                         len(assembled_ctx_stream.structured_summary.to_text()),
                     )
-            except Exception:
+            except Exception as exc:
+                logger.warning("Context assembler failed (stream)", error=str(exc))
                 assembled_ctx_stream = None
 
         effective_history_stream = (
@@ -1036,8 +1038,8 @@ class CognitiveKernel:
                     wm = get_or_create_session_memory(sid)
                     wm.add_turn("user", request.query)
                     wm.add_turn("assistant", final_content)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Working memory add_turn failed (stream)", error=str(exc))
                 try:
                     from memory.episodic_memory.episodic_memory import EpisodicMemory
 
@@ -1048,8 +1050,8 @@ class CognitiveKernel:
                             {"q": request.query, "a": final_content[:500]}, ensure_ascii=False
                         ),
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Episodic turn recording failed (stream)", error=str(exc))
                 # Async semantic write-back (non-blocking, fire-and-forget)
                 try:
                     router = self._get_memory_router()
@@ -1059,8 +1061,8 @@ class CognitiveKernel:
                         answer=final_content[:2000],
                         metadata={"user_id": request.user_id},
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Semantic write-back to memory router failed (stream)", error=str(exc))
                 # Semantic history indexing (best-effort, stream path)
                 try:
                     from kernel.history_retriever import SemanticHistoryRetriever
@@ -1072,8 +1074,8 @@ class CognitiveKernel:
                         request.query,
                         final_content,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Semantic history indexing failed (stream)", error=str(exc))
             # ── End turn saving ──────────────────────────────────────────
 
             # ── Feature ③: Active Memory Detection (stream path) ──────
@@ -1312,8 +1314,8 @@ class CognitiveKernel:
             intent = self._get_intent_engine().parse(q)
             if intent.multi_step:
                 return True
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Multi-question detection failed", error=str(exc))
 
         return False
 
@@ -1399,8 +1401,8 @@ class CognitiveKernel:
                             }
                         )
                 return result if len(result) >= 2 else None
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Syntax-based question splitting failed", error=str(exc))
         return None
 
     async def _split_questions(self, query: str) -> list[dict[str, str]] | None:

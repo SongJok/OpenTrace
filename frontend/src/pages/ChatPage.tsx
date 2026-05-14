@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { BarChart3, ChevronDown, Database, FileWarning, FileText, Package, type LucideIcon } from 'lucide-react'
+import { BarChart3, ChevronDown, Database, FileWarning, FileText, Package, User, type LucideIcon } from 'lucide-react'
 import Sidebar from '../components/Sidebar'
 import MessageList, { type MessageListHandle } from '../components/MessageList'
 import ChatInput from '../components/ChatInput'
@@ -7,6 +7,7 @@ import WelcomeScreen from '../components/WelcomeScreen'
 import { apiGetMessages, apiListConversations } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import { useChatStore } from '../store/chat'
+import { getShowAvatars, setShowAvatars } from '../store/theme'
 
 const QUICK_TAGS: Array<{ label: string; prefix: string; icon: LucideIcon }> = [
   { label: 'RAG', prefix: '/rag', icon: FileText },
@@ -51,6 +52,13 @@ export default function ChatPage() {
 
   const messageListRef = useRef<MessageListHandle>(null)
   const [isAtBottom, setIsAtBottom] = useState(true)
+  const [showAvatars, setShowAvatarsLocal] = useState(() => getShowAvatars())
+
+  const toggleAvatars = () => {
+    const next = !showAvatars
+    setShowAvatarsLocal(next)
+    setShowAvatars(next)
+  }
 
   const handleScrollStateChange = useCallback((atBottom: boolean) => {
     setIsAtBottom(atBottom)
@@ -100,11 +108,24 @@ export default function ChatPage() {
                 <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-secondary)]">OpenTrace</div>
                 <div className="mt-1 text-sm text-[var(--text)]">Chat · 证据驱动的对话工作台</div>
               </div>
-              <div className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-[11px] text-[var(--text-secondary)]">
-                AI Workflow Console
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={toggleAvatars}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] transition-colors ${
+                    showAvatars
+                      ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]'
+                      : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]'
+                  }`}
+                >
+                  <User size={12} />
+                  头像
+                </button>
+                <div className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-[11px] text-[var(--text-secondary)]">
+                  AI Workflow Console
+                </div>
               </div>
             </div>
-            <MessageList ref={messageListRef} onScrollStateChange={handleScrollStateChange} />
+            <MessageList ref={messageListRef} onScrollStateChange={handleScrollStateChange} showAvatars={showAvatars} />
             <div className="relative flex-shrink-0">
               {!isAtBottom && (
                 <div className="pointer-events-none absolute inset-x-0 bottom-full z-30 mx-auto w-full max-w-4xl px-6">

@@ -4,14 +4,15 @@ import ast
 import asyncio
 import contextlib
 import json
-import logging
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from infra.observability.logger import get_logger
+
+logger = get_logger(__name__)
 
 VALID_FORCE_MODES = frozenset(
     {
@@ -84,10 +85,11 @@ class ToolAgent:
         parsed: Any = None
         try:
             parsed = json.loads(raw)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to parse JSON/ast literal", error=str(exc))
             try:
                 parsed = ast.literal_eval(raw)
-            except Exception:
+            except Exception as exc:
                 parsed = None
 
         if isinstance(parsed, dict):
@@ -234,8 +236,8 @@ class CognitiveOrchestratorV4:
             try:
                 from kernel.adaptive_profiles import apply_user_tags
                 profile = apply_user_tags(profile, user_tags)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Adaptive profile enrichment failed", error=str(exc))
 
         return profile
 
@@ -251,8 +253,8 @@ class CognitiveOrchestratorV4:
             try:
                 masker = get_ner_masker()
                 content = masker.unmask_output(content, pii_mapping)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("PII unmask failed", error=str(exc))
 
         # Remove explicit internal source markers like [tool]/[web_search]/[sql] and Chinese labels
         content = re.sub(
@@ -456,8 +458,8 @@ class CognitiveOrchestratorV4:
             intent = await IntentEngine().parse(q)
             if intent.multi_step:
                 return await self._split_multi_question(q)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Multi-question detection failed", error=str(exc))
 
         return None
 
@@ -549,8 +551,8 @@ class CognitiveOrchestratorV4:
                         )
                 if len(result) >= 2:
                     return result
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Question classification failed", error=str(exc))
         return None
 
     async def _process_multi_question(
@@ -1084,6 +1086,7 @@ class CognitiveOrchestratorV4:
             timeout_sec=timeout_sec,
             bus_enabled=bool(settings.kernel_agent_bus_enabled),
             bus_namespace=str(settings.kernel_agent_bus_namespace),
+            max_parallel=max_parallel,
         )
         self.fusion_engine = FusionEngine()
         self.critic_engine = CriticEngine()
@@ -1112,8 +1115,8 @@ class CognitiveOrchestratorV4:
                 mask_result = masker.mask_input(req.query)
                 masked_query = mask_result.masked
                 pii_mapping = mask_result.mapping
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("PII mask_input failed", error=str(exc))
 
         # ── XAI cognitive tracer: start trace for audit trail ──
         xai_tracer = None
@@ -1126,7 +1129,8 @@ class CognitiveOrchestratorV4:
                     masked_query,
                     user_id=req.user_id or "",
                 )
-            except Exception:
+            except Exception as exc:
+                logger.warning("XAI tracer start_trace failed", error=str(exc))
                 xai_tracer = None
 
         if trace_id:
@@ -1242,8 +1246,8 @@ class CognitiveOrchestratorV4:
             try:
                 from kernel.adaptive_profiles import user_tags_to_style_hints
                 user_style_hints = user_tags_to_style_hints(all_tags)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("User style hints generation failed", error=str(exc))
 
         adaptive_profile = self._get_adaptive_profile(req.query, user_tags=all_tags)
         data_source_context = {
@@ -1282,7 +1286,8 @@ class CognitiveOrchestratorV4:
                 )
                 if dialogue_state.resolved_query and dialogue_state.resolved_query != req.query:
                     resolved_query = dialogue_state.resolved_query
-            except Exception:
+            except Exception as exc:
+                logger.warning("DialogueStateTracker failed", error=str(exc))
                 dialogue_state = None
                 resolved_query = req.query
 
@@ -1299,7 +1304,8 @@ class CognitiveOrchestratorV4:
                 if reference_result.confidence >= 0.5:
                     if reference_result.resolved_query and reference_result.resolved_query != req.query:
                         resolved_query = reference_result.resolved_query
-            except Exception:
+            except Exception as exc:
+                logger.warning("ReferenceResolver failed", error=str(exc))
                 reference_result = None
 
         # Multi-question detection (only when not in force_mode)
@@ -1382,7 +1388,8 @@ class CognitiveOrchestratorV4:
                             correction_reused = refined.reused_results
                             correction_replaced_indices = refined.replaced_indices
                             resolved_query = correction_intent.corrected_query or req.query
-            except Exception:
+            except Exception as exc:
+                logger.warning("RefinePlanner correction path failed", error=str(exc))
                 correction_plan = None
                 correction_reused = {}
                 correction_replaced_indices = []
@@ -1517,8 +1524,8 @@ class CognitiveOrchestratorV4:
                     {"subtask_count": len(plan.subtasks), "merge_strategy": plan.merge_strategy},
                     f"Generated {len(plan.subtasks)} subtasks with {plan.merge_strategy} merge",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("XAI trace record_decision failed", error=str(exc))
 
         # Hard-guard: auto-inject subtasks only when NOT in force_mode
         q_lower = (req.query or "").lower()
@@ -2113,8 +2120,8 @@ class CognitiveOrchestratorV4:
                     merged_length=len(fusion.merged_context or ""),
                     strategy=getattr(plan, "merge_strategy", "direct"),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("XAI trace record_fusion failed", error=str(exc))
 
         fusion_span = tctx.start_span("fusion", parent_span_id=root_span) if tctx else ""
         if trace_id:
@@ -2367,8 +2374,8 @@ class CognitiveOrchestratorV4:
                     issues_found=len(issues),
                     corrections=[critique.feedback] if critique.need_fix else [],
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("XAI trace record_critic failed", error=str(exc))
 
         if critique.need_fix:
             task_model.add_hypothesis(
@@ -2418,7 +2425,8 @@ class CognitiveOrchestratorV4:
                             for i, opt in enumerate(q.suggested_options[:3], 1):
                                 clarify_suffix += f"{i}. {opt}\n"
                         answer = f"{answer}{clarify_suffix}"
-        except Exception:
+        except Exception as exc:
+            logger.warning("Clarification gate failed", error=str(exc))
             clarification_result = None
             clarification_data = None
 
@@ -2565,8 +2573,8 @@ class CognitiveOrchestratorV4:
                     total_latency_ms=int((monotonic() - t0) * 1000),
                 )
                 xai_tracer.finish_trace(xai_trace_id, {"route": "agent_cluster", "validation_score": max(0.6, fusion.confidence)})
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("XAI trace finish_trace failed", error=str(exc))
 
         return OrchestratorV4Response(
             content=answer,

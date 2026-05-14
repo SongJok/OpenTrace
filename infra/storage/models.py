@@ -322,6 +322,11 @@ class Feedback(Base):
     score: Mapped[float] = mapped_column(Float, nullable=True)
     correction: Mapped[str] = mapped_column(Text, nullable=True)
     feedback_metadata: Mapped[str] = mapped_column(Text, nullable=True)
+    # DataAgent V2 learning loop fields
+    agent_trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    corrected_metric_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    corrected_sql: Mapped[str | None] = mapped_column(Text, nullable=True)
+    learning_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -496,6 +501,10 @@ class DataSourceSchema(Base):
     schema_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     semantic_mappings: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     embedding: Mapped[str] = mapped_column(Text, nullable=True)
+    # DataAgent V2 enhanced fields
+    auto_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    relationship_hints: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -515,6 +524,178 @@ class DataQueryLog(Base):
     success: Mapped[bool] = mapped_column(Boolean, default=True)
     error_message: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DataAgent V2 — Knowledge Asset Tables
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class MetricDefinition(Base):
+    """Governed metric catalog — authoritative source for business metric formulas."""
+
+    __tablename__ = "metric_definitions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    data_source_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    aliases: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    formula: Mapped[str] = mapped_column(Text, nullable=False)
+    underlying_columns: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    agg_function: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    business_definition: Mapped[str | None] = mapped_column(Text, nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    tags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    sensitivity: Mapped[str] = mapped_column(String(20), nullable=False, default="public")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    lineage: Mapped[list[MetricLineage]] = relationship(
+        back_populates="metric", foreign_keys="MetricLineage.metric_id", cascade="all, delete-orphan"
+    )
+
+
+class SchemaMetadata(Base):
+    """Per-column business semantics — bridges DB schema and business vocabulary."""
+
+    __tablename__ = "schema_metadata"
+    __table_args__ = (
+        UniqueConstraint("data_source_id", "table_name", "column_name", name="uq_schema_meta_ds_table_col"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    data_source_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    table_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    column_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    business_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    business_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    semantic_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    value_map: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_primary_key: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_foreign_key: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_time_column: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    time_grain: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    is_metric_column: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_dimension_column: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_sensitive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    masking_rule: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    lifecycle_stage: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    nullable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    default_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sample_values: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TableRelationship(Base):
+    """Pre-modeled table join graph — FK-based with usage-based validation."""
+
+    __tablename__ = "table_relationships"
+    __table_args__ = (
+        UniqueConstraint(
+            "data_source_id", "left_table", "left_column", "right_table", "right_column",
+            name="uq_table_rel_ds_lr",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    data_source_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    left_table: Mapped[str] = mapped_column(String(255), nullable=False)
+    left_column: Mapped[str] = mapped_column(String(255), nullable=False)
+    right_table: Mapped[str] = mapped_column(String(255), nullable=False)
+    right_column: Mapped[str] = mapped_column(String(255), nullable=False)
+    join_type: Mapped[str] = mapped_column(String(20), nullable=False, default="LEFT")
+    cardinality: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    amplification_risk: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    verified_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    success_rate: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AnalyticalSkill(Base):
+    """Reusable analytical pattern templates — cohort, funnel, RFM, etc."""
+
+    __tablename__ = "analytical_skills"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    skill_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    required_intent_types: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    required_metric_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    required_dimension_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    plan_template: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    sql_template: Mapped[str | None] = mapped_column(Text, nullable=True)
+    visualization_hint: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    parameters_schema: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    examples: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class QueryPattern(Base):
+    """Successful query pattern memory — hash-based fast path for repeated queries."""
+
+    __tablename__ = "query_patterns"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    pattern_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    query_template: Mapped[str] = mapped_column(Text, nullable=False)
+    intent_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    entities: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    metrics: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    successful_sql: Mapped[str | None] = mapped_column(Text, nullable=True)
+    success_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    avg_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MetricLineage(Base):
+    """Dependency graph between metrics — e.g. "ARPU" depends on "Revenue" and "Active Users"."""
+
+    __tablename__ = "metric_lineage"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    metric_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("metric_definitions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    depends_on_metric_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("metric_definitions.id", ondelete="SET NULL"), nullable=True
+    )
+    depends_on_column: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    transformation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lineage_type: Mapped[str] = mapped_column(String(20), nullable=False, default="derived")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    metric: Mapped[MetricDefinition] = relationship(
+        back_populates="lineage", foreign_keys=[metric_id]
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 class Attachment(Base):
@@ -552,6 +733,21 @@ class Attachment(Base):
 
     def __repr__(self) -> str:
         return f"<Attachment id={self.id} filename={self.filename} session={self.session_id}>"
+
+
+class CognitiveEvent(Base):
+    """DataAgent V2 pipeline step audit trail."""
+    __tablename__ = "cognitive_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    trace_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    query_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    step: Mapped[str] = mapped_column(String(64), nullable=False)
+    node_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="start")
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class SystemSetting(Base):
