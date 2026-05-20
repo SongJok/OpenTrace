@@ -100,7 +100,7 @@ export default function TasksPage({ onBack }: { onBack: () => void }) {
               placeholder="例如：每小时检查 HackerNews 的 AI 文章并给我摘要"
               className="w-full rounded border border-[var(--border)] bg-transparent px-2 py-1 text-sm"
             />
-            <button onClick={() => void createTask()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-white text-xs inline-flex items-center gap-1">
+            <button onClick={() => void createTask()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs inline-flex items-center gap-1">
               <Plus size={12} /> 创建
             </button>
           </div>

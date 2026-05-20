@@ -57,7 +57,7 @@ export default function AuditPage({ onBack }: { onBack: () => void }) {
             <input value={end} onChange={(e) => setEnd(e.target.value)} className="block rounded border border-[var(--border)] bg-transparent px-2 py-1 text-sm" />
           </div>
           <button onClick={() => void load()} className="px-3 py-1.5 rounded border text-xs">查询</button>
-          <button onClick={() => void exportCsv()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-white text-xs inline-flex items-center gap-1"><Download size={12} />导出 CSV</button>
+          <button onClick={() => void exportCsv()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs inline-flex items-center gap-1"><Download size={12} />导出 CSV</button>
         </div>
         <div className="space-y-2">
           {items.length === 0 ? <p className="text-sm text-[var(--text-secondary)]">暂无审计记录</p> : items.map((x) => (

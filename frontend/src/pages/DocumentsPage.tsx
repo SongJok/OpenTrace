@@ -219,7 +219,7 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
             <button
               onClick={handleSearch}
               disabled={searching || !searchQuery.trim()}
-              className="px-4 py-2.5 bg-[var(--accent)] text-white rounded-xl text-sm font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
+              className="px-4 py-2.5 bg-[var(--accent)] text-[var(--accent-foreground)] rounded-xl text-sm font-medium hover:opacity-90 disabled:opacity-40 transition-opacity"
             >
               {searching ? <Loader2 size={16} className="animate-spin" /> : 'Search'}
             </button>
@@ -336,7 +336,7 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
                     <button
                       onClick={saveDetail}
                       disabled={saving || !editTitle.trim()}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[var(--accent)] text-white text-sm font-medium disabled:opacity-40"
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[var(--accent)] text-[var(--accent-foreground)] text-sm font-medium disabled:opacity-40"
                     >
                       {saving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
                       Save title

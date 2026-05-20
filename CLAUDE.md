@@ -22,6 +22,12 @@ OpenTrace is a cognitive kernel-centric agent system supporting conversational Q
 - View agent-worker logs: `bash scripts/docker_logs.sh agent-worker`
 - Full reset (including volumes): `bash stop.sh --volumes && bash start.sh`
 
+**Important — Docker code deployment:** The Dockerfile uses `COPY . .` (not volume mounts), so source code is baked into the image at build time. Both `start.sh` and `restart.sh` run `docker compose up -d --build` which rebuilds images. However, Docker's layer cache may skip rebuilding the `COPY . .` step. When source changes don't seem to take effect in the running container, force a full rebuild:
+
+```bash
+docker compose build --no-cache api agent-worker && bash restart.sh
+```
+
 ### Verification Scripts
 
 - Run all verification (local): `bash scripts/verify_all.sh`
@@ -102,6 +108,10 @@ The dev server proxies API requests to `http://localhost:14100`.
    - `fusion_engine/` and `critic_engine/`: merge results and critique.
    - `adaptive_profiles.py`: dynamic quality/speed profile switching.
    - `cognition/` / `data_cognition/`: entity recognition and canonical name resolution.
+   - `identity/` — System identity & persona enforcement:
+     - `system_identity.py`: `SYSTEM_IDENTITY` prompt template, `CANONICAL_IDENTITY_RESPONSE` (fallback), `is_identity_user_query()`, `enforce_identity_output()` (post-process filter), `build_identity_llm_messages()` (context-aware identity prompt builder).
+     - L0 identity queries ("你是谁") route through `orchestrator_v4._handle_identity_query()` → `LLMRole.IDENTITY` (MinShort 0.6B) → response cached in WorkingMemory with turn-sequence freshness check (expires after 5 turns).
+     - Feature flag: `kernel_identity_llm_enabled` (True=LLM动态生成, False=回退固定答案).
 4. **Agent Cluster** (`agents/`) – Parallel execution units:
    - `data_agent.py`: structured data queries (Text2SQL).
    - `web_agent.py`: web search (Serper API).
@@ -110,7 +120,22 @@ The dev server proxies API requests to `http://localhost:14100`.
    - `skills_agent.py`: specialized skill invocation.
    - `worker.py`: consumes from Redis bus (stream/pubsub modes).
    - `registry.py`: agent registration and discovery.
-5. **Model Gateway** (`model/`) – Abstracts LLM calls with role‑based routing (QUERY/PLANNING/COMPRESS).
+5. **Model Gateway** (`model/`) — Abstracts LLM calls with role‑based routing. Roles form a capability hierarchy:
+
+   | Role | Typical Model | Purpose |
+   |------|--------------|---------|
+   | `QUERY` | qwen3.6-plus | Primary reasoning & answer generation |
+   | `PLANNING` | qwen3.6-plus | Task decomposition & plan generation |
+   | `COMPRESS` | qwen3.5-27b | Context compression & memory summarization |
+   | `ROUTER` | qwen3-1.7b (JuniorShort) | L1 intent classification |
+   | `FAST` | qwen3-8b (MiddleShort) | Simple/FAQ direct answers |
+   | `CHEAP_CRITIC` | qwen3-14b (SeniorShort) | Lightweight output critique |
+   | `KNOWLEDGE` | qwen3-14b (SeniorShort) | Knowledge Q&A |
+   | `IDENTITY` | qwen3-0.6b (MinShort) | Personalized identity responses (L0) |
+   | `VISION` | qwen3.6-vl-plus | Image/chart interpretation |
+
+   - `model/model_gateway/gateway.py`: role configs, circuit breaker, offline fallback, `merge_system_identity`.
+   - `model/llm_adapter/`: provider adapters (DashScope, OpenAI-compatible).
 6. **Memory** (`memory/`) – Multi‑layer memory (working, semantic, episodic, procedural).
 7. **Execution Plane** (`execution/`) – Tool routing, data query, DAG/workflow engines.
 8. **Infrastructure** (`infra/`) – Config, storage, observability, error handling, guards.
@@ -132,6 +157,19 @@ The dev server proxies API requests to `http://localhost:14100`.
 - RAG: `RAG_MIN_SCORE` (default 0.25, dynamically adjusted in code).
 - Frontend: `VITE_API_URL` and `VITE_WS_URL` in `.env` must point to the API gateway.
 
+### Feature Flags (selected)
+
+All flags are defined in `infra/config/settings.py` and configurable via `.env`. Key flags beyond the basic agent toggles:
+
+- `KERNEL_IDENTITY_LLM_ENABLED` (default `True`) — Use LLM for dynamic identity responses instead of fixed canned text.
+- `KERNEL_V5_ROUTING_ENABLED` — Enable V5 routing tier (L0 Rule Router + L1 TinyRouter + semantic cache). Currently stubs.
+- `KERNEL_SEMANTIC_CACHE_ENABLED` — Enable semantic (vector-based) answer cache. Currently a stub.
+- `KERNEL_ADAPTIVE_MODE_ENABLED` — Enable dynamic quality/speed profile switching based on query complexity.
+- `KERNEL_PLAN_MEMORY_ENABLED` / `KERNEL_PLAN_MEMORY_WINDOW` — Cache and reuse successful execution plans.
+- `KERNEL_MEMORY_CONTEXT_ENABLED` — Enable memory context injection into LLM prompts.
+- `KERNEL_CONTEXT_COMPOSER_ENABLED` — Enable V5 structured context assembly. Currently a stub.
+- `KERNEL_USER_PROFILING_ENABLED` — Enable user preference-based style hints.
+
 ## Development Notes
 
 - The main chat entry point is `gateway/api_gateway/routers/chat.py` – handles sync/streaming, permissions, data‑source context.
@@ -148,7 +186,6 @@ The dev server proxies API requests to `http://localhost:14100`.
 
 ## Further Reading
 
-- `SERVICE.md` – Single source of truth (full project documentation)
-- `RUNBOOK.md` – Operations and troubleshooting
-- `scripts/work_script.md` – Detailed script usage
 - `README.md` – Quick start and high‑level overview
+- `scripts/work_script.md` – Detailed script usage
+- `.env.example` – Full environment variable catalog (~150 vars) including all feature flags

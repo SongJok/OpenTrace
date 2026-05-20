@@ -30,15 +30,15 @@ from kernel.data_cognition.types import CandidateSQL, SemanticContext
 class DataAgent(BaseAgent):
     """DataAgent with V2 support via feature flag.
 
-    When DATA_AGENT_V2_ENABLED=false (default), delegates to DataAgentV1.
-    When enabled, delegates to DataAgentV2Supervisor with V1 fallback on error.
+    When DATA_AGENT_V2_ENABLED=false, delegates to DataAgentV1.
+    When enabled, delegates to DataAgentV2Supervisor. V1 fallback is opt-in only.
     """
 
     def __init__(self) -> None:
         super().__init__("data")
         self._v1: DataAgentV1 | None = None
         self._v2_enabled = bool(getattr(settings, "data_agent_v2_enabled", False))
-        self._v2_fallback = bool(getattr(settings, "data_agent_v2_fallback_to_v1", True))
+        self._v2_fallback = bool(getattr(settings, "data_agent_v2_fallback_to_v1", False))
 
     async def execute(self, task: TaskMessage) -> AgentResult:
         if not self._v2_enabled:

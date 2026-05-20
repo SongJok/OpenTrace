@@ -68,7 +68,7 @@ class LLMSettings(BaseSettings):
 
     # Planning LLM
     default_llm_planing_provider: str = "阿里巴巴Qwen(DashScope)"
-    default_llm_planing_model: str = "qwen3.5-flash"
+    default_llm_planing_model: str = "qwen3.6-plus"
     default_llm_planing_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     default_llm_planing_api_key: str = ""
 
@@ -212,6 +212,7 @@ class AppSettings(BaseSettings):
     kernel_plan_memory_window: int = 50
     kernel_memory_context_enabled: bool = True
     kernel_enriched_identity_enabled: bool = True
+    kernel_identity_llm_enabled: bool = True  # True=LLM动态生成身份回答, False=回退固定答案
     kernel_agent_dag_scheduling_enabled: bool = False
     kernel_agent_speculative_execution_enabled: bool = False
     kernel_agent_bus_enabled: bool = False
@@ -318,8 +319,8 @@ class AppSettings(BaseSettings):
     kernel_ner_masking_entity_types: str = "EMAIL,PHONE_CN,PHONE_INTL,CREDIT_CARD,ID_CN,IP_ADDRESS,PERSON_CN,LOCATION_CN,ORG_CN"
 
     # ── DataAgent V2 — Cognitive Data Core ────────────────────────────
-    data_agent_v2_enabled: bool = False
-    data_agent_v2_fallback_to_v1: bool = True
+    data_agent_v2_enabled: bool = True
+    data_agent_v2_fallback_to_v1: bool = False
     # Knowledge Layer
     data_agent_v2_knowledge_retriever_enabled: bool = True
     data_agent_v2_use_metric_definitions: bool = True
@@ -335,6 +336,7 @@ class AppSettings(BaseSettings):
     data_agent_v2_semantic_enabled: bool = True
     data_agent_v2_planner_enabled: bool = True
     data_agent_v2_compiler_enabled: bool = True
+    data_agent_v2_sql_compiler_enabled: bool = True
     data_agent_v2_verifier_enabled: bool = True
     data_agent_v2_reflection_enabled: bool = True
     data_agent_v2_critic_enabled: bool = True
@@ -350,6 +352,7 @@ class AppSettings(BaseSettings):
     data_agent_v2_auto_metric_refinement_enabled: bool = False
     data_agent_v2_auto_schema_enrichment_enabled: bool = False
     # Advanced Analysis (Phase 4)
+    data_agent_v2_advanced_analytics_mode: str = "manual"  # off | manual | auto
     data_agent_v2_statistical_enabled: bool = False
     data_agent_v2_insight_enabled: bool = False
     data_agent_v2_visualization_enabled: bool = False

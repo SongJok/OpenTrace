@@ -13,6 +13,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 IDENTITY_CACHE_KEY = "identity_answer"
+IDENTITY_FINGERPRINT_KEY = "identity_context_fingerprint"
+IDENTITY_TURN_SEQ_KEY = "identity_turn_sequence"
+IDENTITY_CACHE_TTL_TURNS = 5  # Regenerate identity answer after 5 new turns
 _SESSION_WORKING_MEMORIES: dict[str, WorkingMemory] = {}
 
 # Redis key namespace
@@ -311,6 +314,57 @@ def cache_identity_answer(session_id: str, query: str, answer: str) -> None:
         memory.add_turn("user", query, topic="identity")
     memory.add_turn("assistant", answer, topic="identity")
     memory.set(IDENTITY_CACHE_KEY, answer)
+
+
+def set_identity_context_fingerprint(session_id: str, fingerprint: str) -> None:
+    """Store the context fingerprint alongside the cached identity answer."""
+    if not session_id or not fingerprint:
+        return
+    memory = _SESSION_WORKING_MEMORIES.get(session_id)
+    if memory is None:
+        return
+    memory.set(IDENTITY_FINGERPRINT_KEY, fingerprint)
+
+
+def get_identity_context_fingerprint(session_id: str) -> str | None:
+    """Get the stored context fingerprint for identity cache invalidation."""
+    if not session_id:
+        return None
+    memory = _SESSION_WORKING_MEMORIES.get(session_id)
+    if memory is None:
+        return None
+    val = memory.get(IDENTITY_FINGERPRINT_KEY)
+    return str(val) if isinstance(val, str) and val else None
+
+
+def set_identity_turn_sequence(session_id: str, turn_seq: int) -> None:
+    """Store the turn sequence number when the identity answer was cached."""
+    if not session_id:
+        return
+    memory = _SESSION_WORKING_MEMORIES.get(session_id)
+    if memory is None:
+        return
+    memory.set(IDENTITY_TURN_SEQ_KEY, turn_seq)
+
+
+def get_identity_turn_sequence(session_id: str) -> int | None:
+    """Get the stored turn sequence number for identity cache invalidation."""
+    if not session_id:
+        return None
+    memory = _SESSION_WORKING_MEMORIES.get(session_id)
+    if memory is None:
+        return None
+    val = memory.get(IDENTITY_TURN_SEQ_KEY)
+    return int(val) if isinstance(val, (int, float)) else None
+
+
+def is_identity_cache_expired(session_id: str, current_turn_count: int) -> bool:
+    """Check if the identity cache should be regenerated based on turn count."""
+    cached_turn = get_identity_turn_sequence(session_id)
+    if cached_turn is None:
+        # 无 turn sequence = 旧缓存（升级前产生）→ 视为过期，走 LLM 重新生成
+        return True
+    return (current_turn_count - cached_turn) >= IDENTITY_CACHE_TTL_TURNS
 
 
 def clear_session_memory(session_id: str) -> None:

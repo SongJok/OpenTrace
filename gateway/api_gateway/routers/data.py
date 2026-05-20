@@ -7,9 +7,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agents.base import TaskMessage
+from agents.data_agent import DataAgent
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.routers.databases import _dec
 from infra.config.settings import get_settings
+from infra.errors import AppException, ErrorCodes
 from infra.metadata.schema_inspector import build_schema_hint, load_schema_inspection
 from infra.storage.database import db_session_dependency as get_db
 from execution.data.db_router import DBConnectionInfo, DBRouter
@@ -60,6 +63,68 @@ async def data_query(
 
     inspection = await load_schema_inspection(db, req.data_source_id)
     schema_payload = inspection.schema_payload
+
+    if bool(getattr(settings, "data_agent_v2_enabled", False)):
+        dsn = DBRouter().build_dsn(
+            DBConnectionInfo(
+                source_type=source.source_type,
+                host=source.host,
+                port=source.port,
+                database=source.database,
+                username=source.username,
+                password=_dec(source.password_encrypted),
+            )
+        )
+        schema_hint = build_schema_hint(schema_payload)
+        table_names = inspection.table_names
+        table_columns = inspection.column_map if hasattr(inspection, "column_map") else {}
+
+        task = TaskMessage(
+            task_id=f"data_query:{req.data_source_id}",
+            agent_type="data",
+            query=req.question,
+            params={
+                "data_source_id": req.data_source_id,
+                "sql": req.sql or "",
+                "dry_run": req.dry_run,
+                "_dsn": dsn,
+                "dialect": detect_sql_dialect(source.source_type).name,
+                "schema_hint": schema_hint,
+                "table_names": table_names,
+                "table_columns": table_columns,
+            },
+            session_id=None,
+            user_id=getattr(current_user, "id", None),
+        )
+        result = await DataAgent().execute(task)
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        sql = str(metadata.get("sql", "") or req.sql or "")
+        rows = metadata.get("rows", [])
+        if not isinstance(rows, list):
+            rows = []
+        if result.status != "success":
+            raise AppException(
+                ErrorCodes.PARAM_INVALID.code,
+                message=result.error or "data query failed",
+            )
+        answer = result.content or ""
+        return {
+            "data_source_id": req.data_source_id,
+            "answer": answer,
+            "summary": answer[:300] if answer else _build_summary(rows, None, inspection.table_names),
+            "sql": sql,
+            "rows": rows,
+            "confidence": result.confidence,
+            "schema": schema_payload,
+            "ranked_candidates": 0,
+            "semantic_mappings_count": len(metadata.get("entities_used", []) or []),
+            "mode": metadata.get("mode", "data_agent_v2"),
+            "result_refs": metadata.get("result_refs", []),
+            "verification_report": metadata.get("verification_report"),
+            "insights": metadata.get("insights"),
+            "statistical_report": metadata.get("statistical_report"),
+            "visualization_config": metadata.get("visualization_config"),
+        }
 
     # Load semantic mappings
     rs = await db.execute(select(DataSourceSchema).where(DataSourceSchema.data_source_id == req.data_source_id))

@@ -19,6 +19,7 @@
   --accent:         #10a37f;
   --accent-hover:   #0e8f6e;
   --accent-dim:     rgba(16, 163, 127, 0.12);
+  --accent-foreground: #ffffff;
   --user-bubble:    #252525;
   --code-bg:        #111111;
   --scrollbar:      #3a3a3a;
@@ -35,6 +36,7 @@
   --accent: #f5f5f5;
   --accent-hover: #ffffff;
   --accent-dim: rgba(245, 245, 245, 0.12);
+  --accent-foreground: #111111;
   --page-radial: radial-gradient(circle at top, rgba(255, 255, 255, 0.08), transparent 24%);
   --page-linear: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent);
 }
@@ -43,6 +45,7 @@
   --accent: #111111;
   --accent-hover: #000000;
   --accent-dim: rgba(17, 17, 17, 0.12);
+  --accent-foreground: #ffffff;
   --page-radial: radial-gradient(circle at top, rgba(255, 255, 255, 0.04), transparent 22%);
   --page-linear: linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent);
 }
@@ -51,24 +54,28 @@
   --accent: #c86d3a;
   --accent-hover: #b85f2e;
   --accent-dim: rgba(200, 109, 58, 0.12);
+  --accent-foreground: #ffffff;
 }
 
 [data-theme='light'][data-accent='white'] {
   --accent: #ffffff;
   --accent-hover: #f7f7f7;
   --accent-dim: rgba(255, 255, 255, 0.65);
+  --accent-foreground: #111111;
 }
 
 [data-theme='light'][data-accent='black'] {
   --accent: #111111;
   --accent-hover: #000000;
   --accent-dim: rgba(17, 17, 17, 0.08);
+  --accent-foreground: #ffffff;
 }
 
 [data-theme='light'][data-accent='warm'] {
   --accent: #b85f2e;
   --accent-hover: #9f5126;
   --accent-dim: rgba(184, 95, 46, 0.10);
+  --accent-foreground: #ffffff;
   --page-radial: radial-gradient(circle at top, rgba(255, 255, 255, 0.05), transparent 24%);
   --page-linear: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent);
 }

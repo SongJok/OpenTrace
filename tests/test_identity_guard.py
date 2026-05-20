@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from kernel.cognitive_kernel import CognitiveKernel, KernelRequest
 from memory.working_memory.working_memory import (
     cache_identity_answer,
     clear_session_memory,
     get_cached_identity_answer,
+    set_identity_turn_sequence,
 )
 from kernel.identity.system_identity import CANONICAL_IDENTITY_RESPONSE
 from model.llm_adapter.base import LLMMessage
@@ -29,6 +29,7 @@ class IdentityGuardTests(IsolatedAsyncioTestCase):
             "你是谁",
             CANONICAL_IDENTITY_RESPONSE,
         )
+        set_identity_turn_sequence("session-cache-hit", 0)
         kernel = CognitiveKernel()
 
         with patch("kernel.orchestrator.CognitiveOrchestrator") as orchestrator_cls:
@@ -41,25 +42,11 @@ class IdentityGuardTests(IsolatedAsyncioTestCase):
         orchestrator_cls.assert_not_called()
 
     async def test_kernel_stores_identity_answer_after_first_response(self):
-        kernel = CognitiveKernel()
-        fake_resp = SimpleNamespace(
-            content=CANONICAL_IDENTITY_RESPONSE,
-            route="reason",
-            validation_score=1.0,
-            passed_validation=True,
-            hallucination_risk=0.0,
-            intent_category="qa",
-            metadata={},
-            execution_graph=SimpleNamespace(model_dump=lambda mode="json": {"nodes": [], "edges": []}),
-        )
-
-        with patch("kernel.orchestrator.CognitiveOrchestrator") as orchestrator_cls:
-            orchestrator = orchestrator_cls.return_value
-            orchestrator.process = AsyncMock(return_value=fake_resp)
-            with patch.object(settings, "kernel_enriched_identity_enabled", False):
-                resp = await kernel.run(
-                    KernelRequest(query="你是谁", session_id="session-store")
-                )
+        with patch.object(settings, "kernel_identity_llm_enabled", False):
+            kernel = CognitiveKernel()
+            resp = await kernel.run(
+                KernelRequest(query="你是谁", session_id="session-store")
+            )
 
         self.assertEqual(resp.content, CANONICAL_IDENTITY_RESPONSE)
         self.assertEqual(
@@ -73,6 +60,7 @@ class IdentityGuardTests(IsolatedAsyncioTestCase):
             "你是谁",
             CANONICAL_IDENTITY_RESPONSE,
         )
+        set_identity_turn_sequence("session-cache-hit", 0)
         kernel = CognitiveKernel()
 
         events = []

@@ -40,8 +40,12 @@ from kernel.protocol.events import trace_context_for_request
 from memory.working_memory.working_memory import (
     cache_identity_answer,
     get_cached_identity_answer,
+    get_identity_turn_sequence,
     get_or_create_session_memory,
+    is_identity_cache_expired,
     load_or_create_session_memory,
+    set_identity_context_fingerprint,
+    set_identity_turn_sequence,
 )
 
 logger = get_logger(__name__)
@@ -95,6 +99,16 @@ def _context_hash(history: list[dict[str, Any]] | None) -> str:
     import hashlib
 
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
+
+
+def _record_identity_turn_seq(session_id: str) -> None:
+    """Record the current WorkingMemory turn count when caching an identity answer."""
+    try:
+        wm = get_or_create_session_memory(session_id)
+        current_turns = len(wm._turns)
+        set_identity_turn_sequence(session_id, current_turns)
+    except Exception:
+        pass
 
 
 @dataclass
@@ -252,26 +266,52 @@ class CognitiveKernel:
             if sid:
                 await load_or_create_session_memory(sid)
 
-            # ── Working memory identity cache (fastest path) ──────────
+            # ── Working memory identity cache ──────────────────────
             if sid and is_identity_user_query(request.query) and not is_multi:
                 cached = get_cached_identity_answer(sid)
                 if cached:
-                    total_ms = int((time.monotonic() - t0) * 1000)
-                    span.set_attribute("total.latency_ms", total_ms)
-                    span.set_attribute("identity.cache_hit", True)
-                    return KernelResponse(
-                        content=cached,
-                        session_id=sid,
-                        route="working_memory",
-                        validation_score=1.0,
-                        passed_validation=True,
-                        hallucination_risk=0.0,
-                        intent_category="identity",
-                        intent_complexity="loop",
-                        context_latency_ms=0,
-                        total_latency_ms=total_ms,
-                        metadata={"identity_cache": True},
-                    )
+                    identity_llm = bool(getattr(settings, "kernel_identity_llm_enabled", True))
+                    if identity_llm:
+                        wm = get_or_create_session_memory(sid)
+                        current_turns = len(wm._turns)
+                        if not is_identity_cache_expired(sid, current_turns):
+                            total_ms = int((time.monotonic() - t0) * 1000)
+                            span.set_attribute("total.latency_ms", total_ms)
+                            span.set_attribute("identity.cache_hit", True)
+                            span.set_attribute("identity.llm_enabled", True)
+                            return KernelResponse(
+                                content=cached,
+                                session_id=sid,
+                                route="working_memory",
+                                validation_score=1.0,
+                                passed_validation=True,
+                                hallucination_risk=0.0,
+                                intent_category="identity",
+                                intent_complexity="loop",
+                                context_latency_ms=0,
+                                total_latency_ms=total_ms,
+                                metadata={"identity_cache": True, "identity_llm": True},
+                            )
+                        # Cache expired — fall through to orchestrator for LLM regeneration
+                        span.set_attribute("identity.cache_expired", True)
+                    else:
+                        # Feature flag off: return cached answer unconditionally
+                        total_ms = int((time.monotonic() - t0) * 1000)
+                        span.set_attribute("total.latency_ms", total_ms)
+                        span.set_attribute("identity.cache_hit", True)
+                        return KernelResponse(
+                            content=cached,
+                            session_id=sid,
+                            route="working_memory",
+                            validation_score=1.0,
+                            passed_validation=True,
+                            hallucination_risk=0.0,
+                            intent_category="identity",
+                            intent_complexity="loop",
+                            context_latency_ms=0,
+                            total_latency_ms=total_ms,
+                            metadata={"identity_cache": True},
+                        )
 
             # ── V5 Routing Tier ───────────────────────────────────────
             # Skip V5 routing when force_mode is explicitly set (slash commands like /rag)
@@ -369,6 +409,7 @@ class CognitiveKernel:
 
                         if l0_result.route in ("identity", "faq") and sid:
                             cache_identity_answer(sid, request.query, l0_result.answer)
+                            _record_identity_turn_seq(sid)
                         total_ms = int((time.monotonic() - t0) * 1000)
                         return KernelResponse(
                             content=l0_result.answer,
@@ -625,6 +666,7 @@ class CognitiveKernel:
 
             if sid and is_identity_user_query(request.query) and resp.content:
                 cache_identity_answer(sid, request.query, resp.content)
+                _record_identity_turn_seq(sid)
 
             # Store in semantic cache for future hits
             if settings.kernel_semantic_cache_enabled and resp.content:
@@ -730,21 +772,31 @@ class CognitiveKernel:
         if sid and is_identity_user_query(request.query) and not is_multi:
             cached = get_cached_identity_answer(sid)
             if cached:
-                async for event in _emit_streaming_answer(
-                    cached,
-                    reasoning_step={
-                        "type": "reasoning_step",
-                        "data": {
-                            "id": "identity_reason",
-                            "stage": "REASON",
-                            "content": "命中身份记忆，直接返回缓存答案",
-                            "node_id": "node_identity",
-                            "status": "done",
+                identity_llm = bool(getattr(settings, "kernel_identity_llm_enabled", True))
+                cache_valid = True
+                if identity_llm:
+                    try:
+                        wm = get_or_create_session_memory(sid)
+                        current_turns = len(wm._turns)
+                        cache_valid = not is_identity_cache_expired(sid, current_turns)
+                    except Exception:
+                        cache_valid = False
+                if cache_valid:
+                    async for event in _emit_streaming_answer(
+                        cached,
+                        reasoning_step={
+                            "type": "reasoning_step",
+                            "data": {
+                                "id": "identity_reason",
+                                "stage": "REASON",
+                                "content": "命中身份记忆，直接返回缓存答案",
+                                "node_id": "node_identity",
+                                "status": "done",
+                            },
                         },
-                    },
-                ):
-                    yield event
-                return
+                    ):
+                        yield event
+                    return
 
         trace_ctx = request.trace_ctx or trace_context_for_request(
             request_id=request.metadata.get("request_id", sid),

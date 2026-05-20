@@ -12,6 +12,9 @@ class DataQueryApiContractTests(unittest.TestCase):
         self.assertIn('@router.post("/data/schema/sync")', txt)
         self.assertIn('@router.get("/data/schema")', txt)
         self.assertIn('data_source_id: str', txt)
+        self.assertIn('from agents.data_agent import DataAgent', txt)
+        self.assertIn('data_agent_v2_enabled', txt)
+        self.assertIn('DataAgent().execute', txt)
         self.assertIn('SQLPlanner().plan', txt)
         self.assertIn('SQLRewriter().rewrite', txt)
 

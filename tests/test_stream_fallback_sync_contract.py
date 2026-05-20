@@ -68,7 +68,11 @@ class StreamFallbackSyncBehaviorTests(unittest.TestCase):
                  patch("gateway.api_gateway.routers.data.normalize_sql_for_dialect") as normalize_mock, \
                  patch("gateway.api_gateway.routers.data.SQLRanker") as ranker_cls, \
                  patch("gateway.api_gateway.routers.data.SQLReflector") as reflector_cls:
-                settings_mock.return_value = Mock(text2sql_default_limit=100, text2sql_max_retry=0)
+                settings_mock.return_value = Mock(
+                    text2sql_default_limit=100,
+                    text2sql_max_retry=0,
+                    data_agent_v2_enabled=False,
+                )
                 planner = AsyncMock()
                 planned = Mock()
                 planned.sql = "SELECT count(*) FROM orders"

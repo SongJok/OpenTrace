@@ -663,7 +663,7 @@ function UserMessage({ message }: { message: Message }) {
               <button onClick={() => setEditing(false)} className="rounded px-2 py-1 bg-[var(--bg-secondary)] text-[var(--text-secondary)]">
                 取消
               </button>
-              <button onClick={save} className="rounded px-2 py-1 bg-[var(--accent)] text-white">
+              <button onClick={save} className="rounded px-2 py-1 bg-[var(--accent)] text-[var(--accent-foreground)]">
                 保存并重生成
               </button>
             </div>
@@ -1005,7 +1005,7 @@ function FinalMessage({
           />
           <div className="flex gap-2 text-xs">
             <button onClick={() => setEditing(false)} className="px-2 py-1 rounded border border-[var(--border)]">取消</button>
-            <button onClick={() => void saveAssistantEdit()} className="px-2 py-1 rounded bg-[var(--accent)] text-white">保存答案</button>
+            <button onClick={() => void saveAssistantEdit()} className="px-2 py-1 rounded bg-[var(--accent)] text-[var(--accent-foreground)]">保存答案</button>
           </div>
         </div>
       ) : showFlowCards && toolCard ? (

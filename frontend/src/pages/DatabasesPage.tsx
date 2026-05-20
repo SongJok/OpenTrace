@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, Database, Plus, Trash2, RefreshCw, PlayCircle, BarChart3, Table2, Settings2, Search, Pencil, Circle, Zap } from 'lucide-react'
 import DatabaseTypeSelect, { DATABASE_HOST_MODE_OPTIONS, type DatabaseHostMode, type DatabaseType } from '../components/DatabaseTypeSelect'
+import MarkdownMessage from '../components/MarkdownMessage'
 import { useAuthStore } from '../store/auth'
 import {
   buildJdbc,
@@ -35,7 +36,17 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const [selected, setSelected] = useState<DataSourceItem | null>(null)
   const [activeTab, setActiveTab] = useState<TabKey>('query')
   const [question, setQuestion] = useState('过去30天订单趋势')
-  const [queryOutput, setQueryOutput] = useState<{ sql: string; rows: Array<Record<string, unknown>>; summary: string } | null>(null)
+  const [queryOutput, setQueryOutput] = useState<{
+    answer?: string
+    summary: string
+    sql: string
+    rows: Array<Record<string, unknown>>
+    insights?: Record<string, any>
+    statistical_report?: Record<string, any>
+    visualization_config?: Record<string, any>
+    verification_report?: Record<string, any>
+    confidence?: number
+  } | null>(null)
   const [schema, setSchema] = useState<{ tables: Array<{ name: string; comment?: string; columns: Array<{ name: string; type: string; comment?: string }> }> } | null>(null)
   const [analysis, setAnalysis] = useState<{ summary: string; charts: any[]; tables: any[]; insights: string[] } | null>(null)
   const [creating, setCreating] = useState(false)
@@ -201,7 +212,17 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const runQuery = async () => {
     if (!selected) return
     const out = await apiDatabaseQuery(token, selected.id, { question })
-    setQueryOutput({ sql: out.sql, rows: out.rows, summary: out.summary })
+    setQueryOutput({
+      answer: out.answer,
+      summary: out.summary,
+      sql: out.sql,
+      rows: out.rows,
+      insights: out.insights,
+      statistical_report: out.statistical_report,
+      visualization_config: out.visualization_config,
+      verification_report: out.verification_report,
+      confidence: out.confidence,
+    })
   }
 
   const testConn = async () => {
@@ -419,7 +440,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
               <div className="text-[10px] text-[var(--text-secondary)]">
                 你可以直接修改 JDBC 里的 host / port / database / 参数；粘贴完整 JDBC 后会自动同步到表单字段。
               </div>
-              <button disabled={saving} className="w-full rounded bg-[var(--accent)] text-white text-xs py-1 disabled:opacity-50" onClick={() => void saveAndTest()}>{saving ? '保存中...' : '保存并测试连接'}</button>
+              <button disabled={saving} className="w-full rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs py-1 disabled:opacity-50" onClick={() => void saveAndTest()}>{saving ? '保存中...' : '保存并测试连接'}</button>
             </div>
           ) : null}
 
@@ -491,14 +512,28 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
               {activeTab === 'query' ? (
                 <div className="rounded border border-[var(--border)] p-3 space-y-2">
                   <input value={question} onChange={(e) => setQuestion(e.target.value)} className="w-full rounded border border-[var(--border)] bg-transparent px-2 py-1 text-sm" />
-                  <button className="px-3 py-1.5 rounded bg-[var(--accent)] text-white text-xs" onClick={() => void runQuery()}>运行 Text2SQL</button>
+                  <button className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs" onClick={() => void runQuery()}>运行 Text2SQL</button>
                   {queryOutput ? (
                     <>
-                      <div className="text-xs text-[var(--text-secondary)]">{queryOutput.summary}</div>
-                      <details>
-                        <summary className="cursor-pointer text-xs">查看 SQL</summary>
-                        <pre className="text-xs whitespace-pre-wrap rounded border border-[var(--border)] p-2 bg-black/20">{queryOutput.sql}</pre>
-                      </details>
+                      {/* 1. Answer - 自然语言分析回答 */}
+                      {queryOutput.answer ? (
+                        <div className="rounded border border-[var(--border)] p-3 bg-[var(--surface-raised)]">
+                          <div className="text-xs font-medium mb-2" style={{ color: 'var(--accent)' }}>分析结果</div>
+                          <MarkdownMessage content={queryOutput.answer} />
+                        </div>
+                      ) : (
+                        <div className="text-xs text-[var(--text-secondary)]">{queryOutput.summary}</div>
+                      )}
+
+                      {/* 2. SQL - 默认展开 */}
+                      {queryOutput.sql ? (
+                        <details open>
+                          <summary className="cursor-pointer text-xs font-medium" style={{ color: 'var(--accent)' }}>已执行 SQL</summary>
+                          <pre className="text-xs whitespace-pre-wrap rounded border border-[var(--border)] p-2 bg-black/20 mt-1">{queryOutput.sql}</pre>
+                        </details>
+                      ) : null}
+
+                      {/* 3. 结果表格 */}
                       <div className="overflow-x-auto rounded border border-[var(--border)]">
                         <table className="min-w-full text-xs">
                           <thead className="bg-[var(--surface-raised)]">
@@ -513,12 +548,104 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                           </tbody>
                         </table>
                       </div>
-                      <button
-                        className="px-3 py-1 rounded border text-xs"
-                        onClick={() => window.dispatchEvent(new CustomEvent('opentrace:prefill', { detail: `请基于以下数据绘制图表并分析：\n${JSON.stringify(queryOutput.rows.slice(0, 20), null, 2)}` }))}
-                      >
-                        生成图表
-                      </button>
+                      {queryOutput.rows.length > 20 ? (
+                        <div className="text-xs text-[var(--text-secondary)]">仅显示前 20 行，共 {queryOutput.rows.length} 行</div>
+                      ) : null}
+
+                      {/* 4. 洞察区 */}
+                      {queryOutput.insights ? (
+                        <div className="rounded border border-[var(--border)] p-3 space-y-2">
+                          <div className="text-xs font-medium" style={{ color: 'var(--accent)' }}>数据洞察</div>
+                          {queryOutput.insights.observations?.length > 0 ? (
+                            <div className="space-y-1">
+                              <div className="text-xs text-[var(--text-secondary)]">关键发现</div>
+                              {queryOutput.insights.observations.map((o: string, i: number) => (
+                                <div key={i} className="text-xs">• {o}</div>
+                              ))}
+                            </div>
+                          ) : null}
+                          {queryOutput.insights.recommendations?.length > 0 ? (
+                            <div className="space-y-1">
+                              <div className="text-xs text-[var(--text-secondary)]">建议</div>
+                              {queryOutput.insights.recommendations.map((r: string, i: number) => (
+                                <div key={i} className="text-xs">→ {r}</div>
+                              ))}
+                            </div>
+                          ) : null}
+                          {queryOutput.insights.patterns?.length > 0 ? (
+                            <div className="space-y-1">
+                              <div className="text-xs text-[var(--text-secondary)]">模式</div>
+                              {queryOutput.insights.patterns.map((p: string, i: number) => (
+                                <div key={i} className="text-xs">• {p}</div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {/* 5. 统计分析区 */}
+                      {queryOutput.statistical_report ? (
+                        <div className="rounded border border-[var(--border)] p-3 space-y-2">
+                          <div className="text-xs font-medium" style={{ color: 'var(--accent)' }}>统计分析</div>
+                          {queryOutput.statistical_report.trends && Object.keys(queryOutput.statistical_report.trends).length > 0 ? (
+                            <div className="space-y-1">
+                              <div className="text-xs text-[var(--text-secondary)]">趋势</div>
+                              {Object.entries(queryOutput.statistical_report.trends as Record<string, any>).map(([col, t]) => (
+                                <div key={col} className="text-xs">
+                                  • {col}: {t.direction} ({t.strength_label}), 变化: {t.change_pct}%
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                          {queryOutput.statistical_report.outliers ? (
+                            (() => {
+                              const totalOutliers = Object.values(queryOutput.statistical_report.outliers as Record<string, any[]>).reduce((sum: number, v: any[]) => sum + v.length, 0)
+                              return totalOutliers > 0 ? (
+                                <div className="text-xs">• 检测到 {totalOutliers} 个异常值</div>
+                              ) : null
+                            })()
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {/* 6. 图表建议 */}
+                      {queryOutput.visualization_config ? (
+                        <div className="rounded border border-[var(--border)] p-3 space-y-1">
+                          <div className="text-xs font-medium" style={{ color: 'var(--accent)' }}>图表建议</div>
+                          <div className="text-xs">
+                            推荐图表: {queryOutput.visualization_config.chart_type}
+                            {queryOutput.visualization_config.title ? ` - ${queryOutput.visualization_config.title}` : ''}
+                          </div>
+                          {queryOutput.visualization_config.alternatives?.length > 0 ? (
+                            <div className="text-xs text-[var(--text-secondary)]">
+                              备选: {queryOutput.visualization_config.alternatives.join(', ')}
+                            </div>
+                          ) : null}
+                          <button
+                            className="px-3 py-1 rounded border text-xs mt-1"
+                            onClick={() => window.dispatchEvent(new CustomEvent('opentrace:prefill', { detail: `请基于以下数据绘制图表并分析：\n${JSON.stringify(queryOutput.rows.slice(0, 20), null, 2)}` }))}
+                          >
+                            在对话中生成图表
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          className="px-3 py-1 rounded border text-xs"
+                          onClick={() => window.dispatchEvent(new CustomEvent('opentrace:prefill', { detail: `请基于以下数据绘制图表并分析：\n${JSON.stringify(queryOutput.rows.slice(0, 20), null, 2)}` }))}
+                        >
+                          生成图表
+                        </button>
+                      )}
+
+                      {/* 7. 元信息 */}
+                      {queryOutput.confidence != null ? (
+                        <div className="flex items-center gap-4 text-xs text-[var(--text-secondary)]">
+                          <span>置信度: {(queryOutput.confidence * 100).toFixed(0)}%</span>
+                          {queryOutput.verification_report ? (
+                            <span>校验: {queryOutput.verification_report.status || queryOutput.verification_report}</span>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </>
                   ) : (
                     <div className="text-xs text-[var(--text-secondary)]">查询结果会显示在这里</div>
@@ -528,7 +655,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
 
               {activeTab === 'analysis' ? (
                 <div className="rounded border border-[var(--border)] p-3 space-y-3">
-                  <button className="px-3 py-1.5 rounded bg-[var(--accent)] text-white text-xs" onClick={() => void runAnalysis()}>运行分析</button>
+                  <button className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs" onClick={() => void runAnalysis()}>运行分析</button>
 
                   <div className="text-sm font-medium">{analysis?.summary || '点击运行分析'}</div>
 
@@ -737,7 +864,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                       </div>
                     </div>
 
-                    <button onClick={() => void handleSaveSemanticConfig()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-white text-xs">保存语义配置</button>
+                    <button onClick={() => void handleSaveSemanticConfig()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs">保存语义配置</button>
                   </div>
                 </div>
               ) : null}
@@ -753,7 +880,7 @@ function TabButton({ active, onClick, icon, label }: { active: boolean; onClick:
   return (
     <button
       onClick={onClick}
-      className={`px-3 py-1 rounded text-xs inline-flex items-center gap-1 ${active ? 'bg-[var(--accent)] text-white' : 'border border-[var(--border)]'}`}
+      className={`px-3 py-1 rounded text-xs inline-flex items-center gap-1 ${active ? 'bg-[var(--accent)] text-[var(--accent-foreground)]' : 'border border-[var(--border)]'}`}
     >
       {icon}
       {label}

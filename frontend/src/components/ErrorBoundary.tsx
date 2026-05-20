@@ -23,7 +23,7 @@ export default class ErrorBoundary extends Component<Props, State> {
             <p className="text-sm text-[var(--text-secondary)]">{this.state.message || '页面出现异常，请刷新后重试。'}</p>
             <button
               onClick={() => window.location.reload()}
-              className="px-4 py-2 rounded-lg bg-[var(--accent)] text-white text-sm"
+              className="px-4 py-2 rounded-lg bg-[var(--accent)] text-[var(--accent-foreground)] text-sm"
             >
               刷新页面
             </button>

@@ -116,7 +116,7 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
         <div className="rounded-xl border border-[var(--border)] p-4 bg-[var(--surface)] space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold">记忆学习设置</h2>
-            <button onClick={() => void saveSettings()} className="px-3 py-1.5 text-xs rounded bg-[var(--accent)] text-white inline-flex items-center gap-1">
+            <button onClick={() => void saveSettings()} className="px-3 py-1.5 text-xs rounded bg-[var(--accent)] text-[var(--accent-foreground)] inline-flex items-center gap-1">
               <Save size={12} /> 保存
             </button>
           </div>
@@ -135,7 +135,7 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`px-3 py-1.5 rounded text-xs border ${tab === t ? 'bg-[var(--accent)] text-white border-[var(--accent)]' : 'border-[var(--border)]'}`}
+              className={`px-3 py-1.5 rounded text-xs border ${tab === t ? 'bg-[var(--accent)] text-[var(--accent-foreground)] border-[var(--accent)]' : 'border-[var(--border)]'}`}
             >
               {t}
             </button>
@@ -157,7 +157,7 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
             className="w-full rounded border border-[var(--border)] bg-transparent px-3 py-2 text-sm"
             rows={3}
           />
-          <button onClick={() => void createMemory()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-white text-xs inline-flex items-center gap-1">
+          <button onClick={() => void createMemory()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs inline-flex items-center gap-1">
             <Plus size={12} /> 新增
           </button>
         </div>

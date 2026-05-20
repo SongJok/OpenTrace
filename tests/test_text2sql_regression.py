@@ -50,7 +50,11 @@ class Text2SqlRegressionTests(unittest.TestCase):
                  patch("gateway.api_gateway.routers.data.normalize_sql_for_dialect") as normalize_mock, \
                  patch("gateway.api_gateway.routers.data.DBRouter") as router_cls, \
                  patch("gateway.api_gateway.routers.data.SQLExecutor") as exec_cls:
-                settings_mock.return_value = Mock(text2sql_default_limit=100, text2sql_max_retry=0)
+                settings_mock.return_value = Mock(
+                    text2sql_default_limit=100,
+                    text2sql_max_retry=0,
+                    data_agent_v2_enabled=False,
+                )
                 planner = AsyncMock()
                 planner.plan.return_value = "SELECT count(*) AS table_count FROM information_schema.tables"
                 planner_cls.return_value = planner
@@ -94,7 +98,11 @@ class Text2SqlRegressionTests(unittest.TestCase):
                  patch("gateway.api_gateway.routers.data.normalize_sql_for_dialect") as normalize_mock, \
                  patch("gateway.api_gateway.routers.data.DBRouter") as router_cls, \
                  patch("gateway.api_gateway.routers.data.SQLExecutor") as exec_cls:
-                settings_mock.return_value = Mock(text2sql_default_limit=100, text2sql_max_retry=0)
+                settings_mock.return_value = Mock(
+                    text2sql_default_limit=100,
+                    text2sql_max_retry=0,
+                    data_agent_v2_enabled=False,
+                )
                 planner = AsyncMock()
                 planner.plan.return_value = "SELECT table_name FROM information_schema.tables"
                 planner_cls.return_value = planner
@@ -153,7 +161,8 @@ class Text2SqlRegressionTests(unittest.TestCase):
                 Mock(scalar_one_or_none=Mock(return_value=schema_row)),
             ]
 
-            with patch("agents.data_agent.AsyncSessionLocal") as session_mock, \
+            with patch("agents.data_agent.settings.data_agent_v2_enabled", False), \
+                 patch("agents.data_agent.AsyncSessionLocal") as session_mock, \
                  patch("agents.data_agent._dec", return_value="secret"), \
                  patch("agents.data_agent.DBRouter") as router_cls, \
                  patch("agents.data_agent.SQLExecutor_from_executor") as exec_fn, \

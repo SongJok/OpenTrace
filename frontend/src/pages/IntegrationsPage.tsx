@@ -120,7 +120,7 @@ export default function IntegrationsPage({ onBack }: { onBack: () => void }) {
             <p className="text-xs text-[var(--text-secondary)]">从 Git 安装技能</p>
             <input value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} placeholder="git url" className="w-full rounded border border-[var(--border)] bg-transparent px-2 py-1 text-sm" />
             <input value={ref} onChange={(e) => setRef(e.target.value)} placeholder="ref" className="w-full rounded border border-[var(--border)] bg-transparent px-2 py-1 text-sm" />
-            <button onClick={() => void install()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-white text-xs inline-flex items-center gap-1"><Download size={12} /> 安装</button>
+            <button onClick={() => void install()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs inline-flex items-center gap-1"><Download size={12} /> 安装</button>
           </div>
           <div className="space-y-2">
             {skills.length === 0 ? <p className="text-sm text-[var(--text-secondary)]">暂无技能</p> : skills.map((s) => (

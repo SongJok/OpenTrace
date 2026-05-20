@@ -59,7 +59,12 @@ from kernel.fusion_engine.engine import FusionEngine
 from kernel.fusion_engine.models import FusionInput, ToolResult
 from kernel.fusion_engine.sequence_fusion import SequenceFusionEngine
 from kernel.fusion_engine.sequence_models import SequenceFusionInput
-from kernel.identity.system_identity import CANONICAL_IDENTITY_RESPONSE, is_identity_user_query
+from kernel.identity.system_identity import (
+    CANONICAL_IDENTITY_RESPONSE,
+    build_identity_llm_messages,
+    enforce_identity_output,
+    is_identity_user_query,
+)
 from kernel.json_parser import parse_llm_json
 from kernel.plan_agent import PlanAgent
 from model.llm_adapter.base import LLMMessage
@@ -784,6 +789,149 @@ class CognitiveOrchestratorV4:
             },
         )
 
+    async def _handle_identity_query(
+        self,
+        req: OrchestratorV4Request,
+        t0: float,
+        trace_id: str,
+        root_span: str,
+        tctx: Any,
+        event_cb: Any,
+    ) -> OrchestratorV4Response:
+        """Lightweight LLM path for identity queries.
+
+        Gathers conversation context (ConversationState, WorkingMemory turns),
+        builds a context-rich identity prompt, and calls the IDENTITY role model.
+        Skips PlanAgent, Agent dispatch, Fusion, and Critic entirely.
+        """
+        from kernel.cognition.self_model import SelfModel
+        from memory.working_memory.working_memory import get_or_create_session_memory
+
+        identity_llm_enabled = bool(getattr(settings, "kernel_identity_llm_enabled", True))
+
+        # Build conversation context dict from request state
+        conv_ctx: dict[str, object] = {}
+        if req.conversation_state is not None:
+            if hasattr(req.conversation_state, "to_db_dict"):
+                cs_dict = req.conversation_state.to_db_dict()
+            elif isinstance(req.conversation_state, dict):
+                cs_dict = req.conversation_state
+            else:
+                cs_dict = {}
+
+            conv_ctx["active_topic"] = cs_dict.get("active_topic", "")
+            conv_ctx["conversation_summary"] = cs_dict.get("conversation_summary", "")
+            conv_ctx["conversation_phase"] = cs_dict.get("conversation_phase", "open")
+
+            ext = cs_dict.get("state_extension") or {}
+            if isinstance(ext, dict):
+                conv_ctx["learned_preferences"] = ext.get("learned_preferences", {})
+                conv_ctx["active_entities"] = cs_dict.get("active_entities", [])
+
+        # Gather recent turns from WorkingMemory
+        recent_turns: list[dict[str, object]] = []
+        sid = req.session_id or ""
+        try:
+            wm = get_or_create_session_memory(sid)
+            for turn in list(wm._turns)[-8:]:
+                recent_turns.append({
+                    "role": getattr(turn, "role", "unknown"),
+                    "content": getattr(turn, "content", ""),
+                })
+        except Exception:
+            recent_turns = []
+
+        # Build identity prompt from SelfModel
+        self_model = SelfModel()
+        self_model.refresh_state()
+        identity_prompt = self_model.get_identity_prompt()
+
+        if not identity_llm_enabled:
+            # Feature flag off: return canonical response
+            content = CANONICAL_IDENTITY_RESPONSE
+            route = "identity_canonical"
+        else:
+            try:
+                messages = build_identity_llm_messages(
+                    query=req.query,
+                    identity_prompt=identity_prompt,
+                    conversation_context=conv_ctx,
+                    recent_turns=recent_turns,
+                )
+                gw = get_model_gateway()
+                resp = await gw.complete(messages, role=LLMRole.IDENTITY)
+                content = enforce_identity_output(
+                    resp.content.strip() if resp.content else "",
+                    req.query,
+                )
+                route = "identity_llm"
+            except Exception as exc:
+                logger.warning(
+                    "Identity LLM call failed, falling back to canonical response",
+                    error=str(exc),
+                )
+                content = CANONICAL_IDENTITY_RESPONSE
+                route = "identity_fallback"
+
+        elapsed_ms = int((monotonic() - t0) * 1000)
+        metrics = {
+            "first_token_ms": elapsed_ms,
+            "orchestrator_latency_ms": elapsed_ms,
+            "supervisor_retry_count": 0,
+            "agent_count": 0,
+            "avg_agent_latency_ms": 0,
+        }
+        runtime_metrics_store.record(metrics)
+
+        if trace_id:
+            await cognitive_event_bus.publish(
+                cognitive_event_bus.emit_learning(
+                    trace_id=trace_id,
+                    payload={
+                        "action": "orchestrator.process.completed",
+                        "route": route,
+                        "validation_score": 1.0,
+                        "passed_validation": True,
+                        "agent_count": 0,
+                        "identity_handler": "llm_dynamic" if identity_llm_enabled else "canonical",
+                    },
+                    session_id=req.session_id,
+                    user_id=req.user_id,
+                    source="orchestrator_v4",
+                )
+            )
+
+        return OrchestratorV4Response(
+            content=content,
+            route=route,
+            strategy="direct",
+            passed_validation=True,
+            validation_score=1.0,
+            hallucination_risk=0.0,
+            intent_category="identity",
+            metadata={
+                "orchestrator_version": "v4",
+                "adaptive_profile": {
+                    "name": "identity",
+                    **self._get_adaptive_profile(req.query),
+                },
+                "plan": {"subtasks": [], "merge_strategy": "direct", "max_parallel": 0},
+                "agent_results": [],
+                "fusion": {
+                    "confidence": 1.0,
+                    "conflicts": [],
+                    "context": content,
+                },
+                "critic": {"feedback": "identity_llm" if identity_llm_enabled else "identity_canonical"},
+                "execution_graph": {
+                    "nodes": [],
+                    "edges": [],
+                    "state": {"identity_llm": identity_llm_enabled},
+                },
+                "metrics": metrics,
+            },
+        )
+
     async def _llm_fallback_answer(
         self, req: OrchestratorV4Request, memory_context: list[dict[str, Any]] | None = None
     ) -> str:
@@ -1002,23 +1150,61 @@ class CognitiveOrchestratorV4:
         return "\n\n参考来源：\n" + "\n".join(lines)
 
     def _format_data_answer(self, query: str, agent_results: list) -> str:
-        """Format data agent results into natural language."""
+        """Format data agent results into natural language.
+
+        Priority: result.content (V2 rich answer) > insights > statistical_report > generic.
+        """
         for r in agent_results:
             if r.agent_type != "data" or not isinstance(r.metadata, dict):
                 continue
+
+            # P0: Use result.content if it's richer than a generic summary
+            content = getattr(r, "content", "") or ""
+            if content and len(content) > 40 and "查询成功，返回" not in content:
+                parts = [content]
+
+                # Append insights from metadata if not already in content
+                insights = r.metadata.get("insights")
+                if insights and isinstance(insights, dict):
+                    recs = insights.get("recommendations", [])
+                    if recs and not any(r in content for r in recs[:1]):
+                        parts.append("\n建议:\n" + "\n".join(f"→ {r}" for r in recs[:3]))
+
+                return "\n\n".join(parts)
+
+            # P1: Build from insights + statistical_report if available
+            insights = r.metadata.get("insights")
+            statistical_report = r.metadata.get("statistical_report")
+            if insights and isinstance(insights, dict) and insights.get("summary"):
+                parts = [insights["summary"]]
+                observations = insights.get("observations", [])
+                if observations:
+                    parts.append("关键发现:\n" + "\n".join(f"• {o}" for o in observations[:5]))
+                return "\n\n".join(parts)
+
+            if statistical_report and isinstance(statistical_report, dict):
+                trends = statistical_report.get("trends", {})
+                if trends:
+                    parts = [f"查询「{query}」完成。"]
+                    trend_lines = [
+                        f"{col}: {t.get('direction', '?')} ({t.get('change_pct', '?')}%)"
+                        for col, t in trends.items()
+                    ]
+                    parts.append("趋势:\n" + "\n".join(f"• {t}" for t in trend_lines))
+                    return "\n\n".join(parts)
+
+            # Fallback: generic row count display
             sql = str(r.metadata.get("sql", "")).strip()
             rows = r.metadata.get("rows")
             row_count = int(r.metadata.get("row_count", 0) or 0)
 
             if isinstance(rows, list) and rows:
-                # Try to extract a single COUNT result
                 first_row = rows[0]
                 if isinstance(first_row, dict) and len(first_row) == 1:
                     col_name = list(first_row.keys())[0]
                     col_val = first_row[col_name]
                     if "count" in col_name.lower():
                         return f"根据查询结果，共有 {col_val} 条记录。"
-                # Generic row display
                 row_text = json.dumps(rows[:5], ensure_ascii=False)
                 return f"查询已执行，共返回 {row_count} 行数据，以下是结果预览：\n\n{row_text}"
 
@@ -1152,75 +1338,14 @@ class CognitiveOrchestratorV4:
                     source="orchestrator_v4",
                 )
             )
-        # Identity shortcut: only for pure identity queries, not multi-question
+        # Identity: route to lightweight LLM with conversation context
         _maybe_multi = (req.query or "").count("？") + (req.query or "").count("?") >= 2 or any(
             hint in (req.query or "") for hint in self._MULTI_Q_HINTS
         )
         if is_identity_user_query(req.query) and not _maybe_multi:
-            if trace_id:
-                await cognitive_event_bus.publish(
-                    cognitive_event_bus.emit_learning(
-                        trace_id=trace_id,
-                        payload={"action": "orchestrator.identity.shortcut", "agent_count": 0},
-                        session_id=req.session_id,
-                        user_id=req.user_id,
-                        source="orchestrator_v4",
-                    )
-                )
-            elapsed_ms = int((monotonic() - t0) * 1000)
-            metrics = {
-                "first_token_ms": elapsed_ms,
-                "orchestrator_latency_ms": elapsed_ms,
-                "supervisor_retry_count": 0,
-                "agent_count": 0,
-                "avg_agent_latency_ms": 0,
-            }
-            runtime_metrics_store.record(metrics)
-            if trace_id:
-                await cognitive_event_bus.publish(
-                    cognitive_event_bus.emit_learning(
-                        trace_id=trace_id,
-                        payload={
-                            "action": "orchestrator.process.completed",
-                            "route": "identity",
-                            "validation_score": 1.0,
-                            "passed_validation": True,
-                            "agent_count": 0,
-                        },
-                        session_id=req.session_id,
-                        user_id=req.user_id,
-                        source="orchestrator_v4",
-                    )
-                )
-            return OrchestratorV4Response(
-                content=CANONICAL_IDENTITY_RESPONSE,
-                route="identity",
-                strategy="direct",
-                passed_validation=True,
-                validation_score=1.0,
-                hallucination_risk=0.0,
-                intent_category="identity",
-                metadata={
-                    "orchestrator_version": "v4",
-                    "adaptive_profile": {
-                        "name": "identity",
-                        **self._get_adaptive_profile(req.query),
-                    },
-                    "plan": {"subtasks": [], "merge_strategy": "direct", "max_parallel": 0},
-                    "agent_results": [],
-                    "fusion": {
-                        "confidence": 1.0,
-                        "conflicts": [],
-                        "context": CANONICAL_IDENTITY_RESPONSE,
-                    },
-                    "critic": {"feedback": "identity_shortcut"},
-                    "execution_graph": {
-                        "nodes": [],
-                        "edges": [],
-                        "state": {"identity_shortcut": True},
-                    },
-                    "metrics": metrics,
-                },
+            return await self._handle_identity_query(
+                req, t0, trace_id, root_span,
+                tctx, event_cb,
             )
 
         task_model = TaskModel()
