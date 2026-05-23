@@ -166,7 +166,7 @@ class ToolAgent:
                 tz_str = payload.get("timezone") or ""
                 text_preview = f"当前时间：{time_str}" + (f"（{tz_str}）" if tz_str else "")
             elif not text_preview and isinstance(payload, dict):
-                text_preview = json.dumps(payload, ensure_ascii=False)
+                text_preview = json.dumps(payload, ensure_ascii=False, default=str)
 
             return AgentResult(
                 task_id=task.task_id,
@@ -1205,7 +1205,7 @@ class CognitiveOrchestratorV4:
                     col_val = first_row[col_name]
                     if "count" in col_name.lower():
                         return f"根据查询结果，共有 {col_val} 条记录。"
-                row_text = json.dumps(rows[:5], ensure_ascii=False)
+                row_text = json.dumps(rows[:5], ensure_ascii=False, default=str)
                 return f"查询已执行，共返回 {row_count} 行数据，以下是结果预览：\n\n{row_text}"
 
             if row_count == 0:
@@ -2564,7 +2564,7 @@ class CognitiveOrchestratorV4:
                 continue
             payload_type = str(payload.get("type", ""))
             if payload_type in ("time", "weather"):
-                card_json = json.dumps(payload, ensure_ascii=False)
+                card_json = json.dumps(payload, ensure_ascii=False, default=str)
                 answer = f"```json\n{card_json}\n```\n\n{answer}"
         # ── End tool card injection ─────────────────────────────────────
 

@@ -46,7 +46,22 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     visualization_config?: Record<string, any>
     verification_report?: Record<string, any>
     confidence?: number
+    session_id?: string
+    needs_clarification?: boolean
+    clarification?: {
+      question_id: string
+      question_text: string
+      missing_entities: string[]
+      suggested_options: string[]
+    }
   } | null>(null)
+  const [querySessionId, setQuerySessionId] = useState<string | null>(null)
+  const [sessionContext, setSessionContext] = useState<Record<string, any> | null>(null)
+  const [queryHistory, setQueryHistory] = useState<Array<{
+    question: string
+    answer: string
+    isClarification: boolean
+  }>>([])
   const [schema, setSchema] = useState<{ tables: Array<{ name: string; comment?: string; columns: Array<{ name: string; type: string; comment?: string }> }> } | null>(null)
   const [analysis, setAnalysis] = useState<{ summary: string; charts: any[]; tables: any[]; insights: string[] } | null>(null)
   const [creating, setCreating] = useState(false)
@@ -209,9 +224,24 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     }
   }
 
-  const runQuery = async () => {
+  const runQuery = async (clarifyContext?: string) => {
     if (!selected) return
-    const out = await apiDatabaseQuery(token, selected.id, { question })
+    const payload: any = { question }
+    if (querySessionId) payload.session_id = querySessionId
+    if (clarifyContext) payload.clarify_context = clarifyContext
+    if (sessionContext) payload.session_context = sessionContext
+
+    const out = await apiDatabaseQuery(token, selected.id, payload)
+
+    if (out.session_id) setQuerySessionId(out.session_id)
+    if (out.session_context) setSessionContext(out.session_context)
+
+    setQueryHistory(prev => [...prev, {
+      question: clarifyContext ? `(补充) ${clarifyContext}` : question,
+      answer: out.answer,
+      isClarification: !!out.needs_clarification,
+    }])
+
     setQueryOutput({
       answer: out.answer,
       summary: out.summary,
@@ -222,6 +252,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
       visualization_config: out.visualization_config,
       verification_report: out.verification_report,
       confidence: out.confidence,
+      session_id: out.session_id,
+      needs_clarification: out.needs_clarification,
+      clarification: out.clarification,
     })
   }
 
@@ -511,10 +544,63 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
 
               {activeTab === 'query' ? (
                 <div className="rounded border border-[var(--border)] p-3 space-y-2">
+                  {/* Conversation history */}
+                  {queryHistory.length > 0 ? (
+                    <div className="space-y-2 mb-3">
+                      {queryHistory.map((h, idx) => (
+                        <div key={idx} className={`rounded border p-2 text-xs ${h.isClarification ? 'border-orange-500/50 bg-orange-500/5' : 'border-[var(--border)] bg-[var(--surface-raised)]'}`}>
+                          <div className="font-medium mb-1" style={{ color: 'var(--accent)' }}>
+                            {h.isClarification ? '需要补充信息' : '查询'}
+                          </div>
+                          <div className="text-[var(--text-secondary)]">Q: {h.question}</div>
+                          <div className="mt-1">{h.answer}</div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
                   <input value={question} onChange={(e) => setQuestion(e.target.value)} className="w-full rounded border border-[var(--border)] bg-transparent px-2 py-1 text-sm" />
                   <button className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs" onClick={() => void runQuery()}>运行 Text2SQL</button>
                   {queryOutput ? (
                     <>
+                      {/* Clarification card — shown when query is too vague */}
+                      {queryOutput.needs_clarification && queryOutput.clarification ? (
+                        <div className="rounded border border-orange-500/50 p-3 bg-orange-500/5 space-y-2">
+                          <div className="text-xs font-medium text-orange-400">需要补充信息</div>
+                          <MarkdownMessage content={queryOutput.clarification.question_text || queryOutput.answer} />
+                          {queryOutput.clarification.suggested_options?.length > 0 ? (
+                            <div className="space-y-1">
+                              <div className="text-xs text-[var(--text-secondary)]">你可以尝试以下方向：</div>
+                              <div className="flex flex-wrap gap-1">
+                                {queryOutput.clarification.suggested_options.map((opt: string, i: number) => (
+                                  <button
+                                    key={i}
+                                    className="px-2 py-1 rounded text-xs border border-[var(--border)] hover:bg-[var(--accent)] hover:text-[var(--accent-foreground)] transition-colors cursor-pointer"
+                                    onClick={() => {
+                                      setQuestion(opt)
+                                      setTimeout(() => runQuery(opt), 50)
+                                    }}
+                                  >
+                                    {opt}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+                          {queryOutput.clarification.missing_entities?.length > 0 ? (
+                            <div className="flex items-center gap-1 flex-wrap">
+                              <span className="text-xs text-[var(--text-secondary)]">缺失信息：</span>
+                              {queryOutput.clarification.missing_entities.map((e: string, i: number) => (
+                                <span key={i} className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--surface-raised)] border border-[var(--border)]">{e}</span>
+                              ))}
+                            </div>
+                          ) : null}
+                          <div className="text-xs text-[var(--text-secondary)]">
+                            你也可以在输入框中修改问题后重新提交
+                          </div>
+                        </div>
+                      ) : null}
+
                       {/* 1. Answer - 自然语言分析回答 */}
                       {queryOutput.answer ? (
                         <div className="rounded border border-[var(--border)] p-3 bg-[var(--surface-raised)]">

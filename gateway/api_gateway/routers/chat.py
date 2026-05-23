@@ -609,10 +609,10 @@ async def _save_trace(
                 validation_score=validation_score,
                 latency_ms=latency_ms,
                 reasoning_steps_json=(
-                    json.dumps(reasoning_steps, ensure_ascii=False) if reasoning_steps else None
+                    json.dumps(reasoning_steps, ensure_ascii=False, default=str) if reasoning_steps else None
                 ),
                 execution_graph_json=(
-                    json.dumps(execution_graph, ensure_ascii=False) if execution_graph else None
+                    json.dumps(execution_graph, ensure_ascii=False, default=str) if execution_graph else None
                 ),
             )
             db.add(log)
@@ -678,7 +678,7 @@ async def _save_trace(
                         session_id=session_id,
                         trace_id=trace_id,
                         phase=phase,
-                        content=json.dumps(step, ensure_ascii=False),
+                        content=json.dumps(step, ensure_ascii=False, default=str),
                         score=score,
                         iteration=i,
                         phase_metadata=json.dumps({"source": "chat_router"}, ensure_ascii=False),
@@ -1487,7 +1487,7 @@ async def chat(
                     yield f"data: {json.dumps({'type': 'reasoning_step', 'data': {'id': 'sql_retrieval', 'stage': 'REASON', 'content': '从上一轮查询中获取 SQL 语句', 'node_id': 'node_sql_retrieval', 'status': 'done'}}, ensure_ascii=False)}\n\n"
                     for i in range(0, len(content), 24):
                         yield f"data: {json.dumps({'type': 'delta', 'data': {'text': content[i : i + 24]}}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'final_answer', 'data': {'content': content, 'execution_graph': exec_graph, 'citations': [], 'annotations': [], 'state_patch': None, 'result_refs': []}}, ensure_ascii=False)}\n\n"
+                    yield f"data: {json.dumps({'type': 'final_answer', 'data': {'content': content, 'execution_graph': exec_graph, 'citations': [], 'annotations': [], 'state_patch': None, 'result_refs': []}}, ensure_ascii=False, default=str)}\n\n"
                     yield ": done\n\n"
                 except asyncio.CancelledError:
                     raise

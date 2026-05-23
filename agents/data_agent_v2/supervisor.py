@@ -22,6 +22,7 @@ import asyncio
 import json
 import time
 import uuid
+from dataclasses import asdict
 from typing import Any
 
 from agents.base import AgentResult, BaseAgent, TaskMessage
@@ -157,6 +158,22 @@ class DataAgentV2Supervisor:
             await self._record_event(self._trace_id, task, "dag_execute",
                                      {"nodes": len(dag.nodes), "duration_ms": int((time.monotonic() - t_dag) * 1000)},
                                      status="success")
+
+        # 5c. Clarification Gate: detect vague queries before SQL execution.
+        # Skip if the user is already responding to a previous clarification
+        # (clarify_context is non-empty) — in that case, proceed with the query.
+        clarification_enabled = bool(getattr(settings, "data_agent_v2_clarification_enabled", True))
+        has_clarify_context = bool(ctx.clarify_context)
+        if clarification_enabled and not ctx.compiled_sql and not has_clarify_context:
+            clarification_question = await self._check_clarification(task, ctx)
+            if clarification_question:
+                ctx.needs_clarification = True
+                ctx.clarification = clarification_question
+                await self._record_event(self._trace_id, task, "clarification",
+                                         {"reason": "query too vague",
+                                          "suggested_options": len(clarification_question.get("suggested_options", []))},
+                                         status="success")
+                return self._build_clarification_result(task, ctx, t0)
 
         # 6. Execute SQL if verification passed
         t_sql = time.monotonic()
@@ -548,24 +565,28 @@ class DataAgentV2Supervisor:
         analytical_intents = {
             "trend", "comparison", "anomaly_detection",
             "ranking", "composition", "distribution",
+            "aggregation",  # COUNT/SUM by group also benefits from stats & insights
         }
 
         # Keywords that signal need for trend/statistical analysis
         trend_keywords = ["趋势", "走势", "变化", "环比", "同比", "增长", "下降", "上升", "下滑"]
         cause_keywords = ["原因", "为什么", "影响因素", "分析", "驱动", "关联", "影响"]
         chart_keywords = ["图", "chart", "图表", "可视化", "折线", "柱状", "饼图"]
+        agg_keywords = ["统计", "汇总", "各", "每个", "按", "合计", "数量", "人数"]
 
         need_statistical = (
             intent_type in analytical_intents
             or any(kw in query_lower for kw in trend_keywords)
+            or any(kw in query_lower for kw in agg_keywords)
         )
         need_insight = (
             intent_type in analytical_intents
             or any(kw in query_lower for kw in cause_keywords)
             or any(kw in query_lower for kw in trend_keywords)
+            or any(kw in query_lower for kw in agg_keywords)
         )
         need_viz = (
-            intent_type in {"trend", "comparison", "composition", "distribution", "ranking"}
+            intent_type in {"trend", "comparison", "composition", "distribution", "ranking", "aggregation"}
             or any(kw in query_lower for kw in chart_keywords)
         )
 
@@ -772,9 +793,18 @@ class DataAgentV2Supervisor:
     # ── Context Initialization ─────────────────────────────────────────
 
     def _init_context(self, task: TaskMessage) -> CognitiveContext:
-        """Initialize a fresh CognitiveContext from TaskMessage."""
+        """Initialize a fresh CognitiveContext from TaskMessage.
+
+        If clarify_context is provided (multi-turn follow-up), merge it
+        with the original query so downstream agents see the full context.
+        """
+        query = task.query
+        clarify_context = str(task.params.get("clarify_context", "") or "").strip()
+        if clarify_context:
+            query = f"原始问题：{query}\n用户补充信息：{clarify_context}"
+
         return CognitiveContext(
-            query=task.query,
+            query=query,
             data_source_id=task.params.get("data_source_id", ""),
             dialect=task.params.get("dialect", "postgresql"),
             schema_hint=task.params.get("schema_hint", ""),
@@ -782,6 +812,7 @@ class DataAgentV2Supervisor:
             table_columns=task.params.get("table_columns", {}),
             semantic_config=task.params.get("semantic_config", {}),
             compiled_sql=str(task.params.get("sql", "") or "").strip() or None,
+            clarify_context=clarify_context,
         )
 
     async def _load_datasource_metadata(
@@ -1172,3 +1203,86 @@ class DataAgentV2Supervisor:
                     if col not in time_cols:
                         time_cols.append(col)
         return time_cols
+
+    # ── Clarification Gate ──────────────────────────────────────────────
+
+    async def _check_clarification(
+        self, task: TaskMessage, ctx: CognitiveContext
+    ) -> dict[str, Any] | None:
+        """Check if the query is too vague and needs a clarification question.
+
+        Returns a ClarificationQuestion dict if clarification is needed,
+        or None if the query is clear enough to proceed.
+        """
+        try:
+            from kernel.clarification_gate import DataClarificationGate
+
+            gate = DataClarificationGate()
+            detect_result = gate.detect(ctx)
+            if not detect_result.get("needs_clarification"):
+                return None
+
+            question = await gate.generate_question(
+                ctx.query, detect_result, ctx
+            )
+
+            return asdict(question)
+        except Exception as exc:
+            logger.warning("Clarification check failed", error=str(exc))
+            return None
+
+    def _build_clarification_result(
+        self, task: TaskMessage, ctx: CognitiveContext, t0: float
+    ) -> AgentResult:
+        """Build an AgentResult carrying a clarification question.
+
+        This short-circuits the normal pipeline — no SQL is executed.
+        The frontend renders a clarification card instead of a result table.
+        """
+        clarification = ctx.clarification or {}
+        question_text = clarification.get("question_text", "")
+        suggested = clarification.get("suggested_options", [])
+
+        content_parts = [question_text]
+        if suggested:
+            content_parts.append("\n\n你可以尝试以下方向：\n" + "\n".join(
+                f"{i}. {opt}" for i, opt in enumerate(suggested, 1)
+            ))
+        content = "\n".join(content_parts)
+
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        return AgentResult(
+            task_id=task.task_id,
+            agent_type="data",
+            status="success",
+            content=content,
+            confidence=0.15,
+            metadata={
+                "rows": [],
+                "row_count": 0,
+                "sql": "",
+                "data_source_id": ctx.data_source_id,
+                "mode": "data_agent_v2",
+                "needs_clarification": True,
+                "clarification": clarification,
+                "intent": ctx.intent,
+                "result_refs": [],
+            },
+            evidence=[{
+                "source": "clarification_gate",
+                "source_type": "clarification",
+                "payload": {
+                    "reason": "query too vague, asking for clarification",
+                    "missing_entities": clarification.get("missing_entities", []),
+                    "suggested_count": len(suggested),
+                },
+                "credibility_score": 1.0,
+                "relevance_score": 1.0,
+            }],
+            agent_trace={
+                "elapsed_ms": elapsed_ms,
+                "pipeline": "data_agent_v2",
+                "clarification": True,
+            },
+        )

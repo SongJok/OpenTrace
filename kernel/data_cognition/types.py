@@ -64,10 +64,17 @@ class ValidationResult:
 
 @dataclass
 class EntityMapping:
-    """A natural language mention mapped to a database table."""
+    """A natural language mention mapped to a database table.
+
+    When mapped_column and mapped_value are set, this entity also acts as a
+    categorical filter (e.g. "队长" → dim_user.role = 'captain').
+    """
 
     mention: str = ""
     mapped_table: str = ""
+    mapped_column: str = ""       # column for categorical filter (e.g. "role")
+    mapped_value: str = ""        # DB value for filter (e.g. "captain")
+    mapped_value_label: str = ""  # human-readable label (e.g. "队长")
     confidence: float = 0.0
 
 

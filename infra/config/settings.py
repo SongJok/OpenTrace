@@ -56,13 +56,13 @@ class LLMSettings(BaseSettings):
 
     # Query LLM
     default_llm_query_provider: str = "阿里巴巴Qwen(DashScope)"
-    default_llm_query_model: str = "qwen3.6-plus"
+    default_llm_query_model: str = "qwen3.7-max"
     default_llm_query_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     default_llm_query_api_key: str = ""
 
     # Compress LLM
     default_llm_compress_provider: str = "阿里巴巴Qwen(DashScope)"
-    default_llm_compress_model: str = "qwen3.5-27b"
+    default_llm_compress_model: str = "qwen3.6-plus"
     default_llm_compress_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     default_llm_compress_api_key: str = ""
 
@@ -72,9 +72,9 @@ class LLMSettings(BaseSettings):
     default_llm_planing_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     default_llm_planing_api_key: str = ""
 
-    # SeniorShort LLM (14B) — knowledge Q&A, cheap critic
+    # SeniorShort LLM (qwen3.6-plus) — knowledge Q&A, cheap critic
     default_llm_seniorshort_provider: str = "阿里巴巴Qwen(DashScope)"
-    default_llm_seniorshort_model: str = "qwen3-14b"
+    default_llm_seniorshort_model: str = "qwen3.6-plus"
     default_llm_seniorshort_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     default_llm_seniorshort_api_key: str = ""
 
@@ -357,6 +357,8 @@ class AppSettings(BaseSettings):
     data_agent_v2_insight_enabled: bool = False
     data_agent_v2_visualization_enabled: bool = False
     data_agent_v2_skill_execution_enabled: bool = False
+    data_agent_v2_clarification_enabled: bool = True
+    data_agent_v2_dag_parallel_timeout_sec: int = 30
 
     # ── Canary testing & auto-rollback ────────────────────────────────
     kernel_canary_auto_rollback_enabled: bool = True

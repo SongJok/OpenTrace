@@ -42,6 +42,9 @@ class DataQueryRequest(BaseModel):
     order_by: str | None = None
     order_dir: str | None = Field(default=None, pattern="^(asc|desc)$")
     filters: list[dict[str, object]] | None = None
+    session_id: str | None = None
+    clarify_context: str | None = None
+    session_context: dict[str, object] | None = None
 
 
 @router.post("/data/query")
@@ -92,6 +95,8 @@ async def data_query(
                 "schema_hint": schema_hint,
                 "table_names": table_names,
                 "table_columns": table_columns,
+                "clarify_context": req.clarify_context or "",
+                "session_context": req.session_context or {},
             },
             session_id=None,
             user_id=getattr(current_user, "id", None),
@@ -108,6 +113,19 @@ async def data_query(
                 message=result.error or "data query failed",
             )
         answer = result.content or ""
+        import uuid
+        session_id = req.session_id or str(uuid.uuid4())
+        needs_clarification = bool(metadata.get("needs_clarification", False))
+        clarification = metadata.get("clarification") if needs_clarification else None
+
+        # Build session_context for multi-turn passthrough
+        session_context = {
+            "previous_query": req.question,
+            "intent_type": (metadata.get("intent") or {}).get("intent_type", "") if isinstance(metadata.get("intent"), dict) else "",
+        }
+        if needs_clarification:
+            session_context["pending_clarification"] = clarification
+
         return {
             "data_source_id": req.data_source_id,
             "answer": answer,
@@ -124,6 +142,10 @@ async def data_query(
             "insights": metadata.get("insights"),
             "statistical_report": metadata.get("statistical_report"),
             "visualization_config": metadata.get("visualization_config"),
+            "session_id": session_id,
+            "session_context": session_context,
+            "needs_clarification": needs_clarification,
+            "clarification": clarification,
         }
 
     # Load semantic mappings

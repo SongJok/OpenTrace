@@ -70,6 +70,11 @@ class CognitiveContext:
     learning_signals: dict[str, Any] | None = None  # classified feedback + actions
     refined_metrics: list[dict[str, Any]] | None = None  # from MetricRefinerAgent
 
+    # ── Multi-turn clarification ─────────────────────────────────────
+    needs_clarification: bool = False
+    clarification: dict[str, Any] | None = None  # ClarificationQuestion as dict
+    clarify_context: str = ""  # user's response to a previous clarification
+
     # ── Advanced Analytics (Phase 4) ──────────────────────────────────
     statistical_report: dict[str, Any] | None = None  # from StatisticalAgent
     insights: dict[str, Any] | None = None  # from InsightAgent

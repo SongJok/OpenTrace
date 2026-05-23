@@ -74,6 +74,37 @@ class EntityAgent(BaseAgent):
                     "source": "exact_match",
                 })
 
+        # Pass 1.5: value_map categorical filter matching
+        # e.g. query contains "队长" → dim_user.role has value_map {"captain": "队长"}
+        # → entity with mapped_column="role", mapped_value="captain"
+        if ctx.column_semantics:
+            seen_filter_tables = set()
+            for col_meta in ctx.column_semantics:
+                value_map = col_meta.get("value_map") or {}
+                if not value_map:
+                    continue
+                for db_value, label in value_map.items():
+                    if not label:
+                        continue
+                    label_str = str(label)
+                    if label_str in ctx.query:
+                        table_name = col_meta["table_name"]
+                        col_name = col_meta["column_name"]
+                        # Deduplicate: same table+column+value → skip
+                        dedup_key = f"{table_name}:{col_name}:{db_value}"
+                        if dedup_key in seen_filter_tables:
+                            continue
+                        seen_filter_tables.add(dedup_key)
+                        entities.append({
+                            "mention": label_str,
+                            "mapped_table": table_name,
+                            "mapped_column": col_name,
+                            "mapped_value": str(db_value),
+                            "mapped_value_label": label_str,
+                            "confidence": 0.92,
+                            "source": "value_map_match",
+                        })
+
         # Second pass: use schema_metadata business names
         if ctx.column_semantics:
             seen_tables = {e["mapped_table"] for e in entities}

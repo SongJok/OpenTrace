@@ -15,6 +15,7 @@ class SchemaInspectionResult:
     schema_payload: dict[str, Any]
     table_names: list[str]
     table_count: int
+    column_map: dict[str, list[str]]
 
 
 async def load_schema_inspection(db: AsyncSession, data_source_id: str) -> SchemaInspectionResult:
@@ -53,7 +54,26 @@ async def load_schema_inspection(db: AsyncSession, data_source_id: str) -> Schem
                             if name:
                                 table_names.append(name)
 
-    return SchemaInspectionResult(schema_payload=schema_payload, table_names=table_names, table_count=len(table_names))
+    # Build column_map: table_name → [column_names]
+    column_map: dict[str, list[str]] = {}
+    if isinstance(tables, list):
+        for t in tables:
+            if not isinstance(t, dict):
+                continue
+            tname = str(t.get("name") or "").strip()
+            if not tname:
+                continue
+            columns = t.get("columns")
+            if isinstance(columns, list):
+                col_names = [str(c.get("name", "")).strip() for c in columns if isinstance(c, dict)]
+                column_map[tname] = [cn for cn in col_names if cn]
+
+    return SchemaInspectionResult(
+        schema_payload=schema_payload,
+        table_names=table_names,
+        table_count=len(table_names),
+        column_map=column_map,
+    )
 
 
 def build_schema_hint(schema_payload: dict[str, Any], max_chars: int = 4000) -> str:
