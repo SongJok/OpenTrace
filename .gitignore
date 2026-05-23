@@ -15,7 +15,7 @@ env/
 .env
 !.env.example
 !CLAUDE.md
-/docs/
+docs/
 
 .idea/
 .vscode/
