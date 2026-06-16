@@ -1,14 +1,13 @@
 """
-MetricRefinerAgent — extracts corrected metric formulas from user feedback.
+MetricRefinerAgent — 从用户反馈抽取修正后的指标公式。
 
-When a user corrects a metric (e.g., "GMV should exclude tax and refunds"),
-this agent:
-1. Uses LLM to extract the corrected formula, columns, and business definition
-2. Compares with existing metric_definitions entry
-3. Creates a new draft version (version++) with the corrected formula
-4. Records lineage from the original metric
+用户纠正指标（如「GMV 应不含税与退款」）时：
+1. LLM 抽取修正公式、列与业务定义
+2. 与现有 metric_definitions 对比
+3. 创建新版草稿（version++）
+4. 记录与原始指标的谱系
 
-Safe-by-default: all refinements create draft versions requiring admin approval.
+默认安全：所有修正均为待管理员审批的草稿版本。
 """
 from __future__ import annotations
 
@@ -22,10 +21,10 @@ from agents.data_agent_v2.types import (
 
 
 class MetricRefinerAgent(BaseAgent):
-    """Extract and apply metric formula corrections from user feedback.
+    """从用户反馈中抽取并应用指标公式修正。
 
-    LLM-based (PLANNING role) for formula extraction, with deterministic
-    comparison and versioning.
+    基于 LLM（PLANNING 角色）进行公式抽取，
+    配合确定性的比较和版本管理。
     """
 
     def __init__(self) -> None:
@@ -43,13 +42,13 @@ class MetricRefinerAgent(BaseAgent):
         db = task.params.get("_db_session")
 
         try:
-            # 1. Extract corrected formula using LLM
+            # 1. 使用 LLM 抽取修正公式
             extraction = await self._extract_correction(ctx, correction_detail)
 
             if not extraction.get("formula"):
                 return self._skip(task, ctx, "could not extract formula from correction")
 
-            # 2. If we have the original metric, compare and version
+            # 2. 若有原始指标，进行对比和版本管理
             if corrected_metric_id and db:
                 await self._create_draft_version(db, corrected_metric_id, extraction, ctx)
             elif db and extraction.get("metric_name"):
@@ -91,14 +90,14 @@ class MetricRefinerAgent(BaseAgent):
     async def _extract_correction(
         self, ctx: CognitiveContext, detail: dict
     ) -> dict[str, Any]:
-        """Use LLM to extract corrected formula from user feedback text."""
+        """使用 LLM 从用户反馈文本中抽取修正公式。"""
         from model.model_gateway.gateway import LLMRole, get_model_gateway
         from model.llm_adapter.base import LLMMessage
 
         correction_text = detail.get("correction", "")
         existing_metrics = ctx.matched_metrics or []
 
-        # Build context from existing metric definitions
+        # 从现有指标定义构建上下文
         metric_context = ""
         if existing_metrics:
             metric_context = "Current metric definitions:\n"
@@ -143,13 +142,13 @@ class MetricRefinerAgent(BaseAgent):
             import json
             return json.loads(response.content.strip())
         except Exception:
-            # Fallback: use heuristic extraction
+            # 回退：使用启发式抽取
             return self._heuristic_extraction(correction_text, existing_metrics)
 
     def _heuristic_extraction(
         self, correction_text: str, existing_metrics: list[dict]
     ) -> dict[str, Any]:
-        """Heuristic extraction when LLM is unavailable."""
+        """LLM 不可用时的启发式抽取。"""
         result: dict[str, Any] = {
             "metric_name": "",
             "formula": "",
@@ -161,7 +160,7 @@ class MetricRefinerAgent(BaseAgent):
             "confidence": 0.3,
         }
 
-        # Try to find metric name from existing metrics
+        # 尝试从现有指标中查找指标名
         for m in existing_metrics:
             name = m.get("name", "")
             if name and name.lower() in correction_text.lower():
@@ -170,7 +169,7 @@ class MetricRefinerAgent(BaseAgent):
                 result["unit"] = m.get("unit", "")
                 break
 
-        # Try to detect agg function
+        # 尝试检测聚合函数
         for agg in ("SUM", "COUNT", "AVG", "MAX", "MIN", "COUNT_DISTINCT"):
             if agg.lower() in correction_text.lower():
                 result["agg_function"] = agg
@@ -185,7 +184,7 @@ class MetricRefinerAgent(BaseAgent):
         extraction: dict,
         ctx: CognitiveContext,
     ) -> None:
-        """Create a new draft version of an existing metric."""
+        """为现有指标创建新的草稿版本。"""
         from infra.storage.models import MetricDefinition, MetricLineage
 
         result = await db.execute(
@@ -218,7 +217,7 @@ class MetricRefinerAgent(BaseAgent):
         db.add(refined)
         await db.flush()
 
-        # Record lineage
+        # 记录谱系
         lineage = MetricLineage(
             metric_id=refined.id,
             depends_on_metric_id=metric_id,
@@ -234,7 +233,7 @@ class MetricRefinerAgent(BaseAgent):
         extraction: dict,
         ctx: CognitiveContext,
     ) -> None:
-        """Create a new metric definition from user feedback."""
+        """从用户反馈创建新的指标定义。"""
         from infra.storage.models import MetricDefinition
 
         if not ctx.data_source_id:

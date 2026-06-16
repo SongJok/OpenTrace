@@ -1,20 +1,16 @@
 """
-ErrorClassifier — standalone error diagnosis and repair strategy engine.
+ErrorClassifier — 独立错误诊断与修复策略引擎。
 
-Categorizes data query failures into actionable classes with targeted
-repair strategies. Works with ReflectionAgent and SQLRewriter to form
-a complete quality loop: classify → diagnose → repair → verify.
+将数据查询失败归类为可执行类别并给出针对性修复策略；
+与 ReflectionAgent、SQLRewriter 组成：分类 → 诊断 → 修复 → 校验 闭环。
 
-Error Taxonomy:
-  SQL Errors: syntax, column_not_found, table_not_found, permission, connection
-  Logic Errors: join_amplification, missing_join, wrong_join_key,
-                time_too_restrictive, time_too_broad, time_format_error,
-                metric_wrong_formula, metric_missing_agg, metric_wrong_column,
-                filter_over_restrictive, filter_contradictory, filter_missing
-  Data Quality: empty_result, null_heavy, negative_metrics, outlier_values
-  Semantic: ambiguous_entity, unresolved_alias, schema_drift
+错误分类：
+  SQL：语法、列/表不存在、权限、连接
+  逻辑：JOIN 放大、缺 JOIN、错误键、时间过严/过宽、指标公式等
+  数据质量：空结果、空值过多、负指标、离群
+  语义：实体歧义、别名未解析、模式漂移
 
-Each category has a repair_strategy that guides SQLRewriter prompts.
+每类对应 repair_strategy，指导 SQLRewriter 提示词。
 """
 from __future__ import annotations
 
@@ -26,7 +22,7 @@ from typing import Any
 
 
 class ErrorCategory(str, Enum):
-    """Top-level error categories."""
+    """顶层错误类别。"""
     SQL_SYNTAX = "sql_syntax"
     SQL_COLUMN_NOT_FOUND = "sql_column_not_found"
     SQL_TABLE_NOT_FOUND = "sql_table_not_found"
@@ -61,7 +57,7 @@ class ErrorCategory(str, Enum):
 
 @dataclass
 class ErrorDiagnosis:
-    """Structured diagnosis for a single detected issue."""
+    """单个检测问题的结构化诊断。"""
     category: ErrorCategory
     severity: str  # critical / high / medium / low
     description: str
@@ -72,7 +68,7 @@ class ErrorDiagnosis:
 
 
 DEFAULT_REPAIR_STRATEGIES: dict[ErrorCategory, dict[str, str]] = {
-    # ── SQL Errors ─────────────────────────────────────────────────
+    # ── SQL 错误 ─────────────────────────────────────────────────
     ErrorCategory.SQL_SYNTAX: {
         "strategy": "fix_syntax",
         "guidance": (
@@ -109,7 +105,7 @@ DEFAULT_REPAIR_STRATEGIES: dict[ErrorCategory, dict[str, str]] = {
         "repairable": "true",
     },
 
-    # ── Join Errors ────────────────────────────────────────────────
+    # ── JOIN 错误 ────────────────────────────────────────────────
     ErrorCategory.JOIN_AMPLIFICATION: {
         "strategy": "add_distinct_or_fix_join",
         "guidance": (
@@ -138,7 +134,7 @@ DEFAULT_REPAIR_STRATEGIES: dict[ErrorCategory, dict[str, str]] = {
         "repairable": "true",
     },
 
-    # ── Time Errors ─────────────────────────────────────────────────
+    # ── 时间错误 ─────────────────────────────────────────────────
     ErrorCategory.TIME_TOO_RESTRICTIVE: {
         "strategy": "widen_time_window",
         "guidance": (
@@ -168,7 +164,7 @@ DEFAULT_REPAIR_STRATEGIES: dict[ErrorCategory, dict[str, str]] = {
         "repairable": "true",
     },
 
-    # ── Metric Errors ───────────────────────────────────────────────
+    # ── 指标错误 ───────────────────────────────────────────────
     ErrorCategory.METRIC_WRONG_FORMULA: {
         "strategy": "fix_metric_formula",
         "guidance": (
@@ -197,7 +193,7 @@ DEFAULT_REPAIR_STRATEGIES: dict[ErrorCategory, dict[str, str]] = {
         "repairable": "true",
     },
 
-    # ── Filter Errors ───────────────────────────────────────────────
+    # ── 筛选器错误 ───────────────────────────────────────────────
     ErrorCategory.FILTER_OVER_RESTRICTIVE: {
         "strategy": "relax_filters",
         "guidance": (
@@ -225,7 +221,7 @@ DEFAULT_REPAIR_STRATEGIES: dict[ErrorCategory, dict[str, str]] = {
         "repairable": "true",
     },
 
-    # ── Data Quality ────────────────────────────────────────────────
+    # ── 数据质量 ────────────────────────────────────────────────
     ErrorCategory.EMPTY_RESULT: {
         "strategy": "diagnose_then_relax",
         "guidance": (
@@ -268,7 +264,7 @@ DEFAULT_REPAIR_STRATEGIES: dict[ErrorCategory, dict[str, str]] = {
         "repairable": "true",
     },
 
-    # ── Semantic Errors ─────────────────────────────────────────────
+    # ── 语义错误 ─────────────────────────────────────────────
     ErrorCategory.AMBIGUOUS_ENTITY: {
         "strategy": "disambiguate_entity",
         "guidance": (
@@ -299,16 +295,15 @@ DEFAULT_REPAIR_STRATEGIES: dict[ErrorCategory, dict[str, str]] = {
 
 
 class ErrorClassifier:
-    """Classify query errors and result quality issues into actionable categories.
+    """将查询错误和结果质量问题分类为可执行的类别。
 
-    Provides repair strategies and guidance for each classified error,
-    used by ReflectionAgent to target repairs and by Supervisor for
-    user-facing recovery suggestions.
+    为每个分类错误提供修复策略和指导，
+    供 ReflectionAgent 定向修复，以及 Supervisor 生成面向用户的恢复建议。
 
-    Strategies are loaded from two layers:
-    1. DEFAULT_REPAIR_STRATEGIES (built-in code defaults)
-    2. repair_strategies.json (optional overlay, keyed by ErrorCategory value)
-    The JSON overlay wins per-key; unknown keys are added, not rejected.
+    策略从两层加载：
+    1. DEFAULT_REPAIR_STRATEGIES（内置代码默认值）
+    2. repair_strategies.json（可选覆盖层，以 ErrorCategory 值为键）
+    JSON 覆盖层按键覆盖；未知键会被添加而非拒绝。
     """
 
     def __init__(self, config_path: str | None = None) -> None:
@@ -336,7 +331,7 @@ class ErrorClassifier:
                 pass
 
     def classify_sql_error(self, error_message: str) -> ErrorDiagnosis:
-        """Classify a SQL execution error message."""
+        """对 SQL 执行错误消息进行分类。"""
         err = error_message.lower()
 
         if any(kw in err for kw in ("syntax", "parse", "unexpected", "expecting")):
@@ -358,7 +353,7 @@ class ErrorClassifier:
         if any(kw in err for kw in ("aggregate", "group by", "not in group by")):
             return self._build_diagnosis(ErrorCategory.METRIC_MISSING_AGG, error_message)
 
-        # Default: generic syntax
+        # 默认：通用语法错误
         return self._build_diagnosis(ErrorCategory.SQL_SYNTAX, error_message)
 
     def classify_result_quality(
@@ -369,7 +364,7 @@ class ErrorClassifier:
         metrics: list[dict] | None = None,
         error: str = "",
     ) -> list[ErrorDiagnosis]:
-        """Classify result quality issues from executed query results."""
+        """对已执行查询的结果质量问题进行分类。"""
         diagnoses: list[ErrorDiagnosis] = []
 
         if not rows and not error:
@@ -383,7 +378,7 @@ class ErrorClassifier:
 
         first_row = rows[0]
 
-        # NULL-heavy check
+        # NULL 值过多检查
         if first_row:
             null_count = sum(1 for v in first_row.values() if v is None)
             total_cols = len(first_row)
@@ -393,7 +388,7 @@ class ErrorClassifier:
                     f"{null_count}/{total_cols} columns in first row are NULL",
                 ))
 
-        # Negative metrics check
+        # 负指标检查
         if metrics and first_row:
             metric_cols = {m.get("mapped_column", "") for m in metrics}
             for col, val in first_row.items():
@@ -405,7 +400,7 @@ class ErrorClassifier:
                             f"Metric column '{col}' = {val} (negative)",
                         ))
 
-        # Outlier / join amplification check
+        # 离群值 / JOIN 放大检查
         if first_row:
             for col, val in first_row.items():
                 if isinstance(val, (int, float)) and val > 1_000_000_000:
@@ -415,7 +410,7 @@ class ErrorClassifier:
                         f"Column '{col}' = {val} (extremely large)",
                     ))
 
-        # Large row count with multiple joins
+        # 大结果集且多 JOIN
         if row_count > 1000 and join_count > 1:
             diagnoses.append(self._build_diagnosis(
                 ErrorCategory.JOIN_AMPLIFICATION,
@@ -431,14 +426,14 @@ class ErrorClassifier:
         verification_report: dict | None,
         ctx,  # CognitiveContext
     ) -> list[ErrorDiagnosis]:
-        """Full classification: SQL error + result quality + semantic issues."""
+        """完整分类：SQL 错误 + 结果质量 + 语义问题。"""
         diagnoses: list[ErrorDiagnosis] = []
 
-        # 1. SQL errors
+        # 1. SQL 错误
         if error:
             diagnoses.append(self.classify_sql_error(error))
 
-        # 2. Result quality
+        # 2. 结果质量
         join_count = len(ctx.join_paths or [])
         quality_diags = self.classify_result_quality(
             rows=rows,
@@ -449,7 +444,7 @@ class ErrorClassifier:
         )
         diagnoses.extend(quality_diags)
 
-        # 3. Verification failures
+        # 3. 验证失败
         if verification_report and verification_report.get("status") == "fail":
             for issue in verification_report.get("issues", []):
                 detail = issue.get("detail", "")
@@ -471,7 +466,7 @@ class ErrorClassifier:
                         ErrorCategory.SCHEMA_DRIFT, detail
                     ))
 
-        # 4. Context-based checks
+        # 4. 基于上下文的检查
         if not rows and not error:
             tw = ctx.time_window or {}
             if tw.get("type") not in (None, "none") and tw.get("days", 0) > 0:
@@ -490,7 +485,7 @@ class ErrorClassifier:
     def get_repair_prompt(
         self, diagnoses: list[ErrorDiagnosis]
     ) -> str:
-        """Build a composite repair prompt from all diagnoses."""
+        """从所有诊断构建组合修复提示。"""
         if not diagnoses:
             return ""
 
@@ -499,7 +494,7 @@ class ErrorClassifier:
             return ""
 
         parts: list[str] = []
-        for d in repairable[:4]:  # Cap at 4 to keep prompt focused
+        for d in repairable[:4]:  # 上限 4 条，保持提示聚焦
             parts.append(
                 f"- [{d.category.value}] ({d.severity}) {d.description}\n"
                 f"  Strategy: {d.repair_strategy}\n"
@@ -515,7 +510,7 @@ class ErrorClassifier:
     def get_recovery_suggestions(
         self, diagnoses: list[ErrorDiagnosis]
     ) -> list[dict[str, str]]:
-        """Build user-facing recovery suggestions from diagnoses."""
+        """从诊断结果构建面向用户的恢复建议。"""
         suggestions: list[dict[str, str]] = []
 
         for d in diagnoses:

@@ -1,10 +1,10 @@
 """
-SemanticAgent — business concept resolution into SQL fragments.
+SemanticAgent — 将业务概念解析为 SQL 片段。
 
-Integrates Knowledge Layer outputs (matched_metrics, column_semantics)
-with SemanticLayer for config-driven dimension/metric/time resolution.
+结合知识层（matched_metrics、column_semantics）与 SemanticLayer，
+做配置驱动的维度/指标/时间解析。
 
-No LLM for core logic — LLM only for ambiguous concept disambiguation.
+核心逻辑无 LLM；仅歧义概念消歧时使用 LLM。
 """
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ from agents.data_agent_v2.types import (
 
 
 class SemanticAgent(BaseAgent):
-    """Resolve business concepts from user query to SQL fragments.
+    """将用户查询中的业务概念解析为 SQL 片段。
 
-    This agent bridges the gap between "business language" and "database language":
+    该 Agent 桥接"业务语言"与"数据库语言"：
     - "高价值用户" → tier IN ('TIAN_DI', 'TIAN_ZUN')
     - "GMV" → SUM(paid_amount) FILTER (WHERE status != 'refunded')
     - "最近7天" → created_at >= now() - interval '7 days'
@@ -73,9 +73,9 @@ class SemanticAgent(BaseAgent):
             )
 
     async def _resolve_semantics(self, ctx: CognitiveContext) -> dict:
-        """Build semantic context from Knowledge Layer + config."""
+        """从知识层与配置构建语义上下文。"""
 
-        # 1. Dimension mappings: from schema_metadata value_maps
+        # 1. 维度映射：来自 schema_metadata 的 value_map
         dimension_mappings: dict = {}
         if ctx.column_semantics:
             for col in ctx.column_semantics:
@@ -88,22 +88,22 @@ class SemanticAgent(BaseAgent):
                         "description": col.get("business_description", ""),
                     }
 
-        # 2. Metric definitions: from Knowledge Layer matched_metrics
+        # 2. 指标定义：来自知识层的 matched_metrics
         metric_defs: dict = {}
         if ctx.matched_metrics:
             for m in ctx.matched_metrics:
                 name = m["name"]
                 metric_defs[name] = m["formula"]
-        # Also add from semantic_config if not already covered
+        # 同时从 semantic_config 补充尚未覆盖的指标
         config_metrics = ctx.semantic_config.get("metrics", {})
         for name, formula in config_metrics.items():
             if name not in metric_defs:
                 metric_defs[name] = formula
 
-        # 3. Time macros: from semantic_config
+        # 3. 时间宏：来自 semantic_config
         time_macros = list(ctx.semantic_config.get("time_macros", []))
 
-        # 4. Resolved SQL fragments
+        # 4. 已解析的 SQL 片段
         resolved_fragments = self._build_resolved_fragments(
             dimension_mappings, metric_defs, ctx
         )
@@ -121,10 +121,10 @@ class SemanticAgent(BaseAgent):
         metrics: dict,
         ctx: CognitiveContext,
     ) -> str:
-        """Build human-readable SQL fragment summary for downstream agents."""
+        """构建供下游 Agent 使用的人类可读 SQL 片段摘要。"""
         parts: list[str] = []
 
-        # Dimension WHERE clauses from value maps
+        # 维度 WHERE 子句（来自 value_map）
         query_lower = ctx.query.lower()
         for name, dim in dims.items():
             value_map = dim.get("value_map", {})
@@ -134,7 +134,7 @@ class SemanticAgent(BaseAgent):
                         col = dim["column"]
                         parts.append(f"-- {name}={label} → {col} = '{key}'")
 
-        # Metric SELECT expressions
+        # 指标 SELECT 表达式
         for name, formula in metrics.items():
             if name.lower() in query_lower:
                 parts.append(f"-- {name} → {formula}")
@@ -146,5 +146,5 @@ class SemanticAgent(BaseAgent):
     ) -> float:
         if dims + metrics + times == 0:
             return 0.3
-        # More resolved concepts = higher confidence
+        # 解析的概念越多，置信度越高
         return min(0.3 + 0.1 * (dims + metrics + times), 0.95)

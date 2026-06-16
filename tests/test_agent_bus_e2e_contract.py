@@ -17,8 +17,14 @@ class AgentBusE2EContractTests(unittest.TestCase):
 
     def test_worker_has_data_and_rag_consumers(self):
         txt = (ROOT / "agents/worker.py").read_text(encoding="utf-8")
-        self.assertIn('"data": DataAgent()', txt)
-        self.assertIn('"rag": RagAgent()', txt)
+        self.assertIn("instantiate_builtin_agents", txt)
+        self.assertIn("register_builtin_agents", txt)
+        self.assertIn("self.agents", txt)
+        from agents.bootstrap import expected_builtin_agent_types
+
+        types = expected_builtin_agent_types()
+        self.assertIn("data", types)
+        self.assertIn("rag", types)
 
 
 if __name__ == "__main__":

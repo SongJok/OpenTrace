@@ -58,8 +58,48 @@ async def build_query_embedding(query: str) -> list[float]:
     return normalize_embedding_vector(vec, settings.embedding_dims)
 
 
-async def fetch_document_candidates(user_id: str, query: str, limit: int = 200) -> list[DocumentCandidate]:
-    candidates = await _fetch_document_candidates_vector(user_id=user_id, query=query, limit=limit)
+def _document_owner_clause(user_id: str):
+    """Restrict retrieval to documents owned by the requesting user."""
+    uid = (user_id or "").strip()
+    if not uid or uid == "shared":
+        return None
+    return Document.owner_id == uid
+
+
+def _document_tenant_clause(tenant_id: str | None, workspace_id: str | None):
+    """Filter by documents.tenant_id / workspace_id columns (equality)."""
+    from sqlalchemy import and_
+
+    tid = (tenant_id or "").strip() or "default"
+    wid = (workspace_id or "").strip() or "default"
+    return and_(Document.tenant_id == tid, Document.workspace_id == wid)
+
+
+def _apply_document_scope(stmt, *, user_id: str, tenant_id: str | None = None, workspace_id: str | None = None):
+    owner = _document_owner_clause(user_id)
+    if owner is not None:
+        stmt = stmt.where(owner)
+    tenant = _document_tenant_clause(tenant_id, workspace_id)
+    if tenant is not None:
+        stmt = stmt.where(tenant)
+    return stmt
+
+
+async def fetch_document_candidates(
+    user_id: str,
+    query: str,
+    limit: int = 200,
+    *,
+    tenant_id: str | None = None,
+    workspace_id: str | None = None,
+) -> list[DocumentCandidate]:
+    candidates = await _fetch_document_candidates_vector(
+        user_id=user_id,
+        query=query,
+        limit=limit,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
     if candidates:
         return candidates
 
@@ -69,6 +109,12 @@ async def fetch_document_candidates(user_id: str, query: str, limit: int = 200) 
             select(DocumentChunk, Document.title)
             .join(Document, DocumentChunk.document_id == Document.id)
             .where(Document.status == "ready")
+        )
+        stmt = _apply_document_scope(
+            stmt,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
         )
         if terms:
             filters = []
@@ -184,7 +230,14 @@ def apply_rerank_boost(score: float, query_terms: list[str], title: str, content
     return min(0.999, score + proportional_bonus + phrase_bonus + position_bonus)
 
 
-async def _fetch_document_candidates_vector(user_id: str, query: str, limit: int) -> list[DocumentCandidate]:
+async def _fetch_document_candidates_vector(
+    user_id: str,
+    query: str,
+    limit: int,
+    *,
+    tenant_id: str | None = None,
+    workspace_id: str | None = None,
+) -> list[DocumentCandidate]:
     if not getattr(settings, "use_pgvector", True):
         return []
 
@@ -195,9 +248,14 @@ async def _fetch_document_candidates_vector(user_id: str, query: str, limit: int
                 select(DocumentChunk, Document.title)
                 .join(Document, DocumentChunk.document_id == Document.id)
                 .where(Document.status == "ready")
-                .order_by(DocumentChunk.embedding_vector.l2_distance(query_embedding))
-                .limit(limit)
             )
+            stmt = _apply_document_scope(
+                stmt,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+            )
+            stmt = stmt.order_by(DocumentChunk.embedding_vector.l2_distance(query_embedding)).limit(limit)
             result = await db.execute(stmt)
             rows = result.all()
 
@@ -207,8 +265,14 @@ async def _fetch_document_candidates_vector(user_id: str, query: str, limit: int
                     .join(Document, DocumentChunk.document_id == Document.id)
                     .where(Document.status == "ready")
                     .where(DocumentChunk.embedding_json.is_not(None))
-                    .limit(limit)
                 )
+                stmt = _apply_document_scope(
+                    stmt,
+                    user_id=user_id,
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                )
+                stmt = stmt.limit(limit)
                 result = await db.execute(stmt)
                 rows = result.all()
         return [DocumentCandidate(chunk=chunk, title=title or "Document") for chunk, title in rows]
@@ -216,13 +280,26 @@ async def _fetch_document_candidates_vector(user_id: str, query: str, limit: int
         return []
 
 
-async def fetch_document_candidates_fallback(user_id: str, query: str, limit: int = 200) -> list[DocumentCandidate]:
+async def fetch_document_candidates_fallback(
+    user_id: str,
+    query: str,
+    limit: int = 200,
+    *,
+    tenant_id: str | None = None,
+    workspace_id: str | None = None,
+) -> list[DocumentCandidate]:
     terms = tokenize(query)
     async with AsyncSessionLocal() as db:
         stmt = (
             select(DocumentChunk, Document.title)
             .join(Document, DocumentChunk.document_id == Document.id)
             .where(Document.status.in_(["ready", "processing", "pending"]))
+        )
+        stmt = _apply_document_scope(
+            stmt,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
         )
         if terms:
             filters = []

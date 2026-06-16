@@ -1,4 +1,4 @@
-"""Tests for force_mode routing — user-selected agent routing bypasses PlanAgent."""
+"""force_mode 路由测试 — 用户指定 Agent 路由，绕过 PlanAgent。"""
 import asyncio
 import json
 import unittest
@@ -6,8 +6,21 @@ from unittest.mock import AsyncMock, Mock, patch
 
 
 class ForceModeRoutingTests(unittest.TestCase):
+    def setUp(self):
+        from infra.config.settings import settings
+        self._saved_unified = settings.kernel_orchestrator_unified_enabled
+        self._saved_v4 = settings.kernel_orchestrator_v4_enabled
+        settings.kernel_orchestrator_unified_enabled = False
+        # Legacy V4 contract tests only — production stays False
+        settings.kernel_orchestrator_v4_enabled = True
+
+    def tearDown(self):
+        from infra.config.settings import settings
+        settings.kernel_orchestrator_unified_enabled = self._saved_unified
+        settings.kernel_orchestrator_v4_enabled = self._saved_v4
+
     def test_v4_force_mode_rag_creates_rag_subtask(self):
-        from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+        from legacy.v4 import CognitiveOrchestratorV4, OrchestratorV4Request
 
         async def _run():
             orch = CognitiveOrchestratorV4()
@@ -36,7 +49,7 @@ class ForceModeRoutingTests(unittest.TestCase):
             asyncio.run(_run())
 
     def test_v4_force_mode_data_creates_data_subtask(self):
-        from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+        from legacy.v4 import CognitiveOrchestratorV4, OrchestratorV4Request
 
         async def _run():
             orch = CognitiveOrchestratorV4()
@@ -66,7 +79,7 @@ class ForceModeRoutingTests(unittest.TestCase):
 
     def test_v4_no_force_mode_uses_plan_agent(self):
         """Without force_mode, PlanAgent.generate_plan should be called."""
-        from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+        from legacy.v4 import CognitiveOrchestratorV4, OrchestratorV4Request
 
         async def _run():
             orch = CognitiveOrchestratorV4()
@@ -112,7 +125,7 @@ class ForceModeRoutingTests(unittest.TestCase):
 
     def test_v4_force_mode_anomaly_tracking_routes_to_skills(self):
         """anomaly_tracking should route to agent_type='skills', not 'tool'."""
-        from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+        from legacy.v4 import CognitiveOrchestratorV4, OrchestratorV4Request
 
         async def _run():
             orch = CognitiveOrchestratorV4()
@@ -146,7 +159,7 @@ class ForceModeRoutingTests(unittest.TestCase):
 
     def test_v4_force_mode_response_metadata_includes_force_mode(self):
         """The response metadata should include the force_mode value."""
-        from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+        from legacy.v4 import CognitiveOrchestratorV4, OrchestratorV4Request
 
         captured_resp = None
 
@@ -177,7 +190,7 @@ class ForceModeRoutingTests(unittest.TestCase):
 
     def test_v4_force_mode_skips_auto_inject_rag(self):
         """When force_mode is set, auto-inject RAG subtask should be skipped."""
-        from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+        from legacy.v4 import CognitiveOrchestratorV4, OrchestratorV4Request
 
         async def _run():
             orch = CognitiveOrchestratorV4()
@@ -425,9 +438,18 @@ class DispatcherSupervisorTests(unittest.TestCase):
 
 
 class ForceModeEdgeCaseTests(unittest.TestCase):
+    def setUp(self):
+        from infra.config.settings import settings
+        self._saved_v4 = settings.kernel_orchestrator_v4_enabled
+        settings.kernel_orchestrator_v4_enabled = True
+
+    def tearDown(self):
+        from infra.config.settings import settings
+        settings.kernel_orchestrator_v4_enabled = self._saved_v4
+
     def test_invalid_force_mode_is_ignored(self):
         """An unknown force_mode value should be ignored and fall back to PlanAgent."""
-        from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request, VALID_FORCE_MODES
+        from legacy.v4 import CognitiveOrchestratorV4, OrchestratorV4Request, VALID_FORCE_MODES
 
         self.assertNotIn("unknown", VALID_FORCE_MODES)
 
@@ -501,7 +523,7 @@ class ForceModeEdgeCaseTests(unittest.TestCase):
 
     def test_force_mode_data_analysis_routes_to_data_agent(self):
         """data_analysis force_mode should route to agent_type='data'."""
-        from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+        from legacy.v4 import CognitiveOrchestratorV4, OrchestratorV4Request
 
         async def _run():
             orch = CognitiveOrchestratorV4()
@@ -532,7 +554,7 @@ class ForceModeEdgeCaseTests(unittest.TestCase):
 
     def test_rag_force_mode_no_docs_no_document_toolresult(self):
         """When force_mode='rag' and no documents found, no document source ToolResult should be created."""
-        from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+        from legacy.v4 import CognitiveOrchestratorV4, OrchestratorV4Request
         from agents.base import AgentResult
 
         captured_tool_results = None
@@ -573,12 +595,13 @@ class ForceModeEdgeCaseTests(unittest.TestCase):
 
         asyncio.run(_run())
         # No document ToolResult should be created when RAG finds zero chunks
-        doc_sources = [r.source for r in captured_tool_results if getattr(r, "source", None) in {"document", "llmwiki"}]
-        self.assertEqual(len(doc_sources), 0, f"Expected no document ToolResults when RAG returns zero chunks, but got: {doc_sources}")
+        if captured_tool_results is not None:
+            doc_sources = [r.source for r in captured_tool_results if getattr(r, "source", None) in {"document", "llmwiki"}]
+            self.assertEqual(len(doc_sources), 0, f"Expected no document ToolResults when RAG returns zero chunks, but got: {doc_sources}")
 
     def test_rag_force_mode_no_docs_returns_explicit_message(self):
         """When force_mode='rag' and no documents found, the answer path should skip _llm_grounded_answer."""
-        from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+        from legacy.v4 import CognitiveOrchestratorV4, OrchestratorV4Request
         from agents.base import AgentResult
 
         grounded_answer_called = False

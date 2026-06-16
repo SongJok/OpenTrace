@@ -1,11 +1,10 @@
 """
-IntentAgent — NL → Structured Analytical Intent.
+IntentAgent — 自然语言 → 结构化分析意图。
 
-Classifies the user query into a fine-grained analytical intent type
-(aggregation, filtering, ranking, trend, comparison, etc.) and extracts
-parameters like target entity, metric, dimensions, time window, output format.
+将用户查询细分为分析意图类型（聚合、过滤、排名、趋势、对比等），
+并抽取目标实体、指标、维度、时间窗、输出格式等参数。
 
-Uses LLM (PLANNING role) for classification with a structured JSON output.
+使用 LLM（PLANNING 角色）输出结构化 JSON。
 """
 from __future__ import annotations
 
@@ -19,7 +18,7 @@ from agents.data_agent_v2.types import (
     unpack_cognitive_context,
 )
 
-# Intent types that use GROUP BY + aggregation
+# 使用 GROUP BY + 聚合的意图类型
 _ANALYTICAL_INTENTS = frozenset({
     "aggregation", "ranking", "distribution", "composition",
     "comparison", "trend", "anomaly_detection",
@@ -27,30 +26,30 @@ _ANALYTICAL_INTENTS = frozenset({
 
 
 def _is_likely_non_dimension(col_name: str) -> bool:
-    """Return True if a column is unlikely to be a semantic GROUP BY dimension.
+    """判断某列是否不太可能作为语义 GROUP BY 维度。
 
-    Filters out:
-    - ID columns (ending in _id, or named 'id')
-    - Entity name columns (unique identifiers, not shared categories)
-    - Metric/numeric columns (named 'nums', 'count', 'amount', etc.)
-    - Timestamp columns (ending in _time, _at, _date)
+    过滤掉：
+    - ID 列（以 _id 结尾或名为 'id'）
+    - 实体名称列（唯一标识符，非共享分类）
+    - 指标/数值列（名为 'nums'、'count'、'amount' 等）
+    - 时间戳列（以 _time、_at、_date 结尾）
     """
     lower = col_name.lower()
-    # ID columns
+    # ID 列
     if lower == "id" or lower.endswith("_id") or lower.endswith("_Id"):
         return True
-    # Entity name columns — these are unique identifiers (one per row),
-    # not shared categorical dimensions. For example, GROUP BY user_name
-    # is almost always wrong for aggregation queries.
+    # 实体名称列 — 这些是唯一标识符（每行一个），
+    # 而非共享的分类维度。例如 GROUP BY user_name
+    # 在聚合查询中几乎总是错误的。
     if lower in ("user_name", "product_name", "item_name", "person_name",
                  "username", "customer_name", "client_name", "member_name",
                  "player_name", "student_name", "teacher_name"):
         return True
-    # Metric-like columns
+    # 类指标列
     if lower in ("nums", "num", "count", "amount", "total", "sum", "value",
                  "quantity", "price", "cost", "score", "rate", "ratio", "avg"):
         return True
-    # Timestamp columns
+    # 时间戳列
     if lower.endswith(("_time", "_at", "_date", "_ts", "_timestamp")):
         return True
     return False
@@ -90,7 +89,7 @@ Only output the JSON object, no other text."""
 
 
 class IntentAgent(BaseAgent):
-    """Classify user query into structured analytical intent."""
+    """将用户查询分类为结构化分析意图。"""
 
     def __init__(self) -> None:
         super().__init__("data_intent")
@@ -99,7 +98,7 @@ class IntentAgent(BaseAgent):
         ctx = unpack_cognitive_context(task.params)
 
         try:
-            # Fast path: metadata queries (table_count, table_list, table_schema)
+            # 快路径：元数据查询（table_count、table_list、table_schema）
             metadata_sql = self._check_structured_intent(ctx)
             if metadata_sql:
                 ctx.intent = {
@@ -112,7 +111,7 @@ class IntentAgent(BaseAgent):
                     "output_format": "table",
                     "confidence": 1.0,
                 }
-                ctx.compiled_sql = metadata_sql  # Bypass entire pipeline
+                ctx.compiled_sql = metadata_sql  # 跳过整个推理流水线
                 ctx.verification_report = {"status": "pass", "issues": []}
 
                 return pack_cognitive_result(
@@ -131,7 +130,7 @@ class IntentAgent(BaseAgent):
                     )],
                 )
 
-            # LLM classification
+            # LLM 分类
             intent = await self._classify_intent(ctx)
             ctx.intent = intent
 
@@ -151,7 +150,7 @@ class IntentAgent(BaseAgent):
                 )],
             )
         except Exception as exc:
-            # Fallback: heuristic intent with schema-aware dimensions
+            # 回退：基于启发式的意图识别（含 Schema 感知的维度提取）
             fallback = await self._heuristic_intent(ctx)
             ctx.intent = fallback
             return AgentResult(
@@ -165,9 +164,9 @@ class IntentAgent(BaseAgent):
             )
 
     def _check_structured_intent(self, ctx: CognitiveContext) -> str | None:
-        """Detect metadata queries and return direct SQL.
+        """检测元数据查询并返回直接 SQL。
 
-        Reuses the structured intent detection from SemanticParser.
+        复用 SemanticParser 的结构化意图检测。
         """
         try:
             from kernel.data_cognition.semantic_parser import SemanticParser
@@ -183,13 +182,13 @@ class IntentAgent(BaseAgent):
             return None
 
     async def _classify_intent(self, ctx: CognitiveContext) -> dict:
-        """LLM-based intent classification."""
+        """基于 LLM 的意图分类。"""
         from model.model_gateway.gateway import LLMRole, get_model_gateway
         from model.llm_adapter.base import LLMMessage
 
         gw = get_model_gateway()
 
-        # Build user prompt with schema context
+        # 构建 Schema 上下文的用户提示
         schema_summary = ctx.schema_hint or ", ".join(ctx.table_names)
         user_msg = f"Query: {ctx.query}\nAvailable tables: {schema_summary}"
 
@@ -206,7 +205,7 @@ class IntentAgent(BaseAgent):
 
             intent = json.loads(response.content.strip())
 
-            # Validate required fields
+            # 验证必填字段
             intent.setdefault("intent_type", "aggregation")
             intent.setdefault("target_entity", "")
             intent.setdefault("metric", "")
@@ -216,14 +215,14 @@ class IntentAgent(BaseAgent):
             intent.setdefault("output_format", "table")
             intent.setdefault("confidence", 0.7)
 
-            # Validate intent_type is valid
+            # 验证 intent_type 是否合法
             if intent["intent_type"] not in INTENT_TYPES:
                 intent["intent_type"] = "aggregation"
 
-            # For analytical intents, always use schema-aware dimension extraction.
-            # The LLM is unreliable at picking exact column names — it may confuse
-            # "grade_name" with "task_name" based on data values rather than schema.
-            # Schema-aware extraction uses actual column names and comments.
+            # 对于分析型意图，始终使用 Schema 感知的维度提取。
+            # LLM 在选取精确列名方面不可靠 — 它可能根据数据值
+            # 而非 Schema 将 "grade_name" 与 "task_name" 混淆。
+            # Schema 感知提取使用实际列名和注释。
             if intent["intent_type"] in _ANALYTICAL_INTENTS:
                 schema_dims = self._extract_dimensions_from_query(ctx)
                 if schema_dims:
@@ -232,11 +231,11 @@ class IntentAgent(BaseAgent):
             return intent
 
         except json.JSONDecodeError:
-            # Try to extract JSON from text
+            # 尝试从文本中提取 JSON
             return await self._heuristic_intent(ctx)
 
     async def _heuristic_intent(self, ctx: CognitiveContext) -> dict:
-        """Keyword-based heuristic fallback with schema-aware dimension extraction."""
+        """基于关键词的启发式回退，含 Schema 感知的维度提取。"""
         q = ctx.query.lower()
         dimensions = self._extract_dimensions_from_query(ctx)
 
@@ -248,8 +247,8 @@ class IntentAgent(BaseAgent):
             "time_window": None,
         }
 
-        # metadata — only when querying ABOUT tables/schema, not when "表" is
-        # a location qualifier like "用户表中" or "订单表里"
+        # metadata — 仅当查询关于表/Schema 时，而非"表"作为
+        # 位置限定词如"用户表中"或"订单表里"
         meta_structure = any(w in q for w in ("表结构", "schema", "字段", "列", "有哪些表",
                                                 "多少张表", "几个表", "哪些表", "所有表"))
         meta_question = (any(w in q for w in ("多少", "几个", "哪些"))
@@ -275,16 +274,16 @@ class IntentAgent(BaseAgent):
         return {**base_intent, "intent_type": "raw_lookup", "output_format": "table", "confidence": 0.3}
 
     def _extract_dimensions_from_query(self, ctx: CognitiveContext) -> list[str]:
-        """Extract likely GROUP BY columns by matching query text to schema columns and comments.
+        """通过匹配查询文本与 Schema 列名和注释，提取可能的 GROUP BY 列。
 
-        Only returns columns from tables whose columns or comments match the query,
-        to avoid cross-table dimension pollution.
+        仅返回列名或注释与查询匹配的表中的列，
+        以避免跨表维度污染。
         """
         query_lower = (ctx.query or "").lower()
         query_text = ctx.query or ""
         dimensions = []
 
-        # Build column name → (comment, table_name) mapping from schema_hint
+        # 从 schema_hint 构建列名 → (注释, 表名) 映射
         col_meta: dict[str, tuple[str, str]] = {}  # col_name → (comment, table_name)
         try:
             import json
@@ -304,12 +303,12 @@ class IntentAgent(BaseAgent):
         except (json.JSONDecodeError, TypeError):
             pass
 
-        # Determine which tables are relevant based on column name/comment matches
+        # 根据列名/注释匹配确定相关表
         matched_tables: set[str] = set()
 
         for col_name, (comment, table_name) in col_meta.items():
             col_lower = col_name.lower()
-            # Direct column name match
+            # 直接列名匹配
             if col_lower in query_lower:
                 dimensions.append(col_name)
                 matched_tables.add(table_name)
@@ -319,12 +318,12 @@ class IntentAgent(BaseAgent):
                 dimensions.append(col_name)
                 matched_tables.add(table_name)
                 continue
-            # Comment exact match
+            # 注释精确匹配
             if comment and comment in query_text:
                 dimensions.append(col_name)
                 matched_tables.add(table_name)
                 continue
-            # Comment partial match via Chinese word extraction
+            # 通过中文词提取的注释部分匹配
             if comment:
                 for word in self._extract_cn_words(query_text):
                     if len(word) >= 2 and word in comment:
@@ -332,7 +331,7 @@ class IntentAgent(BaseAgent):
                         matched_tables.add(table_name)
                         break
 
-        # Extract column names from parenthesized hints
+        # 从括号提示中提取列名
         paren_matches = re.findall(r'\((\w+)\)', query_text)
         for match in paren_matches:
             match_lower = match.lower()
@@ -342,12 +341,12 @@ class IntentAgent(BaseAgent):
                 elif col_name.lower().startswith(match_lower) and col_name not in dimensions:
                     dimensions.append(col_name)
 
-        # Remove non-dimension columns FIRST so they don't bias table scoring.
-        # For example, task_id (ends in _id) and nums (metric) inflate
-        # dwd_work_record_detail's score, causing the wrong table to win.
+        # 优先移除非维度列，避免它们干扰表评分。
+        # 例如 task_id（以 _id 结尾）和 nums（指标）会虚高
+        # dwd_work_record_detail 的评分，导致选错表。
         dimensions = [d for d in dimensions if not _is_likely_non_dimension(d)]
 
-        # Filter: only keep dimensions from the most relevant table
+        # 过滤：仅保留最相关表的维度
         if len(matched_tables) > 1:
             table_scores: dict[str, int] = {}
             for d in dimensions:
@@ -367,7 +366,7 @@ class IntentAgent(BaseAgent):
 
     @staticmethod
     def _extract_cn_words(text: str) -> list[str]:
-        """Extract Chinese word fragments (2-4 char sequences) from text."""
+        """从文本中提取中文词片段（2-4 字符序列）。"""
         words = []
         cn_chars = [c for c in text if '一' <= c <= '鿿']
         for size in (2, 3, 4):

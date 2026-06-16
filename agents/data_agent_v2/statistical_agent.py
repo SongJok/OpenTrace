@@ -1,13 +1,13 @@
 """
-StatisticalAgent — descriptive statistics, outlier detection, and trend analysis.
+StatisticalAgent — 描述统计、离群检测与趋势分析。
 
-Operates on query result rows without LLM. Performs:
-- Descriptive stats: count, mean, median, std, min, max, percentiles
-- Outlier detection: IQR method (1.5×IQR) and Z-score (|z| > 3)
-- Trend detection: monotonic direction + strength for time-series
-- Group comparison: effect size between groups
+在无 LLM 情况下对查询结果行计算：
+- 描述统计：计数、均值、中位数、标准差、分位数等
+- 离群：IQR（1.5×IQR）与 Z 分数（|z|>3）
+- 趋势：时间序列单调方向与强度
+- 组间比较：效应量
 
-All computations are streaming-friendly and handle missing values.
+计算可流式处理并兼容缺失值。
 """
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ from agents.data_agent_v2.types import (
 
 
 class StatisticalAgent(BaseAgent):
-    """Compute descriptive statistics and detect anomalies in query results.
+    """计算查询结果的描述统计并检测异常。
 
-    Deterministic, no LLM. Operates only when results have numeric columns.
+    确定性，无 LLM。仅当结果包含数值列时运行。
     """
 
     def __init__(self) -> None:
@@ -38,20 +38,20 @@ class StatisticalAgent(BaseAgent):
             return self._skip(task, ctx, "no data rows to analyze")
 
         try:
-            # 1. Identify numeric columns
+            # 1. 识别数值列
             numeric_cols = self._find_numeric_columns(rows)
 
-            # 2. Compute descriptive statistics
+            # 2. 计算描述统计
             stats = {}
             for col in numeric_cols:
                 values = self._extract_numeric_values(rows, col)
                 if values:
                     stats[col] = self._compute_stats(values)
 
-            # 3. Detect outliers
+            # 3. 检测异常值
             outliers = self._detect_outliers_all(rows, numeric_cols)
 
-            # 4. Detect trends if time-ordered data
+            # 4. 若为时间序列数据则检测趋势
             trends = {}
             if self._is_time_series(ctx):
                 for col in numeric_cols:
@@ -59,7 +59,7 @@ class StatisticalAgent(BaseAgent):
                     if len(values) >= 3:
                         trends[col] = self._detect_trend(values)
 
-            # 5. Compare groups if dimension columns exist
+            # 5. 若存在维度列则比较组间差异
             comparisons = {}
             dim_cols = self._find_dimension_columns(rows, numeric_cols)
             if dim_cols and len(rows) >= 4:
@@ -67,7 +67,7 @@ class StatisticalAgent(BaseAgent):
 
             summary = self._build_summary(stats, outliers, trends, comparisons)
 
-            # Attach to context
+            # 附加到上下文
             ctx.statistical_report = {
                 "descriptive_stats": stats,
                 "outliers": outliers,
@@ -114,10 +114,10 @@ class StatisticalAgent(BaseAgent):
                 error=str(exc),
             )
 
-    # ── Column Detection ────────────────────────────────────────────────
+    # ── 列检测 ────────────────────────────────────────────────
 
     def _find_numeric_columns(self, rows: list[dict]) -> list[str]:
-        """Identify columns with numeric values."""
+        """识别数值列。"""
         if not rows:
             return []
         numeric: list[str] = []
@@ -125,7 +125,7 @@ class StatisticalAgent(BaseAgent):
             if isinstance(val, (int, float)) and not isinstance(val, bool):
                 numeric.append(col)
             elif col not in numeric:
-                # Check more rows for numeric strings
+                # 检查更多行以识别数字字符串
                 num_count = sum(
                     1 for r in rows[:20]
                     if isinstance(r.get(col), (int, float))
@@ -138,7 +138,7 @@ class StatisticalAgent(BaseAgent):
     def _find_dimension_columns(
         self, rows: list[dict], numeric_cols: list[str]
     ) -> list[str]:
-        """Identify categorical/dimension columns for grouping."""
+        """识别分类/维度列用于分组。"""
         dims: list[str] = []
         for col in rows[0]:
             if col in numeric_cols:
@@ -148,12 +148,12 @@ class StatisticalAgent(BaseAgent):
                 dims.append(col)
         return dims
 
-    # ── Core Statistics ─────────────────────────────────────────────────
+    # ── 核心统计 ─────────────────────────────────────────────────
 
     def _extract_numeric_values(
         self, rows: list[dict], col: str
     ) -> list[float]:
-        """Extract clean numeric values from a column."""
+        """从列中提取干净的数值。"""
         values: list[float] = []
         for r in rows:
             v = r.get(col)
@@ -172,7 +172,7 @@ class StatisticalAgent(BaseAgent):
         return values
 
     def _compute_stats(self, values: list[float]) -> dict[str, float]:
-        """Compute descriptive statistics for a list of values."""
+        """计算数值列表的描述统计。"""
         n = len(values)
         if n == 0:
             return {}
@@ -180,18 +180,18 @@ class StatisticalAgent(BaseAgent):
         sorted_vals = sorted(values)
         mean = sum(values) / n
 
-        # Median
+        # 中位数
         mid = n // 2
         if n % 2 == 0:
             median = (sorted_vals[mid - 1] + sorted_vals[mid]) / 2
         else:
             median = sorted_vals[mid]
 
-        # STD
+        # 标准差
         variance = sum((v - mean) ** 2 for v in values) / n
         std = math.sqrt(variance)
 
-        # Percentiles
+        # 分位数
         def percentile(data: list[float], p: float) -> float:
             k = (len(data) - 1) * p / 100
             f = int(k)
@@ -211,15 +211,15 @@ class StatisticalAgent(BaseAgent):
             "p25": round(percentile(sorted_vals, 25), 4),
             "p75": round(percentile(sorted_vals, 75), 4),
             "p95": round(percentile(sorted_vals, 95), 4),
-            "cv": round(std / abs(mean), 4) if mean != 0 else 0,  # coefficient of variation
+            "cv": round(std / abs(mean), 4) if mean != 0 else 0,  # 变异系数
         }
 
-    # ── Outlier Detection ───────────────────────────────────────────────
+    # ── 异常值检测 ───────────────────────────────────────────────
 
     def _detect_outliers_all(
         self, rows: list[dict], numeric_cols: list[str]
     ) -> dict[str, list[dict]]:
-        """Detect outliers across all numeric columns."""
+        """检测所有数值列的异常值。"""
         results: dict[str, list[dict]] = {}
         for col in numeric_cols:
             values = self._extract_numeric_values(rows, col)
@@ -236,7 +236,7 @@ class StatisticalAgent(BaseAgent):
     def _detect_outliers_iqr(
         self, values: list[float]
     ) -> list[tuple[int, float]]:
-        """Detect outliers using IQR method (1.5 × IQR)."""
+        """使用 IQR 方法检测异常值（1.5 × IQR）。"""
         sorted_vals = sorted(values)
         n = len(sorted_vals)
         q1 = sorted_vals[n // 4]
@@ -254,10 +254,10 @@ class StatisticalAgent(BaseAgent):
                 outliers.append((i, round(v, 4)))
         return outliers
 
-    # ── Trend Detection ─────────────────────────────────────────────────
+    # ── 趋势检测 ─────────────────────────────────────────────────
 
     def _is_time_series(self, ctx: CognitiveContext) -> bool:
-        """Check if results likely represent time-ordered data."""
+        """检查结果是否可能为时间序列数据。"""
         tw = ctx.time_window or {}
         if tw.get("type") not in (None, "none"):
             return True
@@ -266,12 +266,12 @@ class StatisticalAgent(BaseAgent):
         return False
 
     def _detect_trend(self, values: list[float]) -> dict[str, Any]:
-        """Detect monotonic trend direction and strength."""
+        """检测单调趋势方向与强度。"""
         n = len(values)
         if n < 3:
             return {"direction": "insufficient_data"}
 
-        # Spearman-like: count increasing vs decreasing pairs
+        # 类 Spearman：统计递增与递减对数
         increases = 0
         decreases = 0
         for i in range(n - 1):
@@ -285,10 +285,10 @@ class StatisticalAgent(BaseAgent):
         if total_pairs == 0:
             return {"direction": "flat", "strength": 1.0}
 
-        # Trend score: +1 = strictly increasing, -1 = strictly decreasing
+        # 趋势得分：+1 = 严格递增，-1 = 严格递减
         trend_score = (increases - decreases) / total_pairs
 
-        # Compute simple linear regression slope
+        # 计算简单线性回归斜率
         x_mean = (n - 1) / 2
         y_mean = sum(values) / n
         numerator = sum((i - x_mean) * (values[i] - y_mean) for i in range(n))
@@ -324,7 +324,7 @@ class StatisticalAgent(BaseAgent):
             ),
         }
 
-    # ── Group Comparison ────────────────────────────────────────────────
+    # ── 组间比较 ────────────────────────────────────────────────
 
     def _compare_groups(
         self,
@@ -333,10 +333,10 @@ class StatisticalAgent(BaseAgent):
         dim_cols: list[str],
         ctx: CognitiveContext,
     ) -> dict[str, dict]:
-        """Compare numeric metrics across dimension groups."""
+        """跨维度组比较数值指标。"""
         comparisons: dict[str, dict] = {}
 
-        for dim in dim_cols[:3]:  # Max 3 dimensions to keep output manageable
+        for dim in dim_cols[:3]:  # 最多 3 个维度，控制输出规模
             groups: dict[str, list[dict]] = {}
             for r in rows:
                 key = str(r.get(dim, "null"))
@@ -357,7 +357,7 @@ class StatisticalAgent(BaseAgent):
                             "sum": round(sum(vals), 4),
                         }
 
-                # Find min/max group
+                # 找到最大/最小组
                 if group_stats:
                     max_grp = max(group_stats, key=lambda g: group_stats[g]["mean"])
                     min_grp = min(group_stats, key=lambda g: group_stats[g]["mean"])
@@ -377,7 +377,7 @@ class StatisticalAgent(BaseAgent):
 
         return comparisons
 
-    # ── Output ──────────────────────────────────────────────────────────
+    # ── 输出 ──────────────────────────────────────────────────
 
     def _build_summary(
         self,
@@ -386,10 +386,10 @@ class StatisticalAgent(BaseAgent):
         trends: dict[str, dict],
         comparisons: dict[str, dict],
     ) -> str:
-        """Build human-readable summary of statistical findings."""
+        """构建统计发现的人类可读摘要。"""
         parts: list[str] = []
 
-        # Stats summary
+        # 统计摘要
         if stats:
             stat_summaries = [
                 f"{col}: mean={s.get('mean', '?')}, median={s.get('median', '?')}, "
@@ -398,7 +398,7 @@ class StatisticalAgent(BaseAgent):
             ]
             parts.append("Descriptive stats:\n" + "\n".join(stat_summaries))
 
-        # Outliers
+        # 异常值
         total_outliers = sum(len(v) for v in outliers.values())
         if total_outliers > 0:
             outlier_strs = [
@@ -407,7 +407,7 @@ class StatisticalAgent(BaseAgent):
             ]
             parts.append(f"Outliers detected ({total_outliers} total):\n" + "\n".join(outlier_strs))
 
-        # Trends
+        # 趋势
         if trends:
             trend_strs = [
                 f"{col}: {t.get('direction', '?')} ({t.get('strength_label', '?')}), "
@@ -416,7 +416,7 @@ class StatisticalAgent(BaseAgent):
             ]
             parts.append("Trends:\n" + "\n".join(trend_strs))
 
-        # Group comparisons
+        # 组间比较
         if comparisons:
             comp_strs = []
             for dim, cols in comparisons.items():

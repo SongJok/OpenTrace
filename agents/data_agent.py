@@ -4,8 +4,9 @@ import os
 import time
 from typing import Any
 
+from execution.data.database_hosts import format_database_connection_error
 from execution.data.db_router import DBConnectionInfo, DBRouter
-from gateway.api_gateway.routers.databases import _dec
+from infra.security.data_source_secrets import decrypt_data_source_secret
 from infra.config.settings import settings
 from infra.metadata.schema_inspector import build_schema_hint, load_schema_inspection
 from infra.storage.database import AsyncSessionLocal
@@ -25,13 +26,13 @@ from kernel.data_cognition.sql_validator import SQLValidationError, SQLValidator
 from kernel.data_cognition.types import CandidateSQL, SemanticContext
 
 
-# ── DataAgent V2 wrapper ──────────────────────────────────────────────────
+# ── DataAgent V2 包装 ──────────────────────────────────────────────────
 
 class DataAgent(BaseAgent):
-    """DataAgent with V2 support via feature flag.
+    """DataAgent：通过特性开关支持 V2。
 
-    When DATA_AGENT_V2_ENABLED=false, delegates to DataAgentV1.
-    When enabled, delegates to DataAgentV2Supervisor. V1 fallback is opt-in only.
+    DATA_AGENT_V2_ENABLED=false 时委托 DataAgentV1；
+    开启时委托 DataAgentV2Supervisor；V1 回退仅可选开启。
     """
 
     def __init__(self) -> None:
@@ -50,11 +51,29 @@ class DataAgent(BaseAgent):
             result = await supervisor.execute(task)
             return result
         except Exception as exc:
-            if self._v2_fallback:
-                # LowConfidenceError: V2 completed but result quality was poor
-                from agents.data_agent_v2.types import LowConfidenceError
-                if isinstance(exc, LowConfidenceError):
-                    pass  # V1 fallback below — confidence was too low
+            from agents.data_agent_v2.types import LowConfidenceError
+
+            if isinstance(exc, LowConfidenceError):
+                try:
+                    from kernel.agent_runtime.data_v2_failure_memory import (
+                        record_data_v2_circuit_breaker_from_exception,
+                    )
+                    from kernel.agent_runtime.learning_hook import record_agent_learning_signal
+
+                    record_data_v2_circuit_breaker_from_exception(
+                        exc, task=task, resolution="v1_fallback" if self._v2_fallback else "error"
+                    )
+                    await record_agent_learning_signal(
+                        agent_type="data",
+                        task_id=task.task_id,
+                        session_id=str(task.session_id or ""),
+                        passed=False,
+                        confidence=float(exc.confidence),
+                        metadata={"failure": "low_confidence_circuit_breaker"},
+                    )
+                except Exception:
+                    pass
+            if self._v2_fallback and isinstance(exc, LowConfidenceError):
                 return await self._get_v1().execute(task)
             return AgentResult(
                 task_id=task.task_id,
@@ -70,7 +89,7 @@ class DataAgent(BaseAgent):
         return self._v1
 
 
-# ── DataAgent V1 (original implementation, preserved intact) ──────────────
+# ── DataAgent V1（原实现，完整保留）──────────────
 
 class DataAgentV1(BaseAgent):
     def __init__(self) -> None:
@@ -78,12 +97,12 @@ class DataAgentV1(BaseAgent):
         self.validator = SQLValidator(default_limit=100)
         self.ranker = SQLRanker()
         self.reflector = SQLReflector()
-        # Pipeline mode components (lazy-initialized)
+        # 流水线模式组件（惰性初始化）
         self._semantic_parser: SemanticParser | None = None
         self._query_planner: QueryPlanner | None = None
         self._sql_builder: SQLBuilder | None = None
         self._query_executor: QueryExecutor | None = None
-        # Mode: "pipeline" (default) or "llm_direct"
+        # 模式："pipeline"（默认）或 "llm_direct"
         self._mode = os.getenv("NL2SQL_MODE", "pipeline").lower()
 
     async def execute(self, task: TaskMessage) -> AgentResult:
@@ -118,14 +137,14 @@ class DataAgentV1(BaseAgent):
             table_names = inspection.table_names
             table_columns = inspection.column_map if hasattr(inspection, "column_map") else {}
 
-            # Pipeline mode
+            # 流水线模式
             if self._mode == "pipeline":
                 return await self._execute_pipeline(
                     task, ds, dialect, data_source_id, schema_hint,
                     table_names, table_columns, semantic_config,
                 )
 
-            # LLM direct mode (legacy fallback)
+            # LLM 直连模式（遗留回退）
             return await self._execute_llm_direct(
                 task, ds, dialect, data_source_id, sql, schema_hint,
                 semantic_config, start_ts,
@@ -137,15 +156,18 @@ class DataAgentV1(BaseAgent):
                 error=f"invalid sql: {exc}",
             )
         except Exception as exc:  # noqa: BLE001
-            error_msg = str(exc)
-            if "access denied" in error_msg.lower() or "authentication failed" in error_msg.lower():
-                error_msg = f"数据库连接失败：{error_msg}。请检查用户名和密码。"
-            elif "connection refused" in error_msg.lower() or "could not connect" in error_msg.lower():
-                error_msg = f"数据库连接失败：{error_msg}。请检查主机和端口，确保数据库服务正在运行。"
-            elif "does not exist" in error_msg.lower() or "unknown database" in error_msg.lower():
-                error_msg = f"数据库不存在：{error_msg}。请检查数据库名称。"
-            elif "table" in error_msg.lower() and "not exist" in error_msg.lower():
-                error_msg = f"表不存在：{error_msg}。请检查表名或同步数据库模式。"
+            host = port = database = None
+            try:
+                if ds is not None:
+                    host, port, database = ds.host, ds.port, ds.database
+            except NameError:
+                pass
+            error_msg = format_database_connection_error(
+                exc,
+                configured_host=host or "",
+                port=port,
+                database=database,
+            )
             return AgentResult(
                 task_id=task.task_id, agent_type=self.agent_type, status="error", content="",
                 error=error_msg,
@@ -162,11 +184,11 @@ class DataAgentV1(BaseAgent):
         table_columns: dict[str, list[str]],
         semantic_config: dict[str, Any],
     ) -> AgentResult:
-        """Execute using the new multi-stage pipeline: parse → plan → build → execute."""
+        """多阶段流水线执行：解析 → 规划 → 构建 → 执行。"""
         start_ts = time.monotonic()
         dsn = self._build_dsn(ds)
 
-        # Lazy init pipeline components
+        # 惰性初始化流水线组件
         if self._semantic_parser is None:
             self._semantic_parser = SemanticParser(
                 schema_summary=schema_hint,
@@ -185,7 +207,7 @@ class DataAgentV1(BaseAgent):
                 max_retries=2,
             )
 
-        # Step 1: Check structured intent (table_count, table_list, table_schema)
+        # 步骤 1：检查结构化意图（table_count、table_list、table_schema）
         structured_sql = self._semantic_parser.check_structured_intent(
             task.query, table_names, ds.database, dialect,
         )
@@ -196,18 +218,18 @@ class DataAgentV1(BaseAgent):
                 meta={"mode": "pipeline_structured"},
             )
 
-        # Step 2: Semantic parsing
+        # 步骤 2：语义解析
         try:
             semantics = await self._semantic_parser.parse(task.query, dialect)
         except Exception as exc:
-            # Fall back to llm_direct on parse failure
+            # 解析失败时回退 llm_direct
             return await self._execute_llm_direct(
                 task, ds, dialect, data_source_id, task.query, schema_hint,
                 semantic_config, start_ts,
                 fallback_reason=f"semantic_parse_failed: {exc}",
             )
 
-        # Step 3: Query planning → LogicalPlan
+        # 步骤 3：查询规划 → LogicalPlan
         try:
             plan = await self._query_planner.plan(
                 semantics=semantics,
@@ -224,7 +246,7 @@ class DataAgentV1(BaseAgent):
                 fallback_reason=f"query_plan_failed: {exc}",
             )
 
-        # Step 4: Execute with self-validation + auto-retry
+        # 步骤 4：自校验 + 自动重试执行
         try:
             rows, final_sql, warnings = await self._query_executor.run_with_retry(
                 plan=plan,
@@ -242,7 +264,7 @@ class DataAgentV1(BaseAgent):
         elapsed_ms = (time.monotonic() - start_ts) * 1000
         confidence = self._compute_confidence(rows, None, mode="pipeline")
 
-        # Step 5: Build explanation
+        # 步骤 5：生成解释
         explanation = build_explanation(plan, final_sql, rows, task.query, warnings)
 
         row_count = len(rows)
@@ -268,24 +290,37 @@ class DataAgentV1(BaseAgent):
                 message_id=task.task_id,
             ),
         ])
+        meta = {
+            "sql": final_sql,
+            "rows": rows[:20],
+            "row_count": row_count,
+            "data_source_id": data_source_id,
+            "mode": "pipeline",
+            "plan_json": plan.to_json(),
+            "explanation": format_explanation(explanation, include_sql=False),
+            "tables_used": explanation.tables_used,
+            "elapsed_ms": round(elapsed_ms, 1),
+            "result_refs": result_refs,
+        }
+        try:
+            from services.data_intelligence_runtime import attach_data_intelligence_to_metadata
+
+            meta = attach_data_intelligence_to_metadata(
+                meta,
+                query=task.query,
+                sql=final_sql,
+                row_count=row_count,
+                metric_names=list(getattr(plan, "metric_mappings", {}) or {}),
+            )
+        except Exception:
+            pass
         return AgentResult(
             task_id=task.task_id,
             agent_type=self.agent_type,
             status="success",
             content=f"data rows={row_count}",
             confidence=confidence,
-            metadata={
-                "sql": final_sql,
-                "rows": rows[:20],
-                "row_count": row_count,
-                "data_source_id": data_source_id,
-                "mode": "pipeline",
-                "plan_json": plan.to_json(),
-                "explanation": format_explanation(explanation, include_sql=False),
-                "tables_used": explanation.tables_used,
-                "elapsed_ms": round(elapsed_ms, 1),
-                "result_refs": result_refs,
-            },
+            metadata=meta,
             agent_trace={
                 "agent_type": self.agent_type,
                 "task_id": task.task_id,
@@ -323,7 +358,7 @@ class DataAgentV1(BaseAgent):
         start_ts: float,
         fallback_reason: str = "",
     ) -> AgentResult:
-        """Legacy LLM direct SQL generation mode."""
+        """遗留 LLM 直连 SQL 生成模式。"""
         from kernel.data_cognition.sql_postprocess import normalize_sql_for_dialect
         from kernel.data_cognition.sql_planner import SQLPlanner
         from kernel.data_cognition.semantic_layer import SemanticLayer
@@ -332,23 +367,23 @@ class DataAgentV1(BaseAgent):
         semantic_layer = SemanticLayer(semantic_config)
         semantic_ctx = semantic_layer.resolve(task.query, dialect)
 
-        # Supplement with heuristic time intent
+        # 启发式时间意图补充
         if not semantic_ctx.time_macros:
             time_intent = semantic_layer.extract_time_intent(task.query)
             if time_intent:
                 semantic_ctx.time_macros.append(time_intent)
 
-        # SQL generation
+        # SQL 生成
         if not sql.lower().startswith(("select", "with", "show", "describe")):
             planned = await planner.plan(task.query, schema_hint=schema_hint, dialect=dialect)
             sql = planned.sql
 
-        # Re-plan with schema guidance if needed
+        # 必要时按 schema 指引重新规划
         if not sql.lower().startswith(("select", "with")) and schema_hint and len(schema_hint) > 40:
             planned = await planner.plan(task.query, schema_hint=schema_hint, dialect=dialect)
             sql = planned.sql
 
-        # Multi-candidate generation
+        # 多候选 SQL 生成
         semantic_fragments = semantic_ctx.resolved_sql_fragments if semantic_ctx.resolved_sql_fragments else None
         candidates = await planner.generate_candidates(
             task.query, schema_hint=schema_hint, dialect=dialect, n=4,
@@ -439,13 +474,13 @@ class DataAgentV1(BaseAgent):
         )
 
     def _select_valid_sql(self, ranked: list[CandidateSQL], semantic_ctx: SemanticContext | None, query: str) -> str | None:
-        """Select the best valid SQL from ranked candidates."""
+        """从排序后的候选中选取最优合法 SQL。"""
         for c in ranked:
             time_issues = self.validator.validate_time_filter(c.sql, query)
             if time_issues:
                 continue
             return c.sql
-        # All candidates failed time filter — return the highest-ranked one with a warning
+        # 时间过滤均未通过 — 仍返回排名第一的候选并告警
         return ranked[0].sql if ranked else None
 
     async def _execute_with_reflection(
@@ -484,20 +519,20 @@ class DataAgentV1(BaseAgent):
         return [], current_sql
 
     def _compute_confidence(self, rows: list, semantic_ctx: SemanticContext | None, mode: str = "pipeline") -> float:
-        """Compute confidence score based on actual result characteristics."""
-        confidence = 0.60  # base
+        """根据实际结果特征计算置信度。"""
+        confidence = 0.60  # 基线
 
-        # Pipeline mode is inherently more trustworthy (structured reasoning)
+        # 流水线模式更可信（结构化推理）
         if mode == "pipeline":
             confidence += 0.15
 
-        # Has result rows
+        # 有结果行
         if rows:
             confidence += 0.10
             if len(rows) >= 3:
-                confidence += 0.05  # multiple rows = more likely correct
+                confidence += 0.05  # 多行更可能正确
 
-        # Semantic resolution quality
+        # 语义解析质量
         if semantic_ctx:
             if semantic_ctx.dimension_mappings:
                 confidence += 0.05
@@ -516,7 +551,7 @@ class DataAgentV1(BaseAgent):
                 port=ds.port,
                 database=ds.database,
                 username=ds.username,
-                password=_dec(ds.password_encrypted),
+                password=decrypt_data_source_secret(ds.password_encrypted),
             )
         )
 
@@ -548,6 +583,7 @@ class DataAgentV1(BaseAgent):
                 message_id=task.task_id,
             ),
         ])
+        sql_summary = f"SQL ({row_count} rows): {safe_sql[:500]}"
         return AgentResult(
             task_id=task.task_id,
             agent_type=self.agent_type,
@@ -562,6 +598,16 @@ class DataAgentV1(BaseAgent):
                     payload={"sql": safe_sql, "row_count": len(rows)},
                     credibility=0.95,
                     relevance=0.9,
+                )
+            ],
+            evidence_objects=[
+                self._make_evidence_object(
+                    content=sql_summary,
+                    source_type="sql",
+                    credibility=0.95,
+                    relevance=0.9,
+                    data_source_id=data_source_id,
+                    row_count=row_count,
                 )
             ],
         )

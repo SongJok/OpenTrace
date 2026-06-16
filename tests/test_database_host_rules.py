@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from execution.data.database_hosts import (
+    format_database_connection_error,
     is_allowed_database_host,
     is_docker_internal_database_host,
     resolve_database_host_for_runtime,
@@ -26,6 +27,17 @@ class DatabaseHostRulesTests(unittest.TestCase):
             ),
             "host.docker.internal",
         )
+
+    def test_connection_error_mentions_loopback_rewrite(self):
+        msg = format_database_connection_error(
+            ConnectionRefusedError("[Errno 111] Connection refused"),
+            configured_host="127.0.0.1",
+            port=3306,
+            database="app",
+        )
+        self.assertIn("127.0.0.1", msg)
+        self.assertIn("host.docker.internal", msg)
+        self.assertIn("3306", msg)
 
     def test_db_router_uses_runtime_host_resolution(self):
         with patch(

@@ -1,5 +1,5 @@
 """
-Promt Engine — template management for system and user prompts.
+提示词引擎 — 系统与用户提示模板管理。
 """
 
 from __future__ import annotations

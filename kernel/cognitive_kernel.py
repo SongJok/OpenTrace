@@ -34,17 +34,19 @@ from infra.observability.logger import get_logger
 from infra.observability.tracer import get_tracer
 from kernel.cognition.self_model import SelfModel
 from kernel.cognition.types import CapabilityLevel, TaskDomain
+from kernel.cognitive_controls import (
+    classify_intent,
+    direct_answer_for_intent,
+)
 from kernel.identity.system_identity import CANONICAL_IDENTITY_RESPONSE, is_identity_user_query
 from kernel.json_parser import parse_llm_json
 from kernel.protocol.events import trace_context_for_request
 from memory.working_memory.working_memory import (
     cache_identity_answer,
     get_cached_identity_answer,
-    get_identity_turn_sequence,
     get_or_create_session_memory,
     is_identity_cache_expired,
     load_or_create_session_memory,
-    set_identity_context_fingerprint,
     set_identity_turn_sequence,
 )
 
@@ -107,8 +109,8 @@ def _record_identity_turn_seq(session_id: str) -> None:
         wm = get_or_create_session_memory(session_id)
         current_turns = len(wm._turns)
         set_identity_turn_sequence(session_id, current_turns)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("identity_turn_seq_record_skipped", error=str(exc))
 
 
 @dataclass
@@ -260,7 +262,40 @@ class CognitiveKernel:
                 session_id=sid,
                 user_id=request.user_id,
             )
-            is_multi = self._is_multi_question(request.query)
+            from kernel.cognition.multi_question import is_multi_question as _is_mq
+
+            is_multi = _is_mq(request.query) or self._is_multi_question(request.query)
+            force_mode_from_meta: str | None = request.metadata.get("force_mode")
+            from kernel.turn_bootstrap import bootstrap_turn_intent
+
+            boot = await bootstrap_turn_intent(request)
+            effective_query = boot.effective_query
+            intent_lock = boot.intent_lock
+
+            direct_answer = direct_answer_for_intent(intent_lock)
+            if direct_answer and not force_mode_from_meta:
+                total_ms = int((time.monotonic() - t0) * 1000)
+                return KernelResponse(
+                    content=direct_answer,
+                    session_id=request.session_id,
+                    route="intent_lock_direct",
+                    validation_score=1.0,
+                    passed_validation=True,
+                    hallucination_risk=0.0,
+                    intent_category=intent_lock.task_type,
+                    intent_complexity=intent_lock.complexity_level,
+                    context_latency_ms=0,
+                    total_latency_ms=total_ms,
+                    metadata={"intent_lock": intent_lock.to_dict()},
+                )
+
+            from kernel.fast_tool_path import should_use_tool_fast_path
+            from kernel.runtime_gateway import get_runtime_gateway
+
+            if should_use_tool_fast_path(intent_lock, force_mode=force_mode_from_meta):
+                tool_resp = await get_runtime_gateway().try_tool_fast_path(request)
+                if tool_resp is not None:
+                    return tool_resp
 
             # Recover WorkingMemory from Redis if process was restarted
             if sid:
@@ -317,7 +352,6 @@ class CognitiveKernel:
             # Skip V5 routing when force_mode is explicitly set (slash commands like /rag)
             # or when the request includes attachment contexts. L0/L1 routers can't handle
             # attachment content and would return canned identity/FAQ/knowledge answers.
-            force_mode_from_meta: str | None = request.metadata.get("force_mode")
             has_attachments = bool(request.metadata.get("attachment_contexts"))
             if force_mode_from_meta or has_attachments:
                 if force_mode_from_meta:
@@ -326,216 +360,88 @@ class CognitiveKernel:
                     span.set_attribute("routing.has_attachments", True)
                 span.set_attribute("routing.skip_v5", True)
             elif settings.kernel_v5_routing_enabled:
-                # L0: Rule Router (zero-LLM, <1ms)
-                if settings.kernel_l0_rule_router_enabled:
-                    l0_result = await self._get_l0_router().route(
-                        request.query,
-                        sid,
-                        is_multi=is_multi,
-                        conversation_history=request.history,
-                    )
-                    if l0_result.hit and l0_result.answer is not None:
-                        if l0_result.route == "force_mode":
-                            identity_prompt = self.self_model.get_identity_prompt()
-                            from kernel.orchestrator_v4 import (
-                                CognitiveOrchestratorV4,
-                                OrchestratorV4Request,
-                            )
+                from kernel.routing.v5_facade import get_v5_routing_facade
 
-                            orchestrator_v4 = CognitiveOrchestratorV4(
-                                timeout_sec=int(settings.kernel_agent_timeout_sec),
-                                max_parallel=int(settings.kernel_agent_max_parallel),
-                            )
-                            resp = await orchestrator_v4.process(
-                                OrchestratorV4Request(
-                                    query=l0_result.answer,
-                                    session_id=request.session_id,
-                                    user_id=request.user_id,
-                                    history=request.history,
-                                    metadata={
-                                        **request.metadata,
-                                        "web_enabled": request.web_enabled,
-                                        "force_mode": l0_result.force_mode,
-                                    },
-                                    trace_ctx=trace_ctx,
-                                    conversation_state=request.conversation_state,
-                                )
-                            )
-                            total_ms = int((time.monotonic() - t0) * 1000)
-                            return KernelResponse(
-                                content=resp.content,
-                                session_id=request.session_id,
-                                route=resp.route,
-                                validation_score=resp.validation_score,
-                                passed_validation=resp.passed_validation,
-                                hallucination_risk=resp.hallucination_risk,
-                                intent_category=resp.intent_category,
-                                intent_complexity="loop",
-                                context_latency_ms=0,
-                                total_latency_ms=total_ms,
-                                state_patch=resp.state_patch,
-                                result_refs=resp.result_refs or [],
-                                metadata=resp.metadata or {},
-                            )
+                fp = await get_v5_routing_facade(self).try_fast_path(
+                    request,
+                    session_id=sid,
+                    is_multi=is_multi,
+                    context_hash_fn=_context_hash,
+                    t0=t0,
+                )
+                if fp and fp.hit:
+                    if fp.route == "force_mode" and fp.force_mode:
+                        from kernel.runtime_gateway import get_runtime_gateway
 
-                        # ── Enriched identity via MinShort 0.6B ──────────
-                        if (
-                            l0_result.route == "identity"
-                            and settings.kernel_enriched_identity_enabled
-                        ):
-                            try:
-                                from kernel.identity.enriched_identity import (
-                                    generate_enriched_identity,
-                                )
-
-                                wm_turns = []
-                                if sid:
-                                    try:
-                                        wm_turns = get_or_create_session_memory(sid).to_messages()
-                                    except Exception as exc:
-                                        logger.warning("Working memory fetch failed", error=str(exc))
-                                enriched = await generate_enriched_identity(
-                                    query=request.query,
-                                    user_id=request.user_id,
-                                    user_preferences=request.metadata.get("user_preferences", []),
-                                    recent_history=wm_turns or request.history,
-                                )
-                                l0_result.answer = enriched
-                                l0_result.metadata["enriched"] = True
-                            except Exception as exc:
-                                logger.debug(
-                                    "Enriched identity failed, using canned", error=str(exc)
-                                )
-
-                        if l0_result.route in ("identity", "faq") and sid:
-                            cache_identity_answer(sid, request.query, l0_result.answer)
-                            _record_identity_turn_seq(sid)
+                        force_req = KernelRequest(
+                            query=fp.content or request.query,
+                            session_id=request.session_id,
+                            user_id=request.user_id,
+                            history=request.history,
+                            metadata={
+                                **request.metadata,
+                                "web_enabled": request.web_enabled,
+                                "force_mode": fp.force_mode,
+                            },
+                            trace_ctx=trace_ctx,
+                            conversation_state=request.conversation_state,
+                        )
+                        lock_fp = classify_intent(
+                            force_req.query,
+                            fp.force_mode,
+                            prior_intent=getattr(conv_state, "active_intent", None) if conv_state else None,
+                            prior_domain=getattr(conv_state, "active_domain", None) if conv_state else None,
+                            conversation_phase=getattr(conv_state, "conversation_phase", None) if conv_state else None,
+                        )
+                        force_req.metadata["intent_lock"] = lock_fp.to_dict()
+                        force_req.metadata["task_type"] = lock_fp.task_type
+                        if should_use_tool_fast_path(lock_fp, force_mode=fp.force_mode):
+                            tool_fp = await get_runtime_gateway().try_tool_fast_path(force_req)
+                            if tool_fp is not None:
+                                return tool_fp
+                        gw_resp = await get_runtime_gateway().run(force_req)
                         total_ms = int((time.monotonic() - t0) * 1000)
                         return KernelResponse(
-                            content=l0_result.answer,
+                            content=gw_resp.content,
                             session_id=request.session_id,
-                            route=l0_result.route,
-                            validation_score=1.0,
-                            passed_validation=True,
-                            hallucination_risk=0.0,
-                            intent_category=l0_result.route,
-                            intent_complexity="simple",
+                            route=gw_resp.route,
+                            validation_score=gw_resp.validation_score,
+                            passed_validation=gw_resp.passed_validation,
+                            hallucination_risk=gw_resp.hallucination_risk,
+                            intent_category=gw_resp.intent_category,
+                            intent_complexity="loop",
                             context_latency_ms=0,
                             total_latency_ms=total_ms,
-                            metadata=l0_result.metadata,
+                            state_patch=gw_resp.state_patch,
+                            result_refs=gw_resp.result_refs or [],
+                            metadata=gw_resp.metadata or {},
                         )
-
-                # L0.5: Semantic Cache
-                if settings.kernel_semantic_cache_enabled and not is_multi:
-                    ctx_hash = _context_hash(request.history)
-                    cached = await self._get_semantic_cache().lookup(request.query, ctx_hash)
-                    if cached and cached.answer:
-                        total_ms = int((time.monotonic() - t0) * 1000)
-                        return KernelResponse(
-                            content=cached.answer,
-                            session_id=request.session_id,
-                            route="semantic_cache",
-                            validation_score=1.0,
-                            passed_validation=True,
-                            hallucination_risk=0.0,
-                            intent_category="cached",
-                            intent_complexity="simple",
-                            context_latency_ms=0,
-                            total_latency_ms=total_ms,
-                            metadata={"cache_hit": True, "cache_hits": cached.hit_count},
-                        )
-
-                # L1: Complexity Engine + Tiny Router
-                if settings.kernel_l1_tiny_router_enabled and not is_multi:
-                    complexity = self._get_complexity_engine().assess(
-                        request.query,
-                        conversation_context={
-                            "history_length": len(request.history),
-                            "session_id": request.session_id,
-                        },
+                    if fp.route in ("identity", "faq") and sid:
+                        cache_identity_answer(sid, request.query, fp.content)
+                        _record_identity_turn_seq(sid)
+                    total_ms = int((time.monotonic() - t0) * 1000)
+                    return KernelResponse(
+                        content=fp.content,
+                        session_id=request.session_id,
+                        route=fp.route,
+                        validation_score=1.0,
+                        passed_validation=True,
+                        hallucination_risk=0.0,
+                        intent_category=fp.route.replace("l1_", "") if fp.route.startswith("l1_") else fp.route,
+                        intent_complexity="simple",
+                        context_latency_ms=0,
+                        total_latency_ms=total_ms,
+                        metadata=fp.metadata or {},
                     )
-                    if complexity.recommended_pipeline in ("L0", "L1"):
-                        l1_result = await self._get_tiny_router().route(
-                            request.query, request.history
-                        )
-                        if l1_result.route != "complex" and l1_result.answer:
-                            total_ms = int((time.monotonic() - t0) * 1000)
-                            return KernelResponse(
-                                content=l1_result.answer,
-                                session_id=request.session_id,
-                                route=f"l1_{l1_result.route}",
-                                validation_score=1.0,
-                                passed_validation=True,
-                                hallucination_risk=0.0,
-                                intent_category=l1_result.route,
-                                intent_complexity=l1_result.difficulty,
-                                context_latency_ms=0,
-                                total_latency_ms=total_ms,
-                                metadata={**l1_result.metadata, "complexity": complexity.level},
-                            )
             # ── End V5 Routing Tier ────────────────────────────────────
 
-            # ── Memory Context Injection ─────────────────────────────────
-            memory_context: list[dict[str, Any]] = []
-            if settings.kernel_memory_context_enabled and sid:
-                episodic_chunks: list[str] = []
-                keyword_chunks: list[str] = []
+            from kernel.turn_enrichment import enrich_turn_before_dispatch
 
-                # Episodic memory (Redis-backed, best-effort)
-                try:
-                    from memory.episodic_memory.episodic_memory import EpisodicMemory
-
-                    episodic = EpisodicMemory(sid)
-                    episodic_events = await episodic.recall(last_n=20)
-                    # Format episodic events as readable Q&A pairs instead of raw JSON
-                    for e in episodic_events:
-                        try:
-                            inner = json.loads(e.get("content", "{}"))
-                            if isinstance(inner, dict):
-                                q = inner.get("q", "")
-                                a = inner.get("a", "")
-                                if q and a:
-                                    episodic_chunks.append(f"Q: {q}\nA: {a[:300]}")
-                                else:
-                                    episodic_chunks.append(e.get("content", "")[:500])
-                            else:
-                                episodic_chunks.append(str(inner)[:500])
-                        except (json.JSONDecodeError, TypeError):
-                            episodic_chunks.append(str(e.get("content", ""))[:500])
-                except Exception as exc:
-                    logger.warning("Episodic memory fetch failed", error=str(exc))
-
-                # Working memory turns (in-process, always available)
-                try:
-                    wm = get_or_create_session_memory(sid)
-                    keyword_chunks = [
-                        f"user: {t.content}" if t.role == "user" else f"assistant: {t.content}"
-                        for t in wm.get_turns(last_n=8)
-                    ] + request.metadata.get("user_preferences", [])
-                    # Inject layered preference context block
-                    pref_block = request.metadata.get("user_preference_context_block", "")
-                    if pref_block:
-                        keyword_chunks.append(pref_block)
-                except Exception as exc:
-                    logger.warning("Working memory turns fetch failed", error=str(exc))
-
-                # Semantic memory retrieval (combines all sources)
-                if episodic_chunks or keyword_chunks:
-                    try:
-                        memory_chunks = await self._get_memory_router().retrieve(
-                            query=request.query,
-                            episodic_chunks=episodic_chunks,
-                            keyword_chunks=keyword_chunks,
-                            top_k=8,
-                        )
-                        memory_context = [
-                            {"content": c.content, "score": c.score, "source": c.source}
-                            for c in memory_chunks
-                        ]
-                        span.set_attribute("memory_context.hits", len(memory_context))
-                    except Exception as exc:
-                        logger.debug("MemoryRouter.retrieve failed", error=str(exc))
-            # ── End Memory Context Injection ─────────────────────────────
+            fabric_out = await enrich_turn_before_dispatch(
+                request, skip_multi_turn=True
+            )
+            memory_context = fabric_out.memory_context
+            span.set_attribute("memory_context.hits", len(memory_context))
 
             intent = self._classify_intent_domain(request.query)
             assessment = self.self_model.introspect(request.query, intent)
@@ -545,6 +451,9 @@ class CognitiveKernel:
             if assessment.level == CapabilityLevel.UNAVAILABLE:
                 total_ms = int((time.monotonic() - t0) * 1000)
                 if is_identity_user_query(request.query):
+                    if sid:
+                        cache_identity_answer(sid, request.query, CANONICAL_IDENTITY_RESPONSE)
+                        _record_identity_turn_seq(sid)
                     return KernelResponse(
                         content=CANONICAL_IDENTITY_RESPONSE,
                         session_id=request.session_id,
@@ -581,88 +490,61 @@ class CognitiveKernel:
 
             identity_prompt = self.self_model.get_identity_prompt()
 
-            # ── Feature ①: ContextAssembler — unified context assembly ──
-            assembled_ctx = None
-            if bool(settings.kernel_context_composer_enabled) and request.history:
-                try:
-                    from kernel.context_assembler import get_context_assembler
-                    from kernel.turn_context import TurnContext
-
-                    assembler = get_context_assembler()
-
-                    # Build minimal TurnContext for the assembler
-                    tctx = TurnContext(
-                        query=request.query,
-                        session_id=request.session_id or "",
-                        user_id=request.user_id or "",
-                        recent_history=request.history,
-                        memory_context=memory_context,
-                        attachment_contexts=request.metadata.get("attachment_contexts", []),
-                        conversation_state=request.conversation_state,
-                        metadata=request.metadata,
-                    )
-                    assembled_ctx = await assembler.assemble(tctx)
-                    if assembled_ctx.structured_summary:
-                        span.set_attribute(
-                            "context.summary_sections",
-                            len(assembled_ctx.structured_summary.to_text()),
-                        )
-                    span.set_attribute("context.compressed", assembled_ctx.compressed)
-                    span.set_attribute("context.total_tokens", assembled_ctx.total_tokens)
-                except Exception as exc:
-                    logger.warning("Context assembler failed", error=str(exc))
-                    assembled_ctx = None
-
-            effective_history = (
-                assembled_ctx.recent_turns
-                if (assembled_ctx and assembled_ctx.compressed)
-                else request.history
-            )
-            memory_injection_query = (
-                assembled_ctx.memory_injection_query if assembled_ctx else request.query
-            )
-            conversation_summary = assembled_ctx.summary_block if assembled_ctx else ""
-            # ── End ContextAssembler ────────────────────────────────────────
-
-            from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
-
-            orchestrator_v4 = CognitiveOrchestratorV4(
-                timeout_sec=int(settings.kernel_agent_timeout_sec),
-                max_parallel=int(settings.kernel_agent_max_parallel),
-            )
-            resp = await orchestrator_v4.process(
-                OrchestratorV4Request(
-                    query=request.query,
-                    session_id=request.session_id,
-                    user_id=request.user_id,
-                    history=effective_history,
-                    metadata={
-                        **request.metadata,
-                        "web_enabled": request.web_enabled,
-                        "memory_injection_query": memory_injection_query,
-                        "conversation_summary": conversation_summary,
-                        "assembled_context": (
-                            {
-                                "summary_block": assembled_ctx.summary_block,
-                                "memory_block": assembled_ctx.memory_block,
-                                "attachment_block": assembled_ctx.attachment_block,
-                                "state_block": assembled_ctx.state_block,
-                                "total_tokens": assembled_ctx.total_tokens,
-                                "compressed": assembled_ctx.compressed,
-                            }
-                            if assembled_ctx
-                            else None
-                        ),
-                        "composed_context": (
-                            assembled_ctx.__dict__ if assembled_ctx else None
-                        ),
-                        "identity_prompt": identity_prompt,
-                        "memory_context": memory_context,
-                    },
-                    trace_ctx=trace_ctx,
-                    conversation_state=request.conversation_state,
+            effective_history = fabric_out.history or request.history
+            memory_injection_query = fabric_out.memory_injection_query or request.query
+            conversation_summary = fabric_out.conversation_summary or ""
+            assembled_ctx_dict = fabric_out.assembled_context
+            if assembled_ctx_dict:
+                span.set_attribute("context.fabric", True)
+                span.set_attribute(
+                    "context.compressed", bool(assembled_ctx_dict.get("compressed"))
                 )
+                span.set_attribute(
+                    "context.total_tokens", int(assembled_ctx_dict.get("total_tokens") or 0)
+                )
+
+            # ── Universal Cognitive Runtime V2 (sole orchestration path) ──
+            from kernel.runtime_gateway import get_runtime_gateway
+
+            gw_request = KernelRequest(
+                query=request.query,
+                session_id=request.session_id,
+                user_id=request.user_id,
+                history=effective_history,
+                metadata={
+                    **request.metadata,
+                    "web_enabled": request.web_enabled,
+                    "memory_injection_query": memory_injection_query,
+                    "conversation_summary": conversation_summary,
+                    "assembled_context": assembled_ctx_dict,
+                    "composed_context": assembled_ctx_dict,
+                    "turn_enrichment_applied": True,
+                    "identity_prompt": identity_prompt,
+                    "memory_context": memory_context,
+                },
+                trace_ctx=trace_ctx,
+                conversation_state=request.conversation_state,
             )
+            gw_resp = await get_runtime_gateway().run(gw_request)
+            resp = type(
+                "_Gw",
+                (),
+                {
+                    "content": gw_resp.content,
+                    "route": gw_resp.route,
+                    "validation_score": gw_resp.validation_score,
+                    "passed_validation": gw_resp.passed_validation,
+                    "hallucination_risk": gw_resp.hallucination_risk,
+                    "intent_category": gw_resp.intent_category,
+                    "state_patch": gw_resp.state_patch,
+                    "result_refs": gw_resp.result_refs,
+                    "metadata": gw_resp.metadata,
+                    "prompt_tokens": gw_resp.prompt_tokens,
+                    "completion_tokens": gw_resp.completion_tokens,
+                    "model": gw_resp.model,
+                },
+            )()
+            span.set_attribute("routing.path", "cognitive_runtime_v2")
 
             if sid and is_identity_user_query(request.query) and resp.content:
                 cache_identity_answer(sid, request.query, resp.content)
@@ -696,6 +578,20 @@ class CognitiveKernel:
                     )
                 except Exception as exc:
                     logger.warning("Episodic turn recording failed", error=str(exc))
+                try:
+                    from memory.fabric.router_singleton import bind_turn_memory
+
+                    gg = (resp.metadata or {}).get("goal_graph") or {}
+                    bind_turn_memory(
+                        session_id=sid,
+                        request_id=str(request.metadata.get("request_id", sid)),
+                        goal_id=str(gg.get("root_goal_id", "")),
+                        query=request.query,
+                        answer_preview=resp.content[:200],
+                        route=resp.route or "",
+                    )
+                except Exception:
+                    pass
                 # Async semantic write-back (non-blocking, fire-and-forget)
                 try:
                     router = self._get_memory_router()
@@ -727,9 +623,32 @@ class CognitiveKernel:
                 memory_intent = self._detect_active_memory_intent(request.query)
                 if memory_intent:
                     asyncio.create_task(
-                        self._persist_active_memory(request.user_id, memory_intent, sid)
+                        self._persist_active_memory(
+                            request.user_id, memory_intent, sid, request.conversation_state
+                        )
                     )
             # ── End Active Memory Detection ───────────────────────────
+
+            # 将本轮结果引用写回 conversation_state，供下一轮 state_block 引用
+            if request.conversation_state is not None and resp.result_refs:
+                request.conversation_state.last_results = list(resp.result_refs)
+
+            try:
+                from kernel.runtime.finalize_turn import post_turn_enterprise_accounting
+                from kernel.world_turn_finalize import finalize_world_model_for_turn
+
+                post_turn_enterprise_accounting(gw_request, resp)
+                world_meta = await finalize_world_model_for_turn(
+                    session_id=sid,
+                    request=gw_request,
+                    response=resp,
+                )
+                if world_meta:
+                    base_md = dict(getattr(resp, "metadata", None) or {})
+                    base_md.update(world_meta)
+                    resp.metadata = base_md
+            except Exception as exc:
+                logger.debug("cognitive_kernel_run_finalize_skipped", error=str(exc))
 
             total_ms = int((time.monotonic() - t0) * 1000)
             span.set_attribute("total.latency_ms", total_ms)
@@ -761,9 +680,40 @@ class CognitiveKernel:
 
     # ── Streaming ─────────────────────────────────────────────────────
     async def stream(self, request: KernelRequest) -> AsyncIterator[dict[str, Any]]:
-        """SSE 路径：统一走稳定 V4。"""
+        """SSE 路径：统一走 Cognitive Runtime V2（RuntimeGateway）。"""
         sid = request.session_id
         is_multi = self._is_multi_question(request.query)
+        force_mode_from_meta: str | None = request.metadata.get("force_mode")
+        from kernel.turn_bootstrap import bootstrap_turn_intent
+
+        boot = await bootstrap_turn_intent(request)
+        intent_lock = boot.intent_lock
+
+        direct_answer = direct_answer_for_intent(intent_lock)
+        if direct_answer and not force_mode_from_meta:
+            async for event in _emit_streaming_answer(
+                direct_answer,
+                reasoning_step={
+                    "type": "reasoning_step",
+                    "data": {
+                        "id": "intent_lock_direct",
+                        "stage": "ROUTE",
+                        "content": f"Intent Lock 直答: {intent_lock.task_type}",
+                        "node_id": "node_intent_lock",
+                        "status": "done",
+                    },
+                },
+            ):
+                yield event
+            return
+
+        from kernel.fast_tool_path import should_use_tool_fast_path
+        from kernel.runtime_gateway import get_runtime_gateway
+
+        if should_use_tool_fast_path(intent_lock, force_mode=force_mode_from_meta):
+            async for event in get_runtime_gateway().stream_tool_fast_path(request):
+                yield event
+            return
 
         # Recover WorkingMemory from Redis if process was restarted
         if sid:
@@ -805,279 +755,88 @@ class CognitiveKernel:
         )
 
         # ── V5 Routing Tier (streaming) ──────────────────────────────────
-        force_mode_from_meta: str | None = request.metadata.get("force_mode")
         has_stream_attachments = bool(request.metadata.get("attachment_contexts"))
         if force_mode_from_meta:
             pass  # Skip V5 — explicit force_mode from slash command
         elif has_stream_attachments:
             pass  # Skip V5 — attachment contexts require full orchestrator
         elif settings.kernel_v5_routing_enabled:
-            # L0: Rule Router
-            if settings.kernel_l0_rule_router_enabled:
-                l0_result = await self._get_l0_router().route(request.query, sid, is_multi=is_multi)
-                if l0_result.hit and l0_result.answer is not None:
-                    if l0_result.route == "force_mode":
-                        # Slash command — re-enter as force_mode via orchestrator
-                        from kernel.orchestrator_v4 import (
-                            CognitiveOrchestratorV4,
-                            OrchestratorV4Request,
-                        )
+            from kernel.routing.v5_facade import (
+                get_v5_routing_facade,
+                stream_v5_fast_path_from_result,
+            )
 
-                        orchestrator = CognitiveOrchestratorV4(
-                            timeout_sec=int(settings.kernel_agent_timeout_sec),
-                            max_parallel=int(settings.kernel_agent_max_parallel),
-                        )
-                        yield {
-                            "type": "reasoning_step",
-                            "data": {
-                                "id": "l0_slash",
-                                "stage": "ROUTE",
-                                "content": f"L0 斜杠命令: {l0_result.force_mode}",
-                                "node_id": "node_l0",
-                                "status": "done",
-                            },
-                        }
-                        async for event in orchestrator.stream(
-                            OrchestratorV4Request(
-                                query=l0_result.answer,
-                                session_id=request.session_id,
-                                user_id=request.user_id,
-                                history=request.history,
-                                metadata={
-                                    **request.metadata,
-                                    "web_enabled": request.web_enabled,
-                                    "force_mode": l0_result.force_mode,
-                                },
-                                trace_ctx=trace_ctx,
-                                conversation_state=request.conversation_state,
-                            ),
-                        ):
-                            yield event
-                        return
-
-                    # ── Enriched identity via MinShort 0.6B (streaming) ──
-                    if l0_result.route == "identity" and settings.kernel_enriched_identity_enabled:
-                        try:
-                            from kernel.identity.enriched_identity import generate_enriched_identity
-
-                            wm_turns = []
-                            if sid:
-                                try:
-                                    wm_turns = get_or_create_session_memory(sid).to_messages()
-                                except Exception as exc:
-                                    logger.warning("Working memory fetch failed (stream)", error=str(exc))
-                            enriched = await generate_enriched_identity(
-                                query=request.query,
-                                user_id=request.user_id,
-                                user_preferences=request.metadata.get("user_preferences", []),
-                                recent_history=wm_turns or request.history,
-                            )
-                            l0_result.answer = enriched
-                            l0_result.metadata["enriched"] = True
-                        except Exception as exc:
-                            logger.debug(
-                                "Enriched identity failed (stream), using canned", error=str(exc)
-                            )
-
-                    async for event in _emit_streaming_answer(
-                        l0_result.answer,
-                        reasoning_step={
-                            "type": "reasoning_step",
-                            "data": {
-                                "id": "l0_route",
-                                "stage": "ROUTE",
-                                "content": f"L0 规则匹配: {l0_result.route}",
-                                "node_id": "node_l0",
-                                "status": "done",
-                            },
-                        },
-                    ):
-                        yield event
-                    return
-
-            # L0.5: Semantic Cache
-            if settings.kernel_semantic_cache_enabled and not is_multi:
-                cached = await self._get_semantic_cache().lookup(request.query)
-                if cached and cached.answer:
-                    async for event in _emit_streaming_answer(
-                        cached.answer,
-                        reasoning_step={
-                            "type": "reasoning_step",
-                            "data": {
-                                "id": "cache_hit",
-                                "stage": "ROUTE",
-                                "content": "语义缓存命中",
-                                "node_id": "node_cache",
-                                "status": "done",
-                            },
-                        },
-                    ):
-                        yield event
-                    return
-
-            # L1: Tiny Router
-            if settings.kernel_l1_tiny_router_enabled and not is_multi:
-                complexity = self._get_complexity_engine().assess(request.query)
-                if complexity.recommended_pipeline in ("L0", "L1"):
-                    l1_result = await self._get_tiny_router().route(request.query, request.history)
-                    if l1_result.route != "complex" and l1_result.answer:
-                        async for event in _emit_streaming_answer(
-                            l1_result.answer,
-                            reasoning_step={
-                                "type": "reasoning_step",
-                                "data": {
-                                    "id": "l1_route",
-                                    "stage": "ROUTE",
-                                    "content": f"L1 路由: {l1_result.route}",
-                                    "node_id": "node_l1",
-                                    "status": "done",
-                                },
-                            },
-                        ):
-                            yield event
-                        return
+            fp = await get_v5_routing_facade(self).try_fast_path(
+                request,
+                session_id=sid,
+                is_multi=is_multi,
+                context_hash_fn=_context_hash,
+                t0=time.monotonic(),
+            )
+            if fp and fp.hit:
+                async for ev in stream_v5_fast_path_from_result(fp, request):
+                    yield ev
+                return
         # ── End V5 Routing Tier ──────────────────────────────────────────
 
-        # ── Memory Context Injection (streaming) ──────────────────────────
-        memory_context_stream: list[dict[str, Any]] = []
-        if settings.kernel_memory_context_enabled and sid:
-            episodic_chunks_stream: list[str] = []
-            keyword_chunks_stream: list[str] = []
+        from kernel.turn_enrichment import enrich_turn_before_dispatch
 
-            # Episodic memory (Redis-backed, best-effort)
-            try:
-                from memory.episodic_memory.episodic_memory import EpisodicMemory
+        fabric_stream = await enrich_turn_before_dispatch(request, skip_multi_turn=True)
+        memory_context_stream = fabric_stream.memory_context
+        effective_history_stream = fabric_stream.history or request.history
+        memory_injection_query_stream = fabric_stream.memory_injection_query or request.query
+        conversation_summary_stream = fabric_stream.conversation_summary or ""
+        assembled_ctx_stream_dict = fabric_stream.assembled_context
 
-                episodic = EpisodicMemory(sid)
-                episodic_events = await episodic.recall(last_n=20)
-                for e in episodic_events:
-                    try:
-                        inner = json.loads(e.get("content", "{}"))
-                        if isinstance(inner, dict):
-                            q = inner.get("q", "")
-                            a = inner.get("a", "")
-                            if q and a:
-                                episodic_chunks_stream.append(f"Q: {q}\nA: {a[:300]}")
-                            else:
-                                episodic_chunks_stream.append(e.get("content", "")[:500])
-                        else:
-                            episodic_chunks_stream.append(str(inner)[:500])
-                    except (json.JSONDecodeError, TypeError):
-                        episodic_chunks_stream.append(str(e.get("content", ""))[:500])
-            except Exception as exc:
-                logger.warning("Episodic memory fetch failed (stream)", error=str(exc))
-
-            # Working memory turns (in-process, always available)
-            try:
-                wm = get_or_create_session_memory(sid)
-                keyword_chunks_stream = [
-                    f"user: {t.content}" if t.role == "user" else f"assistant: {t.content}"
-                    for t in wm.get_turns(last_n=8)
-                ] + request.metadata.get("user_preferences", [])
-            except Exception as exc:
-                logger.warning("Working memory turns fetch failed (stream)", error=str(exc))
-
-            # Semantic memory retrieval
-            if episodic_chunks_stream or keyword_chunks_stream:
-                try:
-                    memory_chunks = await self._get_memory_router().retrieve(
-                        query=request.query,
-                        episodic_chunks=episodic_chunks_stream,
-                        keyword_chunks=keyword_chunks_stream,
-                        top_k=8,
-                    )
-                    memory_context_stream = [
-                        {"content": c.content, "score": c.score, "source": c.source}
-                        for c in memory_chunks
-                    ]
-                except Exception as exc:
-                    logger.debug("MemoryRouter.retrieve failed (stream)", error=str(exc))
-        # ── End Memory Context Injection ─────────────────────────────────
-
-        # ── Feature ①: ContextAssembler — unified context (stream path) ──
-        assembled_ctx_stream = None
-        if bool(settings.kernel_context_composer_enabled) and request.history:
-            try:
-                from kernel.context_assembler import get_context_assembler
-                from kernel.turn_context import TurnContext
-
-                assembler = get_context_assembler()
-                tctx = TurnContext(
-                    query=request.query,
-                    session_id=request.session_id or "",
-                    user_id=request.user_id or "",
-                    recent_history=request.history,
-                    memory_context=memory_context_stream,
-                    attachment_contexts=request.metadata.get("attachment_contexts", []),
-                    conversation_state=request.conversation_state,
-                    metadata=request.metadata,
-                )
-                assembled_ctx_stream = await assembler.assemble(tctx)
-                if assembled_ctx_stream and assembled_ctx_stream.structured_summary:
-                    span.set_attribute(
-                        "context.summary_sections",
-                        len(assembled_ctx_stream.structured_summary.to_text()),
-                    )
-            except Exception as exc:
-                logger.warning("Context assembler failed (stream)", error=str(exc))
-                assembled_ctx_stream = None
-
-        effective_history_stream = (
-            assembled_ctx_stream.recent_turns
-            if (assembled_ctx_stream and assembled_ctx_stream.compressed)
-            else request.history
-        )
-        memory_injection_query_stream = (
-            assembled_ctx_stream.memory_injection_query if assembled_ctx_stream else request.query
-        )
-        conversation_summary_stream = assembled_ctx_stream.summary_block if assembled_ctx_stream else ""
-        # ── End ContextAssembler ────────────────────────────────────────────
-
-        from kernel.orchestrator_v4 import CognitiveOrchestratorV4, OrchestratorV4Request
+        from kernel.runtime_gateway import get_runtime_gateway
 
         try:
-            orchestrator = CognitiveOrchestratorV4(
-                timeout_sec=int(settings.kernel_agent_timeout_sec),
-                max_parallel=int(settings.kernel_agent_max_parallel),
+            stream_req = KernelRequest(
+                query=request.query,
+                session_id=request.session_id,
+                user_id=request.user_id,
+                history=effective_history_stream,
+                metadata={
+                    **request.metadata,
+                    "web_enabled": request.web_enabled,
+                    "memory_context": memory_context_stream,
+                    "memory_injection_query": memory_injection_query_stream,
+                    "conversation_summary": conversation_summary_stream,
+                    "assembled_context": assembled_ctx_stream_dict,
+                    "composed_context": assembled_ctx_stream_dict,
+                    "turn_enrichment_applied": True,
+                },
+                trace_ctx=trace_ctx,
+                conversation_state=request.conversation_state,
             )
             final_content = None
-            async for event in orchestrator.stream(
-                OrchestratorV4Request(
-                    query=request.query,
-                    session_id=request.session_id,
-                    user_id=request.user_id,
-                    history=effective_history_stream,
-                    metadata={
-                        **request.metadata,
-                        "web_enabled": request.web_enabled,
-                        "memory_context": memory_context_stream,
-                        "memory_injection_query": memory_injection_query_stream,
-                        "conversation_summary": conversation_summary_stream,
-                        "assembled_context": (
-                            {
-                                "summary_block": assembled_ctx_stream.summary_block,
-                                "memory_block": assembled_ctx_stream.memory_block,
-                                "attachment_block": assembled_ctx_stream.attachment_block,
-                                "state_block": assembled_ctx_stream.state_block,
-                                "total_tokens": assembled_ctx_stream.total_tokens,
-                                "compressed": assembled_ctx_stream.compressed,
-                            }
-                            if assembled_ctx_stream
-                            else None
-                        ),
-                        "composed_context": (
-                            assembled_ctx_stream.__dict__ if assembled_ctx_stream else None
-                        ),
-                    },
-                    trace_ctx=trace_ctx,
-                    conversation_state=request.conversation_state,
-                ),
-            ):
+            async for event in get_runtime_gateway().stream(stream_req):
                 if event.get("type") == "final_answer":
                     data = event.get("data", {})
                     final_content = data.get("content") if isinstance(data, dict) else None
-                    # state_patch / result_refs flow through in the event data,
-                    # persistence is handled by the caller (chat.py)
+                    try:
+                        from kernel.runtime.finalize_turn import post_turn_enterprise_accounting
+                        from kernel.world_turn_finalize import finalize_world_model_for_turn
+
+                        post_turn_enterprise_accounting(stream_req, None)
+                        world_meta = await finalize_world_model_for_turn(
+                            session_id=sid,
+                            request=stream_req,
+                            response=type(
+                                "_StreamResp",
+                                (),
+                                {
+                                    "metadata": data if isinstance(data, dict) else {},
+                                    "route": stream_req.metadata.get("route", ""),
+                                    "intent_category": stream_req.metadata.get("task_type", ""),
+                                },
+                            )(),
+                        )
+                        if world_meta and isinstance(data, dict):
+                            data.update(world_meta)
+                            event["data"] = data
+                    except Exception as exc:
+                        logger.debug("cognitive_kernel_stream_finalize_skipped", error=str(exc))
                 yield event
 
             # Store in semantic cache after streaming completes
@@ -1180,7 +939,13 @@ class CognitiveKernel:
                     return content
         return q if len(q) > 5 else None
 
-    async def _persist_active_memory(self, user_id: str, content: str, session_id: str) -> None:
+    async def _persist_active_memory(
+        self,
+        user_id: str,
+        content: str,
+        session_id: str,
+        conversation_state: Any = None,
+    ) -> None:
         """Write a user memory fact to the database."""
         try:
             from infra.storage.database import AsyncSessionLocal
@@ -1203,6 +968,12 @@ class CognitiveKernel:
                 db.add(memory)
                 await db.commit()
                 logger.debug("Active memory persisted", user_id=user_id, content=content[:80])
+            try:
+                from kernel.preference_injection import merge_learned_preference
+
+                merge_learned_preference(conversation_state, "explicit_memory", content[:500])
+            except Exception:
+                pass
         except Exception as exc:
             logger.debug("Active memory persist failed", error=str(exc))
 
@@ -1361,13 +1132,25 @@ class CognitiveKernel:
         if any(hint in q for hint in self._MULTI_Q_HINTS):
             return True
 
-        # Check IntentEngine's multi_step flag
-        try:
-            intent = self._get_intent_engine().parse(q)
-            if intent.multi_step:
-                return True
-        except Exception as exc:
-            logger.warning("Multi-question detection failed", error=str(exc))
+        # IntentEngine.parse is async; multi-step hints already covered above.
+        q_lower = q.lower()
+        if any(
+            w in q_lower
+            for w in [
+                "然后",
+                "接着",
+                "之后",
+                "首先",
+                "其次",
+                "最后",
+                "then",
+                "after that",
+                "first",
+                "next",
+                "finally",
+            ]
+        ):
+            return True
 
         return False
 

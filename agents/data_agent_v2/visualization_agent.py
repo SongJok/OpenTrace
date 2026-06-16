@@ -1,15 +1,13 @@
 """
-VisualizationAgent — recommends chart types and configurations for data results.
+VisualizationAgent — 为数据结果推荐图表类型与配置。
 
-Analyzes data structure (columns, types, row count, cardinality) and intent
-to recommend the optimal visualization. Considers:
-- Column types (numeric, categorical, temporal)
-- Row count and cardinality
-- Intent type (trend → line, composition → pie, ranking → bar, etc.)
-- Analytical skill hints (from matched_skills)
+分析数据结构（列、类型、行数、基数）与意图，推荐最优可视化：
+- 列类型（数值、分类、时间）
+- 行数与基数
+- 意图（趋势→折线、构成→饼图、排名→柱状等）
+- 分析技能提示（matched_skills）
 
-Returns a chart configuration suitable for DataTableChart frontend component.
-No LLM — fully deterministic.
+返回适配 DataTableChart 前端的图表配置；无 LLM，完全确定性。
 """
 from __future__ import annotations
 
@@ -23,13 +21,12 @@ from agents.data_agent_v2.types import (
 
 
 class VisualizationAgent(BaseAgent):
-    """Recommend optimal chart type and configuration for data results.
+    """为数据结果推荐最优图表类型与配置。
 
-    Deterministic. Analyzes data structure + intent to produce
-    a frontend-ready chart configuration.
+    确定性逻辑。分析数据结构与意图，生成前端可用的图表配置。
     """
 
-    # Chart type priorities by intent
+    # 按意图优先的图表类型映射
     INTENT_CHART_MAP: dict[str, list[str]] = {
         "trend": ["line", "area", "bar"],
         "comparison": ["grouped_bar", "bar", "radar"],
@@ -55,13 +52,13 @@ class VisualizationAgent(BaseAgent):
             return self._skip(task, ctx, "no data to visualize")
 
         try:
-            # 1. Analyze data structure
+            # 1. 分析数据结构
             structure = self._analyze_structure(rows, ctx)
 
-            # 2. Determine chart type
+            # 2. 确定图表类型
             chart_config = self._recommend(ctx, structure, rows)
 
-            # 3. Build full configuration
+            # 3. 构建完整配置
             config = self._build_config(chart_config, structure, rows)
 
             ctx.visualization_config = config
@@ -101,12 +98,12 @@ class VisualizationAgent(BaseAgent):
                 error=str(exc),
             )
 
-    # ── Data Structure Analysis ─────────────────────────────────────────
+    # ── 数据结构分析 ─────────────────────────────────────────
 
     def _analyze_structure(
         self, rows: list[dict], ctx: CognitiveContext
     ) -> dict[str, Any]:
-        """Analyze the structure of result rows for chart suitability."""
+        """分析结果行的结构以评估图表适配性。"""
         if not rows:
             return {}
 
@@ -156,8 +153,8 @@ class VisualizationAgent(BaseAgent):
     def _infer_col_type(
         self, col: str, sample: Any, rows: list[dict]
     ) -> str:
-        """Infer column data type."""
-        # Temporal detection
+        """推断列数据类型。"""
+        # 时间类型检测
         temporal_hints = ("date", "time", "日期", "时间", "year", "month", "day",
                          "created", "updated", "timestamp", "ds", "dt")
         if any(h in col.lower() for h in temporal_hints):
@@ -166,7 +163,7 @@ class VisualizationAgent(BaseAgent):
         if isinstance(sample, (int, float)) and not isinstance(sample, bool):
             return "numeric"
 
-        # Categorical detection: string with low cardinality
+        # 分类类型检测：低基数字符串
         if isinstance(sample, str):
             unique = len({str(r.get(col)) for r in rows[:100]})
             if unique <= 15:
@@ -178,7 +175,7 @@ class VisualizationAgent(BaseAgent):
 
         return "unknown"
 
-    # ── Chart Recommendation ────────────────────────────────────────────
+    # ── 图表推荐 ────────────────────────────────────────────
 
     def _recommend(
         self,
@@ -186,17 +183,17 @@ class VisualizationAgent(BaseAgent):
         structure: dict,
         rows: list[dict],
     ) -> dict[str, Any]:
-        """Determine optimal chart type based on data + intent."""
+        """根据数据与意图确定最优图表类型。"""
         intent_type = (
             ctx.intent.get("intent_type", "") if ctx.intent else ""
         )
 
-        # 1. Check skill hint
+        # 1. 检查技能提示
         skill_hint = ""
         if ctx.matched_skills:
             skill_hint = ctx.matched_skills[0].get("visualization_hint", "")
 
-        # 2. Determine available chart types based on data
+        # 2. 根据数据确定可用图表类型
         numeric = structure.get("numeric_cols", [])
         temporal = structure.get("temporal_cols", [])
         categorical = structure.get("categorical_cols", [])
@@ -204,27 +201,27 @@ class VisualizationAgent(BaseAgent):
 
         candidates: list[str] = []
 
-        # Time series → line/area
+        # 时间序列 → 折线/面积图
         if temporal and numeric:
             candidates.extend(["line", "area"])
             if len(numeric) >= 2:
                 candidates.append("multi_line")
 
-        # Numeric + categorical → bar/grouped_bar
+        # 数值 + 分类 → 柱状/分组柱状图
         if numeric and categorical:
             candidates.extend(["bar", "grouped_bar", "horizontal_bar"])
             if len(categorical) == 1 and len(numeric) >= 2:
                 candidates.append("stacked_bar")
 
-        # Single numeric + categorical (few values) → pie/donut
+        # 单数值 + 分类（少量值）→ 饼图/环形图
         if len(numeric) == 1 and categorical and row_count <= 10:
             candidates.extend(["pie", "donut"])
 
-        # Multiple numeric, no clear category → scatter
+        # 多数值，无明确分类 → 散点图
         if len(numeric) >= 2 and not categorical:
             candidates.append("scatter")
 
-        # Large row count, temporal → area/sparkline
+        # 大行数 + 时间 → 面积/迷你折线图
         if temporal and numeric and row_count > 20:
             candidates.append("area")
 

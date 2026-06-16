@@ -1,8 +1,8 @@
 """
-SQLCompilerAgent — deterministic LogicalPlan → SQL compilation.
+SQLCompilerAgent — 确定性 LogicalPlan → SQL 编译。
 
-Wraps SQLBuilder with dialect-aware escaping and time filter rendering.
-No LLM — 100% deterministic given the same LogicalPlan and dialect.
+封装 SQLBuilder，含方言转义与时间过滤渲染。
+无 LLM — 相同 LogicalPlan 与方言下 100% 确定性。
 """
 from __future__ import annotations
 
@@ -14,10 +14,9 @@ from agents.data_agent_v2.types import (
 
 
 class SQLCompilerAgent(BaseAgent):
-    """Compile LogicalPlan into executable SQL for the target dialect.
+    """将 LogicalPlan 编译为目标方言的可执行 SQL。
 
-    Purely deterministic — wraps SQLBuilder.build() with additional
-    validation and dialect-specific escaping.
+    纯确定性 — 在 SQLBuilder.build() 上增加校验与方言转义。
     """
 
     def __init__(self) -> None:
@@ -72,7 +71,7 @@ class SQLCompilerAgent(BaseAgent):
             )
 
     async def _compile(self, plan_dict: dict, ctx: CognitiveContext) -> str:
-        """Convert plan dict → LogicalPlan → SQL."""
+        """将计划字典转换为 LogicalPlan 再编译为 SQL。"""
         from kernel.data_cognition.logical_plan import LogicalPlan
         from kernel.data_cognition.sql_builder import SQLBuilder
         from kernel.data_cognition.sql_dialect import SQLDialectSpec
@@ -85,7 +84,7 @@ class SQLCompilerAgent(BaseAgent):
             supports_interval_days=ctx.dialect not in ("clickhouse", "doris"),
         )
 
-        # Inject time filter if present in time_window
+        # 若 time_window 存在则注入时间过滤
         if ctx.time_window and ctx.time_window.get("type") not in (None, "none"):
             self._inject_time_filter(plan, ctx.time_window, dialect)
 
@@ -95,7 +94,7 @@ class SQLCompilerAgent(BaseAgent):
     def _inject_time_filter(
         self, plan, time_window: dict, dialect
     ) -> None:
-        """Add time filter to plan based on resolved time_window."""
+        """根据已解析的 time_window 向计划添加时间过滤。"""
         col_hint = time_window.get("column_hint", "")
         days = time_window.get("days", 0)
         start = time_window.get("start", "")
@@ -103,7 +102,7 @@ class SQLCompilerAgent(BaseAgent):
         comparison = time_window.get("comparison", "")
 
         if comparison:
-            # Handle comparison-type time window (MoM/YoY) — use marker
+            # 处理对比型时间窗口（环比/同比）— 使用标记
             from kernel.data_cognition.logical_plan import FilterSpec
             plan.filters.append(FilterSpec(
                 expr=f"__TIME_COMPARISON__{comparison}__{col_hint}__",

@@ -1,4 +1,4 @@
-"""Cognitive event protocol types."""
+"""认知事件协议类型。"""
 
 from __future__ import annotations
 

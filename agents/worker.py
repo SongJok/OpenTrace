@@ -1,13 +1,13 @@
+"""Agent Worker — 订阅 Agent 总线并调度各 Agent 执行能力任务。"""
+
 from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
-from agents.data_agent import DataAgent
-from agents.rag_agent import RagAgent
-from agents.tool_agent import ToolAgent
-from agents.web_agent import WebAgent
 from agents.base import TaskMessage
+from agents.bootstrap import instantiate_builtin_agents, register_builtin_agents
 from infra.config.settings import settings
 from infra.message_bus.agent_bus import AgentMessageBus
 
@@ -15,12 +15,15 @@ from infra.message_bus.agent_bus import AgentMessageBus
 class AgentWorker:
     def __init__(self) -> None:
         self.bus = AgentMessageBus(namespace=str(settings.kernel_agent_bus_namespace))
-        self.agents = {
-            "data": DataAgent(),
-            "rag": RagAgent(),
-            "web": WebAgent(),
-            "tool": ToolAgent(),
-        }
+
+        register_builtin_agents(force=True)
+        self.agents: dict[str, Any] = instantiate_builtin_agents()
+
+        from kernel.runtime.capability import capability_registry
+
+        for agent in self.agents.values():
+            if not capability_registry.has_agent(agent.agent_type):
+                capability_registry.register_agent(agent)
 
     async def _execute_payload(self, agent_type: str, payload: dict, attempt: int = 0) -> None:
         task = TaskMessage(
@@ -32,7 +35,21 @@ class AgentWorker:
             user_id=payload.get("user_id"),
         )
         agent = self.agents[agent_type]
-        res = await agent.execute(task)
+        goal_id = str((payload.get("params") or {}).get("goal_id") or payload.get("goal_id") or "")
+        trace_id = str(payload.get("request_id") or payload.get("trace_id") or "")
+        if bool(getattr(settings, "kernel_agent_runtime_v3_enabled", True)):
+            from kernel.agent_runtime.executor import agent_runtime_executor
+
+            contrib = await agent_runtime_executor.execute_task(
+                agent,
+                task,
+                goal_id=goal_id,
+                goal_description=str(payload.get("goal_description") or ""),
+                trace_id=trace_id,
+            )
+            res = agent_runtime_executor.contribution_to_agent_result(contrib)
+        else:
+            res = await agent.execute(task)
 
         max_retry = int(getattr(settings, "kernel_agent_bus_max_retry", 2))
         if res.status in {"error", "timeout"} and attempt < max_retry:
@@ -165,8 +182,16 @@ class AgentWorker:
                 pass
             await asyncio.sleep(10)
 
+    def _bus_consumer_agent_types(self) -> tuple[str, ...]:
+        from kernel.agent_runtime.manifest import get_manifest
+
+        manifest = get_manifest()
+        eligible = set(manifest.bus_eligible_agent_types())
+        return tuple(k for k in self.agents.keys() if k in eligible)
+
     async def run_forever(self) -> None:
-        await asyncio.gather(self._heartbeat(), *(self._consume(k) for k in self.agents.keys()))
+        consumers = self._bus_consumer_agent_types()
+        await asyncio.gather(self._heartbeat(), *(self._consume(k) for k in consumers))
 
 
 async def main() -> None:

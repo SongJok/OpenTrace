@@ -1,4 +1,4 @@
-"""Query Executor — executes SQL with self-validation and auto-retry with enhanced error recovery."""
+"""查询执行器 — 执行 SQL，含自校验、自动重试与增强错误恢复。"""
 
 from __future__ import annotations
 
@@ -15,15 +15,15 @@ from kernel.data_cognition.sql_validator import SQLValidationError, SQLValidator
 
 class QueryExecutor:
     """
-    Executes SQL with validation, result sanity checks, and automatic correction.
+    执行 SQL，包含验证、结果合理性检查和自动修正。
 
-    Flow:
-    1. Parse SQL with sqlglot (syntax validation)
-    2. Validate read-only safety (SQLValidator)
-    3. Execute
-    4. Post-execution sanity checks (SQLReflector)
-    5. On error: auto-correct via LLM rewrite of the LogicalPlan → rebuild SQL → retry
-    6. On final failure: return structured recovery context for user-facing options
+    流程：
+    1. 使用 sqlglot 解析 SQL（语法验证）
+    2. 验证只读安全性（SQLValidator）
+    3. 执行
+    4. 执行后合理性检查（SQLReflector）
+    5. 出错时：通过 LLM 重写 LogicalPlan → 重建 SQL → 重试
+    6. 最终失败时：返回结构化恢复上下文供用户选择
     """
 
     def __init__(
@@ -47,14 +47,14 @@ class QueryExecutor:
         schema_hint: str = "",
     ) -> tuple[list[dict[str, Any]], str, list[str]]:
         """
-        Execute a LogicalPlan with automatic retry on failure.
+        执行 LogicalPlan，失败时自动重试。
 
-        Retry strategy:
-        - Attempt 0: build SQL from plan, validate, execute
-        - Attempt 1+: LLM rewrites SQL based on error → validate rewritten SQL → execute
+        重试策略：
+        - 第 0 次：从计划构建 SQL，验证，执行
+        - 第 1 次及以后：LLM 根据错误重写 SQL → 验证重写后的 SQL → 执行
 
-        Returns: (rows, final_sql, warnings)
-        Raises: SQLValidationError with recovery_context attribute on final failure
+        返回：(rows, final_sql, warnings)
+        失败时抛出：带有 recovery_context 属性的 SQLValidationError
         """
         warnings: list[str] = []
         last_error: str = ""
@@ -62,11 +62,11 @@ class QueryExecutor:
         rewritten_sql: str | None = None
 
         for attempt in range(self._max_retries + 1):
-            # If we have a rewritten SQL from LLM, use it directly
+            # 如果有 LLM 重写的 SQL，直接使用
             if rewritten_sql:
                 sql = rewritten_sql
             else:
-                # Build SQL from plan
+                # 从计划构建 SQL
                 try:
                     sql = self._builder.build(plan, dialect)
                 except Exception as exc:
@@ -84,7 +84,7 @@ class QueryExecutor:
                     )
                     continue
 
-            # Validate SQL safety
+            # 验证 SQL 安全性
             try:
                 safe_sql = self._validator.validate(sql)
             except SQLValidationError as exc:
@@ -102,17 +102,17 @@ class QueryExecutor:
                 )
                 continue
 
-            # Semantic validation
+            # 语义验证
             sem_issues = self._validator.validate_semantic(safe_sql)
             warnings.extend(sem_issues)
 
-            # Time filter validation
+            # 时间过滤器验证
             if query:
                 time_issues = self._validator.validate_time_filter(safe_sql, query)
                 if time_issues:
                     warnings.extend(time_issues)
 
-            # Execute
+            # 执行
             try:
                 rows = await SQLExecutor().run_on_dsn(dsn, safe_sql)
             except Exception as exc:
@@ -130,21 +130,21 @@ class QueryExecutor:
                 )
                 continue
 
-            # Post-execution validation
+            # 执行后验证
             validation = self._reflector.validate_result(safe_sql, rows, query)
             if validation.issues:
                 warnings.extend(validation.issues)
 
             return rows, safe_sql, warnings
 
-        # Should not reach here, but just in case
+        # 不应到达此处，但以防万一
         raise self._enhanced_error(
             f"Query execution failed after {self._max_retries} retries: {last_error}",
             rewriter,
         )
 
     def _enhanced_error(self, message: str, rewriter: SQLRewriter) -> SQLValidationError:
-        """Create SQLValidationError with recovery context attached."""
+        """创建附带恢复上下文的 SQLValidationError。"""
         error = SQLValidationError(message)
         error.recovery_context = rewriter.get_recovery_context()
         return error
@@ -159,7 +159,7 @@ class QueryExecutor:
         rewriter: SQLRewriter,
         attempt_num: int,
     ) -> tuple[str | None, list]:
-        """Use LLM to rewrite SQL based on error feedback. Returns corrected SQL or None."""
+        """使用 LLM 根据错误反馈重写 SQL，返回修正后的 SQL 或 None。"""
         try:
             new_sql = await rewriter.rewrite(
                 current_sql,
@@ -186,7 +186,7 @@ class QueryExecutor:
         schema_hint: str,
         dialect: SQLDialectSpec,
     ) -> LogicalPlan:
-        """Use LLM to rewrite the LogicalPlan based on error feedback."""
+        """使用 LLM 根据错误反馈重写 LogicalPlan。"""
         rewriter = SQLRewriter()
         current_sql = self._builder.build(plan, dialect)
         try:

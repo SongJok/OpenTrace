@@ -1,4 +1,4 @@
-"""Stub: Context Composer — V5 feature not yet implemented."""
+"""桩：上下文编排器 — V5 能力尚未实现。"""
 
 from __future__ import annotations
 

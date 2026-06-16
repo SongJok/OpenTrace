@@ -1,262 +1,545 @@
 # OpenTrace
 
-OpenTrace 是一个以 **Cognitive Kernel** 为核心的智能体系统，支持：
+OpenTrace 是一个以 Cognitive Kernel 为核心的智能体运行系统，当前项目定位是把对话、RAG、工具调用、数据分析、记忆、任务、审计和运行时观测组织成一套可部署的 AgentOS 后端。
 
-- 对话问答（同步 / 流式 SSE）
-- 工具调用（Web / 时间 / 天气 / 代码 / 计算器等）
-- 推理链与执行图可视化
-- 多轮对话状态追踪与上下文压缩
-- V4 架构：**Plan + Dispatcher + Agent Cluster + Fusion + Critic**（稳定默认版本）
+本 README 依据当前仓库代码、`docker-compose.yml`、启动脚本和 `.env` 重新整理。`.env` 中包含真实密钥、数据库密码、SMTP 授权码和第三方 API Key，本文档只记录配置项与脱敏示例，不写入真实敏感值。
 
----
+## 当前能力
 
-## 🚀 快速开始（Docker 统一口径）
+- FastAPI API Gateway，统一暴露 `/api/v1/*` 接口。
+- Cognitive Kernel + **vNext 主路径**（`CognitiveKernel` → `RuntimeGateway` → `CognitiveSupervisor` → `RuntimeTurnDispatcher` → `cognitive_executive` / `data_intelligence` / `multi_goal`），V4 编排仅经 `legacy/v4` shim 保留兼容。
+- V5 快路径（L0 / 语义缓存 / L1）与 Agent Cluster，支持计划、分发、执行、融合、批判与修正。)
+- Redis Agent Bus，当前 `.env` 启用 `KERNEL_AGENT_BUS_ENABLED=true`，模式为 `stream`。
+- 多模型 LLM 路由，当前 `.env` 使用 DashScope/Qwen 系列模型。
+- RAG 增强链路，包含 Query Rewrite、HyDE、混合检索、Rerank、证据质量门禁和 Web fallback。
+- DataAgent V2，用于 Text2SQL、指标语义、表关系、分析技能、结果解释和高级分析。
+- 多轮会话、记忆、任务、审计、技能、连接器、文档、附件上传、沙箱下载等 API。
+- OpenTelemetry、Prometheus、Jaeger 可选观测栈。
+- React + Vite 前端，默认独立运行在 `14108`。
+
+### vNext 架构（契约回归）
+
+主路径与需求矩阵见 `docs/ARCHITECTURE_REQUIREMENTS_MATRIX.md`、`docs/ARCHITECTURE_COMPLETION_ROADMAP.md`。
+
+```text
+CognitiveKernel → RuntimeGateway
+  → CognitiveSupervisor.prepare_run
+  → RuntimeTurnDispatcher
+  → runtime.registry (registry_governance)
+  → run_outcomes (Artifact, GoalEvidenceBinding, semantic_alerts)
+```
+
+```bash
+bash scripts/run_vnext_final_tests.sh
+```
+
+## 快速启动
 
 ### 前置依赖
 
-| 组件 | 版本 | 说明 |
-|------|------|------|
-| Docker | ≥ 24.0 | 容器运行时 |
-| Docker Compose | ≥ 2.20 | 编排工具 |
-| PostgreSQL | 15+ | 持久化存储（docker-compose 自动拉起） |
-| Redis | 7+ | 缓存/会话存储（docker-compose 自动拉起） |
+| 组件 | 建议版本 | 说明 |
+| --- | --- | --- |
+| Docker | 24+ | 默认运行方式 |
+| Docker Compose | 2.20+ | 服务编排 |
+| Python | 3.11+ | 本地开发或容器镜像 |
+| Node.js | 18+ | 前端开发 |
+| npm | 9+ | 前端依赖管理 |
 
-### 启动服务
+### 1. 准备环境变量
+
+首次启动时复制模板并填写真实值：
 
 ```bash
-cd /path/to/opentrace
-
-# 1. 复制环境变量模板并配置 LLM API Key
 cp .env.example .env
-# 编辑 .env，填写 DEFAULT_LLM_QUERY_API_KEY 等必要字段
-
-# 2. 启动所有服务
-bash start.sh
-
-# 3. 验证服务状态
-curl http://localhost:14101/health
 ```
 
-### 服务地址
-
-| 服务 | 地址 | 说明 |
-|------|------|------|
-| Frontend | http://localhost:14108 | React 管理界面 |
-| API Gateway | http://localhost:14101 | FastAPI 后端 |
-| Swagger Docs | http://localhost:14101/docs | API 文档 |
-| PostgreSQL | localhost:5432 | 数据库（默认账号：postgres/PASSWORD） |
-| Redis | localhost:6379 | 缓存服务 |
-
-### 停止 / 重启
-
-```bash
-bash stop.sh      # 优雅停止所有容器
-bash restart.sh   # 重启服务（保留数据卷）
-```
-
----
-
-## ⚙️ 配置说明
-
-### 核心环境变量（.env）
+当前 `.env` 是运行时配置源。至少需要确认这些配置存在：
 
 ```env
-# ── 数据库 ─────────────────────────────────────────
-DATABASE_URL=postgresql+asyncpg://postgres:PASSWORD@postgres:5432/opentrace_v2
-TOKEN_DB_URL=postgresql+asyncpg://postgres:PASSWORD@postgres:5432/opentrace_v2
-
-# ── LLM 配置（DashScope 示例）────────────────────────
-DEFAULT_LLM_QUERY_PROVIDER=阿里巴巴 Qwen(DashScope)
-DEFAULT_LLM_QUERY_MODEL=qwen3.6-plus
-DEFAULT_LLM_QUERY_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-DEFAULT_LLM_QUERY_API_KEY=sk-xxxxxxxxxxxxxxxx
-
-# ── Redis ──────────────────────────────────────────
+POSTGRES_PASSWORD=<your-postgres-password>
+DATABASE_URL=postgresql://postgres:<your-postgres-password>@postgres:5432/opentrace_v2
+TOKEN_DB_URL=postgresql://postgres:<your-postgres-password>@postgres:5432/opentrace_v2
 REDIS_URL=redis://redis:6379/10
 
-# ── 功能开关 ────────────────────────────────────────
-KERNEL_ORCHESTRATOR_VERSION=v4
-RAG_RERANK_ENABLED=true
-ATTACHMENT_UPLOAD_ENABLED=true
+APP_PORT=14100
+VITE_API_URL=http://localhost:14100
+FRONTEND_PORT=14108
+
+DASHSCOPE_API_KEY=<your-dashscope-key>
+DEFAULT_LLM_QUERY_API_KEY=<your-dashscope-key>
+EMBEDDING_API_KEY=<your-dashscope-key>
+RERANK_API_KEY=<your-dashscope-key>
+
+SERPER_API_KEY=<optional-web-search-key>
+WEATHER_API_KEY=<optional-weather-key>
+WEATHER_STACK_API_KEY=<optional-weatherstack-key>
 ```
 
-> 💡 **提示**：修改 `.env` 后需执行 `bash restart.sh` 使配置生效。
+不要提交 `.env`。如果 `.env` 曾经被分享或进入日志，请轮换其中的数据库密码、SMTP 授权码和第三方 API Key。
 
-### V4 推荐配置（稳定默认）
+### 2. 启动后端栈
+
+```bash
+bash start.sh
+```
+
+启动脚本会检查 Docker、Compose、`.env`、端口 `14100`，然后构建并启动：
+
+- `opentrace_api`
+- `opentrace_agent_worker`
+- `opentrace_postgres`
+- `opentrace_redis`
+
+验证：
+
+```bash
+curl http://127.0.0.1:14100/api/v1/health
+curl http://127.0.0.1:14100/api/v1/health/deps
+```
+
+带观测组件启动：
+
+```bash
+bash start.sh --with-observability
+```
+
+启动后额外可用：
+
+- Prometheus: `http://localhost:14190`
+- Jaeger: `http://localhost:14186`
+
+启动并执行 Docker 快速验收：
+
+```bash
+bash start.sh --verify
+```
+
+### 3. 启动前端
+
+`docker-compose.yml` 当前不包含前端服务。前端使用 Vite 本地启动：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+访问：
+
+- 前端: `http://localhost:14108`
+- API: `http://localhost:14100`
+- Swagger: `http://localhost:14100/docs`
+
+## 服务端口
+
+| 服务 | 宿主机地址 | 容器/内部地址 | 说明 |
+| --- | --- | --- | --- |
+| API Gateway | `http://localhost:14100` | `api:14100` | FastAPI 主入口 |
+| Swagger Docs | `http://localhost:14100/docs` | - | OpenAPI 文档 |
+| Frontend | `http://localhost:14108` | - | Vite dev server |
+| PostgreSQL | `localhost:5432` | `postgres:5432` | 默认数据库 `opentrace_v2` |
+| Redis | `localhost:6380` | `redis:6379` | Compose 默认映射 `${REDIS_PORT:-6380}:6379` |
+| Prometheus | `http://localhost:14190` | `prometheus:9090` | `--with-observability` 启用 |
+| Jaeger | `http://localhost:14186` | `jaeger:16686` | `--with-observability` 启用 |
+
+**端口真相**：API 以 **`APP_PORT=14100`** 为准（Compose、`start.sh`、健康检查、`VITE_API_URL`）。若 `.env` 中 `GATEWAY_PORT` 与 `APP_PORT` 不一致，开发环境启动时会收到警告；详见 `docs/CONFIG_TRUTH.md`。
+
+**改代码后容器行为未变**：镜像 `COPY` 打入代码，需强制重建：
+
+```bash
+docker compose build --no-cache api agent-worker && bash restart.sh
+```
+
+## 常用命令
+
+```bash
+# 启动
+bash start.sh
+
+# 启动后端 + Prometheus + Jaeger
+bash start.sh --with-observability
+
+# 停止容器，保留数据卷
+bash stop.sh
+
+# 停止容器并删除数据卷
+bash stop.sh --volumes
+
+# 重启
+bash restart.sh
+
+# 查看日志
+bash scripts/docker_logs.sh api
+bash scripts/docker_logs.sh agent-worker
+
+# Docker 快速验收
+bash scripts/verify_docker.sh
+
+# Docker 完整验证
+bash scripts/verify_all_docker.sh
+```
+
+## 配置说明
+
+OpenTrace 通过 `infra/config/settings.py` 使用 `pydantic-settings` 读取 `.env`，大小写不敏感，额外字段会被忽略。数据库 DSN 如果写成 `postgresql://`，配置层会自动转换为 asyncpg 使用的 `postgresql+asyncpg://`。
+
+### 当前 `.env` 摘要
+
+| 类别 | 当前配置含义 |
+| --- | --- |
+| App | `APP_NAME=opentrace`，`APP_ENV=development`，`APP_PORT=14100`，`DEBUG=true` |
+| Database | PostgreSQL，数据库名 `opentrace_v2`，容器内主机名 `postgres` |
+| Redis | 容器内 `redis:6379/10`，DB `10-15` 分别用于 session/cache/memory/queue/rate-limit/pubsub |
+| LLM | DashScope/Qwen，Query/Strongest 使用 `qwen3.7-max`，Planning/Compress 使用 `qwen3.6-plus` |
+| Short Models | SeniorShort `qwen3-14b`，MiddleShort/JuniorShort/MinShort 当前配置为 `qwen3-8b` |
+| Embedding | DashScope `qwen3-vl-embedding`，维度 `1024` |
+| Rerank | DashScope `qwen3-vl-rerank` |
+| Search/Weather | Serper、OpenWeatherMap、Weatherstack 通过对应 API Key 启用 |
+| Auth | JWT `HS256`，默认过期 `10080` 分钟 |
+| Registration | 注册开启，允许邮箱域名和管理员邮箱由 `.env` 控制 |
+| SMTP | 使用 `.env` 中的 SMTP 服务发送邮件 |
+| Trace | `TRACE_ENABLED=true`，OTLP 默认指向 `http://localhost:4317` |
+| Kernel | vNext 主路径；`KERNEL_ORCHESTRATOR_V4_ENABLED=false`（V4 仅 legacy）；Agent Bus `stream` |
+| Agent Bus | 启用 Redis Agent Bus，当前模式为 `stream` |
+| RAG | Query Rewrite、HyDE、Hybrid Search、Rerank、Fallback to Web 均开启 |
+| Text2SQL | Join inference、结果解释和最多 2 次重试开启 |
+| DataAgent V2 | 当前启用，高级分析模式为 `auto` |
+
+### LLM 配置组
+
+项目把模型按用途拆成多组，便于按成本和延迟路由：
+
+| 配置前缀 | 用途 |
+| --- | --- |
+| `DEFAULT_LLM_STRONGEST_*` | 最强模型，复杂推理或高质量任务 |
+| `DEFAULT_LLM_QUERY_*` | 主问答模型 |
+| `DEFAULT_LLM_COMPRESS_*` | 上下文压缩 |
+| `DEFAULT_LLM_PLANING_*` | 计划生成，变量名沿用项目内 `PLANING` 拼写 |
+| `DEFAULT_LLM_SENIORSHORT_*` | 知识问答、轻量 critique |
+| `DEFAULT_LLM_MIDDLESHORT_*` | 简单问答、FAQ、快速回答 |
+| `DEFAULT_LLM_JUNIORSHORT_*` | L1 路由、轻量分类 |
+| `DEFAULT_LLM_MINSHORT_*` | 预留轻量模型 |
+| `DEFAULT_LLM_VISION_*` | 视觉理解，代码中有默认值，当前 `.env` 未显式配置 |
+
+所有 `*_API_KEY` 请只写在 `.env` 或安全的密钥管理系统里。
+
+### RAG 与检索
+
+当前 `.env` 开启：
 
 ```env
-KERNEL_AGENT_ENABLED=true
-KERNEL_AGENT_DATA_ENABLED=true
-KERNEL_AGENT_TOOL_ENABLED=true
-KERNEL_AGENT_WEB_ENABLED=true
-KERNEL_AGENT_RAG_ENABLED=true
-KERNEL_AGENT_TIMEOUT_SEC=30
-KERNEL_AGENT_MAX_PARALLEL=5
+RAG_QUERY_REWRITE_ENABLED=true
+RAG_HYDE_ENABLED=true
+RAG_HYBRID_SEARCH_ENABLED=true
+RAG_VECTOR_WEIGHT=0.7
+RAG_BM25_WEIGHT=0.3
+RAG_RERANK_ENABLED=true
+RAG_CHUNK_SIZE=800
+RAG_CHUNK_OVERLAP=100
+RAG_SEMANTIC_CHUNKING_ENABLED=true
+RAG_MIN_EVIDENCE_SCORE=0.6
+RAG_MIN_EVIDENCE_COUNT=2
+RAG_FALLBACK_TO_WEB=true
 ```
 
----
+Embedding 与 Rerank 当前均使用 DashScope。若要降级成本或离线运行，可以参考 `.env.example` 中的 `hash` / `heuristic` 配置思路。
 
-## 🔧 开发环境（非 Docker）
+### DataAgent V2 与 Text2SQL
 
-### 本地依赖安装
+DataAgent V2 当前作为数据认知核心开启，覆盖：
+
+- 数据库连接管理与 schema 同步。
+- 指标定义、语义层、表关系、分析技能。
+- Intent、Entity、Metric、Time、Join、Semantic、Planner、SQL Compiler、Verifier、Reflection、Critic 子代理。
+- DAG 并行、Supervisor 重试和高级分析。
+
+关键开关：
+
+```env
+DATA_AGENT_V2_ENABLED=true
+DATA_AGENT_V2_FALLBACK_TO_V1=false
+DATA_AGENT_V2_ADVANCED_ANALYTICS_MODE=auto
+TEXT2SQL_JOIN_INFERENCE_ENABLED=true
+TEXT2SQL_RESULT_INTERPRET_ENABLED=true
+TEXT2SQL_MAX_RETRY=2
+```
+
+## API 概览
+
+所有业务接口默认带 `/api/v1` 前缀。
+
+| 模块 | 主要接口 |
+| --- | --- |
+| Health | `GET /health`，`GET /health/deps`，`GET /health/runtime`，`GET /ping` |
+| Auth | `POST /auth/register`，`POST /auth/login`，`GET /auth/me` |
+| Chat | `POST /chat`，`POST /chat/stop`，`POST /chat/regenerate`，附件上传与消息版本 |
+| Conversations | 会话列表、创建、归档、删除、分支和消息读取 |
+| Documents | 文档上传、搜索、详情、更新和删除 |
+| Memories | 记忆列表、创建、更新、删除和设置 |
+| Tasks | 任务创建、暂停、恢复、取消、通知 |
+| Data | `POST /data/query`，schema 同步和读取 |
+| Databases | 数据库连接、连通性测试、schema 同步、SQL 查询、语义层 |
+| Metrics | 指标定义、发布、废弃和 lineage |
+| Table Relationships | 表关系维护、验证和图谱 |
+| Analytical Skills | 分析技能维护、激活、废弃和 seed |
+| Skills | 技能列表、安装、创建、测试、会话绑定 |
+| Connectors | 连接器授权、回调、资源和同步 |
+| Rules | 规则文件读取、生成、更新和删除 |
+| Audit | 审计日志查询和导出 |
+| Admin | 用户审批、工具、策略、bandit、meta cycle、自博弈 |
+| Sandbox | 沙箱文件下载 |
+| Cognitive | 认知事件 replay |
+
+完整接口以 `http://localhost:14100/docs` 为准。
+
+## 本地开发
+
+推荐仍使用 Docker 跑 PostgreSQL/Redis，然后在宿主机运行 API 或前端。由于当前 `.env` 的 `DATABASE_URL` 和 `REDIS_URL` 使用容器内主机名 `postgres` / `redis`，宿主机直接运行后端时需要临时覆盖为宿主机地址。
 
 ```bash
-# 1. 创建虚拟环境
 python -m venv .venv
 source .venv/bin/activate
-
-# 2. 安装依赖
 pip install -r requirements.txt
 
-# 3. 初始化数据库（开发环境）
-python -c "from infra.storage.database import init_db; import asyncio; asyncio.run(init_db())"
-
-# 4. 启动服务
-python -m gateway.main
+DATABASE_URL=postgresql://postgres:<your-postgres-password>@127.0.0.1:5432/opentrace_v2 \
+TOKEN_DB_URL=postgresql://postgres:<your-postgres-password>@127.0.0.1:5432/opentrace_v2 \
+REDIS_URL=redis://127.0.0.1:6380/10 \
+python -m uvicorn gateway.api_gateway.main:app --host 0.0.0.0 --port 14100 --reload
 ```
 
-### 数据库迁移
-
-> ⚠️ 生产环境请使用 Alembic，开发环境可使用自动建表：
+前端开发：
 
 ```bash
-# 自动创建/更新表结构（开发专用）
-python -c "from infra.storage.database import ensure_runtime_schema; import asyncio; asyncio.run(ensure_runtime_schema())"
+cd frontend
+npm install
+npm run dev
 ```
 
----
-
-## 🧪 测试与验证
-
-### 本地快速验证
+构建前端：
 
 ```bash
-bash scripts/verify_all.sh
+cd frontend
+npm run build
 ```
 
-### Docker 内一致性验证
+## 数据库与迁移
+
+API 启动时会执行 `ensure_runtime_schema()`，用于保证运行期核心表结构存在。迁移系统使用 Alembic，配置入口为 `alembic.ini` 和 `alembic/env.py`。
+
+Docker 环境执行迁移：
+
+```bash
+docker compose exec -T api alembic upgrade head
+```
+
+验证迁移幂等：
+
+```bash
+bash scripts/verify_migration_idempotent.sh
+```
+
+查看核心表：
+
+```bash
+docker compose exec -T postgres psql -U postgres -d opentrace_v2 -c "\dt"
+```
+
+## 测试与验收
+
+Docker 快速验收：
+
+```bash
+bash scripts/verify_docker.sh
+```
+
+Docker 完整验证：
 
 ```bash
 bash scripts/verify_all_docker.sh
 ```
 
-### 关键测试用例
-
-- `tests/test_orchestrator_v3_contract.py` — 编排器接口契约
-- `tests/test_fusion_critic_flags_contract.py` — Fusion/Critic 标志位
-- `tests/test_weather_city_routing_contract.py` — 城市别名路由
-- `tests/test_time_weather_tools_behavior.py` — 工具行为回归
-
----
-
-## ⚠️ 常见问题排查
-
-### 1. 数据库事务错误：`InFailedSQLTransactionError`
-
-**现象**：问答时返回 `{"decision_type": "setup_error", "content": "服务暂时不可用"}`
-
-**原因**：PostgreSQL 事务因前置查询失败进入 `aborted` 状态，后续查询被拒绝。
-
-**排查步骤**：
+本地完整验证：
 
 ```bash
-# ① 检查数据库连接
-pg_isready -h localhost -p 5432
-
-# ② 验证表结构是否匹配代码模型
-psql -h localhost -U postgres -d opentrace_v2 -c "\d+ chat_sessions"
-psql -h localhost -U postgres -d opentrace_v2 -c "\d+ conversation_states"
-
-# ③ 查看 pending 事务/锁
-psql -h localhost -U postgres -d opentrace_v2 -c "SELECT * FROM pg_locks WHERE NOT granted;"
-
-# ④ 临时恢复：重启数据库清理事务状态
-docker restart opentrace-postgres-1  # 或 systemctl restart postgresql
+bash scripts/verify_all.sh
 ```
 
-**预防**：确保 `.env` 中 `DATABASE_URL` 配置正确，且首次启动时执行过数据库初始化。
+单测示例：
 
-### 2. LLM 调用失败 / 超时
+```bash
+python -m pytest -q
+python -m unittest tests/test_orchestrator_v4_contract.py
+```
 
-- 检查 `.env` 中 `DEFAULT_LLM_QUERY_API_KEY` 是否已填写
-- 确认网络可访问 `dashscope.aliyuncs.com`（或对应 provider）
-- 查看日志：`docker logs opentrace-api-1 | grep -i "llm\|error"`
+发布前检查：
 
-### 3. 前端无法连接 API
+```bash
+bash scripts/preflight_release.sh
+```
 
-- 确认 `VITE_API_URL` 与实际 API 地址一致
-- 检查浏览器控制台 CORS 错误
-- 验证网关端口 `14101` 是否监听：`lsof -i :14101`
-
-### 4. 附件上传失败
-
-- 确认 `ATTACHMENT_STORAGE_PATH` 目录存在且可写
-- 检查文件大小是否超过 `ATTACHMENT_MAX_SIZE_MB`（默认 20MB）
-
----
-
-## 🏗️ 项目结构（简版）
+## 项目结构
 
 ```text
 opentrace/
-├── gateway/                 # FastAPI 接口层
-│   ├── api_gateway/
-│   │   ├── routers/         # chat.py, auth.py 等路由
-│   │   └── middleware/      # 认证/限流/观测中间件
-│   └── main.py              # 应用入口
-├── kernel/                  # 核心编排引擎（v4 默认）
-│   ├── orchestrator_v4.py   # 主编排器：Plan→Dispatch→Fusion→Critic
-│   ├── fusion_engine/       # 多源结果融合
-│   ├── critic_engine/       # 输出校验与修正
-│   ├── conversation_state.py# 多轮对话状态管理
-│   └── adaptive_profiles/   # 动态响应策略（speed/quality）
-├── agents/                  # 可插拔 Agent 实现
-│   ├── base.py, registry.py
-│   ├── data_agent.py, rag_agent.py, web_agent.py, tool_agent.py
-│   └── vision_agent.py, skills_agent.py
+├── gateway/                 # FastAPI API Gateway 与 cognitive gateway
+│   └── api_gateway/
+│       ├── main.py          # FastAPI app、middleware、router 注册
+│       └── routers/         # auth/chat/data/databases/documents 等 API
+├── kernel/                  # Cognitive Kernel、路由、运行时、RAG、Data Cognition
+│   ├── orchestrator_v4.py
+│   ├── query_router_v2.py
+│   ├── runtime/
+│   ├── data_cognition/
+│   └── capability_intelligence/
+├── agents/                  # Agent Cluster 与 DataAgent V2 子代理
+│   ├── worker.py
+│   └── data_agent_v2/
+├── infra/                   # 配置、存储、Redis、消息总线、观测、安全、错误模型
+│   ├── config/settings.py
+│   ├── storage/
+│   ├── message_bus/
+│   └── observability/
+├── memory/                  # working/episodic/semantic/procedural/temporal memory
+├── model/                   # LLM adapter、embedding、reranker、model gateway
 ├── tools/                   # 工具注册与内置工具
-│   ├── registry.py
-│   └── builtin/             # weather, datetime, calculator, web_search
-├── plugins/                 # 扩展插件（web/doc/memory）
-├── frontend/                # React + Vite 管理界面
-├── infra/                   # 基础设施层
-│   ├── config/              # pydantic-settings 配置管理
-│   ├── storage/             # SQLAlchemy models + asyncpg engine
-│   ├── cache/               # Redis 客户端
-│   ├── observability/       # OpenTelemetry + 日志
-│   └── security/            # JWT + Zero Trust 校验
-├── memory/                  # 记忆系统（短期/长期/演化）
-├── execution/               # 执行层（tool router, data query）
-├── tests/                   # 合约测试与回归用例
-├── scripts/                 # 启停/验证/运维脚本
-├── docker-compose.yml       # 服务编排定义
-├── .env.example             # 环境变量模板
-└── README.md                # 本文档
+├── plugins/                 # web/document/knowledge/memory/tool/code/chart/data 插件
+├── execution/               # DAG、tool router、workflow、sandbox、SQL executor
+├── skills/                  # skill runtime 与 marketplace/store
+├── connectors/              # connector registry、SDK、内置 GitHub connector
+├── safety/                  # guardrails、policy、masking、audit、XAI
+├── sandbox_runtime/         # 本地 AST、gVisor、Firecracker provider
+├── frontend/                # React + Vite + Tailwind 管理界面
+├── docs/                    # 模块 catalog 与 service 文档
+├── scripts/                 # 启停、验证、迁移、运维脚本
+├── deploy/                  # Docker、K8s、Helm 部署配置
+├── alembic/                 # 数据库迁移
+├── tests/                   # 合约测试与回归测试
+├── docker-compose.yml
+├── pyproject.toml
+├── requirements.txt
+├── start.sh
+├── stop.sh
+└── restart.sh
 ```
 
----
+## 常见问题
 
-## 📚 文档索引
+### 端口 14100 被占用
 
-| 文档 | 说明 | 优先级 |
-|------|------|--------|
-| `SERVICE.md` | 全量主文档（SSOT），含架构/流程/配置详解 | ⭐⭐⭐ |
-| `RUNBOOK.md` | 运维手册：监控/告警/故障处理 | ⭐⭐ |
-| `scripts/work_script.md` | 脚本使用说明与开发工作流 | ⭐⭐ |
-| `kernel/README.md` | Kernel 引擎设计文档（进阶） | ⭐ |
+`start.sh` 会在启动前检查 `14100`。如果失败，先定位占用进程：
 
----
+```bash
+lsof -iTCP:14100 -sTCP:LISTEN
+```
 
-## 🤝 贡献指南
+释放端口后重新执行：
 
-1. 创建分支：`git checkout -b codex/feature-name`
-2. 遵循代码规范：`black . && ruff check .`
-3. 添加测试：新功能需配套单元测试
-4. 提交前验证：`bash scripts/verify_all.sh`
-5. 提交 PR 并关联相关 Issue
+```bash
+bash start.sh
+```
 
----
+### API 健康检查失败
 
-## 📄 许可证
+先看容器状态和日志：
 
-MIT License — 详见 `LICENSE` 文件
+```bash
+docker compose ps
+bash scripts/docker_logs.sh api
+bash scripts/docker_logs.sh agent-worker
+```
+
+再检查依赖：
+
+```bash
+curl http://127.0.0.1:14100/api/v1/health/deps
+```
+
+如果 database 或 redis 异常，确认 `.env` 中容器内地址仍为：
+
+```env
+DATABASE_URL=postgresql://postgres:<password>@postgres:5432/opentrace_v2
+REDIS_URL=redis://redis:6379/10
+```
+
+### 宿主机本地运行后端无法连接数据库
+
+这是因为 `.env` 默认适配 Docker 网络。宿主机进程无法解析 `postgres` / `redis`，需要临时覆盖为 `127.0.0.1`，Redis 宿主机端口默认是 `6380`。
+
+### 前端请求错端口
+
+前端读取 `frontend/.env*` 或根 `.env` 中的 `VITE_API_URL`。当前后端实际地址是：
+
+```env
+VITE_API_URL=http://localhost:14100
+```
+
+浏览器控制台出现网络错误时，优先确认该值和 API 健康检查地址一致。
+
+### LLM、Embedding 或 Rerank 调用失败
+
+检查对应 API Key 和 Base URL：
+
+```env
+DEFAULT_LLM_QUERY_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+RERANK_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+```
+
+容器内可通过日志确认具体错误：
+
+```bash
+bash scripts/docker_logs.sh api
+```
+
+### 注册或邮件发送失败
+
+当前注册由 `.env` 中的这些变量控制：
+
+```env
+REGISTRATION_ENABLED=true
+REGISTRATION_ALLOWED_EMAIL_DOMAIN=<allowed-domain>
+ADMIN_EMAIL=<admin-email>
+SMTP_HOST=<smtp-host>
+SMTP_PORT=465
+SMTP_USER=<smtp-user>
+SMTP_PASS=<smtp-password-or-app-token>
+SMTP_FROM=<sender>
+```
+
+确认 SMTP 授权码有效，且邮箱服务允许应用专用密码或 SMTP 登录。
+
+## 相关文档
+
+| 文档 | 内容 |
+| --- | --- |
+| `docs/ARCHITECTURE_REQUIREMENTS_MATRIX.md` | vNext 需求与实现对照矩阵 |
+| `docs/ARCHITECTURE_COMPLETION_ROADMAP.md` | 分阶段完成规划与每周检查清单 |
+| `docs/RELEASE_GATE.md` | PR/发布合并门禁 |
+| `docs/CONFIG_TRUTH.md` | 端口、URL、RAG 阈值配置真相表 |
+| `docs/ENV_PROFILES.md` | dev / staging / production 推荐开关 |
+| `docs/FEATURE_FLAG_REGISTRY.md` | 内核 Feature Flag 注册表 |
+| `docs/CAPABILITY_MATURITY.md` | 模块成熟度（生产 vs stub） |
+| `docs/OBSERVABILITY_COGNITIVE_HEALTH.md` | 认知健康指标与观测 |
+| `docs/adr/` | 架构决策记录（vNext / Governance / Memory） |
+| `docs/runbooks/` | 排障 runbook（回合追踪、证据门禁等） |
+| `docs/catalog/cognitive_kernel.md` | Cognitive Kernel 模块说明 |
+| `docs/catalog/agent_runtime.md` | Agent Runtime 说明 |
+| `docs/catalog/data_agent.md` | DataAgent 说明 |
+| `docs/catalog/data_cognition.md` | Data Cognition / Text2SQL 说明 |
+| `docs/catalog/rag_retrieval.md` | RAG 与检索说明 |
+| `docs/catalog/memory_system.md` | Memory System 说明 |
+| `docs/service/service_claude.md` | Claude 服务文档 |
+| `scripts/work/README.md` | 启停与开发工作流脚本 |
+
+## 贡献约定
+
+1. 新功能优先补充或更新合约测试。
+2. 合并前运行 `bash scripts/run_vnext_final_tests.sh` 与 `bash scripts/check_import_boundaries.sh`（见 `docs/RELEASE_GATE.md`）。
+3. 提交前至少运行与改动范围匹配的验证脚本。
+4. 配置新增项需要同步更新 `.env.example`、`docs/FEATURE_FLAG_REGISTRY.md` 和本 README。
+5. 不提交 `.env`、日志、数据库 dump、密钥或本地缓存。
+6. 保持 API 错误响应符合统一 error envelope。
+
+## License
+
+MIT

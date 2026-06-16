@@ -1,5 +1,5 @@
 """
-Tool Router — selects and safely dispatches tools based on intent matching.
+工具路由 — 按意图匹配选择并安全调度工具。
 """
 from __future__ import annotations
 

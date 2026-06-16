@@ -1,8 +1,8 @@
-"""Clarification gate — detects vague queries and generates counter-questions.
+"""澄清门 — 检测模糊查询并生成反问。
 
-Two classes:
-- ClarificationGate: original stub for chat orchestrator (backward-compatible)
-- DataClarificationGate: active gate for DataAgent V2 pipeline
+两类：
+- ClarificationGate：对话编排器原桩（向后兼容）
+- DataClarificationGate：DataAgent V2 流水线活跃门
 """
 
 from __future__ import annotations
@@ -12,11 +12,11 @@ import uuid
 from dataclasses import dataclass, field
 
 
-# ── Shared types ────────────────────────────────────────────────────────────
+# ── 共享类型 ────────────────────────────────────────────────────────────
 
 @dataclass
 class ClarificationQuestion:
-    """Structured clarification question for frontend rendering."""
+    """结构化澄清问题，用于前端渲染。"""
     question_id: str = ""
     question_text: str = ""
     missing_entities: list[str] = field(default_factory=list)
@@ -30,10 +30,10 @@ class ClarificationResult:
     question: ClarificationQuestion | None = None
 
 
-# ── Original stub (preserved for chat orchestrator compatibility) ────────────
+# ── 原始桩（保留用于对话编排器兼容性） ────────────
 
 class ClarificationGate:
-    """Original stub — kept for chat orchestrator backward compatibility."""
+    """原始桩 — 保留用于对话编排器向后兼容。"""
 
     async def check(
         self,
@@ -44,9 +44,9 @@ class ClarificationGate:
         return ClarificationResult()
 
 
-# ── Active gate for DataAgent V2 ─────────────────────────────────────────────
+# ── DataAgent V2 活跃门 ─────────────────────────────────────────────
 
-# Patterns that signal the query is too vague to answer deterministically
+# 表示查询过于模糊、无法确定性回答的模式
 _GENERIC_PATTERNS = [
     re.compile(p)
     for p in [
@@ -70,20 +70,20 @@ _GENERIC_PATTERNS = [
 
 
 class DataClarificationGate:
-    """Detect vague data queries and generate helpful counter-questions.
+    """检测模糊的数据查询并生成有用的反问。
 
-    Detection is pure signal logic (no LLM call). Question generation uses
-    LLM (PLANNING role) to produce natural, schema-aware counter-questions.
+    检测采用纯信号逻辑（不调用 LLM）。问题生成使用
+    LLM（PLANNING 角色）来生成自然、感知 schema 的反问。
     """
 
     def detect(self, ctx) -> dict:
-        """Run pure-signal vagueness detection on the cognitive context.
+        """对认知上下文执行纯信号模糊检测。
 
-        Returns a dict with signal flags and an overall needs_clarification
-        boolean. No LLM calls are made here.
+        返回包含信号标志和总体 needs_clarification 布尔值的字典。
+        此处不进行 LLM 调用。
 
         Args:
-            ctx: CognitiveContext from agents.data_agent_v2.types
+            ctx: 来自 agents.data_agent_v2.types 的 CognitiveContext
         """
         entities = ctx.entities or []
         metrics = ctx.metrics or []
@@ -91,7 +91,7 @@ class DataClarificationGate:
         intent_type = intent.get("intent_type", "") if isinstance(intent, dict) else ""
         intent_confidence = intent.get("confidence", 0.0) if isinstance(intent, dict) else 0.0
 
-        # ── Signal extraction ────────────────────────────────────────────
+        # ── 信号提取 ────────────────────────────────────────────
         no_entities = not entities or all(
             not (e.get("mapped_table") if isinstance(e, dict) else False)
             for e in entities
@@ -109,7 +109,7 @@ class DataClarificationGate:
         dimensions = intent.get("dimensions", []) if isinstance(intent, dict) else []
         empty_dimensions = is_analytical and (not dimensions)
 
-        # Too short: strip whitespace and common punctuation
+        # 过短：去除空白和常见标点
         q_clean = re.sub(
             r"[\s.,;:!?，。；：！？、""'']+",
             "",
@@ -117,11 +117,11 @@ class DataClarificationGate:
         )
         too_short = len(q_clean) <= 6
 
-        # Generic pattern match
+        # 通用模式匹配
         query_text = ctx.query or ""
         generic_pattern = any(p.search(query_text) for p in _GENERIC_PATTERNS)
 
-        # ── Composite rules (specific before general) ───────────────────
+        # ── 组合规则（先特殊后一般） ───────────────────
         signals = {
             "no_entities": no_entities,
             "no_metrics": no_metrics,
@@ -132,24 +132,24 @@ class DataClarificationGate:
             "generic_pattern": generic_pattern,
         }
 
-        # Rule 1: no entities AND analytical intent with empty dimensions
-        # (e.g. "统计分布" without saying which table)
+        # 规则1：无实体且分析意图无维度
+        # （例如"统计分布"但未指明哪个表）
         if no_entities and empty_dimensions:
             return {**signals, "needs_clarification": True, "reason": "analytical_no_table_no_dims"}
 
-        # Rule 2: no entities AND no metrics → must clarify
+        # 规则2：无实体且无指标 → 需要澄清
         if no_entities and no_metrics:
             return {**signals, "needs_clarification": True, "reason": "no_entities_and_no_metrics"}
 
-        # Rule 3: no entities AND generic pattern → clarify
+        # 规则3：无实体且匹配通用模式 → 澄清
         if no_entities and generic_pattern:
             return {**signals, "needs_clarification": True, "reason": "no_entities_and_generic"}
 
-        # Rule 4: low confidence AND raw_lookup → clarify
+        # 规则4：低置信度且原始查询 → 澄清
         if low_intent_confidence and raw_lookup_intent:
             return {**signals, "needs_clarification": True, "reason": "low_confidence_raw_lookup"}
 
-        # Rule 5: too short AND no entities → clarify
+        # 规则5：过短且无实体 → 澄清
         if too_short and no_entities:
             return {**signals, "needs_clarification": True, "reason": "too_short_no_entities"}
 
@@ -161,20 +161,23 @@ class DataClarificationGate:
         detect_result: dict,
         ctx,
     ) -> ClarificationQuestion:
-        """Generate a natural-language clarification question via LLM.
+        """通过 LLM 生成自然语言澄清问题。
 
         Args:
-            query: The original user query
-            detect_result: Output of detect() with signal flags and reason
-            ctx: CognitiveContext with schema info
+            query: 原始用户查询
+            detect_result: detect() 的输出，包含信号标志和原因
+            ctx: 包含 schema 信息的 CognitiveContext
 
         Returns:
-            ClarificationQuestion with question_text and suggested_options
+            包含 question_text 和 suggested_options 的 ClarificationQuestion
         """
-        # Build a concise schema summary for the LLM
+        # 为 LLM 构建简洁的 schema 摘要
         schema_summary = self._build_schema_summary(ctx)
 
         prompt = self._build_generation_prompt(query, detect_result, schema_summary)
+        enrich = getattr(ctx, "clarification_enrichment_block", "") or ""
+        if enrich:
+            prompt = f"{prompt}\n\n{enrich[:2000]}"
 
         try:
             from model.model_gateway.gateway import LLMRole, get_model_gateway
@@ -201,16 +204,16 @@ class DataClarificationGate:
                 suggested_options=data.get("suggested_options", []),
             )
         except Exception:
-            # Fallback: build a rule-based clarification question
+            # 降级：构建基于规则的澄清问题
             return self._fallback_question(query, detect_result, ctx)
 
-    # ── Helpers ──────────────────────────────────────────────────────────
+    # ── 辅助方法 ──────────────────────────────────────────────────────────
 
     def _build_schema_summary(self, ctx) -> str:
-        """Build a concise table/column summary for LLM context.
+        """为 LLM 上下文构建简洁的表/列摘要。
 
-        Includes table names and key columns so the LLM can generate
-        specific, executable suggested options using real table/column names.
+        包含表名和关键列，以便 LLM 能生成使用真实表名/列名的
+        具体、可执行的建议选项。
         """
         parts = []
         tables = ctx.table_names or []
@@ -255,7 +258,7 @@ class DataClarificationGate:
     def _fallback_question(
         self, query: str, detect_result: dict, ctx
     ) -> ClarificationQuestion:
-        """Rule-based fallback when LLM is unavailable."""
+        """LLM 不可用时的基于规则的降级方案。"""
         tables = ctx.table_names or []
         table_hint = f"可用的数据表包括：{', '.join(tables[:5])}" if tables else ""
 

@@ -1,4 +1,4 @@
-"""Query Explanation — builds human-readable explanations of executed queries."""
+"""查询解释 — 为已执行查询生成可读说明。"""
 
 from __future__ import annotations
 
@@ -16,14 +16,14 @@ def build_explanation(
     warnings: list[str] | None = None,
 ) -> Explanation:
     """
-    Build a human-readable explanation of what the query does.
+    构建查询功能的可读说明。
 
-    Used to provide transparency to the user about:
-    - What the system understood from their question
-    - Which tables were queried
-    - What filters were applied
-    - The generated SQL
-    - Result summary
+    用于向用户提供透明度信息：
+    - 系统从用户问题中理解了什么
+    - 查询了哪些表
+    - 应用了哪些过滤条件
+    - 生成的 SQL
+    - 结果摘要
     """
     explanation = Explanation(
         understood_query=query,
@@ -32,15 +32,15 @@ def build_explanation(
         warnings=warnings or [],
     )
 
-    # Tables used
+    # 使用的表
     explanation.tables_used = [t.split()[0] if " " in t else t for t in plan.tables]
 
-    # Filters applied
+    # 应用的过滤条件
     for f in plan.filters:
         if not f.is_having and f.expr and not f.expr.startswith("__TIME_FILTER__"):
             explanation.filters_applied.append(f.expr)
 
-    # Summary based on projections
+    # 基于投影的摘要
     if plan.projections:
         proj_names = [p.alias or p.expr for p in plan.projections[:5]]
         if len(rows) > 0 and rows[0]:
@@ -56,7 +56,7 @@ def build_explanation(
 
 
 def format_explanation(exp: Explanation, include_sql: bool = True) -> str:
-    """Format explanation as a human-readable string."""
+    """将说明格式化为可读字符串。"""
     parts: list[str] = []
 
     parts.append(f"**理解的问题**: {exp.understood_query}")

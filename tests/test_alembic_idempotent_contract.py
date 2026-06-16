@@ -11,6 +11,11 @@ class AlembicIdempotentContractTests(unittest.TestCase):
         targets = [
             "20260405_reasoning_artifacts.py",
             "20260406_chat_session_stage1.py",
+            "20260606_enterprise_tenant_tables.py",
+            "20260606_enterprise_tenants_rls.py",
+            "20260610_merge_cognitive_enterprise_heads.py",
+            "20260611_billing_invoice_tables.py",
+            "20260613_documents_tenant_workspace.py",
         ]
         for name in targets:
             p = ALEMBIC_DIR / name
@@ -33,6 +38,9 @@ class AlembicIdempotentContractTests(unittest.TestCase):
             "tags",
             "pinned",
             "archived_at",
+            "tenant_id",
+            "org_id",
+            "workspace_id",
         ]:
             self.assertIn(f"ADD COLUMN IF NOT EXISTS {column}", code)
 

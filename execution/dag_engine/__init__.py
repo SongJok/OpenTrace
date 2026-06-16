@@ -1,5 +1,5 @@
 """
-DAG Engine package — public exports.
+DAG 引擎包 — 对外导出。
 """
 from execution.dag_engine.cognitive_nodes import (
     agent_node,

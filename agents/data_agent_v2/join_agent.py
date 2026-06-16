@@ -1,9 +1,9 @@
 """
-JoinAgent — determines safe join paths between tables needed for a query.
+JoinAgent — 为查询确定表间安全 JOIN 路径。
 
-Uses table_relationships (Knowledge Layer) as primary source,
-falls back to TableRelationshipGraph (BFS + heuristic column similarity).
-Entirely deterministic — no LLM.
+主数据源为知识层 table_relationships；
+回退 TableRelationshipGraph（BFS + 列名启发式相似度）。
+完全确定性，无 LLM。
 """
 from __future__ import annotations
 
@@ -15,12 +15,12 @@ from agents.data_agent_v2.types import (
 
 
 class JoinAgent(BaseAgent):
-    """Construct safe join paths between tables referenced in the query.
+    """为查询中引用的表构建安全的 JOIN 路径。
 
-    Priority:
-    1. table_relationships from Knowledge Layer (pre-verified)
-    2. TableRelationshipGraph FK paths (database declared)
-    3. TableRelationshipGraph heuristic inference (column similarity)
+    优先级：
+    1. 知识层 table_relationships（已验证）
+    2. TableRelationshipGraph FK 路径（数据库声明）
+    3. TableRelationshipGraph 启发式推断（列相似度）
     """
 
     def __init__(self) -> None:
@@ -72,17 +72,17 @@ class JoinAgent(BaseAgent):
         if len(involved_tables) < 2:
             return []
 
-        # Collect relationships from knowledge layer
+        # 从知识层收集关系
         paths: list[dict] = []
         knowledge_rel = ctx.matched_relationships or []
 
-        # Build a set of known table pairs from knowledge layer
+        # 从知识层构建已知表对集合
         known_pairs: set[str] = set()
         for rel in knowledge_rel:
             known_pairs.add(f"{rel['left_table']}:{rel['right_table']}")
             known_pairs.add(f"{rel['right_table']}:{rel['left_table']}")
 
-        # For each pair of involved tables, check knowledge layer first
+        # 对每对涉及的表，优先检查知识层
         for i, table_a in enumerate(involved_tables):
             for table_b in involved_tables[i + 1:]:
                 pair_key = f"{table_a}:{table_b}"
@@ -104,7 +104,7 @@ class JoinAgent(BaseAgent):
                             })
                             break
                 else:
-                    # Fallback to TableRelationshipGraph
+                    # 回退到 TableRelationshipGraph
                     graph_path = await self._graph_fallback(ctx, table_a, table_b)
                     if graph_path:
                         paths.append(graph_path)
@@ -114,15 +114,15 @@ class JoinAgent(BaseAgent):
     async def _graph_fallback(
         self, ctx: CognitiveContext, table_a: str, table_b: str
     ) -> dict | None:
-        """Use TableRelationshipGraph for FK + heuristic join inference."""
+        """使用 TableRelationshipGraph 进行 FK + 启发式 JOIN 推断。"""
         from kernel.data_cognition.table_graph import TableRelationshipGraph
 
         graph = TableRelationshipGraph()
-        # Register columns for heuristic matching
+        # 注册列用于启发式匹配
         for table_name, columns in ctx.table_columns.items():
             graph.register_columns(table_name, columns)
 
-        # Also register any knowledge layer FKs
+        # 同时注册知识层的 FK
         if ctx.matched_relationships:
             for rel in ctx.matched_relationships:
                 if rel.get("is_verified"):
@@ -151,7 +151,7 @@ class JoinAgent(BaseAgent):
         return None
 
     def _get_involved_tables(self, ctx: CognitiveContext) -> list[str]:
-        """Extract table names from entities or table_names list."""
+        """从实体或 table_names 列表中提取表名。"""
         tables: list[str] = []
         if ctx.entities:
             for e in ctx.entities:
@@ -163,7 +163,7 @@ class JoinAgent(BaseAgent):
         return tables
 
     def _check_amplification_risks(self, paths: list[dict]) -> list[str]:
-        """Flag high-risk joins."""
+        """标记高风险 JOIN。"""
         warnings: list[str] = []
         for p in paths:
             if p.get("amplification_risk") in ("high", "critical"):

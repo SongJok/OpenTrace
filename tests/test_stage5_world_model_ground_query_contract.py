@@ -1,3 +1,4 @@
+from tests.orchestrator_v4_source import read_orchestrator_v4_implementation
 import unittest
 from pathlib import Path
 
@@ -13,7 +14,7 @@ class Stage5WorldModelGroundQueryContractTests(unittest.TestCase):
         self.assertIn("last_quarter", txt)
 
     def test_orchestrator_uses_ground_query(self):
-        txt = (ROOT / "kernel/orchestrator_v4.py").read_text(encoding="utf-8")
+        txt = read_orchestrator_v4_implementation()
         self.assertIn("grounded_entities = world_model.ground_query(req.query)", txt)
 
 

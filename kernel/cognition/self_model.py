@@ -114,22 +114,66 @@ class SelfModel:
                 reasoning=f"缺少前置条件: {', '.join(missing)}",
             )
 
+        # Capability Intelligence: use profiler data for accurate latency and reliability
+        expected_latency_ms = 1500
+        confidence = 0.9
+        try:
+            from kernel.capability_intelligence import _capability_intelligence_enabled
+
+            if _capability_intelligence_enabled():
+                from kernel.capability_intelligence import capability_profiler
+                from kernel.runtime.capability import capability_registry
+
+                capability_profiler.build_profiles(capability_registry)
+                domain_map = {
+                    TaskDomain.DATA_QUERY: "data.query",
+                    TaskDomain.DOCUMENT_RETRIEVAL: "rag.retrieve",
+                    TaskDomain.WEB_SEARCH: "web.search",
+                    TaskDomain.TOOL_EXECUTION: "tool.datetime",
+                }
+                cap_type = domain_map.get(intent)
+                if cap_type:
+                    profile = capability_profiler.get_profile(cap_type)
+                    if profile:
+                        expected_latency_ms = profile.expected_latency_ms
+                        confidence = profile.reliability
+        except Exception:
+            pass
+
         return CapabilityAssessment(
             domain=intent,
             level=CapabilityLevel.FULL,
-            confidence=0.9,
+            confidence=confidence,
             required_agents=list(cap["prerequisites"]),
-            expected_latency_ms=1500,
+            expected_latency_ms=expected_latency_ms,
             constraints=list(cap["constraints"]),
             reasoning=f"任务 {intent.value} 前置条件满足",
         )
 
     def get_identity_prompt(self) -> str:
         state = self._state or self.refresh_state()
+        capability_desc = "、".join(state.enabled_agents) if state.enabled_agents else "无"
+
+        # Capability Intelligence: use rich capability descriptions
+        try:
+            from kernel.capability_intelligence import _capability_intelligence_enabled
+
+            if _capability_intelligence_enabled():
+                from kernel.capability_intelligence import capability_profiler, CapabilityAdapter
+                from kernel.runtime.capability import capability_registry
+
+                capability_profiler.build_profiles(capability_registry)
+                profiles = capability_profiler.list_profiles()
+                if profiles:
+                    adapter = CapabilityAdapter()
+                    capability_desc = adapter.format_for_self_model(profiles)
+        except Exception:
+            pass
+
         return (
             f"你是 {self.IDENTITY['name']} v{self.IDENTITY['version']}。\n"
             f"角色: {self.IDENTITY['role']}。\n"
             f"风格: {self.IDENTITY['persona']}。\n"
-            f"可用 Agent: {', '.join(state.enabled_agents) if state.enabled_agents else '无'}。\n"
+            f"可用能力: {capability_desc}。\n"
             "能力边界: 仅在可验证证据范围内回答，不执行未授权高风险操作。"
         )

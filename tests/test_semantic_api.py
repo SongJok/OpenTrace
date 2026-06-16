@@ -1,4 +1,4 @@
-"""Tests for semantic layer management API and auto-extract logic."""
+"""语义层管理 API 与自动抽取逻辑的测试。"""
 import unittest
 
 from gateway.api_gateway.routers.databases import _auto_extract_semantics_from_schema

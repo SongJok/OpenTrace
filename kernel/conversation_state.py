@@ -1,7 +1,7 @@
-"""ConversationState — persistent structured session state for multi-turn chat.
+"""会话状态 — 多轮对话的结构化持久会话状态。
 
-Provides load/save/merge/compact for the conversation_states table,
-replacing the flat metadata dict previously passed between turns.
+对 conversation_states 表提供 load/save/merge/compact，
+替代原先轮次间传递的扁平 metadata 字典。
 """
 
 from __future__ import annotations
@@ -72,6 +72,7 @@ class ConversationState:
     confirmed_facts: list[dict[str, Any]] = field(default_factory=list)
     turn_confidences: list[float] = field(default_factory=list)
     confidence_trend: list[float] = field(default_factory=list)
+    confidence_components: list[dict[str, Any]] = field(default_factory=list)
     learned_preferences: dict[str, Any] = field(default_factory=dict)
 
     _EXTENSION_FIELDS: frozenset = field(
@@ -86,6 +87,7 @@ class ConversationState:
             "confirmed_facts",
             "turn_confidences",
             "confidence_trend",
+            "confidence_components",
             "learned_preferences",
         }),
         repr=False,
@@ -275,14 +277,21 @@ class ConversationStateManager:
         return cs
 
     def add_confidence(
-        self, cs: ConversationState, turn_seq: int, confidence: float
+        self,
+        cs: ConversationState,
+        turn_seq: int,
+        confidence: float,
+        components: dict[str, Any] | None = None,
     ) -> None:
         while len(cs.turn_confidences) < turn_seq:
             cs.turn_confidences.append(0.0)
+            cs.confidence_components.append({})
         if len(cs.turn_confidences) == turn_seq:
             cs.turn_confidences.append(confidence)
+            cs.confidence_components.append(components or {})
         else:
             cs.turn_confidences[turn_seq] = confidence
+            cs.confidence_components[turn_seq] = components or {}
         cs.confidence_trend = cs.turn_confidences[-10:]
 
     def compact(self, cs: ConversationState) -> ConversationState:

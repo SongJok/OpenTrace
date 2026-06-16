@@ -1,13 +1,13 @@
 """
-InsightAgent — generates natural language insights from data results.
+InsightAgent — 从数据结果生成自然语言洞察。
 
-Takes structured data (rows + statistical findings + intent) and produces:
-- Key observations: what stands out in the data
-- Patterns: trends, outliers, groupings
-- Anomalies: statistically significant deviations
-- Recommendations: actionable next steps for the user
+输入结构化数据（行 + 统计发现 + 意图），输出：
+- 关键观察
+- 模式（趋势、离群、分组）
+- 异常（统计显著偏离）
+- 建议（可执行的下一步）
 
-LLM-based (PLANNING role) with deterministic fallback.
+LLM（PLANNING）+ 确定性回退。
 """
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ from agents.data_agent_v2.types import (
 
 
 class InsightAgent(BaseAgent):
-    """Generate natural language insights from structured data results.
+    """从结构化数据结果生成自然语言洞察。
 
-    Uses LLM to interpret statistical findings, data patterns, and
-    business context into human-readable observations and recommendations.
+    使用 LLM 解读统计发现、数据模式和业务上下文，
+    输出人类可读的观察和建议。
     """
 
     def __init__(self) -> None:
@@ -80,7 +80,7 @@ class InsightAgent(BaseAgent):
                 },
             )
         except Exception as exc:
-            # Fallback to heuristic insights
+            # 回退到启发式洞察
             insights = self._heuristic_insights(ctx, rows)
             ctx.insights = insights
             return AgentResult(
@@ -96,7 +96,7 @@ class InsightAgent(BaseAgent):
     async def _generate_insights(
         self, ctx: CognitiveContext, rows: list[dict]
     ) -> dict[str, Any]:
-        """LLM-based insight generation."""
+        """基于 LLM 的洞察生成。"""
         from model.model_gateway.gateway import LLMRole, get_model_gateway
         from model.llm_adapter.base import LLMMessage
 
@@ -120,33 +120,33 @@ class InsightAgent(BaseAgent):
             raise
 
     def _build_insight_prompt(self, ctx: CognitiveContext, rows: list[dict]) -> str:
-        """Build insight generation prompt from context."""
+        """从上下文构建洞察生成提示。"""
         parts = [f"Query: {ctx.query}"]
 
         if ctx.intent:
             parts.append(f"Intent: {ctx.intent.get('intent_type', '')}")
             parts.append(f"Target: {ctx.intent.get('target_entity', '')} / {ctx.intent.get('metric', '')}")
 
-        # Data summary
+        # 数据摘要
         parts.append(f"Rows returned: {len(rows)}")
         if rows:
             parts.append(f"Columns: {', '.join(list(rows[0].keys())[:15])}")
 
-        # Sample rows
+        # 样本行
         sample = rows[:5]
         parts.append(f"Sample data ({len(sample)} rows):")
         for i, r in enumerate(sample):
             parts.append(f"  Row {i+1}: {str(r)[:300]}")
 
-        # Executed SQL (helps understand the query logic)
+        # 已执行的 SQL（帮助理解查询逻辑）
         if ctx.compiled_sql:
             parts.append(f"\nExecuted SQL:\n```sql\n{ctx.compiled_sql}\n```")
 
-        # Schema context (table/column comments for business semantics)
+        # Schema 上下文（表/列注释，用于业务语义）
         if ctx.schema_hint:
             parts.append(f"\nSchema context:\n{ctx.schema_hint[:2000]}")
 
-        # Statistical findings
+        # 统计发现
         stats = ctx.statistical_report or {}
         if stats.get("descriptive_stats"):
             parts.append("\nStatistical findings:")
@@ -169,7 +169,7 @@ class InsightAgent(BaseAgent):
             for col, vals in stats["outliers"].items():
                 parts.append(f"  {col}: {len(vals)} outliers")
 
-        # Metrics context
+        # 指标上下文
         if ctx.metrics:
             metric_strs = [
                 f"{m.get('mention', '')} ({m.get('agg_function', '')})"
@@ -177,11 +177,11 @@ class InsightAgent(BaseAgent):
             ]
             parts.append(f"\nMetrics: {', '.join(metric_strs)}")
 
-        # Time context
+        # 时间上下文
         if ctx.time_window and ctx.time_window.get("type") not in (None, "none"):
             parts.append(f"Time window: {ctx.time_window.get('description', '')}")
 
-        # Entities context
+        # 实体上下文
         if ctx.entities:
             entity_strs = [
                 f"{e.get('mention', '')} → {e.get('mapped_table', '')}"
@@ -194,12 +194,12 @@ class InsightAgent(BaseAgent):
     def _heuristic_insights(
         self, ctx: CognitiveContext, rows: list[dict]
     ) -> dict[str, Any]:
-        """Deterministic insight generation without LLM."""
+        """不依赖 LLM 的确定性洞察生成。"""
 
         observations: list[str] = []
         recommendations: list[str] = []
 
-        # Row count observation
+        # 行数观察
         if len(rows) == 0:
             return {
                 "summary": "查询未返回数据，建议调整过滤条件或扩大时间范围。",
@@ -211,7 +211,7 @@ class InsightAgent(BaseAgent):
 
         observations.append(f"查询返回了 {len(rows)} 行数据。")
 
-        # Statistical insights
+        # 统计洞察
         stats = ctx.statistical_report or {}
         if stats.get("trends"):
             for col, t in stats["trends"].items():
@@ -235,7 +235,7 @@ class InsightAgent(BaseAgent):
                         f"最低为 {c['min_group']}（差距 {c.get('ratio', '?')} 倍）"
                     )
 
-        # Intent-based insights
+        # 基于意图的洞察
         intent_type = ctx.intent.get("intent_type", "") if ctx.intent else ""
         if intent_type == "ranking" and len(rows) > 1:
             first = rows[0]
@@ -244,13 +244,13 @@ class InsightAgent(BaseAgent):
                 f"排名第一和最后之间存在显著差异"
             )
 
-        # Build a summary that references the user's original question
+        # 构建引用用户原始问题的摘要
         query_brief = (ctx.query or "")[:80]
         summary = f"「{query_brief}」查询完成。" + (
             f" 共发现 {len(observations)} 个关键发现。" if observations else ""
         )
 
-        # If the user asked for trend/cause analysis but we lack that capability, note it
+        # 若用户询问趋势/原因分析但缺少相应能力，予以提示
         query_lower = (ctx.query or "").lower()
         if any(kw in query_lower for kw in ["趋势", "走势", "变化", "原因", "为什么"]):
             if not ctx.statistical_report:

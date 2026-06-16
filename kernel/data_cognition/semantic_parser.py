@@ -1,4 +1,4 @@
-"""Semantic Parser — structured intent extraction from natural language queries with caching and metrics."""
+"""语义解析器 — 从自然语言查询抽取结构化意图（含缓存与指标）。"""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from kernel.data_cognition.types import (
     SemanticParseResult,
 )
 
-# Time-related filter patterns for automatic filter extraction
+# 时间相关过滤模式，用于自动过滤条件提取
 _TIME_FILTER_PATTERNS = [
     (r"(?:最近|近|过去|前)\s*(\d+)\s*(?:个)?([年月天日周])", "relative_days"),
     (
@@ -37,10 +37,10 @@ _TIME_FILTER_PATTERNS = [
     (r"(\d{4})年", "year"),
 ]
 
-# Unit → days mapping for relative time expressions
+# 时间单位 → 天数映射
 _TIME_UNIT_DAYS = {"天": 1, "日": 1, "周": 7, "月": 30, "年": 365}
 
-# Comparison operator mapping (Chinese → SQL)
+# 比较运算符映射（中文 → SQL）
 _COMPARISON_OPS = {
     "大于": ">",
     "高于": ">",
@@ -64,20 +64,20 @@ _COMPARISON_OPS = {
     "最多": "<=",
 }
 
-# Filter value patterns
+# 过滤值模式
 _VALUE_PATTERNS = [
-    # Numeric comparisons: "大于100", "超过50%", "低于1000"
+    # 数值比较："大于100"、"超过50%"、"低于1000"
     (r"(?:大于|高于|超过|多于|大于等于|至少)\s*([0-9.]+)%?", ">", "number"),
     (r"(?:小于|低于|少于|小于等于|不超过|最多)\s*([0-9.]+)%?", "<", "number"),
     (r"(?:等于|为|是)\s*([0-9.]+)", "=", "number"),
     (r"(?:不等于|不是)\s*([0-9.]+)", "!=", "number"),
-    # Percentage thresholds
+    # 百分比阈值
     (r"([0-9.]+)%\s*(?:以上|以下|大于|小于|超过)", ">=", "number"),
-    # Chinese numerals (simple)
+    # 中文数字（简单）
     (r"([一二三四五六七八九十百千万亿]+)", "=", "number"),
 ]
 
-# Group-by intent patterns
+# 分组意图模式
 _GROUP_BY_PATTERNS = [
     (r"按(.{1,10}?)(?:统计|分组|汇总|分类|细分|维度)", "entity"),
     (r"(?:每月|按月|按月份|月度)", "month"),
@@ -86,19 +86,19 @@ _GROUP_BY_PATTERNS = [
     (r"(?:每周|按周|周)", "week"),
 ]
 
-# Order-by intent patterns
+# 排序意图模式
 _ORDER_BY_PATTERNS = [
-    # DESC patterns
+    # 降序模式
     (r"(?:最高|最多|最大|最强|最受欢迎)", "DESC"),
     (r"(?:从大到小|降序|倒数)", "DESC"),
-    # ASC patterns
+    # 升序模式
     (r"(?:最低|最少|最小|最弱|从少到多)", "ASC"),
     (r"(?:从小到大|升序)", "ASC"),
-    # Top-N patterns
+    # Top-N 模式
     (r"(?:前|Top|top)\s*(\d+)", "DESC"),
 ]
 
-# Limit patterns (enhanced)
+# 限制模式（增强版）
 _LIMIT_PATTERNS = [
     r"(?:限制|最多|显示|返回|取)\s*(\d+)",
     r"(?:前|Top|top)\s*(\d+)",
@@ -106,26 +106,26 @@ _LIMIT_PATTERNS = [
     r"(\d+)\s*(?:最多|最少|至少)",
 ]
 
-# Filter entity/value extraction patterns
+# 过滤实体/值提取模式
 _ENTITY_FILTER_PATTERNS = [
-    # "北京" "上海" - location values
+    # "北京" "上海" - 地点值
     (r"([北东南西南东北西北]{1,3})[省市地区]", "location"),
-    # "已发货" "未完成" - status values
+    # "已发货" "未完成" - 状态值
     (r"(?:状态(?:为|是|等于)?)?(已发货|已取消|未完成|已完成|待支付|已退款|已关闭)", "status"),
-    # City/entity mentions: "北京" "上海" followed by business words
+    # 城市/实体提及："北京" "上海" 后接业务词
     (
         r"(北京|上海|广州|深圳|杭州|成都|重庆|武汉|西安|南京|天津|苏州|长沙|青岛|郑州|大连|沈阳|济南|哈尔滨|福州|昆明|厦门|南昌|贵阳|太原|南宁|乌鲁木齐|兰州)(?:的|地区|城市)?",
         "location",
     ),
 ]
 
-# Cache configuration
+# 缓存配置
 CACHE_PREFIX = "opentrace:semantic_parse"
-CACHE_TTL_SECONDS = getattr(settings, "semantic_parse_cache_ttl", 24 * 3600)  # Default 24h
+CACHE_TTL_SECONDS = getattr(settings, "semantic_parse_cache_ttl", 24 * 3600)  # 默认 24 小时
 
 
 def _make_cache_key(query: str, schema_version: str, table_names: tuple[str, ...]) -> str:
-    """Generate deterministic cache key from query and schema context."""
+    """根据查询和模式上下文生成确定性缓存键。"""
     payload = json.dumps(
         {
             "q": query.strip().lower(),
@@ -139,7 +139,7 @@ def _make_cache_key(query: str, schema_version: str, table_names: tuple[str, ...
 
 
 def _serialize_result(result: SemanticParseResult) -> dict[str, Any]:
-    """Serialize SemanticParseResult to JSON-serializable dict."""
+    """将 SemanticParseResult 序列化为可 JSON 化的字典。"""
     return {
         "entities": [
             {"mention": e.mention, "mapped_table": e.mapped_table, "confidence": e.confidence}
@@ -161,7 +161,7 @@ def _serialize_result(result: SemanticParseResult) -> dict[str, Any]:
 
 
 def _deserialize_result(data: dict[str, Any]) -> SemanticParseResult:
-    """Deserialize dict back to SemanticParseResult."""
+    """将字典反序列化为 SemanticParseResult。"""
     result = SemanticParseResult()
     result.entities = [EntityMapping(**e) for e in data.get("entities", [])]
     result.metrics = [MetricMapping(**m) for m in data.get("metrics", [])]
@@ -175,18 +175,18 @@ def _deserialize_result(data: dict[str, Any]) -> SemanticParseResult:
 
 class SemanticParser:
     """
-    Parses natural language queries into structured semantic representations.
+    将自然语言查询解析为结构化语义表示。
 
-    Combines:
-    - Schema linking (entity → table/column mapping)
-    - Metric extraction (aggregation intent)
-    - Filter extraction (WHERE conditions)
-    - Time intent extraction
-    - Group/order/limit inference
+    组合：
+    - 模式链接（实体 → 表/列映射）
+    - 指标提取（聚合意图）
+    - 过滤条件提取（WHERE 条件）
+    - 时间意图提取
+    - 分组/排序/限制推断
 
-    Features:
-    - Redis caching for repeated queries with same schema context
-    - Prometheus metrics for cache hit rate and latency monitoring
+    特性：
+    - Redis 缓存，用于相同模式上下文的重复查询
+    - Prometheus 指标，用于缓存命中率和延迟监控
     """
 
     def __init__(
@@ -210,7 +210,7 @@ class SemanticParser:
         self._enable_cache = enable_cache
 
     async def _get_cached(self, query: str) -> SemanticParseResult | None:
-        """Try to fetch parsed result from cache with metrics."""
+        """尝试从缓存获取解析结果，附带指标监控。"""
         if not self._enable_cache:
             return None
         start = time.monotonic()
@@ -225,7 +225,7 @@ class SemanticParser:
                 return _deserialize_result(data)
         except Exception:
             result_label = "error"
-            # Cache miss or error - fall through to normal parsing
+            # 缓存未命中或出错 - 继续正常解析
             pass
         finally:
             latency = time.monotonic() - start
@@ -234,7 +234,7 @@ class SemanticParser:
         return None
 
     async def _set_cache(self, query: str, result: SemanticParseResult) -> None:
-        """Store parsed result in cache."""
+        """将解析结果存入缓存。"""
         if not self._enable_cache:
             return
         try:
@@ -243,7 +243,7 @@ class SemanticParser:
             data = _serialize_result(result)
             await r.setex(key, CACHE_TTL_SECONDS, json.dumps(data))
         except Exception:
-            # Cache write failure should not break the main flow
+            # 缓存写入失败不应中断主流程
             pass
 
     def check_structured_intent(
@@ -253,7 +253,7 @@ class SemanticParser:
         database_name: str,
         dialect: SQLDialectSpec | None = None,
     ) -> str | None:
-        """Fast-path: detect metadata queries (table_count, table_list, table_schema) and return SQL directly."""
+        """快速路径：检测元数据查询（table_count、table_list、table_schema）并直接返回 SQL。"""
 
         result = build_structured_database_query(
             query,
@@ -268,48 +268,48 @@ class SemanticParser:
         query: str,
         dialect: SQLDialectSpec | None = None,
     ) -> SemanticParseResult:
-        """Parse a natural language query into structured semantic representation."""
-        # Try cache first
+        """将自然语言查询解析为结构化语义表示。"""
+        # 先尝试缓存
         cached = await self._get_cached(query)
         if cached:
             return cached
 
-        # Normal parsing flow
+        # 正常解析流程
         result = SemanticParseResult()
 
-        # 1. Entity linking
+        # 1. 实体链接
         entities = await self._schema_linker.link_entities(query, table_columns=self._table_columns)
         result.entities = entities
 
-        # 2. Metric linking
+        # 2. 指标链接
         metrics = await self._schema_linker.link_metrics(query)
         result.metrics = metrics
 
-        # 3. Filter extraction
+        # 3. 过滤条件提取
         result.filters = self._extract_filters(query)
 
-        # 4. Group by inference
+        # 4. 分组推断
         result.group_by = self._infer_group_by(query)
 
-        # 5. Order by inference
+        # 5. 排序推断
         result.order_by = self._infer_order_by(query)
 
-        # 6. Limit inference
+        # 6. 限制推断
         result.limit = self._infer_limit(query)
 
-        # 7. Time window extraction
+        # 7. 时间窗口提取
         result.time_window = self._extract_time_window(query, dialect)
 
-        # Cache the result for future use
+        # 缓存结果供后续使用
         await self._set_cache(query, result)
 
         return result
 
     def _extract_filters(self, query: str) -> list[ParsedFilter]:
-        """Extract filter conditions from query text."""
+        """从查询文本中提取过滤条件。"""
         filters: list[ParsedFilter] = []
 
-        # Extract numeric comparison filters
+        # 提取数值比较过滤条件
         for pattern, op, vtype in _VALUE_PATTERNS:
             match = re.search(pattern, query)
             if match:
@@ -320,7 +320,7 @@ class SemanticParser:
                     val = str(_chinese_num_to_int(val))
                 filters.append(ParsedFilter(field="", operator=op, value=val, value_type=vtype))
 
-        # Extract entity-based filters: "北京的订单" → location=北京
+        # 提取基于实体的过滤条件："北京的订单" → location=北京
         for pattern, ftype in _ENTITY_FILTER_PATTERNS:
             for match in re.finditer(pattern, query):
                 if self._is_time_reference(query[max(0, match.start() - 4) : match.end()]):
@@ -337,8 +337,8 @@ class SemanticParser:
                     )
                 )
 
-        # Extract multi-condition connectors (AND/OR)
-        # If query contains "和""与""且""或", mark subsequent conditions
+        # 提取多条件连接词（AND/OR）
+        # 如果查询包含"和""与""且""或"，标记后续条件
         if "或" in query and len(filters) >= 2:
             filters[-1].operator = f"OR {filters[-1].operator}"
 
@@ -346,12 +346,12 @@ class SemanticParser:
 
     @staticmethod
     def _is_time_reference(text: str) -> bool:
-        """Check if text contains time-related words to avoid false filter matches."""
+        """检查文本是否包含时间相关词汇，以避免误匹配过滤条件。"""
         time_words = {"最近", "近", "过去", "前", "年", "月", "天", "日", "周", "星期"}
         return any(w in text for w in time_words)
 
     def _infer_group_by(self, query: str) -> list[str]:
-        """Infer GROUP BY fields from query intent."""
+        """从查询意图推断 GROUP BY 字段。"""
         groups: list[str] = []
         seen_types = set()
         _time_units = {"月", "年", "日", "天", "周", "quarter", "季度"}
@@ -361,7 +361,7 @@ class SemanticParser:
                     match = re.search(pattern, query)
                     if match:
                         entity = match.group(1).strip()
-                        # Skip time unit words — they'll be handled by temporal patterns
+                        # 跳过时间单位词 — 它们将由时间模式处理
                         if entity and entity not in _time_units and entity not in groups:
                             groups.append(entity)
                 elif field_type not in seen_types:
@@ -370,13 +370,13 @@ class SemanticParser:
         return groups
 
     def _infer_order_by(self, query: str) -> list[dict[str, str]]:
-        """Infer ORDER BY clause from query intent."""
+        """从查询意图推断 ORDER BY 子句。"""
         orders: list[dict[str, str]] = []
         for pattern, direction in _ORDER_BY_PATTERNS:
             match = re.search(pattern, query)
             if match:
                 field = ""
-                # Extract sort field from immediate context (skip time expressions)
+                # 从紧邻上下文提取排序字段（跳过时间表达式）
                 context_start = max(0, match.start() - 6)
                 context = query[context_start : match.start()].strip()
                 if context and not self._is_time_reference(context):
@@ -386,21 +386,21 @@ class SemanticParser:
         return orders
 
     def _infer_limit(self, query: str) -> int:
-        """Infer LIMIT value from query."""
+        """从查询推断 LIMIT 值。"""
         for pattern in _LIMIT_PATTERNS:
             match = re.search(pattern, query)
             if match:
                 return int(match.group(1))
-        # Infer implicit limits: "top/前/排名" without explicit number
+        # 推断隐式限制："top/前/排名" 无显式数字
         if re.search(r"(?:前|top|排名|排行|榜单)", query, re.IGNORECASE):
-            return 10  # Default top-N
+            return 10  # 默认 Top-N
         return 0
 
     def _extract_time_window(self, query: str, dialect: SQLDialectSpec | None) -> dict[str, Any]:
-        """Extract time window constraints from query."""
+        """从查询中提取时间窗口约束。"""
         window: dict[str, Any] = {}
 
-        # Try SemanticLayer's structured time extraction first
+        # 优先尝试 SemanticLayer 的结构化时间提取
         try:
             sl_time = SemanticLayer.extract_time_intent(query)
             if sl_time:
@@ -420,7 +420,7 @@ class SemanticParser:
         except Exception:
             pass
 
-        # Fallback: regex-based extraction
+        # 回退：基于正则的提取
         for pattern, ttype in _TIME_FILTER_PATTERNS:
             match = re.search(pattern, query)
             if match:
@@ -459,7 +459,7 @@ class SemanticParser:
 
 
 def _chinese_num_to_int(text: str) -> int:
-    """Convert simple Chinese numerals to integers (supports 一-十百千万)."""
+    """将简单中文数字转换为整数（支持 一-十百千万）。"""
     cn_map = {
         "一": 1,
         "二": 2,
@@ -478,7 +478,7 @@ def _chinese_num_to_int(text: str) -> int:
     }
     if text in cn_map:
         return cn_map[text]
-    # Simple composite: "三十" = 30, "五百" = 500
+    # 简单组合："三十" = 30, "五百" = 500
     if len(text) == 2 and text[0] in cn_map and text[1] in cn_map:
         a, b = cn_map[text[0]], cn_map[text[1]]
         if b > a:

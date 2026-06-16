@@ -1,8 +1,8 @@
 """
-Intent Engine — dedicated structured intent parser.
+意图引擎 — 专用结构化意图解析器。
 
-Parses raw user queries into a rich Intent object using a small LLM call.
-Falls back to heuristic parsing when LLM is unavailable.
+使用小型 LLM 调用将原始用户查询解析为丰富的 Intent 对象。
+当 LLM 不可用时回退到启发式解析。
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ class Intent:
     keywords: list[str] = field(default_factory=list)
     session_context: dict[str, Any] = field(default_factory=dict)
 
-    # convenience alias kept for backwards-compat with PolicyEngine
+    # 为向后兼容 PolicyEngine 保留的便捷别名
     @property
     def raw(self) -> str:
         return self.raw_query
@@ -59,9 +59,9 @@ class Intent:
 
 class IntentEngine:
     """
-    Parses a raw user query into a structured Intent.
-    Uses the planning LLM (small/fast) for classification.
-    Falls back to heuristics on any error.
+    将原始用户查询解析为结构化 Intent。
+    使用规划 LLM（小型/快速）进行分类。
+    出错时回退到启发式解析。
     """
 
     def __init__(self) -> None:

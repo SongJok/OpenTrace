@@ -1,4 +1,4 @@
-"""Multi-Agent Cognitive Protocol types."""
+"""多 Agent 认知协议类型。"""
 
 from __future__ import annotations
 

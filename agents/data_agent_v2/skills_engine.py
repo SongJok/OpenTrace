@@ -1,14 +1,13 @@
 """
-SkillsEngine — parses analytical_skills.plan_template to expand the cognitive DAG.
+SkillsEngine — 解析 analytical_skills.plan_template 以扩展认知 DAG。
 
-When a Knowledge Layer matches an analytical_skill (e.g., "cohort_retention",
-"funnel_analysis"), the SkillsEngine:
-1. Parses the plan_template into executable DAG nodes
-2. Parameterizes templates with the current query context
-3. Expands the base DAG with skill-specific steps
-4. Handles skill dependencies (e.g., "compute_cohort" → "compute_retention_matrix")
+当知识层匹配分析技能（如 cohort_retention、funnel_analysis）时：
+1. 将 plan_template 解析为可执行 DAG 节点
+2. 用当前查询上下文参数化模板
+3. 在基础 DAG 上追加技能专属步骤
+4. 处理技能依赖（如 compute_cohort → compute_retention_matrix）
 
-This enables multi-step analytical workflows without hardcoding each pattern.
+无需为每种模式硬编码即可支持多步分析工作流。
 """
 from __future__ import annotations
 
@@ -18,10 +17,9 @@ from agents.data_agent_v2.dag_builder import DagNodeSpec, DagPlanSpec
 
 
 class SkillsEngine:
-    """Expand analytical skill templates into DAG execution plans.
+    """将分析技能模板展开为 DAG 执行计划。
 
-    Parses analytical_skills.plan_template (JSON) and generates DagNodeSpec
-    entries that plug into the existing cognitive DAG pipeline.
+    解析 analytical_skills.plan_template（JSON），生成并入认知 DAG 的 DagNodeSpec。
 
     Template format in analytical_skills.plan_template:
     {
@@ -62,9 +60,9 @@ class SkillsEngine:
     }
     """
 
-    # Map skill template agent names to V2 agent types
+    # 技能模板中的 agent 名称到 V2 agent 类型的映射
     AGENT_TYPE_MAP: dict[str, str] = {
-        "data": "data",  # re-entrant: spawns another query
+        "data": "data",  # 重入：生成另一个查询
         "statistical": "data_statistical",
         "insight": "data_insight",
         "visualization": "data_visualization",
@@ -76,15 +74,15 @@ class SkillsEngine:
         base_dag: DagPlanSpec,
         ctx,  # CognitiveContext
     ) -> DagPlanSpec:
-        """Expand a skill template into DAG nodes.
+        """将技能模板展开为 DAG 节点。
 
         Args:
-            skill: Matched skill from ctx.matched_skills
-            base_dag: The existing cognitive DAG plan
-            ctx: Current cognitive context
+            skill: 来自 ctx.matched_skills 的匹配技能
+            base_dag: 现有认知 DAG 计划
+            ctx: 当前认知上下文
 
         Returns:
-            DagPlanSpec with skill steps appended after existing nodes
+            追加技能步骤后的 DagPlanSpec
         """
         plan_template = skill.get("plan_template")
         if not plan_template:
@@ -103,21 +101,21 @@ class SkillsEngine:
         if not steps:
             return base_dag
 
-        # Resolve parameter values from context
+        # 从上下文解析参数值
         resolved_params = self._resolve_parameters(template_params, ctx)
 
-        # Find the last node ID in the base DAG (for dependency chaining)
+        # 找到基础 DAG 中最后一个节点 ID（用于依赖链）
         base_node_ids = {n.node_id for n in base_dag.nodes}
         prev_step_ids: set[str] = set()
 
-        # If steps should build on the base query, first step depends on compiler
+        # 若步骤需基于基础查询构建，则首步依赖 compiler
         first_step_deps: list[str] = []
         if base_node_ids:
             compiler_exists = "compiler" in base_node_ids
             if compiler_exists:
                 first_step_deps = ["compiler"]
             else:
-                # Depends on all existing nodes
+                # 依赖所有现有节点
                 first_step_deps = sorted(base_node_ids)
 
         new_nodes: list[DagNodeSpec] = []
@@ -128,7 +126,7 @@ class SkillsEngine:
             agent_name = step.get("agent", "data")
             agent_type = self.AGENT_TYPE_MAP.get(agent_name, agent_name)
 
-            # Resolve dependencies
+            # 解析依赖
             deps: list[str] = []
             if i == 0 and first_step_deps:
                 deps = first_step_deps
@@ -139,7 +137,7 @@ class SkillsEngine:
                     elif dep_id in base_node_ids:
                         deps.append(dep_id)
 
-            # Resolve step parameters
+            # 解析步骤参数
             step_params = self._resolve_step_params(
                 step.get("params", {}), resolved_params, ctx
             )
@@ -160,7 +158,7 @@ class SkillsEngine:
                 },
             ))
 
-        # Combine base DAG + skill steps
+        # 合并基础 DAG + 技能步骤
         combined_nodes = list(base_dag.nodes) + new_nodes
 
         return DagPlanSpec(
@@ -176,7 +174,7 @@ class SkillsEngine:
     def _resolve_parameters(
         self, template_params: dict, ctx: CognitiveContext
     ) -> dict[str, str]:
-        """Resolve template parameters from context."""
+        """从上下文解析模板参数。"""
         resolved: dict[str, str] = {}
 
         for param_name, param_def in template_params.items():
@@ -185,7 +183,7 @@ class SkillsEngine:
             else:
                 default = str(param_def)
 
-            # Try to resolve from context
+            # 尝试从上下文解析
             value = self._resolve_value(param_name, default, ctx)
             resolved[param_name] = value
 
@@ -194,13 +192,13 @@ class SkillsEngine:
     def _resolve_value(
         self, name: str, default: str, ctx: CognitiveContext
     ) -> str:
-        """Resolve a single parameter value from context."""
-        # Check time window
+        """从上下文解析单个参数值。"""
+        # 检查时间窗口
         if name == "time_window" and ctx.time_window:
             tw = ctx.time_window
             return tw.get("description", str(tw.get("days", default)))
 
-        # Check metrics
+        # 检查指标
         if name == "metric" and ctx.metrics:
             return ctx.metrics[0].get("mention", default)
 
@@ -208,7 +206,7 @@ class SkillsEngine:
             dims = ctx.intent.get("dimensions", [])
             return dims[0] if dims else default
 
-        # Check query directly
+        # 直接检查查询
         if name in ("query",):
             return ctx.query or default
 
@@ -220,7 +218,7 @@ class SkillsEngine:
         resolved: dict[str, str],
         ctx: CognitiveContext,
     ) -> dict:
-        """Replace $param references in step params with resolved values."""
+        """将步骤参数中的 $param 引用替换为已解析的值。"""
         result: dict = {}
         for key, val in step_params.items():
             if isinstance(val, str) and val.startswith("$"):
@@ -231,7 +229,7 @@ class SkillsEngine:
         return result
 
     def get_skill_agent_types(self, skill: dict) -> list[str]:
-        """Return the agent types needed for a skill's steps."""
+        """返回技能步骤所需的 agent 类型列表。"""
         plan_template = skill.get("plan_template")
         if not plan_template:
             return []

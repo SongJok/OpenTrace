@@ -1,18 +1,17 @@
 """
-KnowledgeUpdaterAgent — transforms classified feedback into knowledge asset updates.
+KnowledgeUpdaterAgent — 将已分类反馈转为知识资产更新。
 
-Routes feedback to the appropriate updater:
-  - pattern_reinforce → increment query_patterns.success_count
-  - pattern_penalize → increment query_patterns.failure_count
-  - update_query_pattern → update query_patterns with corrected SQL
-  - refine_metric_definition → delegate to MetricRefinerAgent
-  - update_entity_mapping → update schema_metadata
-  - update_time_window → update query pattern
-  - mark_amplification_risk → update table_relationships.amplification_risk
-  - store_for_review → mark for admin review
+按类型路由：
+  - pattern_reinforce → 增加 query_patterns.success_count
+  - pattern_penalize → 增加 failure_count
+  - update_query_pattern → 用纠正后的 SQL 更新模式
+  - refine_metric_definition → 委托 MetricRefinerAgent
+  - update_entity_mapping → 更新 schema_metadata
+  - update_time_window → 更新查询模式
+  - mark_amplification_risk → 更新 table_relationships.amplification_risk
+  - store_for_review → 标记待管理员审核
 
-All automatic changes use safe defaults (status=draft for metrics,
-learning_applied flag for feedback).
+自动变更默认安全（指标 status=draft、feedback 打 learning_applied）。
 """
 from __future__ import annotations
 
@@ -28,11 +27,11 @@ from agents.data_agent_v2.types import (
 
 
 class KnowledgeUpdaterAgent(BaseAgent):
-    """Apply learned feedback to knowledge asset tables.
+    """将学习到的反馈应用到知识资产表。
 
-    Routes each feedback classification to the correct update path.
-    Safe-by-default: metric changes create draft versions, relationship
-    updates use conservative EMA, pattern updates require sufficient data.
+    将每种反馈分类路由到正确的更新路径。
+    默认安全：指标变更创建草稿版本，关系更新使用保守 EMA，
+    模式更新需要足够数据量。
     """
 
     def __init__(self) -> None:
@@ -55,7 +54,7 @@ class KnowledgeUpdaterAgent(BaseAgent):
         updates_applied: list[str] = []
 
         try:
-            # ── Route by action ──────────────────────────────────────
+            # ── 按操作路由 ──────────────────────────────────────
             if action == "reinforce_pattern":
                 await self._reinforce_pattern(db, ctx, learning_signals)
                 updates_applied.append("pattern_reinforced")
@@ -80,12 +79,12 @@ class KnowledgeUpdaterAgent(BaseAgent):
                 await self._enrich_pattern(db, ctx, learning_signals)
                 updates_applied.append("pattern_enriched")
 
-            # ── Mark feedback as learning_applied ──────────────────
+            # ── 标记反馈为 learning_applied ─────────────────────
             await self._mark_feedback_applied(db, task)
 
             await db.commit()
 
-            # Update context with applied learning
+            # 更新上下文中的已应用学习
             ctx.learning_signals = (ctx.learning_signals or {}) | {
                 "updates_applied": updates_applied,
                 "learning_applied_at": str(__import__("time").time()),
@@ -119,12 +118,12 @@ class KnowledgeUpdaterAgent(BaseAgent):
                 error=str(exc),
             )
 
-    # ── Update Handlers ─────────────────────────────────────────────────
+    # ── 更新处理器 ─────────────────────────────────────────────────
 
     async def _reinforce_pattern(
         self, db, ctx: CognitiveContext, signals: dict
     ) -> None:
-        """Increment success_count for matching query pattern."""
+        """递增匹配查询模式的 success_count。"""
         from infra.storage.models import QueryPattern
         from datetime import datetime, timezone
 
@@ -146,7 +145,7 @@ class KnowledgeUpdaterAgent(BaseAgent):
     async def _update_query_pattern(
         self, db, ctx: CognitiveContext, signals: dict
     ) -> None:
-        """Store user-corrected SQL into query_pattern."""
+        """将用户纠正的 SQL 存入 query_pattern。"""
         from infra.storage.models import QueryPattern
         from datetime import datetime, timezone
 
@@ -154,7 +153,7 @@ class KnowledgeUpdaterAgent(BaseAgent):
         if not corrected_sql:
             return
 
-        # Use pattern_hit hash if available, otherwise compute new
+        # 若有 pattern_hit 哈希则使用，否则计算新哈希
         if ctx.pattern_hit:
             phash = ctx.pattern_hit.get("pattern_hash", "")
         else:
@@ -182,7 +181,7 @@ class KnowledgeUpdaterAgent(BaseAgent):
     async def _refine_metric(
         self, db, ctx: CognitiveContext, signals: dict, task: TaskMessage
     ) -> None:
-        """Delegate to MetricRefinerAgent for metric formula correction."""
+        """委托 MetricRefinerAgent 进行指标公式纠正。"""
         from agents.data_agent_v2.metric_refiner import MetricRefinerAgent
 
         refiner = MetricRefinerAgent()
@@ -199,7 +198,7 @@ class KnowledgeUpdaterAgent(BaseAgent):
         )
         try:
             result = await refiner.execute(refiner_task)
-            # Merge any refined metrics back into context
+            # 将修正后的指标合并回上下文
             result_ctx = result.metadata.get("cognitive_context", {})
             if result_ctx:
                 refined = result_ctx.get("refined_metrics", [])
@@ -211,7 +210,7 @@ class KnowledgeUpdaterAgent(BaseAgent):
     async def _update_entity(
         self, db, ctx: CognitiveContext, signals: dict
     ) -> None:
-        """Update schema_metadata business name mapping."""
+        """更新 schema_metadata 业务名称映射。"""
         from infra.storage.models import SchemaMetadata
 
         details = signals.get("details", {})
@@ -219,7 +218,7 @@ class KnowledgeUpdaterAgent(BaseAgent):
         if not correction_text:
             return
 
-        # Try to update matching schema metadata
+        # 尝试更新匹配的 schema 元数据
         result = await db.execute(
             select(SchemaMetadata).where(
                 SchemaMetadata.data_source_id == ctx.data_source_id,
@@ -228,7 +227,7 @@ class KnowledgeUpdaterAgent(BaseAgent):
         rows = result.scalars().all()
         for row in rows:
             if row.business_name and row.business_name.lower() in correction_text.lower():
-                # Add annotation that mapping was user-corrected
+                # 添加用户纠正的标注
                 existing_desc = row.business_description or ""
                 if "user_corrected" not in existing_desc:
                     row.business_description = (
@@ -239,7 +238,7 @@ class KnowledgeUpdaterAgent(BaseAgent):
     async def _mark_pattern_for_review(
         self, db, ctx: CognitiveContext, signals: dict
     ) -> None:
-        """Mark a pattern for admin review by incrementing failure count."""
+        """通过递增失败计数将模式标记为待管理员审核。"""
         from infra.storage.models import QueryPattern
 
         if not ctx.pattern_hit:
@@ -256,7 +255,7 @@ class KnowledgeUpdaterAgent(BaseAgent):
     async def _enrich_pattern(
         self, db, ctx: CognitiveContext, signals: dict
     ) -> None:
-        """Add supplemental context to query pattern."""
+        """向查询模式添加补充上下文。"""
         from infra.storage.models import QueryPattern
 
         if not ctx.pattern_hit:
@@ -274,7 +273,7 @@ class KnowledgeUpdaterAgent(BaseAgent):
         )
         pattern = result.scalar()
         if pattern:
-            # Append supplemental context to template
+            # 将补充上下文追加到模板
             existing = pattern.query_template or ""
             if supplement not in existing:
                 pattern.query_template = f"{existing}\n-- Supplement: {supplement}"
@@ -282,7 +281,7 @@ class KnowledgeUpdaterAgent(BaseAgent):
     async def _mark_feedback_applied(
         self, db, task: TaskMessage
     ) -> None:
-        """Mark the feedback record as having learning applied."""
+        """标记反馈记录为已应用学习。"""
         from infra.storage.models import Feedback
 
         try:

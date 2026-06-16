@@ -1,4 +1,4 @@
-"""SQL Ranker — rule-based scoring with semantic quality metrics for candidate SQL statements."""
+"""SQL 排序器 — 基于规则与语义质量指标对候选 SQL 打分。"""
 
 from __future__ import annotations
 
@@ -8,17 +8,17 @@ from kernel.data_cognition.types import CandidateSQL, SemanticContext, SemanticP
 
 
 class SQLRanker:
-    # Scoring constants
+    # 评分常量
     BASE_SCORE = 0.75
 
-    # Semantic scoring weights (P0)
+    # 语义评分权重（P0）
     WEIGHT_INTENT_COVERAGE = 0.30
     WEIGHT_COLUMN_ACCURACY = 0.25
     WEIGHT_GROUP_BY_CONSISTENCY = 0.15
     WEIGHT_TIME_CORRECTNESS = 0.15
-    WEIGHT_FORM_ELEGANCE = 0.15  # legacy form-based scoring
+    WEIGHT_FORM_ELEGANCE = 0.15  # 遗留的基于形式的评分
 
-    # Legacy bonuses/penalties
+    # 遗留的加分/扣分
     BONUS_HISTORICAL_SUCCESS = 0.15
     BONUS_DISTINCT = 0.05
     BONUS_LIMIT = 0.08
@@ -40,16 +40,16 @@ class SQLRanker:
         parse_result: SemanticParseResult | None = None,
     ) -> list[CandidateSQL]:
         """
-        Rank candidate SQL statements with semantic-aware scoring.
+        基于语义感知评分对候选 SQL 排序。
 
-        Args:
-            candidates: List of CandidateSQL to rank
-            semantic_ctx: Legacy semantic context for bonus scoring
-            schema_hint: Schema hint string
-            unmapped_terms: Filter terms that couldn't be mapped
-            result_rows: Number of result rows
-            has_empty_semantics: Whether empty result is semantically expected
-            parse_result: Structured parse result for semantic scoring
+        参数：
+            candidates: 待排序的 CandidateSQL 列表
+            semantic_ctx: 遗留语义上下文，用于加分
+            schema_hint: 模式提示字符串
+            unmapped_terms: 无法映射的过滤词
+            result_rows: 结果行数
+            has_empty_semantics: 空结果是否语义上符合预期
+            parse_result: 结构化解析结果，用于语义评分
         """
         if not candidates:
             return []
@@ -78,18 +78,18 @@ class SQLRanker:
         score = self.BASE_SCORE
         sql = candidate.sql.lower()
 
-        # === SEMANTIC SCORING (primary) ===
+        # === 语义评分（主要） ===
         if parse_result:
             semantic_score = self._semantic_score(sql, parse_result)
-            # Blend with base score: semantic score is the primary signal
+            # 与基础分混合：语义评分为主要信号
             score = (
                 score * (1 - self.WEIGHT_INTENT_COVERAGE - self.WEIGHT_COLUMN_ACCURACY)
                 + semantic_score
             )
 
-        # === LEGACY FORM-BASED SCORING (secondary) ===
+        # === 遗留的基于形式的评分（次要） ===
 
-        # SQL length
+        # SQL 长度
         token_count = len(sql.split())
         if token_count <= 10:
             score += 0.05
@@ -98,21 +98,21 @@ class SQLRanker:
         elif token_count > 100:
             score -= self.PENALTY_EXCESSIVE_TOKENS
 
-        # JOIN complexity
+        # JOIN 复杂度
         join_count = sql.count(" join ")
         if join_count == 0:
             score += 0.05
         elif join_count <= 2:
             score += 0.03
 
-        # Subquery depth
+        # 子查询深度
         depth = sql.count("select") - 1
         if depth == 0:
             score += 0.03
         elif depth > 2:
             score -= self.PENALTY_DEEP_SUBQUERY
 
-        # Legacy semantic context bonuses
+        # 遗留语义上下文加分
         if ctx:
             for dim_name, info in ctx.dimension_mappings.items():
                 for cond in info.get("conditions", []):
@@ -137,22 +137,22 @@ class SQLRanker:
             if not has_time_filter:
                 score -= 0.08
 
-        # DISTINCT bonus
+        # DISTINCT 加分
         if "distinct" in sql:
             score += self.BONUS_DISTINCT
 
-        # LIMIT bonus
+        # LIMIT 加分
         if "limit" in sql:
             score += self.BONUS_LIMIT
 
-        # Historical success rate
+        # 历史成功率
         features = candidate.features
         if features.get("historical_success_rate", 0) > 0.8:
             score += self.BONUS_HISTORICAL_SUCCESS
         elif features.get("historical_success_rate", 0) < 0.3:
             score -= 0.05
 
-        # Penalties
+        # 扣分
         if unmapped_terms:
             score -= len(unmapped_terms) * 0.08
 
@@ -166,15 +166,15 @@ class SQLRanker:
         if re.search(r"select\s+\*\s+from", sql):
             score -= self.PENALTY_SELECT_STAR
 
-        # Clamp to [0, 1]
+        # 限制在 [0, 1] 范围内
         return round(max(0.0, min(1.0, score)), 3)
 
     def _semantic_score(self, sql: str, parse_result: SemanticParseResult) -> float:
-        """Compute semantic quality score based on how well SQL matches user intent."""
+        """根据 SQL 与用户意图的匹配程度计算语义质量分数。"""
         lowered = sql.lower()
         components: list[float] = []
 
-        # 1. Intent coverage: are all metrics/entities present?
+        # 1. 意图覆盖度：所有指标/实体是否都出现了？
         if parse_result.metrics or parse_result.entities:
             coverage = 0.0
             total = len(parse_result.metrics) + len(parse_result.entities)
@@ -186,7 +186,7 @@ class SQLRanker:
                     coverage += 1.0
             components.append(coverage / total if total > 0 else 1.0)
 
-        # 2. Column accuracy: filter values present in SQL
+        # 2. 列准确性：过滤值是否出现在 SQL 中
         if parse_result.filters:
             filter_coverage = 0.0
             for f in parse_result.filters:
@@ -194,14 +194,14 @@ class SQLRanker:
                     filter_coverage += 1.0
             components.append(filter_coverage / len(parse_result.filters))
 
-        # 3. GROUP BY consistency
+        # 3. GROUP BY 一致性
         if parse_result.group_by:
             has_gb = "group by" in lowered
             all_present = all(g.lower().strip() in lowered for g in parse_result.group_by)
             gb_score = 1.0 if (has_gb and all_present) else (0.5 if has_gb else 0.0)
             components.append(gb_score)
 
-        # 4. Time filter correctness
+        # 4. 时间过滤正确性
         if parse_result.time_window and parse_result.time_window.get("days"):
             has_time = any(
                 kw in lowered
@@ -221,12 +221,12 @@ class SQLRanker:
                 time_score = 0.0
             components.append(time_score)
 
-        # 5. ORDER BY match
+        # 5. ORDER BY 匹配
         if parse_result.order_by:
             has_ob = "order by" in lowered
             components.append(1.0 if has_ob else 0.3)
 
         if not components:
-            return 0.5  # No semantic info to check against
+            return 0.5  # 无语义信息可供校验
 
         return sum(components) / len(components)

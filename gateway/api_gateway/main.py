@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 
 from gateway.api_gateway.routers import (
     admin,
+    enterprise_admin,
     analytical_skills,
     audit,
     auth,
@@ -26,6 +27,7 @@ from gateway.api_gateway.routers import (
     health,
     memories,
     metrics,
+    prometheus,
     rules,
     sandbox,
     skills,
@@ -35,8 +37,10 @@ from gateway.api_gateway.routers import (
 )
 from infra.message_bus.subscribers import memory_event_subscriber
 from infra.errors import AppException, ErrorCodes
+from infra.observability.logger import get_logger
 from infra.storage.database import ensure_runtime_schema
 
+logger = get_logger(__name__)
 
 app = FastAPI(title="OpenTrace API", version="0.1.0")
 _subscriber_task: asyncio.Task | None = None
@@ -48,6 +52,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+try:
+    from gateway.api_gateway.middleware.tenant import TenantContextMiddleware
+
+    app.add_middleware(TenantContextMiddleware)
+except Exception as exc:
+    logger.warning("tenant_context_middleware_skipped", error=str(exc))
 
 
 @app.middleware("http")
@@ -94,6 +105,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 @app.on_event("startup")
 async def startup_event() -> None:
     global _subscriber_task
+    from agents.bootstrap import register_builtin_agents
+
+    register_builtin_agents()
     await ensure_runtime_schema()
     if _subscriber_task is None or _subscriber_task.done():
         _subscriber_task = asyncio.create_task(memory_event_subscriber.start())
@@ -113,6 +127,7 @@ async def shutdown_event() -> None:
 
 
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
+app.include_router(prometheus.router, prefix="/api/v1", tags=["observability"])
 app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
 app.include_router(conversations.router, prefix="/api/v1", tags=["conversations"])
@@ -129,6 +144,7 @@ app.include_router(databases.router, prefix="/api/v1", tags=["databases"])
 app.include_router(feedback.router, prefix="/api/v1", tags=["feedback"])
 app.include_router(sandbox.router, prefix="/api/v1", tags=["sandbox"])
 app.include_router(admin.router, prefix="/api/v1", tags=["admin"])
+app.include_router(enterprise_admin.router, prefix="/api/v1", tags=["enterprise-admin"])
 app.include_router(rules.router, prefix="/api/v1", tags=["rules"])
 app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
 app.include_router(table_relationships.router, prefix="/api/v1", tags=["table-relationships"])

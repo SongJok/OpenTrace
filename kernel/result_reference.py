@@ -1,4 +1,4 @@
-"""Result reference types for cross-agent data sharing."""
+"""结果引用类型 — 跨 Agent 数据共享。"""
 
 from __future__ import annotations
 

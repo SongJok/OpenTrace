@@ -95,6 +95,7 @@ dev = [
     "ruff>=0.4.5",
     "mypy>=1.10.0",
     "pre-commit>=3.7.1",
+    "import-linter>=2.0",
 ]
 
 [project.scripts]
@@ -121,3 +122,5 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Repo root on sys.path so `import kernel`, `import agents`, etc. work without editable install
+pythonpath = ["."]

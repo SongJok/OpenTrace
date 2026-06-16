@@ -1,3 +1,11 @@
+"""
+[已弃用] Dispatcher + RuntimeSupervisor — 重试/降级任务分发。
+
+已被 kernel.runtime.executor.ExecutionRuntime（认知运行时 Phase 3）取代。
+Agent 自主降级/重试在 capability_executor_mode 下已禁用。
+移除目标：v6.0。
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +21,7 @@ from kernel.plan_agent import SubTask, TaskPlan
 
 
 class RuntimeSupervisor:
-    """Lightweight runtime validator for agent results."""
+    """轻量级运行时验证器，用于验证 Agent 结果。"""
 
     def __init__(self, enabled: bool = True) -> None:
         self.enabled = enabled
@@ -66,6 +74,7 @@ class Dispatcher:
         max_retry: int | None = None,
         runtime_supervisor_enabled: bool | None = None,
         max_parallel: int = 5,
+        execution_runtime: Any = None,  # ExecutionRuntime | None
     ) -> None:
         self.registry = registry
         self.timeout_sec = timeout_sec
@@ -79,16 +88,21 @@ class Dispatcher:
         )
         self.supervisor = RuntimeSupervisor(enabled=bool(enabled))
         self.max_parallel = max_parallel
+        self.execution_runtime = execution_runtime
 
     async def dispatch(
         self,
         plan: TaskPlan,
         event_cb=None,
         previous_results: list[AgentResult] | None = None,
+        ctx: Any = None,  # RuntimeContext
     ) -> list[AgentResult]:
-        # ── Feature ⑥: DAG Checkpoint Reuse ──────────────────────────
-        # If previous_results are provided (from conversation branching),
-        # skip subtasks whose query + agent_type match a previous result.
+        # 当 ExecutionRuntime 可用时委托给它（Phase 1.4 路径）
+        if self.execution_runtime is not None:
+            return await self.execution_runtime.execute(plan, ctx=ctx, event_cb=event_cb)
+        # ── 特性⑥：DAG 检查点复用 ──────────────────────────
+        # 如果提供了 previous_results（来自对话分支），
+        # 跳过 query + agent_type 匹配已有结果的子任务。
         prev_map: dict[tuple[str, str], AgentResult] = {}
         if previous_results:
             for pr in previous_results:
@@ -115,7 +129,7 @@ class Dispatcher:
                 plan.subtasks = new_subtasks
                 remaining = await self._dispatch_inner(plan, event_cb)
                 return reused_results + remaining
-        # ── End DAG Checkpoint Reuse ─────────────────────────────────
+        # ── DAG 检查点复用结束 ─────────────────────────────────
 
         return await self._dispatch_inner(plan, event_cb)
 
@@ -165,21 +179,7 @@ class Dispatcher:
                 return_exceptions=True,
             )
             for st, res in zip(high_priority_tasks, high_results):
-                agent_result = self._coerce_result(res, st.agent_type)
-                results.append(agent_result)
-                if st.agent_type == "rag" and not self._is_rag_quality_sufficient(agent_result, st):
-                    fallback_to_web = bool((st.params or {}).get("fallback_to_web", False))
-                    if fallback_to_web:
-                        normal_tasks.append(
-                            SubTask(
-                                agent_type="web",
-                                query=st.query,
-                                params={
-                                    "fallback_reason": "rag_insufficient",
-                                    "fallback_source_task": st.params.get("node_id", ""),
-                                },
-                            )
-                        )
+                results.append(self._coerce_result(res, st.agent_type))
 
         if normal_tasks:
             sem = asyncio.Semaphore(self.max_parallel)
@@ -209,14 +209,6 @@ class Dispatcher:
             content="",
             error="invalid result",
         )
-
-    def _is_rag_quality_sufficient(self, result: AgentResult, task: SubTask) -> bool:
-        chunks = result.metadata.get("chunks", []) if isinstance(result.metadata, dict) else []
-        if not chunks:
-            return False
-        avg_score = sum(float(c.get("score", 0) or 0.0) for c in chunks) / len(chunks)
-        min_threshold = float((task.params or {}).get("min_evidence_score", 0.5) or 0.5)
-        return avg_score >= min_threshold
 
     async def _run_one(self, sem: asyncio.Semaphore, subtask: SubTask) -> AgentResult:
         async with sem:
@@ -267,6 +259,9 @@ class Dispatcher:
             user_id=str(params.get("user_id", "") or "") or None,
         )
         if self.bus_enabled:
+            from kernel.agent_runtime.manifest import get_manifest
+
+            get_manifest().assert_bus_routing(subtask.agent_type)
             await self.bus.publish_task(
                 AgentTaskEnvelope(
                     task_id=msg.task_id,
@@ -290,8 +285,8 @@ class Dispatcher:
                     error=data.get("error"),
                 )
             except TimeoutError:
-                # If the message bus worker is unavailable, degrade to in-process execution
-                # so RAG/Text2SQL do not silently fail into web-only answers.
+                # 如果消息总线 worker 不可用，降级为进程内执行
+                # 以避免 RAG/Text2SQL 静默降级为仅 web 回答。
                 if bool(getattr(settings, "kernel_agent_bus_require_worker", False)):
                     return AgentResult(
                         task_id=msg.task_id,

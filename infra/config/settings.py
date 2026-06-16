@@ -5,10 +5,10 @@ All configuration is loaded once from environment/dotenv via pydantic-settings.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
 from urllib.parse import urlparse, urlunparse
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -155,6 +155,12 @@ class RegistrationSettings(BaseSettings):
     registration_allowed_email_domain: str = "example.com"
     admin_email: str = "admin@example.com"
     password_prefix: str = ""
+    # 本地开发：注册时若带 password 则直接激活（无需管理员审核）
+    dev_registration_auto_activate: bool = True
+    # 启动后种子账号（仅 app_env=development 时由 seed 脚本创建）
+    dev_seed_user_enabled: bool = True
+    dev_seed_user_email: str = "dev@example.com"
+    dev_seed_user_password: str = "opentrace123"
 
 
 class OTelSettings(BaseSettings):
@@ -193,13 +199,16 @@ class AppSettings(BaseSettings):
     weather_api_key: str = ""
     weather_stack_api_key: str = ""
 
-    # Kernel V4 stable baseline
+    # Legacy 标签：/health 在 V4 启用时展示；V4 关闭时由 resolve_orchestrator_label 报告 vnext
     kernel_orchestrator_version: str = "v4"
     kernel_agent_enabled: bool = True
     kernel_agent_data_enabled: bool = True
     kernel_agent_tool_enabled: bool = True
     kernel_agent_web_enabled: bool = True
     kernel_agent_rag_enabled: bool = True
+    kernel_agent_vision_enabled: bool = True
+    # True: vision execute fails fast without image_urls/image_data (recommended for production).
+    kernel_vision_require_images: bool = True
     kernel_agent_timeout_sec: int = 30
     kernel_agent_max_parallel: int = 5
     kernel_agent_max_retry: int = 1
@@ -213,10 +222,133 @@ class AppSettings(BaseSettings):
     kernel_memory_context_enabled: bool = True
     kernel_enriched_identity_enabled: bool = True
     kernel_identity_llm_enabled: bool = True  # True=LLM动态生成身份回答, False=回退固定答案
-    kernel_agent_dag_scheduling_enabled: bool = False
-    kernel_agent_speculative_execution_enabled: bool = False
-    kernel_agent_bus_enabled: bool = False
-    kernel_agent_bus_require_worker: bool = False
+    kernel_agent_dag_scheduling_enabled: bool = True
+    kernel_agent_speculative_execution_enabled: bool = True
+    # Phase 2: UnifiedOrchestrator — one LLM call replaces 6+ scattered calls
+    kernel_orchestrator_unified_enabled: bool = True
+    # Phase 3: Fusion/Critic V2
+    kernel_fusion_v2_enabled: bool = True
+    kernel_critic_v2_enabled: bool = True
+    # Cognitive Runtime — Phase 1: Rewrite + Understanding engines
+    kernel_runtime_rewrite_enabled: bool = True
+    kernel_runtime_understanding_enabled: bool = True
+    # Cognitive Runtime — Phase 2: CognitivePlanner (upgraded from UnifiedOrchestrator)
+    kernel_runtime_cognitive_planner_enabled: bool = True
+    # Cognitive Runtime — Phase 3: Capability Graph + Agent executor mode
+    kernel_runtime_capability_graph_enabled: bool = True
+    kernel_agent_capability_executor_mode: bool = True
+    # Cognitive Runtime — Phase 4: Evidence → Fusion V2 → Critic V2 → ArtifactComposer
+    kernel_runtime_evidence_fusion_critic_enabled: bool = True
+    # Cognitive Runtime — Phase 5: Workspace + Artifact composer
+    kernel_runtime_artifact_composer_enabled: bool = True
+    kernel_runtime_workspace_enabled: bool = True
+    # Cognitive Runtime — V2 Pipeline (CognitivePlannerV2 → StrategyBuilder → ExecutionProjection)
+    kernel_cognitive_planner_v2_enabled: bool = True
+    # Legacy V4 orchestrator — must stay False; use RuntimeGateway + CognitiveExecutive only
+    kernel_orchestrator_v4_enabled: bool = False
+    kernel_governance_evidence_gate_enabled: bool = True
+    kernel_governance_risk_gate_enabled: bool = True
+    kernel_multi_question_runtime_v2_enabled: bool = True
+    # Multi-goal: chain sub-question execution nodes via depends_on (priority order from GoalGraph)
+    kernel_multi_goal_sequential_enabled: bool = True
+    # Route data_query goals via services.data_intelligence_runtime (DataAgent V2 path)
+    kernel_data_intelligence_routing_enabled: bool = True
+    # When True, data_intelligence runtime re-enters full CognitiveExecutive (higher cost)
+    kernel_data_intelligence_route_executive: bool = False
+    # When True, data_intelligence runtime delegates to full CognitiveExecutive after data agent
+    kernel_data_intelligence_route_executive: bool = False
+    kernel_refine_replan_enabled: bool = True
+    kernel_refine_reexec_enabled: bool = True
+    # Context Compression Runtime (prevents prompt inflation)
+    kernel_context_compressor_enabled: bool = True
+    # Evidence Lifecycle (state machine + ranking + resolution)
+    kernel_evidence_lifecycle_enabled: bool = True
+    # Capability Intelligence — Runtime self-cognition (rich profiles + feedback loop)
+    kernel_capability_intelligence_enabled: bool = True
+    # When False, learning_hook records feedback only; strategy_memory auto-write is shadow (no promotion)
+    kernel_agent_learning_auto_apply: bool = False
+    # Data V2: re-run cognitive DAG after verification fail (error_classifier + limited replans)
+    data_agent_v2_verification_replan_enabled: bool = True
+    data_agent_v2_verification_replan_max: int = 2
+    # RAG: RRF merge across document / llmwiki / memory lanes before evidence intelligence
+    rag_rrf_fusion_enabled: bool = True
+    rag_rrf_k: int = 60
+    # Capability Intelligence Phase 2 — Runtime self-cognition + orchestration learning
+    kernel_capability_intelligence_phase2_enabled: bool = True
+    # Phase 2 sub-features (independently toggled when master Phase 2 flag is ON)
+    kernel_capability_knowledge_graph_enabled: bool = True
+    kernel_capability_reasoner_enabled: bool = True
+    kernel_capability_execution_memory_enabled: bool = True
+    kernel_capability_strategy_memory_enabled: bool = True
+    kernel_capability_evolution_enabled: bool = True
+    # Evolution analysis interval (number of turns between full analysis passes)
+    kernel_capability_evolution_interval: int = 10
+    # Memory Truth Maintenance (confidence decay + contradiction detection + supersession)
+    kernel_memory_truth_maintenance_enabled: bool = True
+    # Deterministic Replay (prompt snapshots + runtime snapshots + execution replay)
+    kernel_runtime_replay_enabled: bool = True
+    # When True, invalid RuntimePhase transitions block execute phase
+    kernel_runtime_phase_transition_strict: bool = True
+    # Memory Fabric read path before legacy MemoryRouter buckets
+    kernel_memory_fabric_retrieval_enabled: bool = True
+    # When True, registry dispatch gate violations block handler invocation
+    kernel_registry_dispatch_strict: bool = True
+    # Agent Runtime V3 — manifest SSOT, UnifiedEvidence on EvidenceBus, GoalContribution metadata
+    kernel_agent_runtime_v3_enabled: bool = True
+    # When True, agent contributions must satisfy unified evidence + contract checks
+    kernel_agent_runtime_v3_strict: bool = False
+    # When True, successful turns require at least one UnifiedEvidence item
+    kernel_unified_evidence_strict: bool = False
+    # P3: hypothesis / contradiction / reflection metadata on turns
+    kernel_agent_runtime_p3_enabled: bool = True
+    # Goal-driven DAG: sub-goals map 1:1 to execution nodes (skip V2 gap decomposition)
+    kernel_goal_driven_dag_enabled: bool = True
+    # Goal Intelligence — split/merge/conflict before dispatch
+    kernel_goal_supervisor_enabled: bool = True
+    # Executive reflection → replan after critic/evidence (distinct from data_agent reflection)
+    kernel_cognitive_iteration_enabled: bool = True
+    kernel_cognitive_iteration_max: int = 2
+    # StrategyMemory patterns surfaced to StrategicPlanner / selector
+    kernel_strategy_memory_planner_enabled: bool = True
+    # P1 — Claim graph, web coverage, capability score ranking, predictive world
+    kernel_claim_graph_enabled: bool = True
+    kernel_web_coverage_evaluator_enabled: bool = True
+    kernel_web_coverage_max_rounds: int = 2
+    kernel_capability_score_ranking_enabled: bool = True
+    kernel_predictive_world_enabled: bool = True
+    kernel_autonomous_goal_discovery_enabled: bool = True
+    kernel_autonomous_goal_commit_enabled: bool = False
+    kernel_self_optimizing_runtime_enabled: bool = True
+    kernel_self_optimizing_runtime_apply: bool = False
+    kernel_capability_evolution_enabled: bool = True
+    kernel_capability_evolution_interval: int = 10
+    # Persist cognitive runtime state to Redis per phase (requires Redis)
+    kernel_cognitive_state_persist_enabled: bool = False
+    # Persist full CognitiveStateGraph JSON to Redis (bus write path); defaults on when cognitive_state_persist in prod profile
+    kernel_cognitive_state_graph_persist_enabled: bool = False
+    kernel_cognitive_state_graph_ttl_seconds: int = 3600
+    # Staging: extra strict phase transitions when app_env=staging
+    kernel_staging_phase_transition_strict: bool = True
+    # When True, policy mutation denials (plan/evidence/memory) abort the turn (prod opt-in)
+    kernel_policy_mutation_fail_closed: bool = False
+    kernel_world_state_persist_enabled: bool = False
+    # Cross-process world model (P0 noop; see docs/architecture/world_model_cross_process.md)
+    kernel_world_model_cross_process_enabled: bool = False
+    kernel_world_model_cross_process_backend: str = "noop"  # noop | redis
+    # Prefer web_intelligence agent over legacy web when registered
+    kernel_web_intelligence_preferred: bool = True
+    # Export semantic health alerts in turn metadata
+    kernel_semantic_alerts_enabled: bool = True
+    # Block execute when capability contract / topology validation fails
+    kernel_capability_contract_strict: bool = True
+    # Block fusion when evidence behavioral contract fails
+    kernel_evidence_contract_strict: bool = True
+    # Prefer fabric-only retrieval (skip legacy router when fabric returns hits)
+    kernel_memory_fabric_primary_only: bool = True
+    # Shadow memory relation graph to Redis (memory DB)
+    kernel_memory_graph_redis_enabled: bool = True
+    kernel_agent_bus_enabled: bool = True
+    kernel_agent_bus_require_worker: bool = True
     kernel_agent_bus_namespace: str = "opentrace:agent"
     kernel_agent_bus_mode: str = "pubsub"  # pubsub | stream
     kernel_agent_bus_group: str = "agent-workers"
@@ -225,6 +357,13 @@ class AppSettings(BaseSettings):
     kernel_agent_bus_reclaim_count: int = 20
     kernel_agent_bus_max_retry: int = 2
     kernel_agent_bus_dlq_stream: str = "opentrace:agent:stream:dlq"
+    # When True, tenant daily turn/cost quotas use Redis counters (multi-replica safe)
+    enterprise_quota_redis_enabled: bool = False
+    enterprise_usage_redis_enabled: bool = False
+    enterprise_tenant_rls_enabled: bool = False
+    enterprise_billing_persist_enabled: bool = False
+    enterprise_billing_prompt_per_million: float = 0.15
+    enterprise_billing_completion_per_million: float = 0.60
 
     # Cognition lexicon
     cognition_lexicon_json: str = ""
@@ -240,14 +379,18 @@ class AppSettings(BaseSettings):
     rag_min_evidence_score: float = 0.65
     rag_auto_fallback_to_web: bool = True
     rag_rerank_enabled: bool = True
+    rag_claim_anchor_enabled: bool = True
+    rag_evidence_cluster_enabled: bool = True
     llmwiki_enabled: bool = True
     llmwiki_model: str = "qwen3.5-27b"
     llmwiki_top_k: int = 3
-    kernel_fusion_enabled: bool = False
-    kernel_critic_enabled: bool = False
+    kernel_fusion_enabled: bool = True
+    kernel_critic_enabled: bool = True
     kernel_critic_max_retry: int = 2
 
     # V5 Routing Tier
+    # Skip full CognitiveSupervisor + executive graph for weather/time/tool intents
+    kernel_tool_fast_path_enabled: bool = True
     kernel_v5_routing_enabled: bool = True
     kernel_l0_rule_router_enabled: bool = True
     kernel_l1_tiny_router_enabled: bool = True
@@ -266,7 +409,7 @@ class AppSettings(BaseSettings):
 
     # Feature ④ Error Correction & Incremental Re-planning
     kernel_correction_detection_enabled: bool = True
-    kernel_refine_replan_enabled: bool = True
+    # kernel_refine_replan_enabled — defined in Phase 2 block above
 
     # Feature ② Dialogue State Tracking
     kernel_dst_enabled: bool = True
@@ -334,6 +477,7 @@ class AppSettings(BaseSettings):
     data_agent_v2_time_enabled: bool = True
     data_agent_v2_join_enabled: bool = True
     data_agent_v2_semantic_enabled: bool = True
+    data_agent_business_semantic_enabled: bool = True
     data_agent_v2_planner_enabled: bool = True
     data_agent_v2_compiler_enabled: bool = True
     data_agent_v2_sql_compiler_enabled: bool = True
@@ -345,18 +489,19 @@ class AppSettings(BaseSettings):
     data_agent_v2_supervisor_max_retries: int = 2
     data_agent_v2_confidence_threshold: float = 0.40  # P0: circuit breaker
     data_agent_v2_repair_strategies_path: str = ""  # P1: externalized repair strategies JSON
-    data_agent_v2_cognitive_events_enabled: bool = False  # P2: audit trail
+    data_agent_v2_cognitive_events_enabled: bool = True  # P2: audit trail
     # Learning Layer (Phase 3)
-    data_agent_v2_learning_enabled: bool = False
-    data_agent_v2_pattern_memory_enabled: bool = False
-    data_agent_v2_auto_metric_refinement_enabled: bool = False
-    data_agent_v2_auto_schema_enrichment_enabled: bool = False
+    data_agent_v2_learning_enabled: bool = True
+    data_agent_v2_auto_learning_enabled: bool = True
+    data_agent_v2_pattern_memory_enabled: bool = True
+    data_agent_v2_auto_metric_refinement_enabled: bool = True
+    data_agent_v2_auto_schema_enrichment_enabled: bool = True
     # Advanced Analysis (Phase 4)
-    data_agent_v2_advanced_analytics_mode: str = "manual"  # off | manual | auto
-    data_agent_v2_statistical_enabled: bool = False
-    data_agent_v2_insight_enabled: bool = False
-    data_agent_v2_visualization_enabled: bool = False
-    data_agent_v2_skill_execution_enabled: bool = False
+    data_agent_v2_advanced_analytics_mode: str = "auto"  # off | manual | auto
+    data_agent_v2_statistical_enabled: bool = True
+    data_agent_v2_insight_enabled: bool = True
+    data_agent_v2_visualization_enabled: bool = True
+    data_agent_v2_skill_execution_enabled: bool = True
     data_agent_v2_clarification_enabled: bool = True
     data_agent_v2_dag_parallel_timeout_sec: int = 30
 
@@ -386,6 +531,70 @@ class Settings(
         extra="ignore",
         case_sensitive=False,
     )
+
+    @field_validator("gateway_port", mode="after")
+    @classmethod
+    def _gateway_port_aligns_with_app(cls, v: int, info) -> int:
+        """避免 .env 中 GATEWAY_PORT 与 APP_PORT 漂移（见 docs/CONFIG_TRUTH.md）。"""
+        try:
+            data = info.data if hasattr(info, "data") else {}
+            app_port = int(data.get("app_port", 14100))
+            if v != app_port and data.get("app_env") != "production":
+                import warnings
+
+                warnings.warn(
+                    f"GATEWAY_PORT ({v}) != APP_PORT ({app_port}); "
+                    "Compose/健康检查以 APP_PORT 为准",
+                    stacklevel=2,
+                )
+        except Exception:
+            pass
+        return v
+
+    @model_validator(mode="after")
+    def _apply_staging_profile(self) -> Self:
+        """staging 环境强化开关（字段校验顺序无关，见 docs/ENV_PROFILES.md）。"""
+        if self.app_env != "staging":
+            return self
+        if not self.kernel_memory_fabric_primary_only:
+            self.kernel_memory_fabric_primary_only = True
+        if not self.kernel_cognitive_state_persist_enabled:
+            self.kernel_cognitive_state_persist_enabled = True
+        if (
+            self.kernel_staging_phase_transition_strict
+            and not self.kernel_runtime_phase_transition_strict
+        ):
+            self.kernel_runtime_phase_transition_strict = True
+        if not self.kernel_world_state_persist_enabled:
+            self.kernel_world_state_persist_enabled = True
+        if not self.kernel_policy_mutation_fail_closed:
+            self.kernel_policy_mutation_fail_closed = True
+        if not self.kernel_agent_runtime_v3_strict:
+            self.kernel_agent_runtime_v3_strict = True
+        if not self.kernel_unified_evidence_strict:
+            self.kernel_unified_evidence_strict = True
+        if not self.kernel_agent_learning_auto_apply:
+            self.kernel_agent_learning_auto_apply = True
+        return self
+
+    @model_validator(mode="after")
+    def _apply_production_profile(self) -> Self:
+        """Production: align with docs/ENV_PROFILES.md (fabric, world, strict evidence)."""
+        if self.app_env != "production":
+            return self
+        if not self.kernel_memory_fabric_primary_only:
+            self.kernel_memory_fabric_primary_only = True
+        if not self.kernel_world_state_persist_enabled:
+            self.kernel_world_state_persist_enabled = True
+        if not self.kernel_cognitive_state_persist_enabled:
+            self.kernel_cognitive_state_persist_enabled = True
+        if not self.kernel_policy_mutation_fail_closed:
+            self.kernel_policy_mutation_fail_closed = True
+        if not self.kernel_agent_runtime_v3_strict:
+            self.kernel_agent_runtime_v3_strict = True
+        if not self.kernel_unified_evidence_strict:
+            self.kernel_unified_evidence_strict = True
+        return self
 
 
 @lru_cache(maxsize=1)

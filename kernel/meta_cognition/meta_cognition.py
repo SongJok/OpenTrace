@@ -1,10 +1,10 @@
 """
-Meta-Cognition — three-tier quality control:
-  score >= 0.8  -> accept
-  score >= 0.6  -> refine (improve without full retry)
-  score <  0.6  -> retry (re-run up to max_retries)
+元认知 — 三层质量控制：
+  score >= 0.8  -> 接受
+  score >= 0.6  -> 精炼（改进而非完全重试）
+  score <  0.6  -> 重试（最多重试 max_retries 次）
 
-Also performs hallucination risk detection.
+同时执行幻觉风险检测。
 """
 
 from __future__ import annotations
@@ -48,10 +48,10 @@ class ValidationResult:
 
 class MetaCognition:
     """
-    Three-tier quality gate:
-      score >= high_threshold  -> pass immediately
-      score >= low_threshold   -> refine once
-      score <  low_threshold   -> retry up to max_retries
+    三层质量门控：
+      score >= high_threshold  -> 直接通过
+      score >= low_threshold   -> 精炼一次
+      score <  low_threshold   -> 最多重试 max_retries 次
     """
 
     def __init__(
@@ -83,7 +83,7 @@ class MetaCognition:
                 if h_risk > 0.7:
                     logger.warning("High hallucination risk", risk=h_risk, attempt=attempt)
 
-                # Tier 1: Accept
+                # 第一层：接受
                 if score >= self.high_threshold:
                     return ValidationResult(
                         passed=True,
@@ -94,7 +94,7 @@ class MetaCognition:
                         issues=issues,
                     )
 
-                # Tier 2: Refine
+                # 第二层：精炼
                 if score >= self.low_threshold:
                     try:
                         current = await self._refine(query, str(current), reason, issues)
@@ -103,7 +103,7 @@ class MetaCognition:
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("Refine failed", error=str(exc))
 
-                # Tier 3: Retry
+                # 第三层：重试
                 logger.warning("MetaCognition: low score, retrying", score=score, attempt=attempt)
                 if retry_fn and attempt < self.max_retries:
                     try:
@@ -115,7 +115,7 @@ class MetaCognition:
                 elif attempt >= self.max_retries:
                     break
 
-            # score/h_risk are guaranteed assigned by the loop above (min 1 iteration)
+            # score/h_risk 由上方循环保证赋值（至少 1 次迭代）
         return ValidationResult(
             passed=score >= self.low_threshold,  # type: ignore[possibly-undefined]
             score=score,  # type: ignore[possibly-undefined]

@@ -1,3 +1,4 @@
+from tests.orchestrator_v4_source import read_orchestrator_v4_implementation
 import unittest
 from pathlib import Path
 
@@ -16,7 +17,7 @@ class RagAgentContractTests(unittest.TestCase):
         self.assertIn("UserMemory", txt)
 
     def test_orchestrator_v4_registers_rag_agent(self):
-        txt = self._read("kernel/orchestrator_v4.py")
+        txt = read_orchestrator_v4_implementation()
         self.assertIn("from agents.rag_agent import RagAgent", txt)
         self.assertIn("self.registry.register(RagAgent())", txt)
 

@@ -1,4 +1,4 @@
-"""Stub: Turn Context — V5 feature not yet implemented."""
+"""桩：回合上下文 — V5 能力尚未实现。"""
 
 from __future__ import annotations
 

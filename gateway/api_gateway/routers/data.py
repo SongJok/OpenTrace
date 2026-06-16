@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agents.base import TaskMessage
 from agents.data_agent import DataAgent
 from gateway.api_gateway.routers.auth import get_current_user
-from gateway.api_gateway.routers.databases import _dec
+from infra.security.data_source_secrets import decrypt_data_source_secret
 from infra.config.settings import get_settings
 from infra.errors import AppException, ErrorCodes
 from infra.metadata.schema_inspector import build_schema_hint, load_schema_inspection
@@ -75,7 +75,7 @@ async def data_query(
                 port=source.port,
                 database=source.database,
                 username=source.username,
-                password=_dec(source.password_encrypted),
+                password=decrypt_data_source_secret(source.password_encrypted),
             )
         )
         schema_hint = build_schema_hint(schema_payload)
@@ -175,7 +175,7 @@ async def data_query(
         dsn = DBRouter().build_dsn(
             DBConnectionInfo(
                 source_type=source.source_type, host=source.host, port=source.port,
-                database=source.database, username=source.username, password=_dec(source.password_encrypted),
+                database=source.database, username=source.username, password=decrypt_data_source_secret(source.password_encrypted),
             )
         )
         rows = await SQLExecutor().run_on_dsn(dsn, safe_sql)
@@ -232,7 +232,7 @@ async def data_query(
     dsn = DBRouter().build_dsn(
         DBConnectionInfo(
             source_type=source.source_type, host=source.host, port=source.port,
-            database=source.database, username=source.username, password=_dec(source.password_encrypted),
+            database=source.database, username=source.username, password=decrypt_data_source_secret(source.password_encrypted),
         )
     )
     rows, final_sql = await _execute_with_reflection(safe_sql, dsn, validator, dialect, req.question, schema_hint, semantic_ctx)

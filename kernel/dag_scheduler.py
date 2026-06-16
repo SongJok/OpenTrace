@@ -1,5 +1,20 @@
 from __future__ import annotations
 
+import warnings
+warnings.warn(
+    "kernel.dag_scheduler is deprecated — superseded by ExecutionRuntime. "
+    "Will be removed in v6.0.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+"""已弃用 — kernel/dag_scheduler.py
+
+已由 kernel.runtime.executor.ExecutionRuntime（Phase 1.4）取代，
+原生使用 execution/dag_engine/，不再重复 DAG 逻辑。
+仅保留向后兼容，v6.0 将移除。
+"""
+
 import asyncio
 from dataclasses import dataclass
 from time import monotonic

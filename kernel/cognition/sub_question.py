@@ -1,4 +1,4 @@
-"""Sub-question decomposition types."""
+"""子问题分解类型。"""
 
 from __future__ import annotations
 

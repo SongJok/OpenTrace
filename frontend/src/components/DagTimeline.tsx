@@ -11,7 +11,7 @@ export type DagTimelineItem = {
   duration_ms?: number
 }
 
-function statusClass(status: string) {
+export function statusClass(status: string) {
   const s = String(status || '').toUpperCase()
   if (s === 'RUNNING') return 'border-cyan-300/20 bg-cyan-300/10 text-cyan-100'
   if (s === 'SUCCESS') return 'border-emerald-300/20 bg-emerald-300/10 text-emerald-100'

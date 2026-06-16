@@ -1,4 +1,4 @@
-"""Unit tests for deterministic V2 agents: Visualization, PatternExtractor, SkillsEngine."""
+"""确定性 V2 Agent 单元测试：Visualization、PatternExtractor、SkillsEngine。"""
 
 import unittest
 import sys

@@ -1,4 +1,4 @@
-"""Schema Linker — maps natural language entities to database tables/columns."""
+"""模式链接器 — 将自然语言实体映射到数据库表/列。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from model.model_gateway.gateway import LLMRole, get_model_gateway
 
 
 class SchemaLinker:
-    """Links user mentions to actual database tables and columns."""
+    """将用户提及映射到实际数据库表和列。"""
 
     def __init__(
         self,
@@ -28,7 +28,7 @@ class SchemaLinker:
         self._table_graph = TableRelationshipGraph()
 
     def register_foreign_keys(self, fks: list[dict[str, str]]) -> None:
-        """Register foreign key relationships for join path inference."""
+        """注册外键关系，用于 JOIN 路径推断。"""
         for fk in fks:
             self._table_graph.register_fk(
                 left_table=fk.get("table", ""),
@@ -42,17 +42,17 @@ class SchemaLinker:
         query: str,
         table_columns: dict[str, list[str]] | None = None,
     ) -> list[EntityMapping]:
-        """Map natural language mentions in query to database tables."""
+        """将查询中的自然语言提及映射到数据库表。"""
         entities: list[EntityMapping] = []
         query_lower = query.lower()
         cols = table_columns or self._table_columns
 
-        # Rule-based table matching first
+        # 优先基于规则的表匹配
         for table in self._table_names:
             if table.lower() in query_lower or _fuzzy_table_match(table, query):
                 entities.append(EntityMapping(mention=table, mapped_table=table, confidence=0.85))
 
-        # If rule-based found nothing, use LLM with full schema context
+        # 若基于规则未找到，使用 LLM 结合完整模式上下文
         if not entities and self._schema_summary:
             entities = await self._llm_link_entities(query, table_columns=cols)
 
@@ -64,16 +64,16 @@ class SchemaLinker:
         table_candidates: list[str] | None = None,
         table_columns: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Map a mention to database columns with similarity scoring.
+        """将提及映射到数据库列，并进行相似度评分。
 
-        Returns list of {table, column, similarity} sorted by score desc.
+        返回按分数降序排列的 {table, column, similarity} 列表。
         """
         results: list[dict[str, Any]] = []
         cols = table_columns or self._table_columns
         candidates = table_candidates or self._table_names
         mention_lower = mention.lower().strip()
 
-        # 1. Exact column name match
+        # 1. 精确列名匹配
         for table in candidates:
             for col in cols.get(table, []):
                 if col.lower() == mention_lower:
@@ -84,7 +84,7 @@ class SchemaLinker:
                         {"table": table, "column": col, "similarity": round(score * 0.7, 2)}
                     )
 
-        # 2. Synonym match
+        # 2. 同义词匹配
         for syn, standard_name in self._build_synonym_index().items():
             if syn in mention_lower:
                 for table in candidates:
@@ -95,13 +95,13 @@ class SchemaLinker:
                         ):
                             results.append({"table": table, "column": col, "similarity": 0.85})
 
-        # 3. LLM fallback if no match
+        # 3. 无匹配时使用 LLM 回退
         if not results and self._schema_summary:
             results = await self._llm_link_columns(
                 mention, table_candidates=candidates, table_columns=cols
             )
 
-        # Sort by similarity descending, deduplicate
+        # 按相似度降序排序，去重
         seen = set()
         deduped = []
         for r in sorted(results, key=lambda x: x["similarity"], reverse=True):
@@ -112,7 +112,7 @@ class SchemaLinker:
         return deduped
 
     def _build_synonym_index(self) -> dict[str, str]:
-        """Build a flat synonym → standard column name index."""
+        """构建扁平的同义词 → 标准列名索引。"""
         index: dict[str, str] = {}
         for standard, synonyms in self._column_synonyms.items():
             for syn in synonyms:
@@ -120,7 +120,7 @@ class SchemaLinker:
         return index
 
     async def link_metrics(self, query: str) -> list[MetricMapping]:
-        """Map metric mentions (销售额, revenue, count, etc.) to column + aggregation."""
+        """将指标提及（销售额、revenue、count 等）映射到列 + 聚合函数。"""
         metrics: list[MetricMapping] = []
 
         metric_patterns = {
@@ -160,7 +160,7 @@ class SchemaLinker:
             "毛利率": ("margin_rate", "AVG"),
         }
         query_lower = query.lower()
-        # Sort by length descending to match longer phrases first
+        # 按长度降序排序，优先匹配较长的短语
         for mention in sorted(metric_patterns.keys(), key=len, reverse=True):
             if mention.lower() in query_lower:
                 col, agg = metric_patterns[mention]
@@ -176,7 +176,7 @@ class SchemaLinker:
         query: str,
         table_columns: dict[str, list[str]] | None = None,
     ) -> list[EntityMapping]:
-        """Use LLM to link entities when rules fail, with full schema context."""
+        """规则匹配失败时使用 LLM 链接实体，结合完整模式上下文。"""
         cols = table_columns or self._table_columns
         schema_context = _format_schema_context(self._table_names, cols)
 
@@ -205,7 +205,7 @@ class SchemaLinker:
         table_candidates: list[str] | None,
         table_columns: dict[str, list[str]],
     ) -> list[dict[str, Any]]:
-        """Use LLM to find matching columns for a mention."""
+        """使用 LLM 查找提及对应的匹配列。"""
         cols = {t: table_columns.get(t, []) for t in (table_candidates or self._table_names)}
         schema_context = _format_schema_context(list(cols.keys()), cols)
 
@@ -245,7 +245,7 @@ class SchemaLinker:
         return []
 
     async def _llm_link_metrics(self, query: str) -> list[MetricMapping]:
-        """Use LLM to link metric mentions to columns."""
+        """使用 LLM 将指标提及映射到列。"""
         schema_context = _format_schema_context(self._table_names, self._table_columns)
 
         prompt = (
@@ -266,7 +266,7 @@ class SchemaLinker:
         )
 
     def infer_join_path(self, tables: list[str]) -> list[str]:
-        """Infer join path between tables using foreign key graph."""
+        """使用外键图推断表之间的 JOIN 路径。"""
         if len(tables) < 2:
             return []
         steps = self._table_graph.find_path_for_tables(tables)
@@ -274,7 +274,7 @@ class SchemaLinker:
 
 
 def _format_schema_context(table_names: list[str], table_columns: dict[str, list[str]]) -> str:
-    """Format schema info into a readable context string for LLM prompts."""
+    """将模式信息格式化为 LLM 提示的可读上下文字符串。"""
     lines = []
     for table in table_names:
         cols = table_columns.get(table, [])
@@ -286,14 +286,14 @@ def _format_schema_context(table_names: list[str], table_columns: dict[str, list
 
 
 def _clean_json_response(content: str | None) -> str:
-    """Clean LLM response to extract raw JSON."""
+    """清理 LLM 响应以提取原始 JSON。"""
     raw = (content or "").strip()
-    # Strip markdown code fences
+    # 去除 Markdown 代码围栏
     if raw.startswith("```"):
         lines = raw.split("\n", 1)
         raw = lines[1] if len(lines) > 1 else raw
         raw = raw.rsplit("```", 1)[0].strip()
-    # Strip leading/trailing non-JSON chars
+    # 去除首尾非 JSON 字符
     raw = raw.strip("`").strip()
     return raw
 
@@ -304,7 +304,7 @@ async def _call_llm_json_array(
     fields: list[tuple[str, type]],
     primary_field: str = "mention",
 ) -> Any:
-    """Call LLM for JSON array output with validation and auto-retry."""
+    """调用 LLM 获取 JSON 数组输出，包含验证和自动重试。"""
     field_defaults = {"str": "", "float": 0.0, "int": 0}
     try:
         gw = get_model_gateway()
@@ -343,7 +343,7 @@ async def _call_llm_json_array(
 
 
 def _fuzzy_table_match(table_name: str, query: str) -> bool:
-    """Fuzzy match table name against query text with reduced false positives."""
+    """模糊匹配表名与查询文本，降低误报率。"""
     clean = table_name.lower().replace("_", "").replace("-", "")
     query_clean = query.lower().replace("_", "").replace("-", "")
     if clean in query_clean:

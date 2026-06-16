@@ -111,8 +111,9 @@ else
   export TRACE_ENABLED=false
 fi
 
+# bash 3.2 + set -u: avoid "${arr[@]}" on empty arrays
 if [ ${#PROFILE_ARGS[@]} -gt 0 ]; then
-  docker compose "${PROFILE_ARGS[@]}" up -d --build
+  docker compose ${PROFILE_ARGS+"${PROFILE_ARGS[@]}"} up -d --build
 else
   docker compose up -d --build
 fi

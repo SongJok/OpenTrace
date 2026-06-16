@@ -1,4 +1,4 @@
-"""Governance protocol types — budget tracking, quality gates."""
+"""治理协议类型 — 预算跟踪、质量门控。"""
 
 from __future__ import annotations
 

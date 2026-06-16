@@ -1,11 +1,10 @@
 import unittest
+from tests.orchestrator_v4_source import read_orchestrator_v4_implementation
 
 
 class StreamDagContractTests(unittest.TestCase):
     def test_orchestrator_accepts_event_callback(self):
-        with open("kernel/orchestrator_v4.py", "r", encoding="utf-8") as f:
-            code = f.read()
-
+        code = read_orchestrator_v4_implementation()
         self.assertIn("async def process(self, req: OrchestratorV4Request, event_cb=None)", code)
         self.assertIn("event_cb=None", code)
         self.assertIn("process(self, req: OrchestratorV4Request", code)
@@ -29,14 +28,14 @@ class StreamDagContractTests(unittest.TestCase):
         self.assertIn('"type": "dag_node_complete"', dag_code)
 
         # adaptive_profile is emitted by orchestrator_v4.py's stream method
-        with open("kernel/orchestrator_v4.py", "r", encoding="utf-8") as f:
+        with open("legacy/v4/orchestrator.py", "r", encoding="utf-8") as f:
             v4_code = f.read()
         self.assertIn('"type": "adaptive_profile"', v4_code)
 
-        # Verify cognitive_kernel.py delegates to orchestrator.stream()
         with open("kernel/cognitive_kernel.py", "r", encoding="utf-8") as f:
             kernel_code = f.read()
-        self.assertIn("orchestrator.stream", kernel_code)
+        self.assertIn("get_runtime_gateway", kernel_code)
+        self.assertIn(".stream(", kernel_code)
 
 
 if __name__ == "__main__":

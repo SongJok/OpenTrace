@@ -125,11 +125,12 @@ class ToolAgent(BaseAgent):
             elif not text_preview and isinstance(payload, dict):
                 text_preview = json.dumps(payload, ensure_ascii=False)
 
+            body = str(text_preview or out)[:1200]
             return AgentResult(
                 task_id=task.task_id,
                 agent_type="tool",
                 status="success",
-                content=str(text_preview or out)[:1200],
+                content=body,
                 confidence=0.88,
                 metadata={
                     "normalized": True,
@@ -143,6 +144,15 @@ class ToolAgent(BaseAgent):
                         payload=payload,
                         credibility=0.85,
                         relevance=0.9,
+                    )
+                ],
+                evidence_objects=[
+                    self._make_evidence_object(
+                        content=body,
+                        source_type="tool",
+                        credibility=0.85,
+                        relevance=0.9,
+                        tool_name=tool_name,
                     )
                 ],
             )

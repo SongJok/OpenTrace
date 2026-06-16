@@ -1,3 +1,12 @@
+"""
+已弃用 — kernel/plan_agent.py
+
+PlanAgent 与 TaskPlan/SubTask 已由 kernel.runtime.orchestrator.UnifiedOrchestrator（Phase 2）取代。
+TaskPlan/SubTask 数据类仅为向后兼容保留。
+
+新代码应使用 UnifiedOrchestrator.plan()，勿再调用 PlanAgent.generate_plan()。
+"""
+
 from __future__ import annotations
 
 import json
@@ -6,6 +15,9 @@ from typing import Any, Literal
 
 from execution.data.query_intents import is_database_question
 from infra.config.settings import settings
+from infra.observability.logger import get_logger
+
+logger = get_logger(__name__)
 from kernel.adaptive_profiles import get_profile_defaults
 from kernel.cognition.world_model import WorldModel
 from kernel.plan_memory import PlanMemoryRecord, plan_memory
@@ -43,8 +55,12 @@ class PlanAgent:
             return "data"
         if any(k in q for k in ["文档", "手册", "知识库", "总结", "归纳", "pdf", "docx", "从文档"]):
             return "rag"
-        if any(k in q for k in ["最新", "新闻", "实时", "今天", "联网", "搜索", "天气"]):
+        if any(k in q for k in ["天气", "气温", "温度", "下雨", "预报", "weather", "forecast"]):
+            return "tool"
+        if any(k in q for k in ["最新", "新闻", "实时", "联网", "搜索"]):
             return "web"
+        if any(k in q for k in ["几点", "现在几点", "当前时间", "what time"]):
+            return "tool"
         return "general"
 
     def _ground_query_terms(self, user_query: str) -> list[dict[str, Any]]:
@@ -81,7 +97,7 @@ class PlanAgent:
             "rag 可在 params 指定 top_k 和 sources，默认 top_k=8, sources=[documents, semantic_memory]。"
             "若用户一次提多个目标（如 查询+图表+分析），可同时返回 data + tool 子任务并行执行。"
         )
-        # Inject clarification context if available (Feature ⑤)
+        # 如有可用，注入澄清上下文（特性⑤）
         metadata = (context or {}).get("metadata", {}) if isinstance(context, dict) else {}
         clarify_context = (
             ((context or {}).get("clarify_context") if isinstance(context, dict) else None)
@@ -96,7 +112,7 @@ class PlanAgent:
             )
             prompt += clarify_part
 
-        # Inject dialogue state if available (Feature ②)
+        # 如有可用，注入对话状态（特性②）
         dialogue_state = (
             (context or {}).get("dialogue_state") if isinstance(context, dict) else None
         )
@@ -113,12 +129,12 @@ class PlanAgent:
                 "请优先沿用上一轮使用的 agent 类型和数据源参数，仅更新查询内容。"
             )
             prompt += dst_part
-            # Use resolved query as the effective query
+            # 使用消解后的查询作为有效查询
             resolved = dialogue_state.get("resolved_query", "")
             if resolved and resolved != user_query:
                 user_query = resolved
 
-        # ── Multi-turn: inject conversation history ──
+        # ── 多轮：注入对话历史 ──
         conversation_history = (
             (context or {}).get("conversation_history") if isinstance(context, dict) else None
         )
@@ -137,7 +153,7 @@ class PlanAgent:
                 "如果用户切换了话题，请按新话题规划。"
             )
 
-        # ── Multi-turn: inject ConversationState context ──
+        # ── 多轮：注入 ConversationState 上下文 ──
         conv_state = (
             (context or {}).get("conversation_state") if isinstance(context, dict) else None
         )
@@ -161,6 +177,35 @@ class PlanAgent:
                     "\n当前会话状态：\n" + "\n".join(cs_parts) + "\n"
                     "如果用户是在延续当前话题，优先沿用上轮的 Agent 和参数配置。"
                 )
+
+        # ── Intent Lock: 注入能力约束 ──
+        metadata = (context or {}).get("metadata", {}) if isinstance(context, dict) else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        intent_lock = metadata.get("intent_lock", {}) if isinstance(metadata, dict) else {}
+        if isinstance(intent_lock, dict) and intent_lock.get("task_type"):
+            task_type = intent_lock.get("task_type", "general_qa")
+            allowed = intent_lock.get("allowed_capabilities", [])
+            disallowed = intent_lock.get("disallowed_capabilities", [])
+            il_parts: list[str] = [
+                f"\n## 意图约束 (Intent Lock)\n当前任务类型: {task_type}"
+            ]
+            if allowed:
+                il_parts.append(f"仅允许使用的能力: {', '.join(allowed)}")
+                if "model.answer" in allowed and len(allowed) == 1:
+                    il_parts.append(
+                        "**关键**: 仅允许 'model.answer'，意味着你只能用 LLM 直接回答。"
+                        "不要生成任何 data/web/rag/tool 子任务。subtasks 必须为空数组 []。"
+                    )
+            if disallowed:
+                il_parts.append(f"严格禁止使用的能力: {', '.join(disallowed)}")
+                il_parts.append(
+                    "禁止的能力对应的 agent_type: "
+                    "rag.retrieve→rag, web.search→web, data.query→data, "
+                    "tool.weather→tool, tool.datetime→tool. "
+                    "严禁为禁止的能力生成对应的 agent 子任务。"
+                )
+            prompt += "\n".join(il_parts) + "\n"
 
         recent_patterns: list[dict[str, Any]] = []
         if bool(getattr(settings, "kernel_plan_memory_enabled", True)):
@@ -363,6 +408,8 @@ class PlanAgent:
             merge_strategy = data.get("merge_strategy", "prioritized")
             max_parallel = int(data.get("max_parallel", 3))
             subtasks, max_parallel = _ensure_rules(subtasks)
+            # ── Intent Lock: 过滤被禁能力的 subtask ──
+            subtasks = self._filter_disallowed_subtasks(subtasks, intent_lock)
             if not subtasks:
                 raise ValueError("empty subtasks")
             plan = TaskPlan(
@@ -432,6 +479,8 @@ class PlanAgent:
             ):
                 subtasks.append(SubTask(agent_type="tool", query=user_query))
             subtasks, max_parallel = _ensure_rules(subtasks)
+            # ── Intent Lock: 过滤被禁能力的 subtask ──
+            subtasks = self._filter_disallowed_subtasks(subtasks, intent_lock)
             plan = TaskPlan(
                 subtasks=subtasks,
                 merge_strategy="prioritized",
@@ -490,10 +539,45 @@ class PlanAgent:
         "general_qa": "tool",
     }
 
+    # intent_lock capability → PlanAgent agent_type 映射（用于过滤被禁子任务）
+    _CAP_AGENT_MAP: dict[str, str] = {
+        "rag.retrieve": "rag",
+        "web.search": "web",
+        "data.query": "data",
+        "memory.retrieve": "memory",
+        "tool.weather": "tool",
+        "tool.datetime": "tool",
+        "tool.execute": "tool",
+        "skills.execute": "skills",
+        "vision.analyze": "vision",
+    }
+
+    def _filter_disallowed_subtasks(
+        self, subtasks: list[Any], intent_lock: dict[str, Any] | None
+    ) -> list[Any]:
+        """根据 Intent Lock 的禁止能力列表过滤子任务。"""
+        if not isinstance(intent_lock, dict) or not subtasks:
+            return subtasks
+        disallowed = intent_lock.get("disallowed_capabilities", [])
+        if not disallowed:
+            return subtasks
+        disallowed_agents = {
+            self._CAP_AGENT_MAP.get(c, c) for c in disallowed
+        }
+        filtered = [s for s in subtasks if getattr(s, "agent_type", "") not in disallowed_agents]
+        if len(filtered) < len(subtasks):
+            logger.info(
+                "PlanAgent filtered disallowed subtasks",
+                original=len(subtasks),
+                filtered=len(filtered),
+                removed_agents=[getattr(s, "agent_type", "?") for s in subtasks if s not in filtered],
+            )
+        return filtered
+
     def _build_params_for_agent(
         self, agent_type: str, sq: dict[str, str], selected_data_source_id: str
     ) -> dict[str, Any]:
-        """Build sensible default params per agent type."""
+        """为每种 Agent 类型构建合理的默认参数。"""
         params: dict[str, Any] = {}
         if agent_type == "data" and selected_data_source_id:
             params["data_source_id"] = selected_data_source_id
@@ -513,7 +597,7 @@ class PlanAgent:
     async def generate_multi_plan(
         self, sub_questions: list[dict[str, str]], context: dict[str, Any] | None = None
     ) -> TaskPlan:
-        """Generate a multi-question TaskPlan with ordered subtasks."""
+        """生成多问题 TaskPlan，子任务按顺序排列。"""
         adaptive_profile = (
             (context or {}).get("adaptive_profile") if isinstance(context, dict) else {}
         )
@@ -528,7 +612,7 @@ class PlanAgent:
             if isinstance(md, dict):
                 selected_data_source_id = str(md.get("data_source_id", "") or "").strip()
 
-        # Build domain context for the LLM
+        # 为 LLM 构建领域上下文
         domain_summary = "\n".join(
             f"  q{i+1}[{sq.get('domain', 'general_qa')}]: {sq.get('text', '')}"
             for i, sq in enumerate(sub_questions)
@@ -545,7 +629,7 @@ class PlanAgent:
                 "- RAG agent 当前不可用，document_retrieval 类问题应降级为 tool agent"
             )
 
-        # ── Multi-turn: inject conversation history ──
+        # ── 多轮：注入对话历史 ──
         conversation_history = (
             (context or {}).get("conversation_history") if isinstance(context, dict) else None
         )
@@ -564,7 +648,7 @@ class PlanAgent:
                 "如果子问题与历史对话相关，请优先复用历史中的数据源和 Agent 参数。\n"
             )
 
-        # ── Multi-turn: inject ConversationState context ──
+        # ── 多轮：注入 ConversationState 上下文 ──
         conv_state = (
             (context or {}).get("conversation_state") if isinstance(context, dict) else None
         )
@@ -639,11 +723,11 @@ class PlanAgent:
                     )
                 )
         except Exception:
-            # Heuristic fallback: assign types based on domain
+            # 启发式降级：按领域分配类型
             for i, sq in enumerate(sub_questions):
                 domain = sq.get("domain", "general_qa")
                 agent_type = self._DOMAIN_AGENT_MAP.get(domain, "tool")
-                # Downgrade data→tool if no data source
+                # 无数据源时降级 data→tool
                 if agent_type == "data" and not selected_data_source_id:
                     agent_type = "tool"
                 if agent_type == "rag" and not has_rag:
@@ -661,6 +745,13 @@ class PlanAgent:
                     )
                 )
 
+        # ── Intent Lock: 过滤被禁能力的 subtask ──
+        md = (context or {}).get("metadata", {}) if isinstance(context, dict) else {}
+        if not isinstance(md, dict):
+            md = {}
+        intent_lock = md.get("intent_lock", {}) if isinstance(md, dict) else {}
+        subtasks = self._filter_disallowed_subtasks(subtasks, intent_lock)
+
         if not subtasks:
             return TaskPlan(subtasks=[], merge_strategy="prioritized", is_multi_question=True)
 
@@ -677,7 +768,7 @@ class PlanAgent:
         )
 
     def __attach_deps_multi(self, sts: list[SubTask], sub_questions: list[dict[str, str]]) -> None:
-        """Attach cross-question dependencies across all agent types."""
+        """为跨问题依赖建立关联。"""
         if not sts or len(sub_questions) < 2:
             return
         sq_to_st: dict[str, SubTask] = {}
@@ -685,7 +776,7 @@ class PlanAgent:
             if s.sub_question_id:
                 sq_to_st[s.sub_question_id] = s
 
-        # Reference words that imply dependency on previous results
+        # 表示依赖前文结果的引用词
         _DEP_REFERENCES = [
             "它们",
             "这些",

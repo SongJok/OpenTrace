@@ -1,4 +1,4 @@
-"""LLM JSON output parser with repair strategies."""
+"""LLM JSON 输出解析器（含修复策略）。"""
 
 from __future__ import annotations
 
@@ -8,17 +8,17 @@ from typing import Any
 
 
 def parse_llm_json(text: str, default: Any = None) -> Any:
-    """Parse JSON from LLM output, with repair for common formatting issues."""
+    """解析 LLM 输出中的 JSON，含常见格式问题的修复策略。"""
     if not text or not text.strip():
         return default
 
-    # Try direct parse first
+    # 先尝试直接解析
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Try extracting JSON block from markdown
+    # 尝试从 markdown 中提取 JSON 块
     m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if m:
         try:
@@ -26,7 +26,7 @@ def parse_llm_json(text: str, default: Any = None) -> Any:
         except json.JSONDecodeError:
             pass
 
-    # Try finding the outermost { } or [ ]
+    # 尝试查找最外层的 { } 或 [ ]
     for pat in (r"\{[\s\S]*\}", r"\[[\s\S]*\]"):
         m = re.search(pat, text)
         if m:

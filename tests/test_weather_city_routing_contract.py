@@ -1,3 +1,4 @@
+from tests.orchestrator_v4_source import read_orchestrator_v4_implementation
 import unittest
 from pathlib import Path
 
@@ -11,13 +12,13 @@ class WeatherCityRoutingContractTests(unittest.TestCase):
 
     def test_orchestrator_v4_has_weather_routing(self):
         """V4 orchestrator handles weather queries."""
-        txt = self._read("kernel/orchestrator_v4.py")
+        txt = read_orchestrator_v4_implementation()
         self.assertIn('"天气"', txt)
         self.assertIn("get_weather", txt)
 
     def test_weather_tool_invokes_city_parameter(self):
         """Weather tool is invoked with city parameter via router."""
-        txt = self._read("kernel/orchestrator_v4.py")
+        txt = read_orchestrator_v4_implementation()
         self.assertIn("get_weather", txt)
         self.assertIn("city", txt)
 

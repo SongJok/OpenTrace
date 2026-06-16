@@ -140,6 +140,29 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)) -> 
     if existing.scalar_one_or_none():
         raise AppException(ErrorCodes.RESOURCE_EXISTS.code, message="Email already registered")
 
+    dev_auto = (
+        settings.app_env == "development"
+        and settings.dev_registration_auto_activate
+        and bool((req.password or "").strip())
+    )
+
+    if dev_auto:
+        user = User(
+            id=str(uuid.uuid4()),
+            email=email,
+            hashed_password=_hash(req.password.strip()),
+            display_name=req.display_name or email.split("@")[0],
+            status="active",
+            role="user",
+        )
+        db.add(user)
+        await db.commit()
+        logger.info("User registered (dev auto-activate)", email=user.email)
+        return RegisterResponse(
+            message="注册成功，请使用邮箱和密码登录。",
+            email=user.email,
+        )
+
     user = User(
         id=str(uuid.uuid4()),
         email=email,

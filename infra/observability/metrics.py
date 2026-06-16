@@ -36,10 +36,12 @@ def _counter(name: str, doc: str, labels: list) -> Any:
         return _Noop()
 
 
-def _gauge(name: str, doc: str) -> Any:
+def _gauge(name: str, doc: str, labels: list | None = None) -> Any:
     if not _PROM_AVAILABLE:
         return _Noop()
     try:
+        if labels:
+            return Gauge(name, doc, labels)
         return Gauge(name, doc)
     except Exception:
         return _Noop()
@@ -111,4 +113,29 @@ JOIN_PATH_INFERENCE_SUCCESS = _counter(
 JOIN_PATH_DEPTH = _histogram(
     "opentrace_join_path_depth", "JOIN path depth distribution",
     [], [1, 2, 3, 4, 5, 10]
+)
+
+ENTERPRISE_TURNS_TOTAL = _counter(
+    "opentrace_enterprise_turns_total",
+    "Cognitive turns with enterprise telemetry",
+    ["tenant_id", "success"],
+)
+ENTERPRISE_TURN_COST = _counter(
+    "opentrace_enterprise_turn_cost_usd",
+    "Attributed turn cost (estimated)",
+    ["tenant_id", "capability_type"],
+)
+CONTROL_PLANE_DENIALS = _counter(
+    "opentrace_control_plane_denials_total",
+    "Control plane denials",
+    ["reason"],
+)
+GOAL_STABILITY = _gauge(
+    "opentrace_cognitive_goal_stability",
+    "Last recorded goal stability score",
+)
+CAPABILITY_SUCCESS_RATE = _gauge(
+    "opentrace_capability_success_rate",
+    "Rolling capability success rate from Capability OS",
+    ["capability_type"],
 )

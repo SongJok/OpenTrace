@@ -1,27 +1,34 @@
 """
-DAG Builder — constructs a DagPlan from CognitiveContext and feature flags.
+DAG 构建器 — 由 CognitiveContext 与特性开关生成 DagPlan。
 
-Pure function with no side effects. Given the current cognitive state and
-which sub-agents are enabled, builds the optimal DAG topology for execution.
+纯函数、无副作用；根据认知状态与启用的子 Agent 构建最优 DAG 拓扑。
 
-DAG Topology:
-  Level 0 (parallel): IntentAgent, EntityAgent, MetricAgent, TimeReasoningAgent, JoinAgent
-  Level 1: SemanticAgent (depends on Intent + Entity)
-  Level 2: PlannerAgent (depends on all Level 0/1)
-  Level 3: SQLCompilerAgent (depends on Planner)
-  Level 4: VerificationAgent (depends on Compiler)
+DAG 拓扑：
+  第 0 层（并行）：Intent、Entity、Metric、TimeReasoning、Join
+  第 1 层：Semantic（依赖 Intent + Entity）
+  第 2 层：Planner（依赖 0/1 层）
+  第 3 层：SQLCompiler（依赖 Planner）
+  第 4 层：Verification（依赖 Compiler）
 
-If the Knowledge Layer detects a metadata query (fast path), the DAG is
-a single-node plan that skips all reasoning.
+知识层识别为元数据查询（快路径）时，DAG 为单节点，跳过推理。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# Level-0 agent keys → (node_id, agent_type)
+_LEVEL0_AGENTS: tuple[tuple[str, str, str], ...] = (
+    ("intent", "intent", "data_intent"),
+    ("entity", "entity", "data_entity"),
+    ("metric", "metric", "data_metric"),
+    ("time", "time", "data_time"),
+    ("join", "join", "data_join"),
+)
+
 
 @dataclass
 class DagNodeSpec:
-    """Lightweight DAG node specification for the Supervisor."""
+    """供 Supervisor 使用的轻量 DAG 节点规格。"""
     node_id: str
     agent_type: str
     query: str
@@ -31,10 +38,44 @@ class DagNodeSpec:
 
 @dataclass
 class DagPlanSpec:
-    """DAG plan with nodes and execution hints."""
+    """DAG 计划，包含节点和执行提示。"""
     nodes: list[DagNodeSpec] = field(default_factory=list)
     parallel_enabled: bool = True
     metadata: dict = field(default_factory=dict)
+
+
+def _node(
+    node_id: str,
+    agent_type: str,
+    query: str,
+    *,
+    depends_on: list[str] | None = None,
+    params: dict | None = None,
+) -> DagNodeSpec:
+    return DagNodeSpec(
+        node_id=node_id,
+        agent_type=agent_type,
+        query=query,
+        depends_on=list(depends_on or []),
+        params=dict(params or {}),
+    )
+
+
+def _append_level0(
+    nodes: list[DagNodeSpec],
+    level0_ids: list[str],
+    query: str,
+    enabled: dict[str, bool],
+    base_params: dict,
+) -> None:
+    for key, node_id, agent_type in _LEVEL0_AGENTS:
+        if enabled.get(key):
+            nodes.append(_node(node_id, agent_type, query, params=base_params))
+            level0_ids.append(node_id)
+
+
+def _deps_from_enabled(enabled: dict[str, bool], keys: tuple[str, ...]) -> list[str]:
+    return [k for k in keys if enabled.get(k)]
 
 
 def build_cognitive_dag(
@@ -43,116 +84,62 @@ def build_cognitive_dag(
     parallel: bool = True,
     is_metadata: bool = False,
 ) -> DagPlanSpec:
-    """Build the cognitive DAG plan based on feature flags.
-
-    Args:
-        query: The original user query
-        enabled: Dict of agent_name → enabled flag
-        parallel: Whether Level 0 agents should run in parallel
-        is_metadata: If True, returns a single-node plan (fast path)
-
-    Returns:
-        DagPlanSpec ready for scheduling
-    """
+    """根据特性开关构建认知 DAG 计划。"""
     if is_metadata:
         return DagPlanSpec(
-            nodes=[DagNodeSpec(
-                node_id="intent",
-                agent_type="data_intent",
-                query=query,
-            )],
+            nodes=[_node("intent", "data_intent", query)],
             parallel_enabled=False,
             metadata={"fast_path": "metadata"},
         )
 
     nodes: list[DagNodeSpec] = []
+    level0_nodes: list[str] = []
     base_params = {"query": query}
 
-    # ── Level 0: Independent agents (parallel) ─────────────────────
-    level0_nodes: list[str] = []
+    _append_level0(nodes, level0_nodes, query, enabled, base_params)
 
-    if enabled.get("intent"):
-        nodes.append(DagNodeSpec(
-            node_id="intent", agent_type="data_intent",
-            query=query, params=base_params,
-        ))
-        level0_nodes.append("intent")
-
-    if enabled.get("entity"):
-        nodes.append(DagNodeSpec(
-            node_id="entity", agent_type="data_entity",
-            query=query, params=base_params,
-        ))
-        level0_nodes.append("entity")
-
-    if enabled.get("metric"):
-        nodes.append(DagNodeSpec(
-            node_id="metric", agent_type="data_metric",
-            query=query, params=base_params,
-        ))
-        level0_nodes.append("metric")
-
-    if enabled.get("time"):
-        nodes.append(DagNodeSpec(
-            node_id="time", agent_type="data_time",
-            query=query, params=base_params,
-        ))
-        level0_nodes.append("time")
-
-    if enabled.get("join"):
-        nodes.append(DagNodeSpec(
-            node_id="join", agent_type="data_join",
-            query=query, params=base_params,
-        ))
-        level0_nodes.append("join")
-
-    # ── Level 1: SemanticAgent (depends on Intent + Entity) ────────
-    semantic_deps: list[str] = []
-    if enabled.get("intent"):
-        semantic_deps.append("intent")
-    if enabled.get("entity"):
-        semantic_deps.append("entity")
-
+    semantic_deps = _deps_from_enabled(enabled, ("intent", "entity"))
     if enabled.get("semantic") and semantic_deps:
-        nodes.append(DagNodeSpec(
-            node_id="semantic", agent_type="data_semantic",
-            query=query, depends_on=semantic_deps, params=base_params,
-        ))
+        nodes.append(
+            _node("semantic", "data_semantic", query, depends_on=semantic_deps, params=base_params)
+        )
 
-    # ── Level 2: PlannerAgent (depends on Semantic+Metric+Time+Join+Entity) ─
-    planner_deps: list[str] = []
-    if enabled.get("semantic"):
-        planner_deps.append("semantic")
-    if enabled.get("metric"):
-        planner_deps.append("metric")
-    if enabled.get("time"):
-        planner_deps.append("time")
-    if enabled.get("join"):
-        planner_deps.append("join")
-    if enabled.get("entity"):
-        planner_deps.append("entity")
-    if enabled.get("intent"):
-        planner_deps.append("intent")
+    business_deps = _deps_from_enabled(enabled, ("metric", "time", "intent"))
+    if enabled.get("business_semantic") and business_deps:
+        nodes.append(
+            _node(
+                "business_semantic",
+                "data_business_semantic",
+                query,
+                depends_on=business_deps,
+                params=base_params,
+            )
+        )
 
+    planner_deps = _deps_from_enabled(
+        enabled,
+        ("business_semantic", "semantic", "metric", "time", "join", "entity", "intent"),
+    )
     if enabled.get("planner"):
-        nodes.append(DagNodeSpec(
-            node_id="planner", agent_type="data_planner",
-            query=query, depends_on=planner_deps, params=base_params,
-        ))
+        nodes.append(
+            _node("planner", "data_planner", query, depends_on=planner_deps, params=base_params)
+        )
 
-    # ── Level 3: SQLCompilerAgent ─────────────────────────────────
     if enabled.get("compiler"):
-        nodes.append(DagNodeSpec(
-            node_id="compiler", agent_type="data_compiler",
-            query=query, depends_on=["planner"], params=base_params,
-        ))
+        nodes.append(
+            _node("compiler", "data_compiler", query, depends_on=["planner"], params=base_params)
+        )
 
-    # ── Level 4: VerificationAgent ────────────────────────────────
     if enabled.get("verifier"):
-        nodes.append(DagNodeSpec(
-            node_id="verification", agent_type="data_verification",
-            query=query, depends_on=["compiler"], params=base_params,
-        ))
+        nodes.append(
+            _node(
+                "verification",
+                "data_verification",
+                query,
+                depends_on=["compiler"],
+                params=base_params,
+            )
+        )
 
     return DagPlanSpec(
         nodes=nodes,
@@ -165,8 +152,46 @@ def build_cognitive_dag(
     )
 
 
+def validate_dag_spec(spec: DagPlanSpec) -> list[str]:
+    """Return validation errors for dependency integrity (pure, for tests)."""
+    errors: list[str] = []
+    ids = {n.node_id for n in spec.nodes}
+    for n in spec.nodes:
+        for dep in n.depends_on:
+            if dep not in ids:
+                errors.append(f"node {n.node_id} depends on missing {dep}")
+    return errors
+
+
+def validate_dag_against_manifest(spec: DagPlanSpec) -> list[str]:
+    """Ensure DAG agent_type values match tier-2 manifest keys."""
+    from kernel.agent_runtime.manifest import get_manifest
+
+    m = get_manifest()
+    tier2 = set(m.tier2_node_keys())
+    errors: list[str] = []
+    for n in spec.nodes:
+        at = (n.agent_type or "").strip().lower()
+        if not at:
+            errors.append(f"node {n.node_id} missing agent_type")
+            continue
+        if at not in tier2:
+            errors.append(f"node {n.node_id} unknown tier2 agent_type:{at}")
+    sem = m.get("data_semantic")
+    if sem:
+        deps = tuple(sem.topology.get("depends_on_nodes") or ())
+        for n in spec.nodes:
+            if n.agent_type == "data_semantic":
+                expected = [d.replace("data_", "") for d in deps]
+                if sorted(n.depends_on) != sorted(expected):
+                    errors.append(
+                        f"semantic_deps_mismatch:got={n.depends_on} expected={expected}"
+                    )
+    return errors
+
+
 def to_dag_plan(spec: DagPlanSpec, task) -> "DagPlan":
-    """Convert DagPlanSpec (V2) to kernel DagPlan for DagScheduler."""
+    """将 DagPlanSpec（V2）转换为内核 DagPlan，供 DagScheduler 使用。"""
     from kernel.dag_plan import DagNode, DagPlan
 
     nodes = [
@@ -190,7 +215,7 @@ def to_dag_plan(spec: DagPlanSpec, task) -> "DagPlan":
 
 
 def get_enabled_agents() -> dict[str, bool]:
-    """Read feature flags from settings."""
+    """从设置中读取特性开关。"""
     from infra.config.settings import settings
 
     return {
@@ -200,6 +225,9 @@ def get_enabled_agents() -> dict[str, bool]:
         "time": bool(getattr(settings, "data_agent_v2_time_enabled", True)),
         "join": bool(getattr(settings, "data_agent_v2_join_enabled", True)),
         "semantic": bool(getattr(settings, "data_agent_v2_semantic_enabled", True)),
+        "business_semantic": bool(
+            getattr(settings, "data_agent_business_semantic_enabled", True)
+        ),
         "planner": bool(getattr(settings, "data_agent_v2_planner_enabled", True)),
         "compiler": bool(getattr(
             settings,

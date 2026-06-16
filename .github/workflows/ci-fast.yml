@@ -34,6 +34,24 @@ jobs:
       - name: Run kernel loop contract
         run: bash scripts/verify_kernel_loop.sh
 
+      - name: Install package (editable) for vNext contract imports
+        run: pip install -e ".[dev]"
+
+      - name: vNext architecture contract suite (no Docker LLM)
+        run: bash scripts/run_vnext_final_tests.sh
+
+      - name: Import boundaries
+        run: bash scripts/check_import_boundaries.sh
+
+      - name: Import linter (importlinter)
+        run: lint-imports --config importlinter.ini
+
+      - name: Enterprise cognitive OS contract suite
+        run: bash scripts/run_enterprise_contract_tests.sh
+
+      - name: Full pytest (migration consistency)
+        run: python -m pytest -q --tb=no
+
       - name: Run V4 agent lightweight contracts
         run: |
           python -m unittest \

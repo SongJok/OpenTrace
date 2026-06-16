@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import type { ReasoningStep, ToolRunStatus } from '../api/client'
+import { normalizeFinalAnswerEnvelope, type TurnMetaEnvelope } from '../utils/streamEnvelope'
+import type { TurnMetaEnvelope } from '../utils/streamEnvelope'
 
 export interface ExecutionGraphNode {
   id: string
@@ -80,6 +82,7 @@ export interface Message {
   completion_tokens?: number
   model?: string
   tool_calls?: ToolCallBlock[]
+  turn_meta?: TurnMetaEnvelope
 }
 
 export interface Conversation {
@@ -110,6 +113,7 @@ interface ChatState {
   appendAssistantStreamingMessage: (id: string, msg: { id: string }) => void
   setLastAssistantCitations: (id: string, citations: CitationItem[]) => void
   setLastAssistantAnnotations: (id: string, annotations: MessageAnnotation[]) => void
+  setLastAssistantTurnMeta: (id: string, turnMeta: TurnMetaEnvelope) => void
   appendStreamingChunk: (id: string, chunk: string) => void
   appendThinking: (id: string, text: string) => void
   finishLastAssistantMessage: (id: string, finalText: string) => void
@@ -155,6 +159,18 @@ function asDoneMessage(raw: any): Message {
     : null
   const attachments = Array.isArray(raw?.attachments) ? raw.attachments as MessageAttachment[] : undefined
   const status = (raw?.decision_type === 'interrupted' || raw?.status === 'interrupted') ? 'interrupted' as const : 'done' as const
+  const turnMeta =
+    raw?.role === 'assistant' || raw?.role === undefined
+      ? normalizeFinalAnswerEnvelope({
+          content: text,
+          execution_graph: raw?.execution_graph ?? null,
+          citations: raw?.citations ?? [],
+          annotations: raw?.annotations ?? [],
+          metadata: raw?.metadata ?? {},
+          prompt_tokens: raw?.prompt_tokens,
+          completion_tokens: raw?.completion_tokens,
+        })
+      : undefined
   return {
     id: String(raw?.id ?? `m_${Date.now()}`),
     role: (raw?.role ?? 'assistant') as Message['role'],
@@ -166,10 +182,13 @@ function asDoneMessage(raw: any): Message {
     reasoning_steps: reasoningSteps,
     execution_graph: executionGraph,
     attachments,
-    prompt_tokens: typeof raw?.prompt_tokens === 'number' ? raw.prompt_tokens : undefined,
-    completion_tokens: typeof raw?.completion_tokens === 'number' ? raw.completion_tokens : undefined,
+    prompt_tokens: typeof raw?.prompt_tokens === 'number' ? raw.prompt_tokens : turnMeta?.prompt_tokens,
+    completion_tokens: typeof raw?.completion_tokens === 'number' ? raw.completion_tokens : turnMeta?.completion_tokens,
     model: typeof raw?.model === 'string' ? raw.model : undefined,
     tool_calls: Array.isArray(raw?.tool_calls) ? raw.tool_calls as ToolCallBlock[] : undefined,
+    citations: Array.isArray(raw?.citations) ? (raw.citations as CitationItem[]) : undefined,
+    annotations: Array.isArray(raw?.annotations) ? (raw.annotations as MessageAnnotation[]) : undefined,
+    turn_meta: turnMeta,
   }
 }
 
@@ -315,6 +334,22 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       const last = list[idx]
       if (last.role !== 'assistant') return {}
       list[idx] = { ...last, annotations: annotations ?? [] }
+      return { messages: { ...s.messages, [id]: list } }
+    }),
+
+  setLastAssistantTurnMeta: (id, turnMeta) =>
+    set((s) => {
+      const list = [...(s.messages[id] ?? [])]
+      if (!list.length) return {}
+      const idx = list.length - 1
+      const last = list[idx]
+      if (last.role !== 'assistant') return {}
+      list[idx] = {
+        ...last,
+        turn_meta: turnMeta,
+        prompt_tokens: turnMeta.prompt_tokens ?? last.prompt_tokens,
+        completion_tokens: turnMeta.completion_tokens ?? last.completion_tokens,
+      }
       return { messages: { ...s.messages, [id]: list } }
     }),
 

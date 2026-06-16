@@ -27,6 +27,30 @@ class DocumentsRagRetrievalContractTests(unittest.TestCase):
         self.assertIn('"chunk_index": meta.get("chunk_index")', txt)
         self.assertIn('"document_id": meta.get("document_id")', txt)
 
+    def test_document_retrieval_scoped_by_owner(self):
+        txt = self._read("plugins/document_retrieval.py")
+        self.assertIn("_document_owner_clause", txt)
+        self.assertIn("Document.owner_id", txt)
+
+    def test_document_retrieval_tenant_equality_columns(self):
+        txt = self._read("plugins/document_retrieval.py")
+        self.assertIn("Document.tenant_id == tid", txt)
+        self.assertIn("Document.workspace_id == wid", txt)
+
+    def test_document_model_has_tenant_columns(self):
+        txt = self._read("infra/storage/models.py")
+        self.assertIn("tenant_id: Mapped[str]", txt)
+        self.assertIn('__tablename__ = "documents"', txt)
+
+    def test_documents_upload_sets_tenant_from_request(self):
+        txt = self._read("gateway/api_gateway/routers/documents.py")
+        self.assertIn("build_tenant_metadata", txt)
+        self.assertIn("tenant_id=doc_tenant", txt)
+
+    def test_document_plugin_llmwiki_scoped_by_owner(self):
+        txt = self._read("plugins/document_plugin.py")
+        self.assertIn("Document.owner_id == uid", txt)
+
 
 if __name__ == "__main__":
     unittest.main()

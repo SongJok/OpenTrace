@@ -60,6 +60,43 @@ def is_running_in_container() -> bool:
     return any(marker in content for marker in ("docker", "containerd", "kubepods"))
 
 
+def format_database_connection_error(
+    exc: BaseException,
+    *,
+    configured_host: str,
+    port: int | None = None,
+    database: str | None = None,
+) -> str:
+    """Turn low-level driver errors into actionable messages (Docker / loopback)."""
+    raw = str(exc)
+    lower = raw.lower()
+    host_part = normalize_database_host(configured_host)
+    resolved = resolve_database_host_for_runtime(configured_host)
+    resolved_in_container = resolve_database_host_for_runtime(
+        configured_host,
+        containerized=True,
+        docker_host_alias=get_settings().docker_host_alias,
+    )
+    endpoint = f"{resolved}:{port}" if port else resolved
+    if host_part.lower() in LOOPBACK_DATABASE_HOSTS:
+        hint = (
+            f"数据源 host 为 {host_part}；在 Docker 容器内会解析为 {resolved_in_container}。"
+            "请确认宿主机数据库已启动且可从容器访问（如 host-gateway / 局域网 IP）。"
+        )
+    else:
+        hint = f"请确认数据库在 {endpoint} 可访问。"
+    if "access denied" in lower or "authentication failed" in lower:
+        return f"数据库认证失败：{raw}。请检查用户名和密码。{hint}"
+    if "connection refused" in lower or "could not connect" in lower or "timed out" in lower:
+        return f"数据库连接失败（{endpoint}）：{raw}。{hint}"
+    if "does not exist" in lower or "unknown database" in lower:
+        db_label = database or "（未指定）"
+        return f"数据库不存在（{db_label}）：{raw}。请检查库名。"
+    if "table" in lower and "not exist" in lower:
+        return f"表不存在：{raw}。请检查表名或同步 schema。"
+    return raw
+
+
 def resolve_database_host_for_runtime(
     host: str,
     *,

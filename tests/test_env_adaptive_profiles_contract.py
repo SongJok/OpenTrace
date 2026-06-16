@@ -1,4 +1,5 @@
 import unittest
+from tests.orchestrator_v4_source import read_orchestrator_v4_implementation
 
 
 class EnvAdaptiveProfilesContractTests(unittest.TestCase):
@@ -23,9 +24,7 @@ class EnvAdaptiveProfilesContractTests(unittest.TestCase):
         self.assertIn("KERNEL_ADAPTIVE_PROFILE_JSON", code)
 
     def test_orchestrator_uses_profile_loader(self):
-        with open("kernel/orchestrator_v4.py", "r", encoding="utf-8") as f:
-            code = f.read()
-
+        code = read_orchestrator_v4_implementation()
         self.assertIn("from kernel.adaptive_profiles import get_profile_defaults", code)
         self.assertIn("profile = get_profile_defaults(profile_name)", code)
 

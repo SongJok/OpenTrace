@@ -1,4 +1,5 @@
 import unittest
+from tests.orchestrator_v4_source import read_orchestrator_v4_implementation
 
 
 class DependencyPlanningContractTests(unittest.TestCase):
@@ -18,9 +19,7 @@ class DependencyPlanningContractTests(unittest.TestCase):
         self.assertIn('s.depends_on =', code)
 
     def test_orchestrator_passes_dependencies_to_dag_path(self):
-        with open("kernel/orchestrator_v4.py", "r", encoding="utf-8") as f:
-            code = f.read()
-
+        code = read_orchestrator_v4_implementation()
         self.assertIn("depends_on", code)
         self.assertIn("plan.subtasks", code)
 

@@ -4,7 +4,7 @@ Evolution Memory Router — MemoryRouter + Compressor + Evolution + Reinforcemen
 from __future__ import annotations
 
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from infra.config.settings import settings
 from infra.observability.logger import get_logger
@@ -48,13 +48,39 @@ class EvolutionMemoryRouter(MemoryRouter):
         session_id: str,
         query: str,
         answer: str,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
         score: float = 0.8,
         success: bool = True,
     ) -> None:
         chunk_id = str(uuid.uuid4())
         content = f"Q: {query}\nA: {answer}"
         meta = {"session_id": session_id, "score": score, **(metadata or {})}
+
+        # ── Memory governance: provenance tracking ──
+        try:
+            from memory.evolution.governance import memory_governance
+            source_agent = (metadata or {}).get("source_agent", "")
+            memory_governance.track_provenance(
+                chunk_id=chunk_id,
+                source_agent=source_agent,
+                session_id=session_id,
+                original_query=query,
+            )
+            meta["governance"] = True
+        except Exception:
+            pass
+
+        # ── Memory governance: contradiction check before store ──
+        try:
+            from memory.evolution.governance import memory_governance
+            existing = await self.semantic_store.search(query, top_k=5)
+            existing_contents = [getattr(c, "content", "") for c in existing]
+            conflicts = memory_governance.check_contradiction(content, existing_contents)
+            if conflicts:
+                logger.debug("Memory contradiction detected", chunk_id=chunk_id, conflicts=len(conflicts))
+                meta["has_contradictions"] = True
+        except Exception:
+            pass
 
         try:
             await self.semantic_store.add(chunk_id, content, meta)
@@ -73,6 +99,24 @@ class EvolutionMemoryRouter(MemoryRouter):
             asyncio.create_task(self._run_evolution())
 
         logger.debug("Memory stored", session=session_id, chunk_id=chunk_id)
+
+        try:
+            from infra.config.settings import settings
+
+            if bool(getattr(settings, "kernel_memory_fabric_retrieval_enabled", True)):
+                goal_id = str((metadata or {}).get("goal_id", "") or session_id)
+                from memory.fabric.router_singleton import bind_turn_memory
+
+                bind_turn_memory(
+                    session_id=session_id,
+                    request_id=chunk_id,
+                    goal_id=goal_id,
+                    query=query,
+                    answer_preview=answer[:200],
+                    route=str((metadata or {}).get("route", "") or "evolution"),
+                )
+        except Exception:
+            pass
 
     async def _run_evolution(self) -> None:
         cases = list(self._pending_cases)
@@ -109,8 +153,8 @@ class EvolutionMemoryRouter(MemoryRouter):
     async def retrieve(
         self,
         query: str,
-        episodic_chunks: Optional[list[str]] = None,
-        keyword_chunks: Optional[list[str]] = None,
+        episodic_chunks: list[str] | None = None,
+        keyword_chunks: list[str] | None = None,
         top_k: int = 8,
     ) -> list[MemoryChunk]:
         chunks = await super().retrieve(
@@ -134,6 +178,16 @@ class EvolutionMemoryRouter(MemoryRouter):
                     except Exception:
                         pass
         # ── End auto-decay ──────────────────────────────────
+
+        # ── Memory governance: record access for confidence refresh ──
+        for chunk in chunks:
+            chunk_id = chunk.metadata.get("chunk_id") or chunk.metadata.get("id")
+            if chunk_id:
+                try:
+                    from memory.evolution.governance import memory_governance
+                    memory_governance.record_access(chunk_id)
+                except Exception:
+                    pass
 
         skills = await self.skill_retrieve(query)
         for skill in reversed(skills):
@@ -190,7 +244,7 @@ class EvolutionMemoryRouter(MemoryRouter):
     # ------------------------------------------------------------------
     async def compress_session(
         self, session_id: str, last_n: int = 30
-    ) -> Optional[str]:
+    ) -> str | None:
         """Compress the most recent N memories of a session."""
         chunks = await super().retrieve(query="session summary", top_k=last_n)
         session_texts = [

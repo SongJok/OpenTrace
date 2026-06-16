@@ -1,4 +1,4 @@
-"""Result reference builder stub — builds ResultRefs from agent results."""
+"""结果引用构建桩 — 从 Agent 结果构建 ResultRefs。"""
 
 from __future__ import annotations
 

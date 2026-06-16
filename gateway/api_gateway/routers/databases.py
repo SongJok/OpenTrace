@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import time
 import uuid
-from cryptography.fernet import Fernet
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -21,6 +18,10 @@ from execution.data.database_hosts import (
 from execution.data.sql_executor import SQLExecutor
 from gateway.api_gateway.routers.auth import get_current_user
 from infra.config.settings import get_settings
+from infra.security.data_source_secrets import (
+    decrypt_data_source_secret,
+    encrypt_data_source_secret,
+)
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import DataQueryLog, DataSource, DataSourceSchema, User
@@ -29,21 +30,6 @@ router = APIRouter()
 
 
 SUPPORTED_SOURCE_TYPES = {"mysql", "clickhouse", "doris", "postgres"}
-
-
-def _fernet() -> Fernet:
-    secret = get_settings().data_secret_key
-    digest = hashlib.sha256(secret.encode("utf-8")).digest()
-    key = base64.urlsafe_b64encode(digest)
-    return Fernet(key)
-
-
-def _enc(v: str) -> str:
-    return _fernet().encrypt(v.encode("utf-8")).decode("utf-8")
-
-
-def _dec(v: str) -> str:
-    return _fernet().decrypt(v.encode("utf-8")).decode("utf-8")
 
 
 class DataSourceCreateRequest(BaseModel):
@@ -169,7 +155,7 @@ async def create_database(req: DataSourceCreateRequest, current_user: User = Dep
         port=req.port,
         database=req.database,
         username=req.username,
-        password_encrypted=_enc(req.password),
+        password_encrypted=encrypt_data_source_secret(req.password),
         status="active",
     )
     db.add(row)
@@ -278,7 +264,7 @@ async def test_connection(database_id: str, current_user: User = Depends(get_cur
                 port=x.port,
                 database=x.database,
                 username=x.username,
-                password=_dec(x.password_encrypted),
+                password=decrypt_data_source_secret(x.password_encrypted),
             )
         )
         rows = await SQLExecutor().run_on_dsn(dsn, "SELECT 1 AS ok")

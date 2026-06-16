@@ -1,4 +1,5 @@
 import re
+from tests.orchestrator_v4_source import read_orchestrator_v4_implementation
 import unittest
 from pathlib import Path
 
@@ -44,9 +45,13 @@ class KernelFlowContractTests(unittest.TestCase):
 
     def test_chat_resume_endpoint_and_session_guard(self):
         txt = self._read("gateway/api_gateway/routers/chat.py")
-        self.assertIn("@router.post(\"/chat/resume\"", txt)
+        self.assertIn('@router.post("/chat/resume"', txt)
         self.assertIn("Session not found or no permission", txt)
-        self.assertRegex(txt, r"orchestrator\.resume\(session_id=session_id, step_index=req\.step_index\)")
+        self.assertIn("resume_turn_via_gateway", txt)
+        self.assertRegex(
+            txt,
+            r"resume_turn_via_gateway\(\s*\n?\s*db,\s*\n?\s*session_id=session_id",
+        )
 
     def test_reasoning_yaml_has_numeric_constraints(self):
         txt = self._read("kernel/prompt_engine/reasoning.yaml")
@@ -64,12 +69,12 @@ class KernelFlowContractTests(unittest.TestCase):
         self.assertIn("data_analysis", txt)
 
     def test_orchestrator_has_non_empty_final_response_fallback(self):
-        txt = self._read("kernel/orchestrator_v4.py")
+        txt = read_orchestrator_v4_implementation()
         self.assertIn("_llm_fallback_answer", txt)
         self.assertIn("无法执行", txt)
 
     def test_reflect_stage_allows_observation_based_answer(self):
-        txt = self._read("kernel/orchestrator_v4.py")
+        txt = read_orchestrator_v4_implementation()
         self.assertIn("evidence_text", txt)
         self.assertIn("_llm_grounded_answer", txt)
 
@@ -87,8 +92,8 @@ class KernelFlowContractTests(unittest.TestCase):
 
     def test_cognitive_kernel_run_and_stream_use_orchestrator(self):
         txt = self._read("kernel/cognitive_kernel.py")
-        self.assertIn("CognitiveOrchestrator", txt)
-        self.assertIn("orchestrator", txt)
+        self.assertIn("get_runtime_gateway", txt)
+        self.assertIn("runtime_gateway", txt)
 
     def test_identity_layer_is_wired_across_gateway_and_kernel(self):
         identity_txt = self._read("kernel/identity/system_identity.py")

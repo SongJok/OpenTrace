@@ -15,6 +15,82 @@ import { CardShell } from './CardShell'
 import { DarkPanel } from './ui/DarkPanel'
 import { t } from '../i18n'
 import DataTableChart from './DataTableChart'
+import type { TurnMetaEnvelope } from '../utils/streamEnvelope'
+
+function TurnMetaPanel({ turnMeta }: { turnMeta?: TurnMetaEnvelope }) {
+  if (!turnMeta) return null
+  const caps = turnMeta.capabilities_used ?? []
+  const warnings = turnMeta.governance_warnings ?? []
+  const cp = turnMeta.control_plane
+  const denied = cp && cp.allowed === false
+  const clar = turnMeta.needs_clarification ? turnMeta.clarification : undefined
+  const refs = turnMeta.result_refs ?? []
+  const hasAnything =
+    denied ||
+    warnings.length > 0 ||
+    caps.length > 0 ||
+    Boolean(turnMeta.turn_outcome) ||
+    Boolean(clar) ||
+    refs.length > 0 ||
+    Boolean(turnMeta.enterprise_telemetry)
+
+  if (!hasAnything) return null
+
+  return (
+    <div className="mt-3 space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+        <ShieldCheck size={12} />
+        <span>治理与证据</span>
+        {turnMeta.turn_outcome ? (
+          <span className="rounded-full border border-[var(--border)] px-2 py-0.5 normal-case tracking-normal">
+            {turnMeta.turn_outcome}
+          </span>
+        ) : null}
+      </div>
+      {denied ? (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-800">
+          控制面拒绝本回合执行
+          {Array.isArray((cp as any).violations) && (cp as any).violations.length ? (
+            <div className="mt-1 opacity-90">{(cp as any).violations.join(', ')}</div>
+          ) : null}
+        </div>
+      ) : null}
+      {warnings.length > 0 ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
+          运行时降级 / 治理告警：{warnings.join(' · ')}
+        </div>
+      ) : null}
+      {caps.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {caps.map((c) => (
+            <span
+              key={c}
+              className="rounded-full border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-0.5 text-[11px] text-[var(--text-secondary)]"
+            >
+              {c}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {clar && typeof clar.question_text === 'string' ? (
+        <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-violet-900">
+          <div className="font-medium">需要澄清</div>
+          <div className="mt-1">{clar.question_text}</div>
+          {Array.isArray(clar.suggested_options) && clar.suggested_options.length ? (
+            <ul className="mt-2 list-inside list-disc">
+              {(clar.suggested_options as string[]).slice(0, 6).map((opt) => (
+                <li key={opt}>{opt}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+      {refs.length > 0 ? (
+        <div className="text-[var(--text-secondary)]">结果引用 {refs.length} 项</div>
+      ) : null}
+    </div>
+  )
+}
 
 function stripJsonBlocks(content: string): string {
   let result = content
@@ -1008,8 +1084,6 @@ function FinalMessage({
             <button onClick={() => void saveAssistantEdit()} className="px-2 py-1 rounded bg-[var(--accent)] text-[var(--accent-foreground)]">保存答案</button>
           </div>
         </div>
-      ) : showFlowCards && toolCard ? (
-        displayContent ? <MarkdownMessage content={displayContent} /> : null
       ) : multiQuestionCards ? (
         <MultiQuestionCards cards={multiQuestionCards} />
       ) : toolCard?.type === 'time' ? (
@@ -1147,6 +1221,8 @@ function FinalMessage({
           ) : null}
         </div>
       )}
+
+      <TurnMetaPanel turnMeta={message.turn_meta} />
 
       {Array.isArray(citations) && citations.length > 0 ? (
         <div className="mt-3 rounded-xl border border-[#e5e7eb] bg-[#f7f7f8] px-4 py-3">

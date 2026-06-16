@@ -1,3 +1,5 @@
+"""融合引擎 — 多源工具/证据结果加权合并。"""
+
 from __future__ import annotations
 
 from .models import FusionInput, FusionOutput, ToolResult

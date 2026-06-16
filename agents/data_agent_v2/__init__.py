@@ -1,1 +1,1 @@
-"""DataAgent V2 — Package init. Re-exports all sub-agents and the supervisor."""
+"""DataAgent V2 — 包初始化，再导出各子 Agent 与监督器。"""

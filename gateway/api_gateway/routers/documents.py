@@ -20,7 +20,7 @@ import uuid
 import zipfile
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import delete, select, text
 from plugins.document_retrieval import fetch_document_candidates, score_document_candidates
@@ -142,8 +142,8 @@ async def _extract_text(raw: bytes, filename: str) -> str:
             reader = pypdf.PdfReader(io.BytesIO(raw))
             txt = "\n".join(page.extract_text() or "" for page in reader.pages)
             pdf_candidates.append(_sanitize_text(txt))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("pdf_extract_pypdf_skipped", error=str(exc))
 
         # 2) pymupdf (better for many CJK PDFs)
         try:
@@ -152,8 +152,8 @@ async def _extract_text(raw: bytes, filename: str) -> str:
             with fitz.open(stream=raw, filetype="pdf") as doc:
                 txt = "\n".join(page.get_text("text") or "" for page in doc)
             pdf_candidates.append(_sanitize_text(txt))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("pdf_extract_pymupdf_skipped", error=str(exc))
 
         # Pick highest quality extracted text.
         pdf_candidates = [c for c in pdf_candidates if c]
@@ -493,8 +493,8 @@ async def _ingest(db: AsyncSession, doc: Document, text: str) -> None:
         doc.status = "error"
         try:
             await db.commit()
-        except Exception:
-            pass
+        except Exception as commit_exc:
+            logger.warning("document_error_status_commit_failed", error=str(commit_exc))
         logger.error("Document ingest failed", doc_id=doc.id, error=str(exc))
         raise
 
@@ -551,6 +551,7 @@ async def list_documents(
 
 @router.post("/documents", response_model=DocumentOut, status_code=201)
 async def upload_document(
+    http_request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
@@ -563,9 +564,17 @@ async def upload_document(
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
     text = await _extract_text(raw, filename)
 
+    from gateway.api_gateway.tenant_middleware import build_tenant_metadata
+
+    tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
+    doc_tenant = str(tenant_md.get("tenant_id") or "default")
+    doc_workspace = str(tenant_md.get("workspace_id") or "default")
+
     doc = Document(
         id=str(uuid.uuid4()),
         owner_id=current_user.id,
+        tenant_id=doc_tenant,
+        workspace_id=doc_workspace,
         title=title or filename,
         file_type=ext,
         file_size=len(raw),

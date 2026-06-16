@@ -1,4 +1,4 @@
-"""Integration tests for DataAgent cognitive pipeline components (unit-level, no DB required)."""
+"""DataAgent 认知流水线组件集成测试（单元级，无需数据库）。"""
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 

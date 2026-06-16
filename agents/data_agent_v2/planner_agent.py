@@ -1,15 +1,10 @@
 """
-PlannerAgent — aggregates all cognitive outputs into a LogicalPlan (query DAG).
+PlannerAgent — 汇总各认知 Agent 输出为 LogicalPlan（查询 DAG）。
 
-Wraps QueryPlanner with enriched context from all upstream agents:
-- Entities + entity metadata
-- Metric definitions
-- Time window
-- Join paths
-- Semantic context
-- Analytical skill templates (if matched)
+封装 QueryPlanner，注入上游上下文：实体、指标定义、时间窗、JOIN 路径、
+语义上下文、分析技能模板（若匹配）。
 
-LLM-based (PLANNING role) with hard validation and deterministic fallback.
+LLM（PLANNING）+ 硬校验 + 确定性回退。
 """
 from __future__ import annotations
 
@@ -19,7 +14,7 @@ from agents.data_agent_v2.types import (
     unpack_cognitive_context,
 )
 
-# Intent types that use GROUP BY + aggregation
+# 使用 GROUP BY + 聚合的意图类型
 _DEFAULT_PLAN_ANALYTICAL_INTENTS = frozenset({
     "aggregation", "ranking", "distribution", "composition",
     "comparison", "trend", "anomaly_detection",
@@ -27,10 +22,10 @@ _DEFAULT_PLAN_ANALYTICAL_INTENTS = frozenset({
 
 
 class PlannerAgent(BaseAgent):
-    """Generate a LogicalPlan (query DAG) from all upstream cognitive outputs.
+    """从所有上游认知输出生成 LogicalPlan（查询 DAG）。
 
-    This is the "brain" of the reasoning layer — it synthesizes all cognitive
-    evidence into a concrete query plan that the SQLCompilerAgent can execute.
+    这是推理层的"大脑" — 将所有认知证据综合为
+    SQLCompilerAgent 可执行的具体查询计划。
     """
 
     def __init__(self) -> None:
@@ -59,7 +54,7 @@ class PlannerAgent(BaseAgent):
                 )],
             )
         except Exception as exc:
-            # Fallback: build minimal plan from entities + metrics
+            # 回退：从实体 + 指标构建最小计划
             plan = await self._fallback_plan(ctx)
             ctx.logical_plan = plan
             return AgentResult(
@@ -73,19 +68,17 @@ class PlannerAgent(BaseAgent):
             )
 
     async def _generate_plan(self, ctx: CognitiveContext) -> dict:
-        """LLM-based plan generation with validation and retry.
+        """基于 LLM 的计划生成，含校验和重试。
 
-        For analytical intents (aggregation, distribution, ranking, etc.) where
-        the IntentAgent has already resolved dimension→table mappings, we skip
-        the LLM entirely and use the deterministic fallback. This avoids the LLM
-        hallucinating wrong tables/columns for GROUP BY queries.
+        对于分析型意图（聚合、分布、排名等），当 IntentAgent 已解析
+        维度→表映射时，跳过 LLM 直接使用确定性回退。这避免 LLM
+        在 GROUP BY 查询中幻觉出错误的表/列。
         """
         intent = ctx.intent or {}
         intent_type = intent.get("intent_type", "") if isinstance(intent, dict) else ""
         dimensions = intent.get("dimensions", []) or [] if isinstance(intent, dict) else []
 
-        # Bypass LLM for analytical queries — deterministic code is more reliable
-        # for GROUP BY + aggregation patterns than an LLM that ignores constraints.
+        # 对分析型查询跳过 LLM — 确定性代码比忽略约束的 LLM 更可靠
         if intent_type in _DEFAULT_PLAN_ANALYTICAL_INTENTS and dimensions:
             return await self._fallback_plan(ctx)
 
@@ -110,45 +103,45 @@ class PlannerAgent(BaseAgent):
                 import json
                 plan = json.loads(response.content.strip())
 
-                # Validate against schema
+                # 校验计划是否符合 Schema
                 errors = self._validate_plan(plan, ctx)
                 if not errors:
                     return plan
 
-                # Retry with error feedback
+                # 带错误反馈重试
                 if attempt < 1:
                     prompt = f"{prompt}\n\nPrevious plan had errors:\n" + "\n".join(errors) + "\nGenerate a corrected plan."
 
             except json.JSONDecodeError:
                 continue
 
-        # All attempts failed — use fallback
+        # 所有尝试失败 — 使用回退
         return await self._fallback_plan(ctx)
 
     @staticmethod
     def _table_alias(table_name: str) -> str:
-        """Derive the SQL alias for a table, matching SQLBuilder._extract_alias()."""
+        """推导表的 SQL 别名，与 SQLBuilder._extract_alias() 保持一致。"""
         parts = table_name.strip().split()
         return parts[1] if len(parts) >= 2 else parts[0][0].lower()
 
     async def _fallback_plan(self, ctx: CognitiveContext) -> dict:
-        """Build minimal LogicalPlan from available cognitive data.
+        """从可用认知数据构建最小 LogicalPlan。
 
-        Uses intent type, entities, metrics, and query text to construct
-        a meaningful plan even when LLM is unavailable.
+        使用意图类型、实体、指标和查询文本，
+        即使 LLM 不可用也能构建有意义的计划。
         """
         tables = ctx.table_names[:] or []
         if ctx.entities:
             for e in ctx.entities:
-                # Only use table-mapping entities for table selection.
-                # Entities with mapped_column are categorical filters, not table refs.
+                # 仅使用表映射实体进行表选择。
+                # 带 mapped_column 的实体是分类筛选器，不是表引用。
                 if e.get("mapped_column"):
                     continue
                 t = e.get("mapped_table", "")
                 if t and t not in tables:
                     tables.append(t)
 
-            # If all entities are filter-type, still need tables from their mapped_table
+            # 若所有实体均为筛选类型，仍需从 mapped_table 获取表
             if not tables:
                 for e in ctx.entities:
                     t = e.get("mapped_table", "")
@@ -159,7 +152,7 @@ class PlannerAgent(BaseAgent):
         intent_type = intent.get("intent_type", "") if isinstance(intent, dict) else ""
         dimensions: list[str] = list(intent.get("dimensions", []) or [])
 
-        # ── Resolve projections ──────────────────────────────────────────
+        # ── 解析投影 ──────────────────────────────────────────
         projections: list[dict] = []
 
         if ctx.metrics:
@@ -173,26 +166,26 @@ class PlannerAgent(BaseAgent):
                         "agg_func": agg,
                     })
 
-        # Safety: build set of valid columns for the selected tables
+        # 安全：构建所选表的有效列集合
         valid_columns: set[str] = set()
         for t in tables:
             for col in (ctx.table_columns or {}).get(t, []):
                 valid_columns.add(col.lower())
 
-        # Intent-aware fallback: if no metrics but intent is analytical,
-        # generate COUNT(*) + dimension projections instead of SELECT *
+        # 意图感知回退：若无指标但意图为分析型，
+        # 生成 COUNT(*) + 维度投影，而非 SELECT *
 
-        # Filter dimensions to only valid columns
+        # 仅保留有效列的维度
         safe_dimensions = [d for d in dimensions if d.lower() in valid_columns]
 
         if not projections and intent_type in _DEFAULT_PLAN_ANALYTICAL_INTENTS:
-            # Default: COUNT(*) with GROUP BY on dimensions
+            # 默认：COUNT(*) + GROUP BY 维度
             projections.append({
                 "expr": "*",
                 "alias": "count",
                 "agg_func": "COUNT",
             })
-            # Add dimension columns as label projections (no aggregation)
+            # 添加维度列作为标签投影（无聚合）
             for dim in safe_dimensions:
                 projections.append({
                     "expr": dim,
@@ -200,7 +193,7 @@ class PlannerAgent(BaseAgent):
                     "agg_func": None,
                 })
         elif not projections and safe_dimensions:
-            # Has dimensions but no analytical intent — still add COUNT(*)
+            # 有维度但非分析意图 — 仍添加 COUNT(*)
             projections.append({
                 "expr": "*",
                 "alias": "count",
@@ -213,18 +206,17 @@ class PlannerAgent(BaseAgent):
                     "agg_func": None,
                 })
 
-        # ── Resolve group_by ─────────────────────────────────────────────
+        # ── 解析 group_by ─────────────────────────────────────────────
         group_by: list[str] = list(safe_dimensions)
 
-        # If no dimensions from intent, but intent is analytical, try to
-        # extract columns from schema that match query terms
+        # 若意图无维度但为分析型，尝试从 schema 中匹配查询词的列
         if not group_by and intent_type in _DEFAULT_PLAN_ANALYTICAL_INTENTS:
             group_by = self._infer_group_by_from_query(ctx)
 
-        # ── Resolve order_by ─────────────────────────────────────────────
+        # ── 解析 order_by ─────────────────────────────────────────────
         order_by: list[dict] = []
         if intent_type in ("ranking", "aggregation", "distribution"):
-            # Order by the first metric projection DESC
+            # 按第一个指标投影降序排列
             for p in projections:
                 if p.get("agg_func"):
                     col = p.get("alias") or p.get("expr", "")
@@ -234,7 +226,7 @@ class PlannerAgent(BaseAgent):
             if not order_by and projections:
                 order_by.append({"expr": projections[0].get("alias", "count"), "direction": "DESC"})
         elif intent_type == "trend" and group_by:
-            # Order by time column ASC if available, otherwise by count DESC
+            # 若有时间列按时间升序，否则按计数降序
             first_gb = group_by[0].lower()
             is_time_col = any(t in first_gb for t in ("time", "date", "day", "month", "year", "week"))
             if is_time_col:
@@ -242,14 +234,14 @@ class PlannerAgent(BaseAgent):
             else:
                 order_by.append({"expr": projections[0].get("alias", "count"), "direction": "DESC"})
 
-        # ── Filters ──────────────────────────────────────────────────────
+        # ── 筛选条件 ──────────────────────────────────────────────────
         filters: list[dict] = []
         if ctx.time_window and ctx.time_window.get("type") not in (None, "none"):
             days = ctx.time_window.get("days", 0)
             if days > 0:
                 filters.append({"expr": f"__TIME_FILTER__{days}__", "is_having": False})
 
-        # Entity-based categorical filters (e.g. "队长" → dim_user.role = 'captain')
+        # 基于实体的分类筛选（如 "队长" → dim_user.role = 'captain'）
         if ctx.entities:
             for e in ctx.entities:
                 col = e.get("mapped_column", "")
@@ -257,11 +249,11 @@ class PlannerAgent(BaseAgent):
                 tbl = e.get("mapped_table", "")
                 if col and val:
                     alias = self._table_alias(tbl)
-                    safe_val = val.replace("'", "''")  # SQL-standard escaping
+                    safe_val = val.replace("'", "''")  # SQL 标准转义
                     expr = f"{alias}.{col} = '{safe_val}'"
                     filters.append({"expr": expr, "is_having": False})
 
-        # ── Joins ────────────────────────────────────────────────────────
+        # ── JOIN ────────────────────────────────────────────────────────
         joins: list[dict] = []
         if ctx.join_paths:
             for jp in ctx.join_paths:
@@ -282,7 +274,7 @@ class PlannerAgent(BaseAgent):
         }
 
     def _infer_group_by_from_query(self, ctx: CognitiveContext) -> list[str]:
-        """Infer GROUP BY columns from query keywords matching schema columns."""
+        """从查询关键词与 schema 列名推断 GROUP BY 列。"""
         import re
         all_columns: dict[str, str] = {}  # col_name → table_name
         for table, cols in (ctx.table_columns or {}).items():
@@ -291,11 +283,11 @@ class PlannerAgent(BaseAgent):
 
         query = ctx.query or ""
         group_by = []
-        # Match column names mentioned in the query
+        # 匹配查询中出现的列名
         for col_lower, col_name in all_columns.items():
             if col_lower in query.lower() and col_name not in group_by:
                 group_by.append(col_name)
-        # Also try schema_hint for column mentions
+        # 同时尝试从 schema_hint 匹配列名
         schema_lower = (ctx.schema_hint or "").lower()
         for col_lower, col_name in all_columns.items():
             if col_lower in query.lower() and col_name not in group_by:
@@ -304,7 +296,7 @@ class PlannerAgent(BaseAgent):
         return group_by
 
     def _build_prompt(self, ctx: CognitiveContext) -> str:
-        """Build comprehensive prompt from all upstream agents."""
+        """从所有上游 Agent 输出构建完整提示词。"""
         parts = [
             f"User Query: {ctx.query}",
             f"Available Tables: {', '.join(ctx.table_names)}",
@@ -318,8 +310,8 @@ class PlannerAgent(BaseAgent):
             parts.append(f"Target Metric: {ctx.intent.get('metric', '')}")
             dims = ctx.intent.get("dimensions", [])
             if dims:
-                # Resolve each dimension to its parent table(s) so the LLM
-                # picks the right table, not a similarly-named column elsewhere.
+                # 将每个维度解析到其所属表，使 LLM
+                # 选择正确的表，而非其他表中同名列。
                 dim_table_map: dict[str, list[str]] = {}
                 for d in dims:
                     parents = []
@@ -330,8 +322,7 @@ class PlannerAgent(BaseAgent):
                 dim_strs = [f"{d} (table: {dim_table_map[d][0]})" if dim_table_map.get(d)
                            else d for d in dims]
                 parts.append(f"Dimensions: {', '.join(dim_strs)}")
-                # If any dimension is found in exactly one table, tell the LLM
-                # to use that table
+                # 若某维度仅存在于一个表中，告知 LLM 使用该表
                 dim_tables = set()
                 for parents in dim_table_map.values():
                     dim_tables.update(parents)
@@ -380,7 +371,7 @@ class PlannerAgent(BaseAgent):
         if ctx.semantic_context and ctx.semantic_context.get("resolved_sql_fragments"):
             parts.append(f"Semantic Hints:\n{ctx.semantic_context['resolved_sql_fragments']}")
 
-        # Inject analytical skill template if available
+        # 若匹配到分析技能模板则注入
         if ctx.matched_skills:
             skill = ctx.matched_skills[0]
             if skill.get("plan_template"):
@@ -392,7 +383,7 @@ class PlannerAgent(BaseAgent):
         return "\n\n".join(parts)
 
     def _validate_plan(self, plan: dict, ctx: CognitiveContext) -> list[str]:
-        """Validate plan against known schema and intent semantics."""
+        """根据已知 schema 和意图语义校验计划。"""
         errors: list[str] = []
         valid_tables = set(ctx.table_names)
 
@@ -400,7 +391,7 @@ class PlannerAgent(BaseAgent):
             if table not in valid_tables:
                 errors.append(f"Table '{table}' not found in schema. Valid tables: {', '.join(sorted(valid_tables))}")
 
-        # Validate join tables exist
+        # 校验 JOIN 表是否存在
         for join in plan.get("joins", []):
             for part in (join.get("on_clause", "") or "").split():
                 if "." in part:
@@ -408,7 +399,7 @@ class PlannerAgent(BaseAgent):
                     if t not in valid_tables:
                         errors.append(f"Join references unknown table '{t}'")
 
-        # Semantic validation: intent-plan alignment
+        # 语义校验：意图与计划一致性
         intent = ctx.intent or {}
         intent_type = intent.get("intent_type", "") if isinstance(intent, dict) else ""
 
@@ -429,7 +420,7 @@ class PlannerAgent(BaseAgent):
                 )
 
             if not has_agg and not has_star_only:
-                # Has specific columns but no aggregation — might be OK for some intents
+                # 有具体列但无聚合 — 某些意图下可接受
                 pass
 
             dimensions: list[str] = list(intent.get("dimensions", []) or [])

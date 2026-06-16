@@ -50,9 +50,9 @@ __all__ = [
     "L0RuleRouter",
     "L0Result",
     "TinyRouter",
-    "L1Result",
+    "L1RouteResult",
     "ComplexityEngine",
-    "ComplexityScore",
+    "ComplexityAssessment",
     "SemanticCache",
     "CacheEntry",
     # Protocol Layer
@@ -90,9 +90,9 @@ _EXPORTS = {
     "L0RuleRouter": ("kernel.query_router_v2", "L0RuleRouter"),
     "L0Result": ("kernel.query_router_v2", "L0Result"),
     "TinyRouter": ("kernel.tiny_router", "TinyRouter"),
-    "L1Result": ("kernel.tiny_router", "L1Result"),
+    "L1RouteResult": ("kernel.tiny_router", "L1RouteResult"),
     "ComplexityEngine": ("kernel.complexity_engine", "ComplexityEngine"),
-    "ComplexityScore": ("kernel.complexity_engine", "ComplexityScore"),
+    "ComplexityAssessment": ("kernel.complexity_engine", "ComplexityAssessment"),
     "SemanticCache": ("kernel.semantic_cache", "SemanticCache"),
     "CacheEntry": ("kernel.semantic_cache", "CacheEntry"),
 }
@@ -116,7 +116,7 @@ def __getattr__(name: str) -> Any:
 
 
 if TYPE_CHECKING:
-    from kernel.complexity_engine import ComplexityEngine, ComplexityScore
+    from kernel.complexity_engine import ComplexityAssessment, ComplexityEngine
     from kernel.intent_engine.engine import Intent, IntentEngine
     from kernel.meta_cognition.meta_cognition import MetaCognition, ValidationResult
     from kernel.orchestrator import (
@@ -128,4 +128,4 @@ if TYPE_CHECKING:
     from kernel.query_router_v2 import L0Result, L0RuleRouter
     from kernel.reasoning.engine import ReasoningEngine, ReasoningResult
     from kernel.semantic_cache import CacheEntry, SemanticCache
-    from kernel.tiny_router import L1Result, TinyRouter
+    from kernel.tiny_router import L1RouteResult, TinyRouter

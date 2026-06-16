@@ -2,12 +2,15 @@ import React from 'react'
 
 export type DatabaseType = 'mysql' | 'clickhouse' | 'doris' | 'postgres'
 
-const OPTIONS: Array<{ value: DatabaseType; label: string; hint: string; defaultPort: number }> = [
+/** Exported for contract tests and database UI copy (local / self-hosted only). */
+export const DATABASE_TYPE_OPTIONS: Array<{ value: DatabaseType; label: string; hint: string; defaultPort: number }> = [
   { value: 'postgres', label: 'PostgreSQL', hint: '本地 / 自建 PostgreSQL', defaultPort: 5432 },
   { value: 'mysql', label: 'MySQL', hint: '本地 / 自建 MySQL', defaultPort: 3306 },
   { value: 'clickhouse', label: 'ClickHouse', hint: '本地 / 自建 ClickHouse', defaultPort: 9000 },
   { value: 'doris', label: 'Doris', hint: '本地 / 自建 Doris', defaultPort: 9030 },
 ]
+
+const OPTIONS = DATABASE_TYPE_OPTIONS
 
 export const DATABASE_HOST_MODE_OPTIONS = [
   { value: 'local' as const, label: '本机 / 宿主机', hint: '例如 localhost、127.0.0.1、host.docker.internal（宿主机上的 MySQL 也放这里）' },

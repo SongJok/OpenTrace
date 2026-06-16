@@ -1,5 +1,8 @@
 """
 PluginSelector — 根据路由决策选择插件组合
+
+Plugins are also registered into the unified CapabilityRegistry
+(kernel.runtime.capability) for orchestrator visibility.
 """
 from __future__ import annotations
 
@@ -41,12 +44,25 @@ def _build_registry() -> dict[str, type[BasePlugin]]:
     return reg
 
 
+def _ensure_registry() -> None:
+    global _REGISTRY
+    if _REGISTRY:
+        return
+    _REGISTRY = _build_registry()
+    # Register each plugin class into the unified CapabilityRegistry
+    try:
+        from kernel.runtime.capability import capability_registry
+
+        for name, cls in _REGISTRY.items():
+            capability_registry.register_plugin(name, cls)
+    except ImportError:
+        pass
+
+
 class PluginSelector:
     @staticmethod
     async def select(route: str) -> list[BasePlugin]:
-        global _REGISTRY
-        if not _REGISTRY:
-            _REGISTRY = _build_registry()
+        _ensure_registry()
         names = PLUGIN_RULES.get(route, PLUGIN_RULES["REASON"])
         plugins: list[BasePlugin] = []
         for name in names:

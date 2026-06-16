@@ -1,4 +1,4 @@
-"""Skills Agent — executes installed skills matching the user query."""
+"""技能 Agent — 执行与用户查询匹配的安装技能。"""
 from __future__ import annotations
 
 import asyncio
@@ -88,6 +88,26 @@ class SkillsAgent(BaseAgent):
                 ResultRef(ref_id=f"skill:{r.get('skill_id', '')}", type="skill", title=r.get("name", "skill"), summary=str(r.get("output", ""))[:200], payload=r.get("output") if r.get("output") else {}, source_agent=self.agent_type, message_id=task.task_id)
                 for r in results if r.get("output")
             ])
+            ev_objs = [
+                self._make_evidence_object(
+                    content=content[:4000],
+                    source_type="skill",
+                    credibility=max(0.7, best_score),
+                    relevance=best_score,
+                    skill_id=str(r.get("skill_id", "")),
+                )
+                for r in results
+                if r.get("score") is not None and r.get("output") is not None
+            ][:3]
+            if not ev_objs and content:
+                ev_objs = [
+                    self._make_evidence_object(
+                        content=content[:4000],
+                        source_type="skill",
+                        credibility=max(0.7, best_score),
+                        relevance=best_score,
+                    )
+                ]
             return AgentResult(
                 task_id=task.task_id,
                 agent_type=self.agent_type,
@@ -96,6 +116,7 @@ class SkillsAgent(BaseAgent):
                 confidence=max(0.7, best_score),
                 metadata={"matched_skills": len(results), "all_results": results, "result_refs": result_refs},
                 evidence=evidence,
+                evidence_objects=ev_objs,
             )
 
         preview = ", ".join(s.name for s in skills[:5])

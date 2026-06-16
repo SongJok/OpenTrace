@@ -1,4 +1,4 @@
-"""Benchmark script for JOIN path heuristic inference accuracy."""
+"""JOIN 路径启发式推断准确率的基准脚本。"""
 
 from __future__ import annotations
 

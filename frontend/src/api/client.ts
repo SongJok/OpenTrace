@@ -1,5 +1,9 @@
 // API client — all backend calls go through here
+import { normalizeFinalAnswerEnvelope, type TurnMetaEnvelope } from '../utils/streamEnvelope'
+
 const BASE = '/api/v1'
+
+export type { TurnMetaEnvelope }
 const ENV_API = (import.meta as any)?.env?.VITE_API_URL as string | undefined
 const BACKEND_DIRECT = `${(ENV_API && ENV_API.trim()) ? ENV_API.trim() : 'http://localhost:14100'}/api/v1`
 
@@ -333,7 +337,8 @@ function parseSseEventBlock(block: string): { type: string; data: any } | null {
   }
 }
 
-async function streamSseResponse(
+/** SSE parser — exported for stream protocol contract tests. */
+export async function streamSseResponse(
   res: Response,
   callbacks: {
     onReasoningStep?: (step: ReasoningStep) => void
@@ -341,8 +346,10 @@ async function streamSseResponse(
     onDelta?: (text: string) => void
     onToolCall?: (payload: any) => void
     onToolResult?: (payload: any) => void
+    onDagNodeStart?: (payload: any) => void
+    onDagNodeComplete?: (payload: any) => void
     onForceMode?: (mode: string | null) => void
-    onFinalAnswer?: (...args: any[]) => void | Promise<void>
+    onFinalAnswer?: (envelope: TurnMetaEnvelope) => void | Promise<void>
     onError?: (err: any) => void | Promise<void>
   },
   signal?: AbortSignal,
@@ -388,12 +395,21 @@ async function streamSseResponse(
           callbacks.onToolResult?.(data)
           continue
         }
+        if (type === 'dag_node_start') {
+          callbacks.onDagNodeStart?.(data)
+          continue
+        }
+        if (type === 'dag_node_complete') {
+          callbacks.onDagNodeComplete?.(data)
+          continue
+        }
         if (type === 'force_mode') {
           callbacks.onForceMode?.(data?.mode ?? null)
           continue
         }
         if (type === 'final_answer') {
-          await callbacks.onFinalAnswer?.(data?.content ?? data?.answer ?? '', data?.execution_graph ?? null, data?.citations ?? [], data?.annotations ?? [])
+          const envelope = normalizeFinalAnswerEnvelope(data)
+          await callbacks.onFinalAnswer?.(envelope)
           continue
         }
         if (type === 'aborted') {
@@ -419,6 +435,8 @@ export async function apiChatStream(
     onDelta?: (text: string) => void
     onToolCall?: (payload: any) => void
     onToolResult?: (payload: any) => void
+    onDagNodeStart?: (payload: any) => void
+    onDagNodeComplete?: (payload: any) => void
     onForceMode?: (mode: string | null) => void
     onFinalAnswer?: (...args: any[]) => void | Promise<void>
     onError?: (err: any) => void | Promise<void>
@@ -431,6 +449,9 @@ export async function apiChatStream(
 ): Promise<void> {
   void webEnabled
   void mode
+  // Stream protocol includes dag_node_start / dag_node_complete (see streamSseResponse).
+  void callbacks.onDagNodeStart
+  void callbacks.onDagNodeComplete
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   const finalPayload = { session_id: sessionId, query, stream: true, ...payload, ...(graphControls ? { graph_controls: graphControls } : {}) }
   try {
@@ -467,7 +488,17 @@ export async function apiChatStream(
       if (sync?.tool_results && Array.isArray(sync.tool_results)) {
         for (const item of sync.tool_results) callbacks.onToolResult?.(item)
       }
-      await callbacks.onFinalAnswer?.(sync?.content ?? sync?.answer ?? '', sync?.execution_graph ?? null, sync?.citations ?? [], sync?.annotations ?? [])
+      await callbacks.onFinalAnswer?.(
+        normalizeFinalAnswerEnvelope({
+          content: sync?.content ?? sync?.answer ?? '',
+          execution_graph: sync?.execution_graph ?? null,
+          citations: sync?.citations ?? [],
+          annotations: sync?.annotations ?? [],
+          metadata: sync?.metadata ?? {},
+          prompt_tokens: sync?.prompt_tokens,
+          completion_tokens: sync?.completion_tokens,
+        }),
+      )
       return
     }
 
@@ -476,14 +507,26 @@ export async function apiChatStream(
     if (!contentType.includes('text/event-stream')) {
       const sync = (await res.json().catch(() => null)) as any
       if (!sync) throw new Error('Invalid chat response')
-      await callbacks.onFinalAnswer?.(sync?.content ?? '', sync?.execution_graph ?? null, sync?.citations ?? [], sync?.annotations ?? [])
+      await callbacks.onFinalAnswer?.(
+        normalizeFinalAnswerEnvelope({
+          content: sync?.content ?? '',
+          execution_graph: sync?.execution_graph ?? null,
+          citations: sync?.citations ?? [],
+          annotations: sync?.annotations ?? [],
+          metadata: sync?.metadata ?? {},
+        }),
+      )
       return
     }
 
     await streamSseResponse(res, callbacks, signal)
   } catch (err) {
     if (err instanceof Error && err.message.includes('Not Found')) {
-      await callbacks.onFinalAnswer?.(`我叫 OpenTrace，是这个工作台里的 AI 助手。\n\n你刚刚问的是：${query}\n\n当前后端聊天接口返回了 Not Found，所以我先用前端兜底回复你。`, null, [], [])
+      await callbacks.onFinalAnswer?.(
+        normalizeFinalAnswerEnvelope({
+          content: `我叫 OpenTrace，是这个工作台里的 AI 助手。\n\n你刚刚问的是：${query}\n\n当前后端聊天接口返回了 Not Found，所以我先用前端兜底回复你。`,
+        }),
+      )
       return
     }
     if (err instanceof DOMException && err.name === 'AbortError') {
@@ -549,7 +592,15 @@ export async function apiSetMemorySettings(token: string, payload: Partial<Memor
 export async function apiListDatabases(token: string): Promise<DataSourceItem[]> { const res = await apiFetch('/databases', { headers: authHeaders(token) }); if (!res.ok) throw new Error('Failed to list databases'); const data = await res.json(); return Array.isArray(data) ? data : data.items || []; }
 export async function apiCreateDatabase(token: string, payload: any): Promise<any> { const res = await apiFetch('/databases', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) }); if (!res.ok) throw new Error('Failed to create database'); return res.json() }
 export async function apiDeleteDatabase(token: string, id: string): Promise<void> { const res = await apiFetch(`/databases/${id}`, { method: 'DELETE', headers: authHeaders(token) }); if (!res.ok) throw new Error('Failed to delete database') }
-export async function apiUpdateDatabase(token: string, id: string, payload: any): Promise<any> { const res = await apiFetch(`/databases/${id}`, { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload) }); if (!res.ok) throw new Error('Failed to update database'); return res.json() }
+export async function apiUpdateDatabase(token: string, id: string, payload: any): Promise<any> {
+  const res = await apiFetch(`/databases/${id}`, {
+    method: 'PATCH',
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '更新数据库失败'))
+  return res.json()
+}
 export async function apiAnalyzeDatabase(token: string, id: string): Promise<any> { const res = await apiFetch(`/databases/${id}/analysis`, { method: 'POST', headers: authHeaders(token) }); if (!res.ok) throw new Error('Failed to analyze database'); return res.json() }
 export async function apiDatabaseQuery(token: string, id: string, query: any): Promise<any> { const res = await apiFetch(`/databases/${id}/query`, { method: 'POST', headers: authHeaders(token), body: JSON.stringify(query) }); if (!res.ok) throw new Error('Failed to query database'); return res.json() }
 export async function apiGetDatabaseSchema(token: string, id: string): Promise<any> { const res = await apiFetch(`/databases/${id}/schema`, { headers: authHeaders(token) }); if (!res.ok) throw new Error('Failed to get database schema'); return res.json() }
@@ -717,6 +768,7 @@ export interface DataSourceItem {
   table_count?: number
   last_schema_sync_at?: string
   synced_at?: string
+  updated_at?: string
 }
 
 export interface ConnectorItem {

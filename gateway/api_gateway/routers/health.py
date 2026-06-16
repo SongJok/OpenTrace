@@ -10,6 +10,10 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from infra.cache.redis_client import get_pubsub_redis
+from infra.config.orchestrator_label import (
+    orchestrator_annotations_enabled,
+    resolve_orchestrator_label,
+)
 from infra.config.settings import settings
 from infra.storage.database import AsyncSessionLocal
 from infra.observability.runtime_metrics import runtime_metrics_store
@@ -113,7 +117,7 @@ async def health_deps() -> DependencyHealthResponse:
         redis=redis_status,
         agent_bus=bus_status,
         agent_worker=worker_status,
-        orchestrator=str(getattr(settings, "kernel_orchestrator_version", "v4")),
+        orchestrator=resolve_orchestrator_label(settings),
         timestamp=now,
     )
 
@@ -123,8 +127,8 @@ async def health_runtime() -> RuntimeCognitionHealthResponse:
     now = int(time.time())
     wm = WorldModel()
     records = len(wm.entity_registry.all())
-    orchestrator = str(getattr(settings, "kernel_orchestrator_version", "v4"))
-    annotations_enabled = orchestrator in {"v4"}
+    orchestrator = resolve_orchestrator_label(settings)
+    annotations_enabled = orchestrator_annotations_enabled(settings)
     metrics = runtime_metrics_store.snapshot()
     return RuntimeCognitionHealthResponse(
         status="ok",
@@ -138,6 +142,35 @@ async def health_runtime() -> RuntimeCognitionHealthResponse:
         metric_samples=int(metrics.get("samples", 0) or 0),
         adaptive_mode_enabled=bool(getattr(settings, "kernel_adaptive_mode_enabled", False)),
         timestamp=now,
+    )
+
+
+class CognitiveOsHealthResponse(BaseModel):
+    status: str
+    flag_validation_ok: bool
+    flag_violations: list[str]
+    tier1_runtimes: list[str]
+    orchestrator_label: str
+    timestamp: int
+
+
+@router.get("/health/cognitive-os", response_model=CognitiveOsHealthResponse)
+async def health_cognitive_os() -> CognitiveOsHealthResponse:
+    """Readiness for vNext: flag deps + Tier-1 runtime registry (no secrets)."""
+    from infra.config.flag_governance import validate_feature_flags
+    from kernel.runtime.registry import ensure_runtimes_registered, list_runtimes
+
+    fv = validate_feature_flags(settings)
+    ensure_runtimes_registered()
+    tier1 = sorted(list_runtimes())
+    status = "ok" if fv.ok else "degraded"
+    return CognitiveOsHealthResponse(
+        status=status,
+        flag_validation_ok=fv.ok,
+        flag_violations=list(fv.violations),
+        tier1_runtimes=tier1,
+        orchestrator_label=resolve_orchestrator_label(settings),
+        timestamp=int(time.time()),
     )
 
 

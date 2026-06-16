@@ -1,8 +1,8 @@
 """
-EntityAgent — maps natural language entity mentions to database tables/columns.
+EntityAgent — 将自然语言实体提及映射到表/列。
 
-Wraps SchemaLinker with Knowledge Layer grounding from schema_metadata and
-table_relationships. Rule-based matching first, LLM fallback only when needed.
+封装 SchemaLinker，并用知识层 schema_metadata、table_relationships  grounding；
+优先规则匹配，必要时 LLM 回退。
 """
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ from agents.data_agent_v2.types import (
 
 
 class EntityAgent(BaseAgent):
-    """Identify entities (tables) referenced in the user query.
+    """识别用户查询中引用的实体（表）。
 
-    Leverages Knowledge Layer column_semantics for precise matching,
-    falls back to SchemaLinker heuristics + LLM for ambiguous mentions.
+    利用知识层 column_semantics 进行精确匹配，
+    对模糊提及回退到 SchemaLinker 启发式 + LLM。
     """
 
     def __init__(self) -> None:
@@ -47,7 +47,7 @@ class EntityAgent(BaseAgent):
                 )],
             )
         except Exception as exc:
-            # Non-critical — return empty entities, downstream can still plan
+            # 非关键错误 — 返回空实体，下游仍可规划
             ctx.entities = []
             return AgentResult(
                 task_id=task.task_id,
@@ -60,11 +60,11 @@ class EntityAgent(BaseAgent):
             )
 
     async def _resolve_entities(self, ctx: CognitiveContext) -> list[dict]:
-        """Resolve entities using rule-based matching + schema_metadata hints."""
+        """使用基于规则的匹配 + schema_metadata 提示解析实体。"""
         entities: list[dict] = []
         query_lower = ctx.query.lower()
 
-        # First pass: exact table name matches
+        # 第一轮：精确表名匹配
         for table in ctx.table_names:
             if table.lower() in query_lower:
                 entities.append({
@@ -74,9 +74,9 @@ class EntityAgent(BaseAgent):
                     "source": "exact_match",
                 })
 
-        # Pass 1.5: value_map categorical filter matching
-        # e.g. query contains "队长" → dim_user.role has value_map {"captain": "队长"}
-        # → entity with mapped_column="role", mapped_value="captain"
+        # 第 1.5 轮：value_map 分类筛选匹配
+        # 例如查询包含"队长" → dim_user.role 有 value_map {"captain": "队长"}
+        # → 生成 mapped_column="role", mapped_value="captain" 的实体
         if ctx.column_semantics:
             seen_filter_tables = set()
             for col_meta in ctx.column_semantics:
@@ -90,7 +90,7 @@ class EntityAgent(BaseAgent):
                     if label_str in ctx.query:
                         table_name = col_meta["table_name"]
                         col_name = col_meta["column_name"]
-                        # Deduplicate: same table+column+value → skip
+                        # 去重：相同 table+column+value → 跳过
                         dedup_key = f"{table_name}:{col_name}:{db_value}"
                         if dedup_key in seen_filter_tables:
                             continue
@@ -105,7 +105,7 @@ class EntityAgent(BaseAgent):
                             "source": "value_map_match",
                         })
 
-        # Second pass: use schema_metadata business names
+        # 第二轮：使用 schema_metadata 业务名称
         if ctx.column_semantics:
             seen_tables = {e["mapped_table"] for e in entities}
             for col_meta in ctx.column_semantics:
@@ -128,14 +128,14 @@ class EntityAgent(BaseAgent):
                         "source": "schema_metadata_description",
                     })
 
-        # Third pass: try heuristic via SchemaLinker if still no matches
+        # 第三轮：若仍无匹配，尝试通过 SchemaLinker 启发式匹配
         if not entities and len(ctx.table_names) > 0:
             entities = await self._fallback_schema_linker(ctx)
 
         return entities
 
     async def _fallback_schema_linker(self, ctx: CognitiveContext) -> list[dict]:
-        """LLM-based fallback using SchemaLinker for complex entity mentions."""
+        """基于 LLM 的回退方案，使用 SchemaLinker 处理复杂实体提及。"""
         from kernel.data_cognition.schema_linker import SchemaLinker
 
         linker = SchemaLinker(

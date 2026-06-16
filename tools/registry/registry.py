@@ -120,3 +120,25 @@ def _tokenize(text: str) -> list[str]:
 
 # Module-level singleton
 registry = ToolRegistry()
+
+
+# Auto-register into the unified CapabilityRegistry when tools are registered
+def _auto_register_to_capability(spec: ToolSpec) -> None:
+    try:
+        from kernel.runtime.capability import capability_registry as cap_reg
+
+        cap_reg.register_tool(spec)
+    except ImportError:
+        pass
+
+
+# Monkey-patch register to also feed CapabilityRegistry
+_original_register = ToolRegistry.register
+
+
+def _patched_register(self: ToolRegistry, spec: ToolSpec) -> None:
+    _original_register(self, spec)
+    _auto_register_to_capability(spec)
+
+
+ToolRegistry.register = _patched_register  # type: ignore[method-assign]

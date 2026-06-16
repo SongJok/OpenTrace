@@ -1,11 +1,11 @@
 """
-VerificationAgent — multi-dimension SQL validation before execution.
+VerificationAgent — 执行前多维度 SQL 校验。
 
-Wraps SQLValidator with additional business-semantic validation:
-1. Syntax validation (read-only, no injection)
-2. Semantic sanity (no LIMIT 0, no WHERE 1=0)
-3. Intent coverage (metrics/entities/time filters in SQL)
-4. Business metric grounding (SQL matches metric_definitions.formula)
+封装 SQLValidator，并增加业务语义校验：
+1. 语法（只读、防注入）
+2. 语义合理性（禁止 LIMIT 0、WHERE 1=0）
+3. 意图覆盖（SQL 含指标/实体/时间过滤）
+4. 业务指标口径（SQL 与 metric_definitions.formula 一致）
 """
 from __future__ import annotations
 
@@ -20,10 +20,9 @@ from agents.data_agent_v2.types import (
 
 
 class VerificationAgent(BaseAgent):
-    """Validate generated SQL across multiple dimensions before execution.
+    """执行前多维度 SQL 校验。
 
-    Returns a verification_report with pass/warning/fail status and
-    actionable issues list.
+    返回包含 pass/warning/fail 状态和可操作问题列表的校验报告。
     """
 
     def __init__(self) -> None:
@@ -76,7 +75,7 @@ class VerificationAgent(BaseAgent):
     async def _verify(self, sql: str, ctx: CognitiveContext) -> dict:
         issues: list[dict] = []
 
-        # 1. Structural validation
+        # 1. 结构校验
         try:
             from kernel.data_cognition.sql_validator import SQLValidator
             validator = SQLValidator(default_limit=100)
@@ -88,7 +87,7 @@ class VerificationAgent(BaseAgent):
                 "severity": "critical",
             })
 
-        # 2. Semantic sanity checks
+        # 2. 语义合理性检查
         sql_lower = sql.lower()
         if "limit 0" in sql_lower:
             issues.append({
@@ -103,7 +102,7 @@ class VerificationAgent(BaseAgent):
                 "severity": "high",
             })
 
-        # 3. Intent coverage: time filter
+        # 3. 意图覆盖：时间过滤
         if ctx.time_window and ctx.time_window.get("type") not in (None, "none"):
             if "where" not in sql_lower:
                 issues.append({
@@ -112,7 +111,7 @@ class VerificationAgent(BaseAgent):
                     "severity": "medium",
                 })
 
-        # 4. Intent coverage: metrics
+        # 4. 意图覆盖：指标
         if ctx.metrics:
             for metric in ctx.metrics:
                 col = metric.get("mapped_column", "")
@@ -123,7 +122,7 @@ class VerificationAgent(BaseAgent):
                         "severity": "medium",
                     })
 
-        # 5. Intent coverage: entities (tables)
+        # 5. 意图覆盖：实体（表）
         if ctx.entities:
             for entity in ctx.entities:
                 table = entity.get("mapped_table", "")
@@ -134,7 +133,7 @@ class VerificationAgent(BaseAgent):
                         "severity": "medium",
                     })
 
-        # 6. Business metric grounding — compare SQL to metric_definitions
+        # 6. 业务指标口径校验 — 对比 SQL 与 metric_definitions
         if ctx.matched_metrics:
             for mm in ctx.matched_metrics:
                 formula = (mm.get("formula") or "").lower()
@@ -145,7 +144,7 @@ class VerificationAgent(BaseAgent):
                         "severity": "low",
                     })
 
-        # Determine overall status
+        # 确定整体状态
         criticals = [i for i in issues if i["severity"] == "critical"]
         highs = [i for i in issues if i["severity"] == "high"]
 
@@ -166,10 +165,10 @@ class VerificationAgent(BaseAgent):
         }
 
     def _formula_overlaps(self, formula: str, sql: str) -> bool:
-        """Check if formula keywords appear in SQL."""
+        """检查公式关键词是否出现在 SQL 中。"""
         formula_tokens = re.findall(r"[a-z_]+", formula)
         if not formula_tokens:
-            return True  # can't check
+            return True  # 无法检查
         matches = sum(1 for t in formula_tokens if t in sql)
         return matches / len(formula_tokens) >= 0.5
 

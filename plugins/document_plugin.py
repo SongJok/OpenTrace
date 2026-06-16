@@ -358,13 +358,26 @@ class DocumentPlugin(BasePlugin):
             latency_ms=int((time.monotonic() - t0) * 1000),
         )
 
-    async def search_chunks(self, query: str, user_id: str, top_k: int = 6) -> list["ContextChunk"]:
+    async def search_chunks(
+        self,
+        query: str,
+        user_id: str,
+        top_k: int = 6,
+        *,
+        tenant_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list["ContextChunk"]:
         from kernel.context_builder import ContextChunk
 
+        scope = dict(tenant_id=tenant_id, workspace_id=workspace_id)
         try:
-            candidates = await fetch_document_candidates(user_id=user_id, query=query, limit=200)
+            candidates = await fetch_document_candidates(
+                user_id=user_id, query=query, limit=200, **scope
+            )
             if not candidates:
-                candidates = await fetch_document_candidates_fallback(user_id=user_id, query=query, limit=200)
+                candidates = await fetch_document_candidates_fallback(
+                    user_id=user_id, query=query, limit=200, **scope
+                )
             scored = await score_document_candidates(query=query, candidates=candidates)
             top = scored[:top_k]
             return [
@@ -410,6 +423,9 @@ class DocumentPlugin(BasePlugin):
                 .join(Document, DocumentLLMWiki.document_id == Document.id)
                 .where(Document.status == "ready")
             )
+            uid = (user_id or "").strip()
+            if uid and uid != "shared":
+                stmt = stmt.where(Document.owner_id == uid)
             if terms:
                 like_filters = []
                 for term in terms[:8]:

@@ -326,6 +326,15 @@ class ModelGateway:
                     cb.record_success()
                     span.set_attribute("llm.resolved_role", candidate.value)
                     span.set_attribute("llm.latency_ms", latency_ms)
+                    try:
+                        from infra.observability.turn_metering import add_llm_usage
+
+                        add_llm_usage(
+                            prompt_tokens=int(result.prompt_tokens or 0),
+                            completion_tokens=int(result.completion_tokens or 0),
+                        )
+                    except Exception:
+                        pass
                     return result
                 except Exception as exc:  # noqa: BLE001
                     latency_ms = int((time.monotonic() - t0) * 1000) if 't0' in locals() else 0
@@ -376,7 +385,26 @@ class ModelGateway:
                     buf.append(chunk)
                     yield chunk
                 latency_ms = int((time.monotonic() - t0) * 1000)
-                enforce_identity_output("".join(buf), user_text)  # post-hoc validation only
+                full_text = "".join(buf)
+                enforce_identity_output(full_text, user_text)  # post-hoc validation only
+                try:
+                    from infra.observability.turn_metering import add_llm_usage
+                    from kernel.token_counter import TokenCounter
+
+                    tc = TokenCounter()
+                    est_prompt = tc.count(
+                        "\n".join(
+                            str(getattr(m, "content", "") or "")
+                            for m in prepared_messages
+                        )
+                    )
+                    est_completion = tc.count(full_text)
+                    add_llm_usage(
+                        prompt_tokens=est_prompt,
+                        completion_tokens=est_completion,
+                    )
+                except Exception:
+                    pass
                 logger.info("LLM stream success", role=role.value, latency_ms=latency_ms)
                 cb.record_success()
                 return

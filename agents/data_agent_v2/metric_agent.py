@@ -1,8 +1,8 @@
 """
-MetricAgent — maps business metric mentions to column + aggregation functions.
+MetricAgent — 将业务指标提及映射到列与聚合函数。
 
-Uses metric_definitions from Knowledge Layer as the primary source of truth.
-Falls back to SchemaLinker.link_metrics() pattern dictionary + LLM.
+以知识层 metric_definitions 为主数据源；
+回退 SchemaLinker.link_metrics() 模式字典与 LLM。
 """
 from __future__ import annotations
 
@@ -14,12 +14,12 @@ from agents.data_agent_v2.types import (
 
 
 class MetricAgent(BaseAgent):
-    """Identify and ground metric references in the user query.
+    """识别并定位用户查询中的指标引用。
 
-    Priority order:
-    1. metric_definitions (Knowledge Layer — authoritative)
-    2. Built-in pattern dictionary (SchemaLinker.link_metrics)
-    3. LLM fallback
+    优先级：
+    1. metric_definitions（知识层 — 权威来源）
+    2. 内置模式字典（SchemaLinker.link_metrics）
+    3. LLM 回退
     """
 
     def __init__(self) -> None:
@@ -63,7 +63,7 @@ class MetricAgent(BaseAgent):
         metrics: list[dict] = []
         query_lower = ctx.query.lower()
 
-        # Priority 1: Knowledge Layer matched_metrics
+        # 优先级 1：知识层 matched_metrics
         if ctx.matched_metrics:
             for m in ctx.matched_metrics:
                 name_lower = (m["name"] or "").lower()
@@ -83,18 +83,18 @@ class MetricAgent(BaseAgent):
                         "confidence": 0.95,
                     })
 
-        # Priority 2: Built-in pattern dictionary
+        # 优先级 2：内置模式字典
         if not metrics:
             metrics = await self._fallback_pattern_dict(ctx)
 
-        # Priority 3: LLM fallback
+        # 优先级 3：LLM 回退
         if not metrics:
             metrics = await self._fallback_llm(ctx)
 
         return metrics
 
     async def _fallback_pattern_dict(self, ctx: CognitiveContext) -> list[dict]:
-        """Use SchemaLinker.link_metrics() pattern dictionary."""
+        """使用 SchemaLinker.link_metrics() 模式字典。"""
         from kernel.data_cognition.schema_linker import SchemaLinker
 
         linker = SchemaLinker(
@@ -114,14 +114,14 @@ class MetricAgent(BaseAgent):
         ]
 
     async def _fallback_llm(self, ctx: CognitiveContext) -> list[dict]:
-        """LLM-based fallback for novel metrics."""
+        """基于 LLM 的回退方案，用于新指标。"""
         from kernel.data_cognition.schema_linker import SchemaLinker
 
         linker = SchemaLinker(
             table_names=ctx.table_names,
             table_columns=ctx.table_columns,
         )
-        # Force LLM path by providing empty columns
+        # 强制走 LLM 路径（提供空列）
         try:
             mappings = await linker.link_metrics(ctx.query)
             return [

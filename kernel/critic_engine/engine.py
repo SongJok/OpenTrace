@@ -1,3 +1,5 @@
+"""批评引擎 — 多候选打分与可解释置信度。"""
+
 from __future__ import annotations
 
 import re
@@ -6,7 +8,7 @@ from .models import CandidateScore, CriticInput, CriticOutput
 
 
 class CriticEngine:
-    """Enhanced critic with multi-candidate scoring and explainable confidence."""
+    """增强批评：多候选评分与可解释置信度分解。"""
 
     def run(self, data: CriticInput) -> CriticOutput:
         answer = (data.answer or "").strip()
@@ -22,10 +24,10 @@ class CriticEngine:
         feedback = "ok"
         improved = answer
 
-        # ── Decomposed confidence scoring ──────────────────────────
+        # ── 置信度分解打分 ──────────────────────────
         confidence_breakdown = self._compute_confidence_breakdown(data, answer)
 
-        # ── Multi-candidate scoring ───────────────────────────────
+        # ── 多候选打分 ───────────────────────────────
         candidate_scores: list[CandidateScore] = []
         selected_candidate_index = -1
         if data.candidate_answers:
@@ -35,7 +37,7 @@ class CriticEngine:
                 selected_candidate_index = next(
                     i for i, c in enumerate(candidate_scores) if c is best
                 )
-                # Use best candidate if significantly better
+                # 显著更优时选用最佳候选
                 best_composite = best.composite
                 primary = self._score_single(answer, "primary", data)
                 if best_composite > primary.composite + 0.1:
@@ -43,7 +45,7 @@ class CriticEngine:
                     need_fix = True
                     feedback = "selected_better_candidate"
 
-        # ── Confidence-based adjustments ──────────────────────────
+        # ── 基于置信度的调整 ──────────────────────────
         fusion_conf = data.fusion_confidence
         if fusion_conf < 0.6:
             if profile_name == "speed":
@@ -68,7 +70,7 @@ class CriticEngine:
             need_fix = True
             feedback = "replace_refusal_with_fusion"
 
-        # Build confidence explanation
+        # 构建置信度说明
         explanation = self._build_confidence_explanation(confidence_breakdown, fusion_conf)
 
         return CriticOutput(
@@ -81,10 +83,10 @@ class CriticEngine:
             selected_candidate_index=selected_candidate_index,
         )
 
-    # ── Confidence decomposition ─────────────────────────────────────
+    # ── 置信度分解 ─────────────────────────────────────
 
     def _compute_confidence_breakdown(self, data: CriticInput, answer: str) -> dict[str, float]:
-        """Decompose confidence into explainable factors."""
+        """将置信度分解为可解释因子。"""
         breakdown: dict[str, float] = {}
 
         # 1. Source coverage: did we get results from enough agents?

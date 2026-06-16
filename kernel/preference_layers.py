@@ -1,4 +1,4 @@
-"""Stub: User preference memory layer classification."""
+"""桩：用户偏好记忆层分类。"""
 
 from __future__ import annotations
 

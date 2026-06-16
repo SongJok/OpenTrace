@@ -13,10 +13,19 @@ class AllAgentBusRoutingContractTests(unittest.TestCase):
 
     def test_worker_contains_all_v4_agents(self):
         txt = (ROOT / "agents/worker.py").read_text(encoding="utf-8")
-        self.assertIn('"data": DataAgent()', txt)
-        self.assertIn('"rag": RagAgent()', txt)
-        self.assertIn('"web": WebAgent()', txt)
-        self.assertIn('"tool": ToolAgent()', txt)
+        self.assertIn("instantiate_builtin_agents", txt)
+        self.assertIn("self.agents", txt)
+        from agents.bootstrap import expected_builtin_agent_types
+
+        expected = set(expected_builtin_agent_types())
+        from kernel.agent_runtime.manifest import get_manifest
+
+        manifest = get_manifest()
+        manifest_expected = set(manifest.worker_agent_types)
+        self.assertEqual(expected, manifest_expected)
+        self.assertTrue({"data", "rag", "web_intelligence", "tool"}.issubset(expected))
+        self.assertIn("rules", manifest.bootstrap_agent_types)
+        self.assertNotIn("rules", manifest.bus_eligible_agent_types())
 
 
 if __name__ == "__main__":

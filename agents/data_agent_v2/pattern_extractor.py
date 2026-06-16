@@ -1,14 +1,13 @@
 """
-PatternExtractorAgent — extracts and stores successful query patterns.
+PatternExtractorAgent — 抽取并存储成功查询模式。
 
-After a successful query execution, this agent:
-1. Computes a SHA256 pattern hash from (intent_type, entities, metrics)
-2. Upserts into query_patterns table (create or update)
-3. Updates table_relationships usage_count and success_rate
-4. Extracts dimensional patterns for skill distillation candidates
+成功执行 SQL 后：
+1. 由 (intent_type, entities, metrics) 计算 SHA256 模式哈希
+2. 写入/更新 query_patterns 表
+3. 更新 table_relationships 的 usage_count、success_rate
+4. 抽取维度模式供技能蒸馏候选
 
-This is the "memory" component of the self-learning loop:
-  Success → store pattern → next similar query hits cache → skip reasoning.
+自学习环路的「记忆」组件：成功 → 存模式 → 相似查询命中缓存 → 跳过推理。
 """
 from __future__ import annotations
 
@@ -27,10 +26,9 @@ from agents.data_agent_v2.types import (
 
 
 class PatternExtractorAgent(BaseAgent):
-    """Extract query patterns from successful executions for future fast-path.
+    """从成功执行中抽取查询模式，用于未来快路径。
 
-    Non-LLM, deterministic. Operates only on successful queries with
-    confidence above threshold.
+    非 LLM、确定性。仅对置信度高于阈值的成功查询进行操作。
     """
 
     MIN_CONFIDENCE_THRESHOLD = 0.70
@@ -42,7 +40,7 @@ class PatternExtractorAgent(BaseAgent):
     async def execute(self, task: TaskMessage) -> AgentResult:
         ctx = unpack_cognitive_context(task.params)
 
-        # Only extract from successful queries
+        # 仅从成功查询中抽取
         confidence = task.params.get("final_confidence", 0.0)
         if confidence < self.MIN_CONFIDENCE_THRESHOLD:
             return self._skip(task, ctx, f"confidence {confidence:.2f} below threshold")
@@ -60,19 +58,19 @@ class PatternExtractorAgent(BaseAgent):
         t0 = time.monotonic()
 
         try:
-            # 1. Compute pattern signature
+            # 1. 计算模式签名
             pattern_key = self._compute_pattern_key(ctx)
             pattern_hash = hashlib.sha256(pattern_key.encode()).hexdigest()
 
-            # 2. Upsert query_pattern
+            # 2. 更新或插入 query_pattern
             await self._upsert_pattern(db, ctx, sql, pattern_hash, confidence)
 
-            # 3. Update relationship success rates
+            # 3. 更新关系成功率
             await self._update_relationship_stats(db, ctx, success=True)
 
             elapsed_ms = int((time.monotonic() - t0) * 1000)
 
-            # Store pattern hash on context
+            # 将模式哈希存储到上下文
             ctx.pattern_hit = {
                 "pattern_hash": pattern_hash,
                 "successful_sql": sql,
@@ -115,10 +113,10 @@ class PatternExtractorAgent(BaseAgent):
                 error=str(exc),
             )
 
-    # ── Core Logic ──────────────────────────────────────────────────────
+    # ── 核心逻辑 ──────────────────────────────────────────────────
 
     def _compute_pattern_key(self, ctx: CognitiveContext) -> str:
-        """Compute a stable pattern key from query structure."""
+        """从查询结构计算稳定的模式键。"""
         intent_type = ctx.intent.get("intent_type", "") if ctx.intent else ""
         entities = sorted(
             e.get("mapped_table", "") for e in (ctx.entities or [])
@@ -128,7 +126,7 @@ class PatternExtractorAgent(BaseAgent):
             m.get("mention", "") for m in (ctx.metrics or [])
             if m.get("mention")
         )
-        # Also include time window type if present
+        # 若存在时间窗类型也包含
         time_type = (
             ctx.time_window.get("type", "")
             if ctx.time_window and ctx.time_window.get("type") not in (None, "none")
@@ -145,19 +143,19 @@ class PatternExtractorAgent(BaseAgent):
         pattern_hash: str,
         confidence: float,
     ) -> None:
-        """Create or update a query_pattern record."""
+        """创建或更新 query_pattern 记录。"""
         from infra.storage.models import QueryPattern
         from sqlalchemy import update as sql_update
         from datetime import datetime, timezone
 
-        # Check if exists
+        # 检查是否已存在
         result = await db.execute(
             select(QueryPattern).where(QueryPattern.pattern_hash == pattern_hash)
         )
         existing = result.scalar()
 
         if existing:
-            # Update: increment success_count, update SQL if higher confidence
+            # 更新：递增 success_count，若置信度更高则更新 SQL
             new_count = (existing.success_count or 0) + 1
             new_avg_conf = (
                 (existing.avg_confidence or confidence) * (new_count - 1) + confidence
@@ -174,7 +172,7 @@ class PatternExtractorAgent(BaseAgent):
                 )
             )
         else:
-            # Create new pattern
+            # 创建新模式
             pattern = QueryPattern(
                 pattern_hash=pattern_hash,
                 query_template=ctx.query or "",
@@ -197,27 +195,27 @@ class PatternExtractorAgent(BaseAgent):
         ctx: CognitiveContext,
         success: bool,
     ) -> None:
-        """Update table_relationships usage statistics."""
+        """更新 table_relationships 使用统计。"""
         from infra.storage.models import TableRelationship
 
         if not ctx.data_source_id:
             return
 
-        # Get the relationships used in this query
+        # 获取本查询使用的关系
         relationships = ctx.matched_relationships or []
         join_paths = ctx.join_paths or []
 
-        # Collect (left_table, right_table) pairs from join paths
+        # 从 JOIN 路径收集 (left_table, right_table) 对
         used_pairs: set[tuple[str, str]] = set()
         for jp in join_paths:
             path = jp.get("path", "")
             if "." in path:
-                # Crude extraction: try to find table pairs
+                # 粗略提取：尝试查找表对
                 parts = path.replace("=", " ").replace("ON", " ").split()
                 for part in parts:
                     if "." in part:
                         t = part.split(".")[0].strip().strip("`\"'")
-                        used_pairs.add((t, ""))  # We have partial info
+                        used_pairs.add((t, ""))  # 信息不完整
 
         for rel in relationships:
             left = rel.get("left_table", "")
@@ -238,7 +236,7 @@ class PatternExtractorAgent(BaseAgent):
                     row = result.scalar()
                     if row:
                         new_count = (row.usage_count or 0) + 1
-                        # Exponential moving average for success rate
+                        # 指数移动平均计算成功率
                         alpha = 0.3
                         new_rate = (
                             row.success_rate * (1 - alpha) + (1.0 if success else 0.0) * alpha

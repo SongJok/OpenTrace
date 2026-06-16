@@ -1,11 +1,11 @@
 """
-Cognitive Node — factory helpers for typed DAG tasks.
+认知节点 — 为类型化 DAG 任务提供工厂辅助。
 
-A CognitiveNode wraps one of:
-  reasoning  — ReasoningEngine (Direct / CoT / ToT)
-  tool       — ToolRouter dispatch
-  agent      — AgentRuntime sub-run
-  model      — ModelGateway raw call
+CognitiveNode 封装以下之一：
+  reasoning — ReasoningEngine（Direct / CoT / ToT）
+  tool      — ToolRouter 调度
+  agent     — AgentRuntime 子运行
+  model     — ModelGateway 原始调用
 """
 from __future__ import annotations
 

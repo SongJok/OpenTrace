@@ -1,18 +1,17 @@
 """
-FeedbackCollectorAgent — entry point of the Learning Layer.
+FeedbackCollectorAgent — 学习层入口。
 
-Captures user feedback (corrections, ratings, likes, supplemental queries),
-classifies it into actionable types, and stores it in the feedback table
-for downstream PatternExtractor, KnowledgeUpdater, and MetricRefiner agents.
+采集用户反馈（纠正、评分、点赞、补充查询），分类为可执行类型，
+写入 feedback 表，供 PatternExtractor、KnowledgeUpdater、MetricRefiner 使用。
 
-Feedback types:
-  - like / dislike: Binary sentiment on result quality
-  - rating (1-5): Numeric quality rating
-  - correction_sql: User corrected the generated SQL
-  - correction_metric: User corrected a metric formula/definition
-  - correction_entity: User corrected an entity mapping
-  - correction_time: User corrected time window
-  - supplement: User provided additional context to refine query
+反馈类型：
+  - like / dislike：结果质量二元情感
+  - rating (1-5)：数值质量评分
+  - correction_sql：用户纠正生成的 SQL
+  - correction_metric：用户纠正指标公式/定义
+  - correction_entity：用户纠正实体映射
+  - correction_time：用户纠正时间窗
+  - supplement：用户补充上下文以细化查询
 """
 from __future__ import annotations
 
@@ -20,17 +19,17 @@ from typing import Any
 
 from agents.base import AgentResult, BaseAgent, TaskMessage
 from agents.data_agent_v2.types import (
+    CognitiveContext,
     pack_cognitive_result,
     unpack_cognitive_context,
 )
 
 
 class FeedbackCollectorAgent(BaseAgent):
-    """Collect and classify user feedback for the learning loop.
+    """采集并分类用户反馈，用于学习闭环。
 
-    Observes the final answer + user interaction, classifies the feedback
-    type, stores to feedback table, and returns classified signals for
-    downstream learning agents.
+    观察最终答案 + 用户交互，分类反馈类型，
+    存储到反馈表，并返回分类信号供下游学习 Agent 使用。
     """
 
     def __init__(self) -> None:
@@ -46,12 +45,12 @@ class FeedbackCollectorAgent(BaseAgent):
         try:
             classification = self._classify(feedback_payload, ctx)
 
-            # Store to database if session available
+            # 若会话可用，存储到数据库
             db = task.params.get("_db_session")
             if db:
                 await self._store_feedback(db, task, feedback_payload, classification)
 
-            # Attach classification to context for downstream learning
+            # 将分类结果附加到上下文，供下游学习使用
             ctx.learning_signals = (ctx.learning_signals or {}) | {
                 "feedback_type": classification["type"],
                 "feedback_action": classification["action"],
@@ -93,7 +92,7 @@ class FeedbackCollectorAgent(BaseAgent):
     def _classify(
         self, feedback: dict, ctx: CognitiveContext
     ) -> dict[str, Any]:
-        """Classify feedback into actionable type + strategy."""
+        """将反馈分类为可执行类型和策略。"""
         fb_type = feedback.get("type", "")
         rating = feedback.get("rating")
         correction = feedback.get("correction", "")
@@ -165,7 +164,7 @@ class FeedbackCollectorAgent(BaseAgent):
         corrected_metric: dict,
         ctx: CognitiveContext,
     ) -> dict[str, Any]:
-        """Classify what kind of correction the user made."""
+        """分类用户做出的纠正类型。"""
         if corrected_sql:
             return {
                 "type": "correction_sql",
@@ -191,7 +190,7 @@ class FeedbackCollectorAgent(BaseAgent):
                 },
             }
 
-        # Heuristic classification from correction text
+        # 基于纠正文本的启发式分类
         lower = correction.lower()
         if any(kw in lower for kw in ("指标", "metric", "公式", "formula", "计算", "口径")):
             return {
@@ -236,7 +235,7 @@ class FeedbackCollectorAgent(BaseAgent):
         payload: dict,
         classification: dict,
     ) -> None:
-        """Persist feedback to the feedback table."""
+        """将反馈持久化到反馈表。"""
         from infra.storage.models import Feedback
 
         feedback = Feedback(

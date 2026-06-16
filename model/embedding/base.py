@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import os
 from abc import ABC, abstractmethod
+from typing import Any
 
 import numpy as np
 
@@ -103,10 +104,57 @@ class DashScopeEmbedder(BaseEmbedder):
             kwargs_candidates.insert(0, {"model": self.model, "input": texts, "input_type": input_type})
             kwargs_candidates.insert(0, {"model": self.model, "texts": texts, "input_type": input_type})
 
+        if is_vl_model and api_key:
+            try:
+                http_embedder = APIEmbedder(
+                    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    api_key=api_key,
+                    model=self.model,
+                    dims=self.dims,
+                    paths=["/embeddings"],
+                    api_style="dashscope",
+                )
+                return await http_embedder.embed(texts, input_type=input_type)
+            except Exception as http_exc:
+                logger.debug(
+                    "dashscope VL HTTP embedding failed, trying SDK",
+                    error=str(http_exc),
+                    model=self.model,
+                )
+
         try:
             import asyncio
 
             loop = asyncio.get_event_loop()
+
+            def _extract_items(data: Any) -> list:
+                if data is None:
+                    return []
+                if isinstance(data, list):
+                    return data
+                if not isinstance(data, dict):
+                    return []
+                for key in ("embeddings", "data", "results"):
+                    items = data.get(key)
+                    if items:
+                        return items if isinstance(items, list) else [items]
+                return []
+
+            def _item_embedding(item: Any) -> list:
+                if isinstance(item, (list, tuple)):
+                    return list(item)
+                if not isinstance(item, dict):
+                    return []
+                for key in (
+                    "embedding",
+                    "vector",
+                    "embedding_vector",
+                    "text_embedding",
+                ):
+                    emb = item.get(key)
+                    if emb is not None:
+                        return list(emb)
+                return []
 
             def _call_batch() -> list[list[float]]:
                 last_err: Exception | None = None
@@ -114,12 +162,19 @@ class DashScopeEmbedder(BaseEmbedder):
                     for kwargs in kwargs_candidates:
                         try:
                             resp = embedding_call.call(**kwargs)  # type: ignore[attr-defined]
-                            data = getattr(resp, "output", None) or resp.get("output", {})
-                            items = data.get("embeddings") or data.get("data") or []
+                            output = getattr(resp, "output", None)
+                            if output is None and isinstance(resp, dict):
+                                output = resp.get("output")
+                            if output is None:
+                                output = resp
+                            items = _extract_items(output)
+                            if not items and isinstance(resp, dict):
+                                items = _extract_items(resp)
                             vecs: list[list[float]] = []
                             for item in items:
-                                emb = item.get("embedding") or item.get("vector") or item.get("embedding_vector") or []
-                                vecs.append(normalize_embedding_vector(list(emb), self.dims))
+                                emb = _item_embedding(item)
+                                if emb:
+                                    vecs.append(normalize_embedding_vector(emb, self.dims))
                             if vecs:
                                 return vecs
                         except Exception as exc:

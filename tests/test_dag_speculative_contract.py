@@ -1,4 +1,5 @@
 import unittest
+from tests.orchestrator_v4_source import read_orchestrator_v4_implementation
 
 
 class DagSpeculativeContractTests(unittest.TestCase):
@@ -29,9 +30,7 @@ class DagSpeculativeContractTests(unittest.TestCase):
         self.assertIn("DagPlan", code)
 
     def test_orchestrator_sets_dependencies_when_dag_enabled(self):
-        with open("kernel/orchestrator_v4.py", "r", encoding="utf-8") as f:
-            code = f.read()
-
+        code = read_orchestrator_v4_implementation()
         self.assertIn("kernel_agent_dag_scheduling_enabled", code)
         self.assertIn("depends_on", code)
         self.assertIn("node_", code)

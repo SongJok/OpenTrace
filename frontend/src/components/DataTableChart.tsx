@@ -240,6 +240,10 @@ export default function DataTableChart({ rows: rowsProp, config, sql, maxRows = 
   const rows = rowsProp ?? data?.rows ?? []
   const chartType = config?.chart_type || 'table'
   const alternatives = config?.alternatives || []
+  const title =
+    (typeof data?.title === 'string' && data.title) ||
+    config?.title ||
+    ''
 
   if (!rows || rows.length === 0) {
     return (
@@ -283,7 +287,8 @@ export default function DataTableChart({ rows: rowsProp, config, sql, maxRows = 
     <div style={{ border: '1px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
       {/* Toolbar */}
       <div style={{ padding: '8px 12px', background: '#f9fafb', borderBottom: '1px solid #e5e7eb', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {title ? <span style={{ fontSize: 13, fontWeight: 600, color: '#111827' }}>{title}</span> : null}
           {[chartType, ...alternatives].slice(0, 5).map(t => (
             <button key={t} onClick={() => onChartTypeChange?.(t)}
               style={{

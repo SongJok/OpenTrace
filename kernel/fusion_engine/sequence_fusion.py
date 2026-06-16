@@ -1,3 +1,5 @@
+"""序列融合引擎 — 多问场景下按子问题顺序融合各 Agent 结果。"""
+
 from __future__ import annotations
 
 from typing import Any

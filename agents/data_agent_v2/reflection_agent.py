@@ -1,16 +1,15 @@
 """
-ReflectionAgent — observes SQL execution results, diagnoses issues, triggers repair.
+ReflectionAgent — 观察 SQL 执行结果、诊断问题并触发修复。
 
-Wraps SQLReflector for result validation and SQLRewriter for SQL repair.
-Adds enhanced result quality analysis beyond the existing reflectors:
+封装 SQLReflector（结果校验）与 SQLRewriter（SQL 修复），并增强结果质量分析：
 
-- Empty result set → diagnose over-filtering
-- Giant numbers → detect join amplification (cartesian product)
-- NULL-heavy results → flag missing data
-- Negative values → suggest metric grounding checks
-- Time mismatch → verify time filter correctness
+- 空结果集 → 诊断过滤过严
+- 异常大数值 → 检测 JOIN 放大（笛卡尔积）
+- 空值过多 → 标记缺失数据
+- 负值 → 建议指标口径校验
+- 时间不匹配 → 校验时间过滤
 
-Max 3 reflection rounds (configurable via DATA_AGENT_V2_SUPERVISOR_MAX_RETRIES).
+最多 3 轮反思（可由 DATA_AGENT_V2_SUPERVISOR_MAX_RETRIES 配置）。
 """
 from __future__ import annotations
 
@@ -26,17 +25,17 @@ from agents.data_agent_v2.types import (
 
 
 class ReflectionAgent(BaseAgent):
-    """Post-execution result observer with auto-repair capability.
+    """执行后结果观察器，具备自动修复能力。
 
-    Diagnoses result quality issues and triggers targeted SQL repairs
-    via the SQLRewriter. Records all repair attempts for audit.
+    诊断结果质量问题，通过 SQLRewriter 触发定向 SQL 修复。
+    记录所有修复尝试以供审计。
     """
 
     MAX_ROUNDS = 3
 
     def __init__(self) -> None:
         super().__init__("data_reflection")
-        self._rewriter = None  # Lazy init
+        self._rewriter = None  # 延迟初始化
 
     async def execute(self, task: TaskMessage) -> AgentResult:
         ctx = unpack_cognitive_context(task.params)
@@ -82,7 +81,7 @@ class ReflectionAgent(BaseAgent):
             )
 
     async def _reflect(self, ctx: CognitiveContext) -> dict[str, Any]:
-        """Run reflection loop: classify → diagnose → repair → re-execute."""
+        """运行反思循环：分类 → 诊断 → 修复 → 重新执行。"""
         from kernel.data_cognition.sql_rewriter import SQLRewriter
         from agents.data_agent_v2.error_classifier import ErrorClassifier
 
@@ -102,7 +101,7 @@ class ReflectionAgent(BaseAgent):
         repaired_sql = ""
         summary = ""
 
-        # Only attempt repair if there are actionable issues
+        # 仅在存在可修复问题时尝试修复
         if diagnosis["can_repair"] and ctx.reflection_rounds < self.MAX_ROUNDS:
             ctx.reflection_rounds += 1
 
@@ -145,7 +144,7 @@ class ReflectionAgent(BaseAgent):
     def _build_diagnosis_dict(
         self, diagnoses: list
     ) -> dict[str, Any]:
-        """Convert ErrorClassifier diagnoses into the dict format used by _reflect."""
+        """将 ErrorClassifier 诊断结果转换为 _reflect 使用的字典格式。"""
         if not diagnoses:
             return {
                 "can_repair": False,
@@ -178,7 +177,7 @@ class ReflectionAgent(BaseAgent):
         }
 
     def _result_confidence(self, diagnosis: dict, repair_applied: bool) -> float:
-        """Compute confidence after reflection."""
+        """反思后计算置信度。"""
         if not diagnosis.get("issues"):
             return 0.95
         if repair_applied:
@@ -186,7 +185,7 @@ class ReflectionAgent(BaseAgent):
         return 0.40
 
     def _build_recovery_context(self, ctx: CognitiveContext) -> dict[str, Any]:
-        """Build user-facing recovery options if all repairs failed."""
+        """构建面向用户的恢复选项（所有修复均失败时）。"""
         from agents.data_agent_v2.error_classifier import ErrorClassifier
 
         classifier = ErrorClassifier()

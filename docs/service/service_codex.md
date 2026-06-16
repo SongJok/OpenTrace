@@ -1,10 +1,10 @@
-# OpenTrace 项目代码梳理（Codex 版）
+# OpenTrace 项目代码梳理（Claude 版）
 
-> 本文档以当前仓库代码为事实来源，参考原 `docs/service/service_codex.md` 的组织方式重新梳理。
+> 本文档以当前仓库代码为事实来源，参考 `docs/service/service_codex.md` 的组织方式重新梳理。
 >
-> 目标是提供一份比原文档更完整的项目说明，覆盖架构、入口、核心链路、配置、数据库模型、运行部署、测试与排障。
+> 目标是提供一份可维护的项目说明，覆盖架构、入口、核心链路、运行时、数据/RAG/记忆、安全、配置、部署、测试与排障。
 >
-> 最后更新：2026-05-20
+> 最后更新：2026-05-27
 
 ---
 
@@ -18,42 +18,45 @@
 6. [前端应用](#6-前端应用)
 7. [API 网关](#7-api-网关)
 8. [聊天主链路](#8-聊天主链路)
-9. [认知内核](#9-认知内核)
-10. [编排器、路由与多轮增强](#10-编排器路由与多轮增强)
-11. [Agent 集群](#11-agent-集群)
-12. [DataAgent V2 认知型数据智能体](#12-dataagent-v2-认知型数据智能体)
-13. [数据源、Knowledge Assets 与 Text2SQL](#13-数据源knowledge-assets-与-text2sql)
-14. [RAG 与文档系统](#14-rag-与文档系统)
-15. [记忆系统](#15-记忆系统)
-16. [工具、技能、插件与连接器](#16-工具技能插件与连接器)
-17. [规则引擎与灰度发布](#17-规则引擎与灰度发布)
-18. [执行平面与 Agent Bus](#18-执行平面与-agent-bus)
-19. [模型网关](#19-模型网关)
-20. [安全、审计与可解释性](#20-安全审计与可解释性)
-21. [基础设施与持久化](#21-基础设施与持久化)
-22. [数据库模型](#22-数据库模型)
-23. [配置项](#23-配置项)
-24. [部署与运行](#24-部署与运行)
-25. [测试体系](#25-测试体系)
-26. [开发规范与维护建议](#26-开发规范与维护建议)
-27. [排障入口](#27-排障入口)
-28. [已知风险与后续优化](#28-已知风险与后续优化)
+9. [认知内核与认知控制](#9-认知内核与认知控制)
+10. [AI Runtime 统一运行时](#10-ai-runtime-统一运行时)
+11. [V4 编排器、路由与多轮增强](#11-v4-编排器路由与多轮增强)
+12. [Agent 集群](#12-agent-集群)
+13. [DataAgent V2 认知型数据智能体](#13-dataagent-v2-认知型数据智能体)
+14. [数据源、Knowledge Assets 与 Text2SQL](#14-数据源knowledge-assets-与-text2sql)
+15. [RAG 与文档系统](#15-rag-与文档系统)
+16. [记忆系统](#16-记忆系统)
+17. [Capability Intelligence](#17-capability-intelligence)
+18. [工具、技能、插件与连接器](#18-工具技能插件与连接器)
+19. [规则引擎与灰度发布](#19-规则引擎与灰度发布)
+20. [执行平面与 Agent Bus](#20-执行平面与-agent-bus)
+21. [模型网关](#21-模型网关)
+22. [安全、审计与可解释性](#22-安全审计与可解释性)
+23. [基础设施与持久化](#23-基础设施与持久化)
+24. [数据库模型](#24-数据库模型)
+25. [配置项](#25-配置项)
+26. [部署与运行](#26-部署与运行)
+27. [测试体系](#27-测试体系)
+28. [开发规范与维护建议](#28-开发规范与维护建议)
+29. [排障入口](#29-排障入口)
+30. [已知风险与后续优化](#30-已知风险与后续优化)
 
 ---
 
 ## 1. 项目定位
 
-OpenTrace 是一个以 **Cognitive Kernel** 为中枢的智能体操作系统。它不是单一聊天机器人，而是把用户请求统一接入后，按意图、复杂度、历史状态、数据源上下文和工具能力路由到不同认知模块。
+OpenTrace 是一个以 **Cognitive Kernel** 为中枢的 AgentOS / AI Runtime 项目。它不是单轮 ChatBot，而是将聊天、RAG、数据查询、工具调用、记忆、任务、审计、规则、技能、连接器和运行时观测整合到一套可部署的智能体系统中。
 
 当前代码体现出的核心目标：
 
-- 统一入口：所有聊天请求进入 `gateway/api_gateway/routers/chat.py`，再进入 `kernel.cognitive_kernel.CognitiveKernel`。
-- 分层路由：优先使用 L0 规则、语义缓存、TinyRouter、复杂度评分处理简单请求，复杂请求进入完整编排。
-- V4 编排：`PlanAgent -> Dispatcher -> Agent Cluster -> Fusion -> Critic -> Epistemic Annotation`。
-- 多 Agent 能力：Data、RAG、Web、Tool、Skills、Rule、Vision 等 Agent 可被规划器和调度器调用。
-- 多轮增强：会话状态、引用消解、上下文压缩、纠正重规划、主动追问、记忆反馈共同工作。
-- 数据认知：DataAgent V2 默认启用，将数据查询从“NL2SQL 工具”升级为“认知型数据中枢”。
-- 可观测与审计：TraceLog、ReasoningTrace、CognitiveEvent、AuditLog、XAI trace 等记录运行过程。
+- **统一入口**：所有聊天请求进入 `gateway/api_gateway/routers/chat.py`，再进入 `kernel.cognitive_kernel.CognitiveKernel`。
+- **受控认知链路**：通过 `kernel/cognitive_controls.py` 提供 Intent Lock、Cognitive Budget、Capability Guard 和 Relevance Anchor，防止简单问题被复杂 Runtime 过度扩张。
+- **分层路由**：L0 规则、L0.5 语义缓存、L1 TinyRouter、复杂度引擎共同处理简单/中等请求，复杂任务进入完整编排。
+- **双运行时并存**：稳定路径是 `CognitiveOrchestratorV4`，新运行时是 `kernel/runtime/` 下的 CognitiveExecutive / Unified Runtime。
+- **多 Agent 能力**：Data、RAG、Web、Tool、Skills、Rule、Vision 等 Agent 由规划器、调度器或能力运行时调用。
+- **数据认知**：DataAgent V2 将 Text2SQL 扩展为知识层、推理层、学习层组成的认知数据智能体。
+- **证据优先**：RAG、Data、Web、Tool 等产物先作为 Evidence/候选材料进入融合和审校，再形成最终回答。
+- **可观测与审计**：TraceLog、ReasoningTrace、CognitiveEvent、AuditLog、XAI trace、runtime snapshots 等记录运行过程。
 
 ---
 
@@ -63,23 +66,34 @@ OpenTrace 是一个以 **Cognitive Kernel** 为中枢的智能体操作系统。
 |------|----------|
 | 后端入口 | FastAPI，默认端口 `14100` |
 | 前端入口 | React/Vite，默认端口 `14108` |
-| 编排版本 | `KERNEL_ORCHESTRATOR_VERSION=v4` |
-| DataAgent | V2 默认启用，V1 fallback 默认关闭 |
-| 数据源支持 | MySQL、Postgres、ClickHouse、Doris |
-| RAG | 文档、chunk、LLMWiki、pgvector/embedding、rerank |
-| Redis | 会话、缓存、记忆、队列、pubsub/stream bus |
+| 主聊天入口 | `POST /api/v1/chat` |
+| Kernel 主入口 | `kernel/cognitive_kernel.py` |
+| 稳定编排器 | `kernel/orchestrator_v4.py` |
+| 新运行时 | `kernel/runtime/cognitive_executive.py` |
+| 分层路由 | `query_router_v2.py`、`tiny_router.py`、`complexity_engine.py`、`semantic_cache.py` |
+| 认知控制 | `kernel/cognitive_controls.py` |
+| DataAgent | V2 默认启用，V1 保留 |
+| RAG | 文档 chunk、LLMWiki、pgvector/embedding、rerank、answerability gate |
+| 记忆 | working / episodic / semantic / procedural / temporal / evolution |
+| Capability Intelligence | capability profile、KG、reasoner、execution memory、strategy memory、evolution |
 | 数据库 | PostgreSQL 16 + pgvector |
-| 测试现状 | 后端全量测试通过；前端 build 通过；前端 Vitest 存在若干 UI contract 失败 |
+| 缓存/队列 | Redis 7，多 DB 隔离 |
+| 部署 | Docker Compose + 本地 Vite 前端 |
 
-关键默认配置：
+关键默认配置来自 `infra/config/settings.py`：
 
 ```env
 KERNEL_ORCHESTRATOR_VERSION=v4
 KERNEL_AGENT_ENABLED=true
+KERNEL_V5_ROUTING_ENABLED=true
+KERNEL_L0_RULE_ROUTER_ENABLED=true
+KERNEL_L1_TINY_ROUTER_ENABLED=true
+KERNEL_SEMANTIC_CACHE_ENABLED=true
+KERNEL_COGNITIVE_PLANNER_V2_ENABLED=true
+KERNEL_CAPABILITY_INTELLIGENCE_ENABLED=true
+KERNEL_CAPABILITY_INTELLIGENCE_PHASE2_ENABLED=true
 DATA_AGENT_V2_ENABLED=true
 DATA_AGENT_V2_FALLBACK_TO_V1=false
-KERNEL_V5_ROUTING_ENABLED=true
-KERNEL_CONVERSATION_STATE_ENABLED=true
 ATTACHMENT_UPLOAD_ENABLED=true
 ```
 
@@ -95,14 +109,13 @@ ATTACHMENT_UPLOAD_ENABLED=true
 | Web 框架 | FastAPI |
 | ASGI 服务 | Uvicorn |
 | ORM | SQLAlchemy asyncio |
-| 迁移 | Alembic |
+| 数据库迁移 | Alembic |
 | 数据库 | PostgreSQL 16 |
 | 向量能力 | pgvector |
 | 缓存/队列 | Redis 7 |
 | LLM SDK | OpenAI-compatible API、DashScope |
 | 配置 | pydantic-settings + `.env` |
-| 序列化 | Pydantic、orjson |
-| SQL | sqlglot、自研 data_cognition 管线 |
+| SQL | sqlglot、自研 `kernel/data_cognition` |
 | 可观测 | OpenTelemetry、Prometheus、Jaeger、structlog |
 | 安全 | JWT、bcrypt、host guard、PII masking、tool permission token |
 
@@ -124,11 +137,11 @@ ATTACHMENT_UPLOAD_ENABLED=true
 | 组件 | 容器/端口 |
 |------|-----------|
 | API | `opentrace_api`, `14100` |
-| Frontend | 本地 Vite `14108`，Docker compose 未单独定义前端服务 |
+| Agent Worker | `agent-worker` |
 | PostgreSQL | `opentrace_postgres`, host `${POSTGRES_PORT:-5432}` |
 | Redis | `opentrace_redis`, host `${REDIS_PORT:-6380}` |
-| Prometheus | `opentrace_prometheus`, `14190` |
-| Jaeger | `opentrace_jaeger`, UI `14186`, OTLP `4317` |
+| Prometheus | observability profile |
+| Jaeger | observability profile |
 
 ---
 
@@ -145,37 +158,36 @@ ATTACHMENT_UPLOAD_ENABLED=true
 │ API Gateway: FastAPI /api/v1                                │
 │ auth, chat, conversations, documents, databases, data, ...   │
 └───────────────────────────────┬─────────────────────────────┘
-                                │ ChatRequest / KernelRequest
+                                │ ChatRequest / RuntimeContext
                                 ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ CognitiveKernel                                               │
-│ L0 rules / semantic cache / tiny router / context composer    │
+│ Intent Lock / L0 / Cache / TinyRouter / Context Assembly      │
 └───────────────────────────────┬─────────────────────────────┘
-                                │ OrchestratorRequest
-                                ▼
-┌─────────────────────────────────────────────────────────────┐
-│ CognitiveOrchestratorV4                                      │
-│ Plan -> Dispatch -> Agent Results -> Fusion -> Critic         │
-└──────────────┬──────────────┬──────────────┬────────────────┘
-               │              │              │
-               ▼              ▼              ▼
-       ┌─────────────┐ ┌─────────────┐ ┌──────────────┐
-       │ Agent 集群   │ │ ModelGateway │ │ Execution    │
-       │ Data/RAG/...│ │ LLM roles    │ │ SQL/Tools/DAG │
-       └──────┬──────┘ └──────┬──────┘ └──────┬───────┘
-              │               │               │
-              ▼               ▼               ▼
-       PostgreSQL       OpenAI-compatible     Redis / Bus
-       pgvector         DashScope/Qwen        Audit / XAI
+                                │
+              ┌─────────────────┴─────────────────┐
+              ▼                                   ▼
+┌─────────────────────────────┐     ┌─────────────────────────────┐
+│ CognitiveExecutive Runtime  │     │ CognitiveOrchestratorV4      │
+│ Rewrite -> Understand ->    │     │ Plan -> Dispatch -> Agent    │
+│ Plan -> Execute -> Evidence │     │ Results -> Fusion -> Critic  │
+└──────────────┬──────────────┘     └──────────────┬──────────────┘
+               │                                   │
+               ▼                                   ▼
+        ┌─────────────────────────────────────────────────────┐
+        │ Agent / Capability / Tool / Data / RAG / Web / Skill │
+        └──────────────────────┬──────────────────────────────┘
+                               ▼
+        PostgreSQL + pgvector / Redis / Model Gateway / Audit
 ```
 
-实际系统可以分为六层：
+实际系统可分为六层：
 
 1. **交互层**：前端页面、API client、SSE 消息处理。
 2. **网关层**：认证、会话、附件、权限、路由、错误封装。
-3. **认知层**：路由、规划、对话状态、上下文压缩、引用消解。
-4. **执行层**：Agent、工具、数据查询、RAG、规则、技能。
-5. **模型层**：按角色调度 LLM/Embedding/Rerank。
+3. **认知层**：意图锁定、复杂度门控、规划、对话状态、上下文压缩、引用消解。
+4. **执行层**：Agent、工具、数据查询、RAG、规则、技能、DAG。
+5. **模型层**：按角色调度 LLM、Embedding、Rerank、Vision。
 6. **基础设施层**：PostgreSQL、Redis、审计、事件、可观测、部署脚本。
 
 ---
@@ -186,7 +198,7 @@ ATTACHMENT_UPLOAD_ENABLED=true
 opentrace/
 ├── agent_runtime/              # Agent runtime、planner、executor、critic、market、reflector
 ├── agents/                     # Data/RAG/Web/Tool/Skills/Rule/Vision Agent
-│   └── data_agent_v2/           # DataAgent V2 认知数据智能体子系统
+│   └── data_agent_v2/           # DataAgent V2 认知数据智能体
 ├── alembic/                    # Alembic 迁移
 ├── connectors/                 # connector SDK 与内置连接器
 ├── deploy/                     # Docker、Helm、K8s、Prometheus 配置
@@ -194,22 +206,25 @@ opentrace/
 ├── evolution/                  # learning、feedback、self-play、meta-learning、data flywheel
 ├── execution/                  # DAG、workflow、sandbox、tool router、data executor
 ├── frontend/                   # React/Vite 前端
-├── gateway/                    # FastAPI API gateway
+├── gateway/                    # FastAPI API gateway 与 cognitive gateway
 ├── infra/                      # config/storage/cache/security/observability/message bus
-├── kernel/                     # Cognitive Kernel、V4 Orchestrator、routing、fusion、critic
-├── memory/                     # working/semantic/episodic/procedural/evolution memory
+├── kernel/                     # Cognitive Kernel、Runtime、V4 Orchestrator、routing、fusion、critic
+│   ├── runtime/                 # AI Runtime 统一运行时
+│   ├── capability_intelligence/ # 能力画像、KG、执行记忆、策略记忆、演进
+│   ├── data_cognition/          # SQL planning / validation / dialect / semantic layer
+│   └── cognitive_controls.py    # Intent Lock / Cognitive Budget / Relevance Anchor
+├── memory/                     # working/semantic/episodic/procedural/temporal/evolution memory
 ├── model/                      # LLM gateway、adapter、embedding、rerank
-├── plugins/                    # chart/code/data/file/tool 插件
+├── plugins/                    # chart/code/data/file/tool/document 插件
 ├── safety/                     # guardrails、policy、masking、canary、xai、audit
 ├── sandbox_runtime/            # sandbox providers
 ├── scripts/                    # 启停、验证、迁移、schema 同步脚本
 ├── sdk/                        # plugin/python SDK
-├── services/                   # 服务层辅助模块
+├── services/                   # 文件解析等服务层辅助模块
 ├── skills/                     # skills runtime、store、installed
 ├── tests/                      # 后端合约与回归测试
 ├── tools/                      # tool registry 和内置工具
 ├── docker-compose.yml
-├── pyproject.toml
 ├── requirements.txt
 ├── start.sh
 └── stop.sh
@@ -230,16 +245,15 @@ opentrace/
 | 页面 | 作用 |
 |------|------|
 | `ChatPage.tsx` | 主聊天界面，同步/SSE、推理链、执行图、附件、快捷模式 |
-| `DatabasesPage.tsx` | 数据源 CRUD、连接测试、schema 同步、语义配置、DataAgent V2 知识资产入口 |
+| `DatabasesPage.tsx` | 数据源 CRUD、连接测试、schema 同步、语义配置 |
 | `KnowledgeAssetsPage.tsx` | 知识资产管理入口 |
 | `DocumentsPage.tsx` | 文档上传、列表、预览、删除、检索 |
-| `SkillsPage.tsx` | 技能市场、技能创建、安装、测试、会话绑定 |
+| `SkillsPage.tsx` | 技能市场、创建、安装、测试、会话绑定 |
 | `RulesPage.tsx` | 规则管理、版本、灰度、发布/回滚 |
 | `MemoryPage.tsx` | 用户记忆、记忆设置 |
 | `TasksPage.tsx` | 任务定义、运行、事件触发、通知 |
 | `AuditPage.tsx` | 审计日志查询 |
 | `IntegrationsPage.tsx` | 外部连接器管理 |
-| `PermissionsPage.tsx` | 权限相关页面 |
 | `SettingsPage.tsx` | UI/用户设置 |
 | `LoginPage.tsx` / `RegisterPage.tsx` | 登录注册 |
 
@@ -247,8 +261,8 @@ opentrace/
 
 | 组件 | 作用 |
 |------|------|
-| `ChatInput.tsx` | 输入框、快捷标签、附件、发送控制 |
-| `ChatMessage.tsx` | 消息渲染、工具卡片、表格/JSON/Markdown 结构化显示 |
+| `ChatInput.tsx` | 输入框、斜杠命令、附件、发送控制 |
+| `ChatMessage.tsx` | 消息渲染、工具卡片、JSON/Markdown/表格结构化显示 |
 | `MessageList.tsx` | 消息列表 |
 | `ReasoningChain.tsx` | 推理链展示 |
 | `ExecutionGraphPanel.tsx` | 执行图展示 |
@@ -256,1178 +270,1007 @@ opentrace/
 | `DecisionTraceCard.tsx` | 决策轨迹卡片 |
 | `DataQueryResult.tsx` | 数据查询结果 |
 | `DataTableChart.tsx` | 表格/图表切换 |
-| `DatabaseTypeSelect.tsx` | 数据源类型选择 |
 | `MetricDefinitionEditor.tsx` | 指标定义编辑 |
-| `TableRelationGraph.tsx` | 表关系图 |
-| `SkillTemplateEditor.tsx` | 技能模板编辑 |
-| `MultiQuestionCards.tsx` | 多子问题渲染 |
-| `MessageVersionTree.tsx` | 分支/版本历史 |
+| `TableRelationGraph.tsx` | 表关系展示 |
 
-### 6.3 API Client
+### 6.3 前端数据流
 
-`frontend/src/api/client.ts` 统一封装后端调用：
-
-- 默认相对路径：`/api/v1`
-- fallback 直连：`${VITE_API_URL || http://localhost:14100}/api/v1`
-- 包含 auth、documents、conversations、databases、chat、rules、skills、tasks、memories 等调用。
-- `apiFetch()` 会在相对路径失败时 fallback 到 `BACKEND_DIRECT`。
-
-### 6.4 前端验证状态
-
-- `npm run build` 当前通过。
-- `npm test -- --run` 当前仍有 UI contract 失败，集中在组件文案、DAG timeline 事件和 ChatMessage tool card 渲染，不属于 DataAgent V2 后端链路问题。
+```text
+ChatInput
+  -> apiChatStream / apiChatSync
+  -> /api/v1/chat
+  -> SSE delta / reasoning_step / tool_call / final_answer
+  -> Zustand chat store
+  -> ChatMessage / ReasoningChain / ExecutionGraphPanel
+```
 
 ---
 
 ## 7. API 网关
 
-FastAPI 应用入口：`gateway/api_gateway/main.py`。
+主入口：
 
-主要职责：
-
-- 创建 FastAPI app。
-- 注册 `/api/v1` 下所有业务 router。
-- 注入 request id、响应耗时。
-- 统一异常处理。
-- 管理 memory event subscriber 生命周期。
+- `gateway/api_gateway/main.py`
+- `gateway/api_gateway/routers/*.py`
 
 ### 7.1 Router 清单
 
-| 文件 | 作用 |
-|------|------|
-| `auth.py` | 注册、登录、token、当前用户 |
-| `chat.py` | 聊天主路由，同步/SSE、附件、图控制、反馈、恢复 |
-| `conversations.py` | 会话、消息、分支、归档 |
-| `documents.py` | 文档上传、解析、chunk、检索 |
-| `databases.py` | 数据源管理、连接测试、schema 同步、查询、分析、语义配置 |
-| `data.py` | `/data/query` 兼容查询入口；V2 开启时走 `DataAgent` |
-| `metrics.py` | DataAgent V2 指标定义管理 |
-| `table_relationships.py` | 表关系管理 |
-| `analytical_skills.py` | 分析技能资产管理 |
-| `skills.py` | 技能市场、创建、安装、测试、会话绑定 |
-| `rules.py` | 规则 CRUD、版本、灰度、发布、回滚 |
-| `tasks.py` | 任务定义、运行、事件、通知 |
-| `memories.py` | 记忆 CRUD、记忆设置 |
-| `feedback.py` | 用户反馈 |
+| Router | 作用 |
+|--------|------|
+| `chat.py` | 聊天同步/流式、附件、停止、反馈、再生成 |
+| `auth.py` | 注册、登录、JWT |
+| `conversations.py` | 会话 CRUD、分支、消息版本 |
+| `documents.py` | 文档上传、搜索、详情、删除 |
+| `databases.py` | 数据源 CRUD、连接测试、schema 同步 |
+| `data.py` | 数据查询 API |
+| `metrics.py` | 指标定义 |
+| `table_relationships.py` | 表关系 |
+| `analytical_skills.py` | 分析技能 |
+| `memories.py` | 记忆 CRUD 与设置 |
+| `skills.py` | 技能安装、测试、会话绑定 |
+| `rules.py` | 规则引擎管理 |
+| `tasks.py` | 任务管理 |
 | `audit.py` | 审计日志 |
-| `cognitive.py` | 认知事件回放 |
-| `connectors.py` | 连接器授权、资源、同步 |
-| `sandbox.py` | 沙箱产物下载 |
-| `health.py` | liveness、deps、runtime |
-| `admin.py` | 管理接口 |
+| `feedback.py` | 用户反馈 |
+| `connectors.py` | 连接器 |
+| `sandbox.py` | 沙箱 |
 | `ui_settings.py` | UI 设置 |
+| `health.py` | 健康检查 |
+| `cognitive.py` | 认知事件查询 |
 
-### 7.2 关键响应结构
+### 7.2 ChatRequest 关键字段
 
-聊天最终响应通常包含：
-
-- `content`
-- `decision_type`
-- `reasoning_steps`
-- `execution_graph`
-- `citations`
-- `annotations`
-- `metadata`
-- `state_patch`
-- `result_refs`
-
-`result_refs` 是前端和多轮引用消解的重要桥梁，DataAgent V2 已补齐 SQL/table 类型引用。
+| 字段 | 说明 |
+|------|------|
+| `query` | 用户输入 |
+| `session_id` | 会话 ID |
+| `stream` | 是否 SSE |
+| `web_enabled` | 是否允许联网 |
+| `force_mode` | 强制模式：`rag/data_query/data_analysis/anomaly_tracking/product/rule_engine/vision` |
+| `data_source_id` | 数据源绑定 |
+| `attachment_ids` | 附件上下文 |
+| `parent_message_id` | 分支/编辑上下文 |
+| `clarify_context` | 主动追问补充信息 |
+| `enabled_skills` / `disabled_skills` | 会话技能控制 |
 
 ---
 
 ## 8. 聊天主链路
 
-聊天主入口：`gateway/api_gateway/routers/chat.py`。
-
-### 8.1 ChatRequest 关键字段
-
-| 字段 | 含义 |
-|------|------|
-| `query` | 用户输入 |
-| `session_id` | 会话 ID |
-| `stream` | 是否 SSE |
-| `web_enabled` | 是否允许 web search |
-| `enabled_skills` / `disabled_skills` | 会话技能控制 |
-| `tool_permission_token` | 工具权限 token |
-| `confirmation_granted` | 危险/敏感动作确认 |
-| `data_source_id` / `data_source_name` | 数据源上下文 |
-| `force_database` | 强制数据库上下文 |
-| `force_mode` | 快捷标签或强制模式 |
-| `clarify_context` / `clarify_question_id` | 追问上下文 |
-| `parent_message_id` | 分支/再生成依据 |
-| `attachment_ids` | 附件注入 |
-
-### 8.2 同步链路
+同步路径：
 
 ```text
 POST /api/v1/chat
-  -> auth user
-  -> create/load session
-  -> assemble metadata: data source, memory, attachments, force mode
+  -> gateway/api_gateway/routers/chat.py
+  -> 认证 / 会话 / 历史 / 附件 / 数据源 / 用户偏好
+  -> KernelRequest
   -> CognitiveKernel.run()
-  -> Orchestrator V4
-  -> persist user/assistant messages
-  -> trace/audit/state patch/result refs
-  -> response
+  -> Intent Lock / L0 / Cache / TinyRouter
+  -> CognitiveExecutive 或 OrchestratorV4
+  -> Agent/Capability 执行
+  -> Fusion / Critic / Annotation
+  -> TraceLog / Message / Memory 写回
+  -> ChatResponse
 ```
 
-### 8.3 SSE 链路
-
-流式模式负责输出：
-
-- token/answer chunk
-- reasoning step
-- execution graph update
-- tool/agent start/complete
-- force mode event
-- clarification event
-- final answer
-
-`frontend/src/store/chat.ts` 与 `frontend/src/api/client.ts` 负责消费事件并更新 UI 状态。
-
----
-
-## 9. 认知内核
-
-核心入口：`kernel/cognitive_kernel.py`。
-
-职责：
-
-- 接收 API 层整理后的 `KernelRequest`。
-- 尝试 L0/L1/L2 分层路由。
-- 管理 streaming 与同步输出。
-- 注入 context composer、多轮状态、主动记忆。
-- 调用 `CognitiveOrchestratorV4`。
-
-关键模块：
-
-| 模块 | 作用 |
-|------|------|
-| `query_router_v2.py` | L0 规则路由 |
-| `semantic_cache.py` | 语义缓存 |
-| `tiny_router.py` | L1 小模型分类 |
-| `complexity_engine.py` | 复杂度评分 |
-| `context_assembler.py` | 上下文装配 |
-| `context_composer.py` | 长上下文压缩 |
-| `turn_context.py` | 单轮上下文 |
-| `token_counter.py` | token 预算估算 |
-| `history_retriever.py` | 历史检索 |
-| `identity/system_identity.py` | 系统身份回答 |
-
----
-
-## 10. 编排器、路由与多轮增强
-
-主编排器：`kernel/orchestrator_v4.py`。
-
-### 10.1 V4 编排流程
+流式路径：
 
 ```text
-OrchestratorRequest
-  -> PlanAgent 生成 subtasks
-  -> Dispatcher 调度 Agent
-  -> AgentResult 收集
-  -> FusionEngine 融合
-  -> CriticEngine 审校
-  -> epistemology 标注
-  -> OrchestratorResponse
+POST /api/v1/chat stream=true
+  -> CognitiveKernel.stream()
+  -> SSE:
+      reasoning_step
+      tool_call
+      tool_result
+      delta
+      final_answer
 ```
 
-### 10.2 PlanAgent
+重要特性：
 
-`kernel/plan_agent.py` 负责：
-
-- 判断是否使用 data/rag/web/tool/skills/rule 等 Agent。
-- 注入 `data_source_id`。
-- 处理 force mode。
-- 支持多子问题拆分。
-- 支持对话状态、追问、纠正上下文。
-
-### 10.3 DAG 与调度
-
-| 模块 | 作用 |
-|------|------|
-| `dag_plan.py` | DAG 数据结构 |
-| `dag_scheduler.py` | 依赖调度、并行执行 |
-| `dispatcher.py` | Agent 并发、超时、降级 |
-| `plan_memory.py` | 规划记忆 |
-
-### 10.4 多轮增强
-
-| 模块 | 功能 |
-|------|------|
-| `conversation_state.py` | 结构化会话状态，保存 active topic/entity/mode/data source/result refs |
-| `reference_resolver.py` | “刚才那个”“第二个结果”等引用消解 |
-| `clarification_gate.py` | 信息不足时主动追问 |
-| `refine_planner.py` | 用户纠正后的增量重规划 |
-| `dialogue_state_tracker.py` | 槽位与意图状态追踪 |
-| `context_composer.py` | 历史压缩与摘要 |
-| `preference_layers.py` | 用户偏好层 |
+- 支持同步和 SSE 流式两种模式。
+- 支持 `/rag`、`/data`、`/web` 等前端斜杠命令。
+- 支持附件解析和上下文注入。
+- 支持 ConversationState、ResultRef、ReferenceResolver。
+- 支持主动追问、纠正重规划、分支会话和消息版本。
+- 支持工具权限 token 和高风险操作确认。
 
 ---
 
-## 11. Agent 集群
+## 9. 认知内核与认知控制
 
-Agent 抽象定义在 `agents/base.py`：
+主文件：
 
-- 输入：`TaskMessage`
-- 输出：`AgentResult`
-- 支持 `metadata`、`evidence`、`agent_trace`
+- `kernel/cognitive_kernel.py`
+- `kernel/cognitive_controls.py`
+- `kernel/query_router_v2.py`
+- `kernel/tiny_router.py`
+- `kernel/complexity_engine.py`
+- `kernel/semantic_cache.py`
+- `kernel/context_assembler.py`
 
-### 11.1 Agent 清单
+### 9.1 CognitiveKernel 职责
+
+`CognitiveKernel` 是聊天唯一中枢，负责：
+
+1. 恢复 WorkingMemory。
+2. 构建 Intent Lock。
+3. 执行 L0 规则路由、语义缓存、L1 TinyRouter。
+4. 按预算决定是否注入 memory/context。
+5. 优先调用 CognitiveExecutive，失败时回退 V4。
+6. 写回 WorkingMemory、EpisodicMemory、SemanticHistory。
+7. 返回统一 `KernelResponse` 或 SSE event。
+
+### 9.2 Intent Lock / Cognitive Budget
+
+`kernel/cognitive_controls.py` 是当前项目最关键的稳定性控制层。
+
+| 对象 | 作用 |
+|------|------|
+| `IntentLock` | 锁定 `raw_user_query`、`protected_intent`、`task_type`、允许/禁止能力 |
+| `CognitiveBudget` | 限制 planning depth、capability 数量、memory token、context expansion、replan、critic |
+| `classify_intent()` | 零 LLM 的确定性意图分类 |
+| `direct_answer_for_intent()` | 能力/帮助类问题直接回答 |
+| `relevance_score()` | 查询与候选输出的相关性评分 |
+| `passes_relevance_anchor()` | Relevance Anchor，防止最终答案偏题 |
+
+典型规则：
+
+- `你好`、`你是谁`、`你可以做什么`、`怎么帮我` 走 L0 或 `intent_lock_direct`。
+- 简单问答默认禁用 `rag.retrieve`、`memory.retrieve`、`web.search`、`data.query`。
+- 文档/数据/联网/工具类任务才允许对应能力进入执行链路。
+- RAG/fusion 输出必须通过相关性锚点，弱相关证据不能接管答案。
+
+### 9.3 V5 Routing Tier
+
+```text
+L0 Rule Router
+  -> identity / greeting / FAQ / slash command
+L0.5 Semantic Cache
+  -> 高相似历史回答复用
+L1 Tiny Router
+  -> simple / knowledge / complex 分类
+Complexity Engine
+  -> simple / medium / complex 评分
+L2/V4 or Runtime
+  -> 完整认知编排
+```
+
+---
+
+## 10. AI Runtime 统一运行时
+
+目录：`kernel/runtime/`
+
+AI Runtime 是新一代统一执行管线，目标是将旧链路中分散的上下文拼装、规划、证据收集、融合、审校、产物写回收敛到 `RuntimeContext` 和 `CognitiveExecutive`。
+
+### 10.1 核心管线
+
+```text
+RuntimeContext
+  -> RewriteEngine
+  -> UnderstandingEngine
+  -> PolicyEngine
+  -> CognitivePlannerV2
+  -> StrategyBuilder
+  -> ExecutionProjection
+  -> CapabilityGraphBuilder
+  -> ExecutionRuntime
+  -> EvidenceBus
+  -> FusionEngineV2
+  -> CriticEngineV2
+  -> ArtifactComposer
+  -> Workspace / MemoryFabric
+```
+
+### 10.2 关键模块
+
+| 模块 | 作用 |
+|------|------|
+| `context.py` | `RuntimeContext`，统一请求上下文 |
+| `objects.py` | Evidence、RuntimeObject、ExecutionPlan、ExecutionNode 等对象模型 |
+| `rewrite_engine.py` | 查询规范化，受 Intent Lock 约束 |
+| `understanding_engine.py` | 深度任务理解 |
+| `cognitive_executive.py` | 新 Runtime 单一入口 |
+| `constraint_layer.py` | budget/policy/risk/capability/historical 五维守卫 |
+| `capability.py` | CapabilityRegistry |
+| `capability_graph_builder.py` | 能力图构建 |
+| `executor.py` | ExecutionRuntime + DAG 执行 |
+| `evidence_bus.py` | Evidence pub/sub 与生命周期 |
+| `fusion.py` | FusionEngineV2 |
+| `critic.py` | CriticEngineV2 |
+| `artifact_composer.py` | Artifact 生成 |
+| `workspace.py` | Workspace 状态 |
+| `memory_fabric.py` | Runtime 记忆写回 |
+
+### 10.3 Runtime 子目录
+
+| 子目录 | 作用 |
+|--------|------|
+| `runtime/cognitive/` | CognitivePlannerV2、StrategyBuilder、ExecutionProjection、CognitiveGraph |
+| `runtime/context_runtime/` | ContextCompressor、ContextRanker、EvidenceSelector、MemorySelector、SemanticDistiller |
+| `runtime/evidence/` | Evidence lifecycle、ranking、resolution、state machine |
+| `runtime/memory/` | truth maintenance、confidence decay、contradiction resolution、fact supersession |
+| `runtime/replay/` | prompt snapshot、runtime snapshot、deterministic trace、execution replay |
+
+---
+
+## 11. V4 编排器、路由与多轮增强
+
+主文件：`kernel/orchestrator_v4.py`
+
+### 11.1 V4 经典管线
+
+```text
+OrchestratorV4Request
+  -> identity shortcut
+  -> TaskModel / WorldModel
+  -> DialogueStateTracker / ReferenceResolver
+  -> multi-question split
+  -> RefinePlanner correction path
+  -> PlanAgent.generate_plan()
+  -> Dispatcher / DAG Scheduler
+  -> AgentResult[]
+  -> FusionEngine
+  -> LLM grounded answer
+  -> Epistemology Annotator / Validator
+  -> CriticEngine
+  -> ClarificationGate
+  -> state_patch / result_refs
+```
+
+### 11.2 多轮增强
+
+| 模块 | 作用 |
+|------|------|
+| `conversation_state.py` | 结构化会话状态 |
+| `reference_resolver.py` | 指代/引用/纠正解析 |
+| `result_ref_builder.py` | 结果引用构建 |
+| `dialogue_state_tracker.py` | 对话状态追踪 |
+| `refine_planner.py` | 局部纠正重规划 |
+| `clarification_gate.py` | 主动追问 |
+| `context_assembler.py` | 结构化上下文组装 |
+| `context_composer.py` | 压缩与摘要 |
+| `history_retriever.py` | 语义历史召回 |
+| `preference_layers.py` | 用户偏好分层注入 |
+
+### 11.3 融合与审校
+
+- `kernel/fusion_engine/engine.py`：V1 加权融合。
+- `kernel/fusion_engine/sequence_fusion.py`：多问题顺序融合。
+- `kernel/critic_engine/engine.py`：候选答案评分、低置信补充提示、质量审校。
+- `kernel/epistemology/`：证据标注、输出验证、渲染 hint。
+
+---
+
+## 12. Agent 集群
+
+目录：`agents/`
 
 | Agent | 文件 | 作用 |
 |-------|------|------|
-| DataAgent | `agents/data_agent.py` | 数据查询；默认委托 DataAgent V2 Supervisor |
-| RagAgent | `agents/rag_agent.py` | 文档、chunk、LLMWiki、记忆检索 |
-| WebAgent | `agents/web_agent.py` | Web 搜索 |
-| ToolAgent | `agents/tool_agent.py` | 通用工具调用 |
-| SkillsAgent | `agents/skills_agent.py` | 技能检索/执行 |
-| RuleEngineAgent | `agents/rule_engine_agent.py` | YAML 规则匹配 |
-| VisionAgent | `agents/vision_agent.py` | 视觉/多模态分析 |
-| Worker | `agents/worker.py` | Redis Agent Bus worker |
+| DataAgent | `data_agent.py` | 数据查询入口，支持 V1/V2 |
+| RagAgent | `rag_agent.py` | 文档、LLMWiki、memory 检索 |
+| WebAgent | `web_agent.py` | 联网检索 |
+| ToolAgent | `tool_agent.py` / V4 内置类 | 时间、天气、计算等工具 |
+| SkillsAgent | `skills_agent.py` | 技能执行 |
+| RuleEngineAgent | `rule_engine_agent.py` | 产品/业务规则匹配 |
+| VisionAgent | `vision_agent.py` | 图片/图表理解 |
+| Worker | `worker.py` | Agent Bus worker |
+| Registry | `registry.py` | Agent 注册与查询 |
 
-### 11.2 注册方式
+Agent 返回 `AgentResult`，包含：
 
-- `agents/__init__.py` 导出核心 Agent。
-- `agents/registry.py` 提供注册与查找。
-- `kernel/orchestrator_v4.py` 初始化时注册 `DataAgent()` 等能力。
-- `agents/worker.py` 在 agent bus 模式下消费任务。
+- `task_id`
+- `agent_type`
+- `status`
+- `content`
+- `confidence`
+- `metadata`
+- `evidence`
+- `error`
 
 ---
 
-## 12. DataAgent V2 认知型数据智能体
+## 13. DataAgent V2 认知型数据智能体
 
-DataAgent V2 是当前项目数据查询的默认主路径。入口仍然是 `agents/data_agent.py` 中的 `DataAgent`，但当 `DATA_AGENT_V2_ENABLED=true` 时会委托给 `agents/data_agent_v2/supervisor.py`。
+目录：`agents/data_agent_v2/`
 
-### 12.1 默认配置
+DataAgent V2 将数据查询分为三层：
+
+1. **Knowledge Layer**：schema metadata、metric definitions、table relationships、analytical skills。
+2. **Reasoning Layer**：意图、实体、指标、时间、join、语义、计划、SQL 编译、验证、反思。
+3. **Learning Layer**：反馈收集、pattern extraction、metric refinement、schema enrichment。
+
+### 13.1 主要模块
+
+| 模块 | 作用 |
+|------|------|
+| `intent_agent.py` | 数据问题意图分类 |
+| `entity_agent.py` | 实体识别 |
+| `metric_agent.py` | 指标解析 |
+| `time_reasoning_agent.py` | 时间范围推理 |
+| `join_agent.py` | join 路径推理 |
+| `semantic_agent.py` | 语义补全 |
+| `planner_agent.py` | 数据查询计划 |
+| `sql_compiler_agent.py` | SQL 生成 |
+| `verification_agent.py` | SQL/结果验证 |
+| `reflection_agent.py` | 错误反思 |
+| `data_critic.py` | 数据答案审校 |
+| `supervisor.py` | V2 supervisor 与重试修复 |
+| `dag_builder.py` | 并行 DAG 构建 |
+| `statistical_agent.py` | 统计分析 |
+| `insight_agent.py` | 洞察生成 |
+| `visualization_agent.py` | 可视化建议 |
+| `skills_engine.py` | 分析技能执行 |
+
+### 13.2 配置
 
 ```env
 DATA_AGENT_V2_ENABLED=true
 DATA_AGENT_V2_FALLBACK_TO_V1=false
 DATA_AGENT_V2_KNOWLEDGE_RETRIEVER_ENABLED=true
-DATA_AGENT_V2_INTENT_ENABLED=true
-DATA_AGENT_V2_ENTITY_ENABLED=true
-DATA_AGENT_V2_METRIC_ENABLED=true
-DATA_AGENT_V2_TIME_ENABLED=true
-DATA_AGENT_V2_JOIN_ENABLED=true
-DATA_AGENT_V2_SEMANTIC_ENABLED=true
-DATA_AGENT_V2_PLANNER_ENABLED=true
-DATA_AGENT_V2_SQL_COMPILER_ENABLED=true
-DATA_AGENT_V2_VERIFIER_ENABLED=true
-DATA_AGENT_V2_REFLECTION_ENABLED=true
-DATA_AGENT_V2_CRITIC_ENABLED=true
-```
-
-### 12.2 目标架构
-
-```text
-DataAgent
-  -> DataAgentV2Supervisor
-      -> KnowledgeRetrieverAgent
-      -> DAG:
-          IntentAgent
-          EntityAgent
-          MetricAgent
-          TimeReasoningAgent
-          JoinAgent
-          SemanticAgent
-          PlannerAgent
-          SQLCompilerAgent
-          VerificationAgent
-      -> SQL execution
-      -> ReflectionAgent
-      -> StatisticalAgent / InsightAgent / VisualizationAgent
-      -> DataCriticAdapter
-      -> Learning pipeline
-```
-
-### 12.3 子 Agent 职责
-
-| 子 Agent | 文件 | 职责 |
-|----------|------|------|
-| KnowledgeRetrieverAgent | `knowledge_retriever.py` | 读取指标定义、schema metadata、表关系、分析技能、query patterns |
-| IntentAgent | `intent_agent.py` | 识别 aggregation、ranking、trend、metadata 等分析意图 |
-| EntityAgent | `entity_agent.py` | 用户实体词到表/列的映射 |
-| MetricAgent | `metric_agent.py` | 指标名到字段、公式、聚合方式的映射 |
-| TimeReasoningAgent | `time_reasoning_agent.py` | 解析近 7 天、同比、环比等时间表达 |
-| JoinAgent | `join_agent.py` | 推理 join path、cardinality、放大风险 |
-| SemanticAgent | `semantic_agent.py` | 业务语义上下文 |
-| PlannerAgent | `planner_agent.py` | 生成逻辑查询计划 |
-| SQLCompilerAgent | `sql_compiler_agent.py` | 确定性编译 SQL |
-| VerificationAgent | `verification_agent.py` | SQL 安全、语义、指标覆盖、实体覆盖验证 |
-| ReflectionAgent | `reflection_agent.py` | 执行失败、空结果、异常结果后的修复 |
-| StatisticalAgent | `statistical_agent.py` | 统计画像、异常、趋势 |
-| InsightAgent | `insight_agent.py` | 自然语言洞察 |
-| VisualizationAgent | `visualization_agent.py` | 图表建议 |
-| DataCriticAdapter | `data_critic.py` | 质量评估与置信度解释 |
-| FeedbackCollectorAgent | `feedback_collector.py` | 用户反馈分类 |
-| PatternExtractorAgent | `pattern_extractor.py` | 成功模式抽取 |
-| KnowledgeUpdaterAgent | `knowledge_updater.py` | 知识资产更新 |
-| MetricRefinerAgent | `metric_refiner.py` | 指标精炼 |
-
-### 12.4 CognitiveContext
-
-`agents/data_agent_v2/types.py` 中的 `CognitiveContext` 是子 Agent 间共享状态，包含：
-
-- 输入：query、data_source_id、dialect、schema_hint、table_names、table_columns、semantic_config
-- 推理结果：intent、entities、metrics、time_window、join_paths、semantic_context、logical_plan、compiled_sql、verification_report
-- 知识层：matched_metrics、matched_skills、matched_relationships、column_semantics、pattern_hit
-- 执行结果：execution_rows、execution_row_count、execution_error、reflection_rounds
-- 学习层：learning_signals、refined_metrics
-- 分析层：statistical_report、insights、visualization_config
-
-### 12.5 当前已补齐的主链路行为
-
-- V2 默认启用，V1 fallback 默认关闭。
-- `/api/v1/data/query` 在 V2 开启时也走 `DataAgent().execute()`。
-- Supervisor 会加载 datasource/schema/dialect/DSN。
-- Knowledge Layer 自动注入 DB session。
-- DAG 分层执行时持续注入并合并 `CognitiveContext`。
-- 子 Agent 返回 dict 或 `AgentResult` 都会在 Supervisor 边界归一化。
-- direct SQL、dry-run、metadata fast path 已支持。
-- verified `compiled_sql` 由 SQLExecutor 执行。
-- Reflection 修复 SQL 后会重新执行。
-- 最终 metadata 包含 `data_source_id`、`mode=data_agent_v2`、`sql`、`rows`、`row_count`、`result_refs`、`verification_report`。
-
-### 12.6 返回协议
-
-DataAgent V2 返回 `AgentResult`：
-
-```json
-{
-  "agent_type": "data",
-  "status": "success",
-  "content": "查询返回 N 行数据...",
-  "confidence": 0.85,
-  "metadata": {
-    "rows": [],
-    "row_count": 0,
-    "sql": "SELECT ...",
-    "data_source_id": "...",
-    "mode": "data_agent_v2",
-    "verification_report": {},
-    "intent": {},
-    "metrics_used": [],
-    "entities_used": [],
-    "result_refs": []
-  },
-  "evidence": [],
-  "agent_trace": {
-    "pipeline": "data_agent_v2"
-  }
-}
+DATA_AGENT_V2_USE_METRIC_DEFINITIONS=true
+DATA_AGENT_V2_USE_SCHEMA_METADATA=true
+DATA_AGENT_V2_USE_TABLE_RELATIONSHIPS=true
+DATA_AGENT_V2_CONFIDENCE_THRESHOLD=0.40
+DATA_AGENT_V2_SUPERVISOR_MAX_RETRIES=2
 ```
 
 ---
 
-## 13. 数据源、Knowledge Assets 与 Text2SQL
+## 14. 数据源、Knowledge Assets 与 Text2SQL
 
-### 13.1 数据源管理
+相关目录：
 
-路由：`gateway/api_gateway/routers/databases.py`
-
-支持能力：
-
-- 创建/更新/删除数据源。
-- host 校验，阻止 Docker 内部不可达主机名。
-- 测试连接。
-- 同步 schema。
-- 查询数据库。
-- 简单分析。
-- 语义映射 CRUD。
-
-支持数据库类型：
-
-- `mysql`
-- `postgres`
-- `clickhouse`
-- `doris`
-
-### 13.2 `/data/query` 行为
-
-路由：`gateway/api_gateway/routers/data.py`
-
-- 当 `DATA_AGENT_V2_ENABLED=true`：走 `DataAgent` / V2 Supervisor。
-- 当 `DATA_AGENT_V2_ENABLED=false`：保留旧 Text2SQL pipeline，用于兼容和回归。
-
-### 13.3 Knowledge Assets
-
-DataAgent V2 相关知识资产表：
-
-| 表 | 作用 |
-|----|------|
-| `metric_definitions` | 指标目录，公式、别名、底层字段、审批状态 |
-| `schema_metadata` | 列级业务语义，主外键、时间列、指标/维度标记 |
-| `table_relationships` | 表连接关系、cardinality、放大风险、成功率 |
-| `analytical_skills` | 可复用分析模式，如 cohort、funnel、ranking |
-| `query_patterns` | 成功查询模式记忆 |
-| `metric_lineage` | 指标血缘 |
-| `cognitive_events` | DataAgent V2 管线事件 |
-
-相关路由：
-
+- `gateway/api_gateway/routers/databases.py`
+- `gateway/api_gateway/routers/data.py`
 - `gateway/api_gateway/routers/metrics.py`
 - `gateway/api_gateway/routers/table_relationships.py`
 - `gateway/api_gateway/routers/analytical_skills.py`
+- `kernel/data_cognition/`
+- `execution/data/`
 
-### 13.4 旧 data_cognition 管线
+### 14.1 数据源支持
 
-目录：`kernel/data_cognition/`
+| 类型 | 说明 |
+|------|------|
+| MySQL | 业务库查询 |
+| PostgreSQL | 业务库查询 |
+| ClickHouse | 分析型查询 |
+| Doris | 分析型查询 |
 
-关键模块：
-
-- `semantic_parser.py`
-- `schema_linker.py`
-- `query_planner.py`
-- `logical_plan.py`
-- `sql_builder.py`
-- `sql_validator.py`
-- `sql_ranker.py`
-- `sql_reflector.py`
-- `sql_rewriter.py`
-- `query_executor.py`
-- `table_graph.py`
-- `explanation.py`
-
-虽然 V2 默认启用，但旧管线仍保留用于兼容测试、fallback 可选项和部分低层能力复用。
-
----
-
-## 14. RAG 与文档系统
-
-### 14.1 路由与模型
-
-路由：`gateway/api_gateway/routers/documents.py`
-
-核心表：
-
-- `documents`
-- `document_chunks`
-- `document_llmwiki`
-
-### 14.2 RAG Agent
-
-文件：`agents/rag_agent.py`
-
-职责：
-
-- 根据 query 检索文档 chunk。
-- 检索 LLMWiki 问答条目。
-- 检索用户记忆。
-- 应用动态阈值与 rerank。
-- 输出 citations、chunks、vector_chunks、llmwiki_entries、quality metadata。
-
-### 14.3 文档处理
-
-支持：
-
-- 文本上传。
-- 文件 metadata。
-- chunk strategy。
-- embedding_json / embedding_vector 双字段。
-- pgvector 可选。
-
----
-
-## 15. 记忆系统
-
-目录：`memory/`
-
-| 子系统 | 作用 |
-|--------|------|
-| `working_memory` | 当前会话工作记忆、summary slot |
-| `semantic_memory` | 长期语义记忆 |
-| `episodic_memory` | 情节记忆 |
-| `procedural_memory` | 程序性记忆 |
-| `memory_router` | 多源记忆检索与路由 |
-| `evolution` | 记忆演化、价值评分、衰减 |
-
-数据库表：
-
-- `user_memories`
-- `user_memory_settings`
-- `feedback`
-
-聊天中会使用：
-
-- 用户显式反馈。
-- like/dislike 对记忆价值加权。
-- active memory detection。
-- context composer 对历史进行压缩。
-
----
-
-## 16. 工具、技能、插件与连接器
-
-### 16.1 工具
-
-目录：
-
-- `tools/`
-- `kernel/tools/`
-- `agents/tool_agent.py`
-
-常见工具：
-
-- 时间/日期。
-- 天气。
-- 计算。
-- Web search。
-- Python/code execution 相关能力。
-
-### 16.2 技能系统
-
-目录：
-
-- `skills/`
-- `agents/skills_agent.py`
-- `gateway/api_gateway/routers/skills.py`
-
-能力：
-
-- 技能创建。
-- 技能安装。
-- 技能测试。
-- 会话绑定。
-- marketplace/store/installed/runtime 管理。
-
-### 16.3 插件与连接器
-
-目录：
-
-- `plugins/`
-- `connectors/`
-- `gateway/api_gateway/routers/connectors.py`
-
-插件类型：
-
-- chart
-- code
-- data
-- file
-- tool
-
-连接器支持授权、资源列举、同步等基本流程。
-
----
-
-## 17. 规则引擎与灰度发布
-
-路由：`gateway/api_gateway/routers/rules.py`
-
-Agent：`agents/rule_engine_agent.py`
-
-相关配置：
-
-```env
-KERNEL_RULE_GRAYSCALE_ENABLED=true
-KERNEL_RULE_GRAYSCALE_DEFAULT_PERCENTAGE=100
-KERNEL_CANARY_AUTO_ROLLBACK_ENABLED=true
-KERNEL_CANARY_ERROR_RATE_THRESHOLD=0.10
-KERNEL_CANARY_LATENCY_MULTIPLIER=2.0
-KERNEL_CANARY_MIN_SAMPLES=100
-```
-
-支持能力：
-
-- YAML 规则管理。
-- 版本创建。
-- 灰度发布。
-- promote。
-- rollback。
-- 自动回滚阈值。
-
----
-
-## 18. 执行平面与 Agent Bus
-
-目录：`execution/`
+### 14.2 Data Cognition 模块
 
 | 模块 | 作用 |
 |------|------|
-| `dag_engine/` | DAG 执行引擎 |
-| `workflow_engine/` | workflow 执行 |
-| `sandbox/` | 沙箱执行 |
-| `scheduler/` | 调度 |
-| `tool_router/` | 工具路由 |
-| `data/` | DBRouter、SQLExecutor、query intents |
+| `semantic_layer.py` | 指标、维度、语义层 |
+| `schema_linker.py` | schema linking |
+| `query_planner.py` | 查询计划 |
+| `logical_plan.py` | 逻辑计划 |
+| `sql_builder.py` | SQL 构造 |
+| `sql_validator.py` | SQL 验证 |
+| `sql_rewriter.py` | SQL 修复 |
+| `sql_reflector.py` | 反思 |
+| `sql_dialect.py` | 方言适配 |
+| `query_executor.py` | 执行 |
+| `explanation.py` | 结果解释 |
 
-Agent Bus：
+---
 
-- `infra/message_bus/agent_bus.py`
-- `agents/worker.py`
+## 15. RAG 与文档系统
+
+相关文件：
+
+- `agents/rag_agent.py`
+- `plugins/document_plugin.py`
+- `plugins/document_retrieval.py`
+- `gateway/api_gateway/routers/documents.py`
+- `services/file_parser.py`
+
+### 15.1 RAG 流程
+
+```text
+query
+  -> normalize / rewrite
+  -> query type classify
+  -> query expansion
+  -> DocumentPlugin.search_chunks
+  -> DocumentPlugin.search_llmwiki
+  -> optional rerank
+  -> evidence quality gate
+  -> relevance anchor
+  -> AgentResult(metadata.chunks / citations / quality)
+```
+
+### 15.2 重要控制
+
+- `RAG_MIN_SCORE` / `rag_min_evidence_score` 控制检索阈值。
+- `rag_rerank_enabled` 控制 reranker。
+- `llmwiki_enabled` 控制 LLMWiki。
+- RAG 会输出 `quality.answerable`、`quality.gated`、`quality.relevance_anchor`。
+- 低相关 supporting chunk 会被降级，不再直接作为最终答案。
+
+### 15.3 附件上传
+
+支持 txt、md、csv、tsv、pdf、docx、xlsx、json、代码文件、图片等类型，解析后注入 `attachment_contexts`。
+
+---
+
+## 16. 记忆系统
+
+目录：`memory/`
+
+| 模块 | 作用 |
+|------|------|
+| `working_memory/` | Redis 支持的会话窗口、scratchpad、identity cache |
+| `episodic_memory/` | 情节记忆，记录 turn/event |
+| `semantic_memory/` | 语义记忆 |
+| `procedural_memory/` | 程序性记忆 |
+| `memory_router/` | 统一记忆检索路由 |
+| `temporal_memory/` | 时间衰减索引 |
+| `evolution/` | 记忆演进、治理、路由增强 |
+
+### 16.1 记忆治理
+
+`memory/evolution/governance.py` 提供：
+
+- 信心衰减。
+- 矛盾检测。
+- 来源追踪。
+- 记忆启用/禁用与质量控制。
+
+### 16.2 注入原则
+
+当前项目已引入 Cognitive Budget：
+
+- 简单问答默认不注入 memory。
+- 记忆类、延续类、个性化类任务才允许 memory 进入上下文。
+- memory 作为候选上下文，不能覆盖 `raw_user_query`。
+
+---
+
+## 17. Capability Intelligence
+
+目录：`kernel/capability_intelligence/`
+
+Capability Intelligence 将系统从 “tool calling” 升级为 “capability cognition”。Planner 看到的不只是工具名，而是能力画像、可靠性、延迟、历史成功率、替代关系和策略记忆。
+
+| 模块 | 作用 |
+|------|------|
+| `profile.py` | CapabilityProfile |
+| `profiler.py` | 能力画像构建 |
+| `adapter.py` | 为 Understanding/Planner 格式化能力信息 |
+| `feedback.py` | 执行反馈闭环 |
+| `ontology.py` | 能力本体 |
+| `knowledge_graph.py` | 能力关系图 |
+| `reasoner.py` | 基于 KG 和历史的能力推荐 |
+| `execution_memory.py` | 执行统计与退化检测 |
+| `strategy_memory.py` | 编排策略记忆 |
+| `failure_memory.py` | 失败模式记录 |
+| `evolution.py` | 持续改进引擎 |
+
+关键配置：
+
+```env
+KERNEL_CAPABILITY_INTELLIGENCE_ENABLED=true
+KERNEL_CAPABILITY_INTELLIGENCE_PHASE2_ENABLED=true
+KERNEL_CAPABILITY_KNOWLEDGE_GRAPH_ENABLED=true
+KERNEL_CAPABILITY_REASONER_ENABLED=true
+KERNEL_CAPABILITY_EXECUTION_MEMORY_ENABLED=true
+KERNEL_CAPABILITY_STRATEGY_MEMORY_ENABLED=true
+KERNEL_CAPABILITY_EVOLUTION_ENABLED=true
+```
+
+---
+
+## 18. 工具、技能、插件与连接器
+
+### 18.1 Tools
+
+相关目录：
+
+- `kernel/tools/`
+- `tools/registry/`
+- `tools/builtin_tools/`
+- `execution/tool_router/`
+
+内置能力包括：
+
+- 时间/日期。
+- 天气。
+- 计算器。
+- Python/code sandbox。
+- Web search。
+
+### 18.2 Plugins
+
+目录：`plugins/`
+
+| 插件 | 作用 |
+|------|------|
+| `document_plugin.py` | 文档检索 |
+| `web_plugin.py` | Web 检索 |
+| `knowledge_plugin.py` | 知识增强 |
+| `memory_plugin.py` | 记忆访问 |
+| `tool_plugin.py` | 工具封装 |
+| `code/` | 安全代码解释器 |
+| `chart/` | 图表生成 |
+| `data/` | 数据分析插件 |
+
+### 18.3 Skills
+
+目录：
+
+- `skills/runtime/`
+- `skills/store/`
+- `skills/installed/`
+
+Skills 支持 manifest 验证、加载、市场条目、会话启用/禁用和测试执行。
+
+### 18.4 Connectors
+
+目录：
+
+- `connectors/sdk/`
+- `connectors/builtin/`
+- `gateway/api_gateway/routers/connectors.py`
+
+用于外部系统集成和插件式数据接入。
+
+---
+
+## 19. 规则引擎与灰度发布
+
+相关文件：
+
+- `agents/rule_engine_agent.py`
+- `gateway/api_gateway/routers/rules.py`
+- `infra/storage/models.py`
+
+能力：
+
+- YAML 规则定义。
+- 规则 CRUD。
+- 版本化。
+- 灰度发布。
+- 发布/回滚。
+- 与 Product/Rule force mode 集成。
 
 配置：
 
 ```env
-KERNEL_AGENT_BUS_ENABLED=false
-KERNEL_AGENT_BUS_MODE=pubsub
-KERNEL_AGENT_BUS_GROUP=agent-workers
-KERNEL_AGENT_BUS_CONSUMER=worker-1
-KERNEL_AGENT_BUS_MAX_RETRY=2
-```
-
-Bus 支持 pubsub 和 stream，两者用于不同可靠性要求的任务分发。
-
----
-
-## 19. 模型网关
-
-目录：`model/`
-
-核心文件：`model/model_gateway/gateway.py`
-
-### 19.1 LLM 角色
-
-配置类中定义了多个模型角色：
-
-| 角色 | 默认模型 |
-|------|----------|
-| query | `qwen3.6-plus` |
-| planning | `qwen3.6-plus` |
-| compress | `qwen3.5-27b` |
-| seniorshort | `qwen3-14b` |
-| middleshort | `qwen3-8b` |
-| juniorshort | `qwen3-1.7b` |
-| minshort | `qwen3-0.6b` |
-| vision | `qwen3.6-vl-plus` |
-
-### 19.2 Embedding 与 Rerank
-
-Embedding：
-
-```env
-EMBEDDING_PROVIDER=dashscope
-EMBEDDING_MODEL_NAME=text-embedding-v3
-EMBEDDING_DIMS=1024
-```
-
-Rerank：
-
-```env
-RERANK_PROVIDER=heuristic
-RERANK_MODEL_NAME=BAAI/bge-reranker-v2-m3
+KERNEL_RULE_GRAYSCALE_ENABLED=true
+KERNEL_RULE_GRAYSCALE_DEFAULT_PERCENTAGE=100
 ```
 
 ---
 
-## 20. 安全、审计与可解释性
-
-### 20.1 安全
+## 20. 执行平面与 Agent Bus
 
 相关目录：
 
-- `infra/security/`
-- `infra/guards/`
-- `safety/`
+- `execution/`
+- `kernel/dispatcher.py`
+- `kernel/dag_scheduler.py`
+- `kernel/runtime/executor.py`
+- `agents/worker.py`
 
-能力：
+### 20.1 执行方式
 
-- JWT。
-- bcrypt 密码哈希。
-- 注册开关和邮箱域限制。
-- 数据库 host allowlist。
-- SQL read-only 验证。
-- tool permission token。
-- NER PII masking。
+| 模式 | 说明 |
+|------|------|
+| 直接执行 | Dispatcher 本进程调用 Agent |
+| DAG 调度 | 根据依赖拓扑执行任务 |
+| Speculative Execution | 并行候选执行 |
+| Agent Bus | Redis pubsub/stream 分发给 worker |
+| Runtime Executor | 新运行时中的 ExecutionRuntime |
 
-### 20.2 审计
+### 20.2 Agent Bus 配置
 
-表：
-
-- `audit_logs`
-- `trace_logs`
-- `reasoning_traces`
-- `cognitive_events`
-
-路由：
-
-- `/api/v1/audit/*`
-- `/api/v1/cognitive-events/replay`
-- `/api/v1/xai/*`
-
-### 20.3 可解释性
-
-相关模块：
-
-- `kernel/protocol/events.py`
-- `kernel/protocol/mcp.py`
-- `kernel/epistemology/*`
-- `safety/xai/*`
-- `infra/observability/tracer.py`
-
-输出包括：
-
-- reasoning steps。
-- execution graph。
-- evidence。
-- confidence。
-- critique。
-- annotations。
-- result refs。
+```env
+KERNEL_AGENT_BUS_ENABLED=true
+KERNEL_AGENT_BUS_REQUIRE_WORKER=true
+KERNEL_AGENT_BUS_NAMESPACE=opentrace:agent
+KERNEL_AGENT_BUS_MODE=pubsub
+KERNEL_AGENT_BUS_GROUP=agent-workers
+KERNEL_AGENT_BUS_MAX_RETRY=2
+```
 
 ---
 
-## 21. 基础设施与持久化
+## 21. 模型网关
 
-### 21.1 配置
+目录：`model/`
 
-统一配置入口：
+### 21.1 角色化模型
+
+| Role | 用途 |
+|------|------|
+| `QUERY` | 主回答、复杂推理、融合 |
+| `PLANNING` | 任务分解、计划生成 |
+| `COMPRESS` | 压缩与摘要 |
+| `ROUTER` | L1 轻量分类 |
+| `FAST` / `MIDDLESHORT` | 简单问答 |
+| `MINSHORT` / `IDENTITY` | 身份与极轻任务 |
+| `VISION` | 图像理解 |
+| `CHEAP_CRITIC` | 低成本审校 |
+
+### 21.2 Embedding / Rerank
+
+| 模块 | 作用 |
+|------|------|
+| `model/embedding/` | embedding 调用 |
+| `model/reranker/` | rerank 调用 |
+| `model/model_gateway/` | 角色到模型的路由 |
+| `model/llm_adapter/` | OpenAI-compatible adapter |
+
+---
+
+## 22. 安全、审计与可解释性
+
+相关目录：
+
+- `safety/`
+- `infra/security/`
+- `infra/audit/`
+- `infra/observability/`
+- `safety/xai/`
+
+### 22.1 安全能力
+
+| 能力 | 说明 |
+|------|------|
+| Zero Trust | 查询风险评估和权限 token |
+| PII Masking | NER PII 脱敏 |
+| Guardrails | 输入和策略防护 |
+| SQL Safety | 只读 SQL、host guard、方言限制 |
+| Tool Permission | 高风险工具确认 |
+| Canary | 金丝雀测试与自动回滚 |
+
+### 22.2 审计与可解释性
+
+| 对象 | 说明 |
+|------|------|
+| `TraceLog` | 每轮 query/response/graph |
+| `ReasoningTrace` | 推理步骤 |
+| `CognitiveEvent` | runtime/cognitive event |
+| `AuditLog` | 审计日志 |
+| `XAI cognitive_trace` | 决策、fusion、critic、final 的可解释轨迹 |
+| Runtime Snapshot | prompt/runtime deterministic replay |
+
+---
+
+## 23. 基础设施与持久化
+
+### 23.1 PostgreSQL
+
+默认数据库：
+
+```env
+DATABASE_URL=postgresql://postgres:<password>@postgres:5432/opentrace_v2
+TOKEN_DB_URL=postgresql://postgres:<password>@postgres:5432/opentrace_v2
+```
+
+宿主机本地运行后端时通常需要改为：
+
+```env
+DATABASE_URL=postgresql://postgres:<password>@127.0.0.1:5432/opentrace_v2
+TOKEN_DB_URL=postgresql://postgres:<password>@127.0.0.1:5432/opentrace_v2
+```
+
+`infra/config/settings.py` 会将 `postgresql://` 自动转换为 asyncpg 使用的 `postgresql+asyncpg://`。
+
+### 23.2 Redis
+
+默认：
+
+```env
+REDIS_URL=redis://redis:6379/10
+```
+
+逻辑 DB：
+
+| DB | 用途 |
+|----|------|
+| 10 | session |
+| 11 | cache |
+| 12 | memory |
+| 13 | queue |
+| 14 | rate-limit |
+| 15 | pubsub |
+
+---
+
+## 24. 数据库模型
+
+主要模型集中在 `infra/storage/models.py`。
+
+| 类别 | 典型模型 |
+|------|----------|
+| 用户与认证 | `User` |
+| 会话与消息 | `ChatSession`、`Message`、`TraceLog` |
+| 文档与附件 | `Document`、`DocumentChunk`、`Attachment` |
+| 数据源 | `DataSource`、`DataSourceSchema` |
+| 语义资产 | metric definitions、table relationships、analytical skills |
+| 记忆 | `UserMemory`、`UserMemorySettings` |
+| 任务 | task 相关模型 |
+| 审计 | `AuditLog`、`ReasoningTrace`、`CognitiveEvent` |
+| 规则 | rule、rule version、grayscale 相关模型 |
+| 技能 | skill manifest / install / session config |
+
+迁移目录：
+
+```text
+alembic/
+└── versions/
+```
+
+---
+
+## 25. 配置项
+
+配置入口：
 
 - `infra/config/settings.py`
+- `.env`
 - `.env.example`
+- `docker-compose.yml`
 
-`Settings` 聚合：
-
-- DatabaseSettings
-- RedisSettings
-- LLMSettings
-- EmbeddingSettings
-- RerankSettings
-- JWTSettings
-- SMTPSettings
-- RegistrationSettings
-- OTelSettings
-- AppSettings
-
-### 21.2 存储
-
-目录：`infra/storage/`
-
-核心：
-
-- `database.py`：engine、session、Base、初始化。
-- `models.py`：ORM models。
-
-### 21.3 Redis
-
-用途：
-
-- session。
-- cache。
-- memory。
-- queue。
-- rate limit。
-- pubsub。
-
-`redis_shadow_kv` 表提供 Redis shadow/fallback。
-
-### 21.4 可观测性
-
-目录：
-
-- `infra/observability/`
-- `deploy/docker/prometheus.yml`
-
-组件：
-
-- structlog。
-- OpenTelemetry。
-- Prometheus。
-- Jaeger。
-
----
-
-## 22. 数据库模型
-
-主要模型位于 `infra/storage/models.py`。
-
-### 22.1 用户与会话
-
-| 表 | 说明 |
-|----|------|
-| `users` | 用户、角色、审批状态 |
-| `chat_sessions` | 会话、标题、标签、归档 |
-| `messages` | 每条消息，支持 tool call、多模态、版本 |
-| `trace_logs` | 回合级追踪聚合 |
-| `conversation_states` | 多轮状态、active topic/entity/result refs |
-| `attachments` | 会话附件、文本/图片内容、hash 去重 |
-
-### 22.2 文档/RAG
-
-| 表 | 说明 |
-|----|------|
-| `documents` | 文档元数据与原文 |
-| `document_chunks` | chunk、embedding、metadata |
-| `document_llmwiki` | 文档生成式问答索引 |
-
-### 22.3 数据源与 DataAgent V2
-
-| 表 | 说明 |
-|----|------|
-| `data_sources` | 外部数据库连接配置 |
-| `data_source_schemas` | schema_json、semantic_mappings、auto_metadata |
-| `data_query_logs` | 数据查询日志 |
-| `metric_definitions` | 指标目录 |
-| `schema_metadata` | 列级业务语义 |
-| `table_relationships` | 表关系 |
-| `analytical_skills` | 分析技能模板 |
-| `query_patterns` | 成功查询模式 |
-| `metric_lineage` | 指标血缘 |
-| `cognitive_events` | DataAgent V2 审计事件 |
-
-### 22.4 记忆、任务、审计
-
-| 表 | 说明 |
-|----|------|
-| `user_memories` | 用户记忆 |
-| `user_memory_settings` | 记忆开关 |
-| `feedback` | 用户反馈、DataAgent V2 学习字段 |
-| `task_definitions` | 任务定义 |
-| `task_runs` | 任务运行 |
-| `task_notifications` | 任务通知 |
-| `audit_logs` | 审计 |
-| `reasoning_traces` | 推理阶段追踪 |
-| `tool_stats` | 工具统计 |
-| `system_settings` | 系统键值配置 |
-| `redis_shadow_kv` | Redis 影子表 |
-
----
-
-## 23. 配置项
-
-### 23.1 服务基础
+### 25.1 运行端口
 
 ```env
-APP_ENV=development
-APP_HOST=0.0.0.0
-APP_PORT=14100
-GATEWAY_PORT=14100
+API_PORT=14100
 FRONTEND_PORT=14108
 VITE_API_URL=http://localhost:14100
-VITE_WS_URL=ws://localhost:14100
 ```
 
-### 23.2 数据库与 Redis
-
-```env
-DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/opentrace_v2
-TOKEN_DB_URL=postgresql+asyncpg://postgres:password@localhost:5432/opentrace_v2
-REDIS_URL=redis://localhost:6379/10
-```
-
-### 23.3 Kernel 与 Agent
+### 25.2 Kernel / Runtime
 
 ```env
 KERNEL_ORCHESTRATOR_VERSION=v4
 KERNEL_AGENT_ENABLED=true
-KERNEL_AGENT_DATA_ENABLED=true
-KERNEL_AGENT_TOOL_ENABLED=true
-KERNEL_AGENT_WEB_ENABLED=true
-KERNEL_AGENT_RAG_ENABLED=true
-KERNEL_AGENT_TIMEOUT_SEC=30
-KERNEL_AGENT_MAX_PARALLEL=5
-KERNEL_AGENT_RUNTIME_SUPERVISOR_ENABLED=true
-```
-
-### 23.4 V5 路由
-
-```env
 KERNEL_V5_ROUTING_ENABLED=true
 KERNEL_L0_RULE_ROUTER_ENABLED=true
 KERNEL_L1_TINY_ROUTER_ENABLED=true
 KERNEL_SEMANTIC_CACHE_ENABLED=true
-KERNEL_SEMANTIC_CACHE_THRESHOLD=0.92
+KERNEL_MEMORY_CONTEXT_ENABLED=true
+KERNEL_CONTEXT_COMPOSER_ENABLED=true
+KERNEL_COGNITIVE_PLANNER_V2_ENABLED=true
+KERNEL_RUNTIME_REWRITE_ENABLED=true
+KERNEL_RUNTIME_UNDERSTANDING_ENABLED=true
+KERNEL_RUNTIME_CAPABILITY_GRAPH_ENABLED=true
+KERNEL_RUNTIME_EVIDENCE_FUSION_CRITIC_ENABLED=true
+KERNEL_RUNTIME_WORKSPACE_ENABLED=true
 ```
 
-### 23.5 多轮增强
+### 25.3 RAG / 文档
 
 ```env
-KERNEL_CONVERSATION_STATE_ENABLED=true
-KERNEL_CLARIFICATION_GATE_ENABLED=true
-KERNEL_CORRECTION_DETECTION_ENABLED=true
-KERNEL_REFINE_REPLAN_ENABLED=true
-KERNEL_DST_ENABLED=true
-KERNEL_CONTEXT_COMPOSER_ENABLED=true
-KERNEL_MEMORY_VALUE_SCORING_ENABLED=true
+RAG_MIN_EVIDENCE_SCORE=0.65
+RAG_AUTO_FALLBACK_TO_WEB=true
+RAG_RERANK_ENABLED=true
+LLMWIKI_ENABLED=true
+LLMWIKI_TOP_K=3
+ATTACHMENT_UPLOAD_ENABLED=true
+ATTACHMENT_MAX_SIZE_MB=20
+ATTACHMENT_MAX_CHARS=4000
 ```
 
-### 23.6 DataAgent V2
+### 25.4 DataAgent V2
 
 ```env
 DATA_AGENT_V2_ENABLED=true
 DATA_AGENT_V2_FALLBACK_TO_V1=false
-DATA_AGENT_V2_SUPERVISOR_MAX_RETRIES=2
 DATA_AGENT_V2_CONFIDENCE_THRESHOLD=0.40
-DATA_AGENT_V2_COGNITIVE_EVENTS_ENABLED=false
-DATA_AGENT_V2_LEARNING_ENABLED=false
-DATA_AGENT_V2_STATISTICAL_ENABLED=false
-DATA_AGENT_V2_INSIGHT_ENABLED=false
-DATA_AGENT_V2_VISUALIZATION_ENABLED=false
+DATA_AGENT_V2_SUPERVISOR_MAX_RETRIES=2
+DATA_AGENT_V2_LEARNING_ENABLED=true
 ```
 
-### 23.7 附件与 PII
+### 25.5 安全与治理
 
 ```env
-ATTACHMENT_UPLOAD_ENABLED=true
-ATTACHMENT_MAX_SIZE_MB=20
-ATTACHMENT_STORAGE_PATH=/tmp/opentrace_attachments
-ATTACHMENT_MAX_CHARS=4000
-MULTIMODAL_ATTACHMENT_ENABLED=true
 KERNEL_NER_MASKING_ENABLED=true
-```
-
-### 23.8 LLM
-
-```env
-DEFAULT_LLM_QUERY_MODEL=qwen3.6-plus
-DEFAULT_LLM_PLANING_MODEL=qwen3.6-plus
-DEFAULT_LLM_COMPRESS_MODEL=qwen3.5-27b
-DEFAULT_LLM_VISION_MODEL=qwen3.6-vl-plus
+KERNEL_CANARY_AUTO_ROLLBACK_ENABLED=true
+KERNEL_RULE_GRAYSCALE_ENABLED=true
+KERNEL_MEMORY_TRUTH_MAINTENANCE_ENABLED=true
 ```
 
 ---
 
-## 24. 部署与运行
+## 26. 部署与运行
 
-### 24.1 Docker 启动
+### 26.1 Docker 启动
 
 ```bash
-cp .env.example .env
 bash start.sh
 ```
 
-`start.sh` 会：
-
-1. 检查 `14100` 端口是否被占用。
-2. 调用 `scripts/docker_up.sh`。
-3. 检查 `/api/v1/health`。
-4. 检查 `/api/v1/health/deps`。
-5. 检查核心表 `public.users` 是否存在。
-6. `--verify` 时运行 Docker 验证脚本。
-
-### 24.2 观测启动
+或：
 
 ```bash
-bash start.sh --with-observability
+docker compose up -d postgres redis api agent-worker
 ```
 
-会启用 Prometheus 和 Jaeger profile。
-
-### 24.3 停止与重启
+健康检查：
 
 ```bash
-bash stop.sh
-bash restart.sh
+curl http://127.0.0.1:14100/api/v1/health
+curl http://127.0.0.1:14100/api/v1/health/deps
+curl http://127.0.0.1:14100/api/v1/health/runtime
 ```
 
-### 24.4 本地开发
+### 26.2 本地后端
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m gateway.api_gateway.main
+DATABASE_URL=postgresql://postgres:<password>@127.0.0.1:5432/opentrace_v2 \
+TOKEN_DB_URL=postgresql://postgres:<password>@127.0.0.1:5432/opentrace_v2 \
+REDIS_URL=redis://127.0.0.1:6380/10 \
+PYTHONPATH=. python -m uvicorn gateway.api_gateway.main:app --host 0.0.0.0 --port 14100 --reload
+```
 
+### 26.3 本地前端
+
+```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-### 24.5 常用检查
+默认访问：
+
+- API: `http://localhost:14100`
+- Swagger: `http://localhost:14100/docs`
+- Frontend: `http://localhost:14108`
+
+### 26.4 迁移
 
 ```bash
-curl http://localhost:14100/api/v1/health
-curl http://localhost:14100/api/v1/health/deps
-docker compose ps
-docker logs opentrace_api
-docker logs opentrace_agent_worker
+docker compose exec -T api alembic upgrade head
+docker compose exec -T api alembic history --verbose
 ```
 
 ---
 
-## 25. 测试体系
+## 27. 测试体系
 
-### 25.1 后端
+### 27.1 后端测试
+
+常用命令：
 
 ```bash
-python -m pytest tests -q
+PYTHONPATH=. pytest -q
 ```
 
-当前后端全量测试状态：
+重点测试文件：
 
-```text
-449 passed, 1 warning
-```
-
-警告来自 pytest 对 `asyncio_mode` 的配置识别，未影响测试结果。
-
-关键测试类别：
-
-| 类别 | 示例 |
+| 测试 | 覆盖 |
 |------|------|
-| Orchestrator | `test_orchestrator_v4_contract.py` |
-| Agent Bus | `test_agent_bus_e2e_contract.py` |
-| DataAgent V2 | `test_data_agent_v2_*` |
-| Text2SQL | `test_text2sql_regression.py` |
-| Data API | `test_data_query_api_contract.py` |
-| Database API | `test_databases_api_contract.py` |
-| Force Mode | `test_force_mode_routing.py` |
-| RAG | `test_rag_agent_contract.py` |
-| Governance | `test_agent_bus_governance_contract.py` |
+| `tests/test_v5_routing_contract.py` | L0/L1/语义缓存/上下文组装 |
+| `tests/test_cognitive_controls_contract.py` | IntentLock、CognitiveBudget、Relevance Anchor |
+| `tests/test_runtime_cognitive_executive.py` | CognitiveExecutive 集成 |
+| `tests/test_cognitive_runtime_contract.py` | Runtime V2 合约 |
+| `tests/test_capability_intelligence.py` | Capability Intelligence |
+| `tests/test_data_agent_v2_agent_contract.py` | DataAgent V2 agent 层 |
+| `tests/test_data_agent_v2_supervisor_contract.py` | DataAgent V2 supervisor |
+| `tests/test_rag_agent_contract.py` | RAG agent |
+| `tests/test_rag_fusion_output_contract.py` | RAG/fusion 输出 |
+| `tests/test_force_mode_routing.py` | 强制模式 |
+| `tests/test_documents_rag_retrieval_contract.py` | 文档/RAG |
+| `tests/test_databases_api_contract.py` | 数据源 API |
+| `tests/test_memory_api_contract.py` | 记忆 API |
+| `tests/test_health_runtime_metrics_contract.py` | health/runtime metrics |
 
-### 25.2 前端
+### 27.2 前端测试
 
 ```bash
 cd frontend
+npm run test
 npm run build
-npm test -- --run
 ```
 
-当前状态：
+### 27.3 注意事项
 
-- `npm run build` 通过。
-- `npm test -- --run` 存在若干 UI contract 失败，主要是文案和组件事件断言，与 DataAgent V2 后端链路无直接关系。
-
-### 25.3 脚本验证
-
-常见脚本：
+裸 `pytest` 在某些环境下可能找不到 `kernel` 包，推荐显式设置：
 
 ```bash
-bash scripts/verify_agent_cluster.sh
-bash scripts/verify_agent_bus_e2e.sh
-bash scripts/verify_migration_idempotent.sh
-bash scripts/verify_error_envelope.sh
-bash scripts/verify_e2e.sh
+PYTHONPATH=. pytest -q
 ```
 
 ---
 
-## 26. 开发规范与维护建议
+## 28. 开发规范与维护建议
 
-### 26.1 后端
-
-- 新增 API 路由时同步注册到 `gateway/api_gateway/main.py`。
-- 新增 DB 字段应提供 Alembic migration，并确保幂等。
-- 新增 Agent 应继承 `BaseAgent`，返回 `AgentResult` 或在调用边界归一化。
-- SQL 生成必须经过 `SQLValidator`，只允许 read-only 查询。
-- DataAgent V2 子 Agent 间传递状态统一使用 `CognitiveContext`。
-- 涉及聊天返回结构时必须考虑 `result_refs`、`metadata`、`execution_graph`。
-
-### 26.2 前端
-
-- API 统一从 `frontend/src/api/client.ts` 调用。
-- 新页面加入 `App.tsx` 路由和 `Sidebar.tsx` 导航。
-- 使用 lucide-react 图标。
-- 数据查询类 UI 优先复用 `DataQueryResult`、`DataTableChart`、`MetricDefinitionEditor`、`TableRelationGraph`。
-
-### 26.3 测试
-
-- 后端改动至少跑相关测试和 `python -m pytest tests -q`。
-- 前端改动至少跑 `npm run build`。
-- DataAgent V2 改动建议跑：
-
-```bash
-python -m pytest \
-  tests/test_data_agent_v2_supervisor_contract.py \
-  tests/test_data_agent_v2_agent_contract.py \
-  tests/test_data_agent_v2_deterministic_agents_unit.py \
-  tests/test_statistical_agent_unit.py \
-  tests/test_text2sql_regression.py \
-  tests/test_data_query_api_contract.py -q
-```
+1. **聊天输出不得绕过 CognitiveKernel**：所有对话输出必须从 Kernel 进入。
+2. **简单问题优先 L0 / Intent Lock**：不要让“你好/你是谁/你能做什么”进入 RAG、memory、planner。
+3. **不要覆盖 raw query**：重写只能生成 canonical query，不能替代 `raw_user_query`。
+4. **能力选择必须受约束**：Planner 输出需符合 allowed/disallowed capabilities。
+5. **RAG 只做证据，不做无条件答案**：低相关证据必须被 answerability gate 拦截。
+6. **Memory 按需注入**：避免长期记忆污染当前问题。
+7. **新增能力要补合约测试**：路由、配置、API、AgentResult metadata 都要覆盖。
+8. **保持文档事实化**：不要把规划中的模块写成已完成，除非代码和测试存在。
+9. **保留用户改动**：仓库常有并行修改，编辑时只动任务相关文件。
 
 ---
 
-## 27. 排障入口
+## 29. 排障入口
 
-### 27.1 API 不通
-
-```bash
-curl http://localhost:14100/api/v1/health
-curl http://localhost:14100/api/v1/health/deps
-lsof -i :14100
-docker logs opentrace_api
-```
-
-### 27.2 数据库不可用
+### 29.1 服务健康
 
 ```bash
-docker compose exec postgres pg_isready -U postgres
-docker compose exec postgres psql -U postgres -d opentrace_v2 -c "\dt"
-docker compose exec api alembic current
-docker compose exec api alembic upgrade head
+curl http://127.0.0.1:14100/api/v1/health
+curl http://127.0.0.1:14100/api/v1/health/deps
+curl http://127.0.0.1:14100/api/v1/health/runtime
 ```
 
-### 27.3 Redis / Agent Bus
+### 29.2 日志
 
 ```bash
-docker compose exec redis redis-cli ping
-docker logs opentrace_agent_worker
-curl http://localhost:14100/api/v1/health/deps
+bash scripts/docker_logs.sh api
+docker compose logs -f api
+docker compose logs -f agent-worker
 ```
 
-### 27.4 LLM 调用失败
+### 29.3 数据库
 
-检查：
+```bash
+docker compose exec -T postgres psql -U postgres -d opentrace_v2 -c "\dt"
+docker compose exec -T api alembic current
+```
 
-- `DEFAULT_LLM_QUERY_API_KEY`
-- `DEFAULT_LLM_PLANING_API_KEY`
-- provider base URL。
-- proxy / no_proxy。
-- API logs 中的 `LLM call`。
+### 29.4 Redis
 
-### 27.5 DataAgent V2 查询失败
+```bash
+docker compose exec -T redis redis-cli ping
+docker compose exec -T redis redis-cli -n 10 keys '*'
+```
 
-优先检查：
+### 29.5 常见问题
 
-1. `DATA_AGENT_V2_ENABLED=true`
-2. 数据源是否连接成功。
-3. schema 是否同步。
-4. `data_source_schemas.schema_json` 是否有 tables/columns。
-5. `metric_definitions`、`schema_metadata`、`table_relationships` 是否存在有效资产。
-6. `cognitive_events` 是否开启并记录。
-7. 返回 metadata 中的 `verification_report`、`agent_trace`、`sql`、`execution_error`。
-
-### 27.6 前端连接 API 失败
-
-检查：
-
-- `VITE_API_URL`
-- 浏览器控制台。
-- CORS。
-- `/api/v1/health` 是否可访问。
+| 问题 | 排查 |
+|------|------|
+| API 连不上数据库 | 检查 `DATABASE_URL` 是容器地址 `postgres` 还是宿主机 `127.0.0.1` |
+| Redis 连接失败 | Docker 内使用 `redis:6379`，宿主机使用 `127.0.0.1:6380` |
+| 简单问答答非所问 | 检查 `kernel/cognitive_controls.py` 和 L0 FAQ 是否命中 |
+| RAG 返回无关文档 | 检查 `quality.answerable`、`quality.relevance_anchor`、`rag_min_evidence_score` |
+| DataAgent 查询失败 | 检查数据源连接、schema 同步、metric/table relationships |
+| SSE 无响应 | 检查 `/api/v1/chat` stream、浏览器 network、后端日志 |
+| 前端 API 地址错误 | 检查 `VITE_API_URL` |
+| 测试 import 失败 | 使用 `PYTHONPATH=. pytest -q` |
 
 ---
 
-## 28. 已知风险与后续优化
+## 30. 已知风险与后续优化
 
-### 28.1 当前已知风险
+### 30.1 当前风险
 
-- 前端 Vitest 有 UI contract 失败，需要单独修复文案/事件/渲染断言。
-- DataAgent V2 高级分析默认关闭：Statistical/Insight/Visualization/SkillExecution 需要按场景逐步启用。
-- DataAgent V2 learning 默认关闭，反馈闭环需要产品化确认后开启。
-- Knowledge Assets 的质量直接决定 V2 业务准确率，需要配套同步和治理流程。
-- `infra/storage/models.py` 中模型数量较多，迁移与运行时 schema 需要持续保持一致。
-- LLM provider/API key 缺失会影响规划、意图识别、SQL 修复、洞察生成等模块。
+- 新旧运行时并存，`CognitiveExecutive` 与 `OrchestratorV4` 的职责边界仍需继续收敛。
+- Capability Intelligence 默认开启后，能力推荐会受历史反馈影响，需要持续监控退化。
+- Agent Bus 依赖 worker 和 Redis，部署不完整时可能产生执行等待或回退路径。
+- 文档、README、CLAUDE.md、service 文档之间仍可能出现事实漂移。
+- 前端 contract 测试与 UI 快速演进之间可能存在短期不一致。
 
-### 28.2 建议后续工作
+### 30.2 优先优化方向
 
-1. 为 `/data/query` V2 路径增加 mock DB 的端到端集成测试。
-2. 为 DataAgent V2 增加真实样例数据集回归：问题、期望 SQL、期望行数、期望解释。
-3. 打开 `DATA_AGENT_V2_COGNITIVE_EVENTS_ENABLED` 后建设审计 UI。
-4. 渐进开启 Statistical/Insight/Visualization，并在前端统一展示。
-5. 补齐 Knowledge Assets 的导入、同步、审核、版本控制。
-6. 修复前端 Vitest contract，恢复前端测试全绿。
-7. 为 Redis shadow、Agent Bus stream mode、任务系统补更多运行态健康指标。
+1. 将 `IntentLock` 贯穿所有 planner、fusion、critic 和 memory selector。
+2. 为复杂度分级建立更完整的评测集。
+3. 将 RAG 的 answerability gate 与 citation 展示统一到 Evidence lifecycle。
+4. 合并 V4 与 Runtime 的重复融合/审校逻辑。
+5. 为 DataAgent V2 增加真实数据源集成回归。
+6. 建立文档自动校验：配置项、router、测试文件、模块清单自动生成摘要。
+7. 增强前端 Trace UI，展示 raw query、protected intent、selected capabilities、relevance score。
 
 ---
 
-## 附录：最短启动与验证命令
+## 附录：推荐阅读顺序
 
-```bash
-# 后端测试
-python -m pytest tests -q
-
-# 前端构建
-cd frontend && npm run build
-
-# Docker 启动
-cp .env.example .env
-bash start.sh
-
-# 健康检查
-curl http://localhost:14100/api/v1/health
-curl http://localhost:14100/api/v1/health/deps
-```
+1. `README.md`
+2. `docs/service/service_codex.md`
+3. `docs/service/service_claude.md`
+4. `gateway/api_gateway/routers/chat.py`
+5. `kernel/cognitive_kernel.py`
+6. `kernel/cognitive_controls.py`
+7. `kernel/orchestrator_v4.py`
+8. `kernel/runtime/cognitive_executive.py`
+9. `agents/rag_agent.py`
+10. `agents/data_agent_v2/`

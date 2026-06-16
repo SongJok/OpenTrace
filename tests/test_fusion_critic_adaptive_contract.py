@@ -1,4 +1,5 @@
 import unittest
+from tests.orchestrator_v4_source import read_orchestrator_v4_implementation
 
 
 class FusionCriticAdaptiveContractTests(unittest.TestCase):
@@ -28,9 +29,7 @@ class FusionCriticAdaptiveContractTests(unittest.TestCase):
         self.assertIn('quality_multi_source_enforce', engine)
 
     def test_orchestrator_passes_adaptive_profile_into_fusion_and_critic(self):
-        with open("kernel/orchestrator_v4.py", "r", encoding="utf-8") as f:
-            code = f.read()
-
+        code = read_orchestrator_v4_implementation()
         self.assertIn('FusionInput(', code)
         self.assertIn('results=tool_results', code)
         self.assertIn('CriticInput(', code)

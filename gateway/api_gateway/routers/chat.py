@@ -1,7 +1,6 @@
 """
-Chat router — SSE streaming + sync chat via CognitiveKernel.
-All requests flow through the Cognitive Kernel (唯一中枢).
-Direct LLM calls are forbidden — only Kernel.run() / Kernel.stream().
+对话路由 — 经 CognitiveKernel 提供 SSE 流式与同步对话。
+所有请求经认知内核（唯一中枢）；禁止直连 LLM，仅允许 Kernel.run() / Kernel.stream()。
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -25,6 +24,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from execution.data.query_intents import is_database_question
 from gateway.api_gateway.routers.auth import get_current_user
+from gateway.api_gateway.tier0_paths import (
+    get_previous_turn_sql,
+    is_sql_retrieval_intent as _tier0_is_sql_retrieval_intent,
+    sse_database_direct_events,
+    sse_sql_retrieval_events,
+    stream_tier0_events,
+)
+from kernel.runtime_gateway import Tier0ChatContext, get_runtime_gateway
 from infra.audit.logger import write_audit_log
 from infra.cache.redis_client import get_cache_redis
 from infra.config.settings import settings
@@ -55,6 +62,7 @@ from infra.storage.models import (
     UserMemorySettings,
 )
 from kernel.protocol.events import SpanStage, trace_context_for_request
+from kernel.runtime.context import RuntimeContext
 from services.file_parser import parse_attachment_content
 
 logger = get_logger(__name__)
@@ -283,7 +291,11 @@ async def _load_conversation_history(
                 history.append(entry)
             return history
     except Exception as exc:
-        pass  # Message table may not exist yet — fall back to TraceLog
+        logger.debug(
+            "chat_history_message_table_fallback",
+            session_id=session_id,
+            error=str(exc),
+        )
 
     # Fallback: load from trace_logs
     try:
@@ -307,30 +319,8 @@ async def _load_conversation_history(
 
 
 def _is_sql_retrieval_intent(query: str) -> bool:
-    """Check if user is asking about the SQL from a *previous* turn.
-
-    Examples: "查询SQL语句是什么？", "刚才的SQL是什么", "执行的SQL"
-    These should return the SQL from the previous turn's execution graph.
-    """
-    q = query.strip().lower()
-    if "sql" not in q:
-        return False
-    sql_retrieval_keywords = [
-        "sql语句是什么",
-        "sql是什么",
-        "执行的sql",
-        "刚才的sql",
-        "上一步的sql",
-        "之前sql",
-        "sql查询是什么",
-        "query sql",
-        "what sql",
-        "生成的sql",
-        "sql代码是什么",
-        "查询sql",
-        "本次查询的sql",
-    ]
-    return any(kw in q for kw in sql_retrieval_keywords)
+    """Delegate to tier0_paths (single SSOT for SQL retrieval intent)."""
+    return _tier0_is_sql_retrieval_intent(query)
 
 
 def _is_sql_generation_intent(query: str) -> bool:
@@ -363,74 +353,41 @@ def _is_sql_generation_intent(query: str) -> bool:
     return any(kw in q for kw in sql_gen_keywords)
 
 
-async def _get_previous_turn_sql(db: AsyncSession, session_id: str) -> str | None:
-    """Get the SQL from the most recent *real* data query turn in this session.
-
-    Skips sql_retrieval turns and turns where the query itself was asking
-    about SQL. Finds the actual SQL from a real data analysis/count query.
-    Handles both direct data_query execution_graphs and orchestrator graphs.
-    """
-    try:
-        res = await db.execute(
-            select(TraceLog)
-            .where(TraceLog.session_id == session_id)
-            .order_by(TraceLog.created_at.desc())
-            .limit(30)
-        )
-        logs = res.scalars().all()
-        for log in logs:
-            if not log.execution_graph_json:
-                continue
-            try:
-                graph = json.loads(log.execution_graph_json)
-                if not isinstance(graph, dict):
-                    continue
-                route = graph.get("route", "")
-                # Skip sql_retrieval turns entirely
-                if route == "sql_retrieval":
-                    continue
-                # Skip turns where the query itself was asking about SQL
-                # (these were mishandled and executed a wrong query)
-                if log.query and _is_sql_retrieval_intent(log.query):
-                    continue
-                # Direct data query route: has top-level sql field
-                if route in {"database_direct", "data_query", "database_fallback"}:
-                    sql = graph.get("sql")
-                    if sql:
-                        return str(sql)
-                # Orchestrator-generated graph: has nodes array
-                nodes = graph.get("nodes", [])
-                if isinstance(nodes, list) and nodes:
-                    for node in nodes:
-                        if isinstance(node, dict):
-                            node_status = node.get("status", "")
-                            # Only accept SQL from successful data agent nodes
-                            if node_status == "SUCCESS":
-                                metadata = node.get("metadata") or {}
-                                agent_type = metadata.get("agent_type", "")
-                                if agent_type == "data":
-                                    output = node.get("output") or {}
-                                    sql = output.get("sql")
-                                    if sql:
-                                        return str(sql)
-            except (json.JSONDecodeError, TypeError):
-                continue
-    except Exception as exc:
-        logger.warning("Chat API operation failed", error=str(exc))
-    return None
-
-
-async def _ensure_session(session_id: str | None, user: User, db: AsyncSession) -> str:
+async def _ensure_session(
+    session_id: str | None,
+    user: User,
+    db: AsyncSession,
+    *,
+    tenant_metadata: dict[str, Any] | None = None,
+) -> str:
+    tm = tenant_metadata or {}
+    tid = str(tm.get("tenant_id") or "default")
+    oid = str(tm.get("org_id") or "default")
+    wid = str(tm.get("workspace_id") or "default")
     if session_id:
         r = await db.execute(
             select(ChatSession).where(ChatSession.id == session_id, ChatSession.user_id == user.id)
         )
-        if r.scalar_one_or_none():
+        existing = r.scalar_one_or_none()
+        if existing:
+            try:
+                existing.tenant_id = tid
+                existing.org_id = oid
+                existing.workspace_id = wid
+                await db.commit()
+            except Exception as exc:
+                logger.warning("chat_session_tenant_update_skipped", error=str(exc))
             return session_id
     new_id = session_id or str(uuid.uuid4())
     db.add(
         ChatSession(
-            id=new_id, user_id=user.id, title="New conversation", display_title="New conversation"
+            id=new_id,
+            user_id=user.id,
+            title="New conversation",
+            display_title="New conversation",
+            tenant_id=tid,
+            org_id=oid,
+            workspace_id=wid,
         )
     )
     await db.commit()
@@ -647,7 +604,11 @@ async def _save_trace(
                     )
                 )
             except Exception as exc:
-                pass  # Message table may not exist yet
+                logger.debug(
+                    "trace_message_persist_skipped",
+                    session_id=session_id,
+                    error=str(exc),
+                )
 
             # Link attachments to this trace log's user message
             message_id = f"{log.id}_q"
@@ -1120,6 +1081,7 @@ async def delete_attachment(
 @router.post("/chat", response_model=None)
 @require_kernel_entrypoint
 async def chat(
+    http_request: Request,
     req: ChatRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1136,8 +1098,36 @@ async def chat(
         logger.warning("Chat API operation failed", error=str(exc))
 
     try:
-        session_id = await _ensure_session(req.session_id, current_user, db)
+        from gateway.api_gateway.tenant_middleware import build_tenant_metadata
+
+        tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
+        try:
+            from gateway.api_gateway.chat_preflight import run_chat_preflight_async
+
+            tenant_md = await run_chat_preflight_async(
+                query=req.query,
+                user_id=current_user.id,
+                session_id=req.session_id or "",
+                tenant_md=tenant_md,
+            )
+        except AppException:
+            raise
+        except Exception as exc:
+            logger.warning("chat_preflight_skipped", error=str(exc))
+
+        session_id = await _ensure_session(
+            req.session_id, current_user, db, tenant_metadata=tenant_md
+        )
         set_user_session_context(user_id=current_user.id, session_id=session_id)
+
+        try:
+            from tenant.tenant_isolation import set_session_tenant_context
+            from tenant.tenant_context import resolve_tenant_context
+
+            tctx = resolve_tenant_context(user_id=current_user.id, metadata=tenant_md)
+            await set_session_tenant_context(db, tctx)
+        except Exception as exc:
+            logger.warning("chat_session_tenant_context_skipped", error=str(exc))
 
         # Load conversation history for multi-turn support
         conversation_history = await _load_conversation_history(db, session_id, limit=10)
@@ -1146,18 +1136,14 @@ async def chat(
         branch_checkpoint: dict[str, Any] | None = None
         is_branch_request = False
         if req.parent_message_id and settings.kernel_conversation_branching_enabled:
-            # Roll back history to before the parent message
             history_before = await _load_history_before_message(
                 db, session_id, req.parent_message_id
             )
             if history_before:
                 conversation_history = history_before
-            # Load checkpoint from the parent message
             branch_checkpoint = await _load_branch_checkpoint(db, session_id, req.parent_message_id)
             is_branch_request = True
         # ── End Conversation Branching ──────────────────────────────
-
-        from kernel.cognitive_kernel import KernelRequest
 
         request_id = req.request_id or str(uuid.uuid4())
         trace_ctx = trace_context_for_request(
@@ -1360,6 +1346,57 @@ async def chat(
             ]
             asyncio.create_task(_save_conversation_state_async(state_manager, conversation_state))
 
+        runtime_ctx = RuntimeContext(
+            request_id=request_id,
+            session_id=session_id,
+            user_id=current_user.id,
+            query=req.query,
+            metadata=dict(tenant_md),
+            conversation_history=conversation_history,
+            conversation_state=conversation_state,
+            user_preferences=user_preferences,
+            preference_context_block=pref_context_block,
+            data_source_context=data_source_context,
+            attachment_contexts=attachment_contexts,
+            force_mode=req.force_mode,
+            web_enabled=req.web_enabled,
+            graph_controls=graph_controls,
+            is_branch_request=is_branch_request,
+            branch_checkpoint=branch_checkpoint,
+            parent_message_id=req.parent_message_id,
+            previous_plan=prev_plan,
+            previous_results=prev_results,
+            clarify_context=req.clarify_context,
+            clarify_question_id=req.clarify_question_id,
+            enabled_skills=req.enabled_skills,
+            disabled_skills=req.disabled_skills,
+            risk_assessment={
+                "risk_level": risk.risk_level,
+                "reason": risk.reason,
+                "requires_confirmation": risk.requires_confirmation,
+            },
+            tool_permission_token=req.tool_permission_token,
+            stream=req.stream,
+            trace_ctx=trace_ctx,
+        )
+
+        # Backward-compat KernelRequest for existing kernel code (Phase 2 will remove this)
+        from kernel.cognitive_kernel import KernelRequest
+
+        try:
+            from infra.observability.turn_metering import reset_turn_tokens
+
+            reset_turn_tokens()
+        except Exception as exc:
+            logger.warning("turn_metering_reset_skipped", error=str(exc))
+
+        kernel_metadata = runtime_ctx.to_metadata_dict()
+        for _tk in ("tenant_id", "org_id", "workspace_id", "data_residency"):
+            if tenant_md.get(_tk) is not None:
+                kernel_metadata[_tk] = tenant_md[_tk]
+        kernel_metadata.setdefault("tenant_id", str(tenant_md.get("tenant_id") or "default"))
+        kernel_metadata.setdefault("workspace_id", str(tenant_md.get("workspace_id") or "default"))
+        kernel_metadata["history"] = list(conversation_history or [])
         kernel_request = KernelRequest(
             query=req.query,
             session_id=session_id,
@@ -1369,32 +1406,22 @@ async def chat(
             web_enabled=req.web_enabled,
             trace_ctx=trace_ctx,
             conversation_state=conversation_state,
-            metadata={
-                "request_id": request_id,
-                "graph_controls": graph_controls,
-                "enabled_skills": req.enabled_skills,
-                "disabled_skills": req.disabled_skills,
-                "user_preferences": user_preferences,
-                "user_preference_tags": user_preference_tags,
-                "user_preference_context_block": pref_context_block,
-                "data_source_id": data_source_context["data_source_id"],
-                "data_source_name": data_source_context["data_source_name"],
-                "data_source_database": data_source_context.get("database"),
-                "data_source_source_type": data_source_context.get("source_type"),
-                "data_source_schema": data_source_context["schema"],
-                "force_database": force_database,
-                "force_mode": req.force_mode,
-                # Multi-turn enhancement metadata
-                "clarify_context": req.clarify_context,
-                "clarify_question_id": req.clarify_question_id,
-                "parent_message_id": req.parent_message_id,
-                "previous_plan": prev_plan,
-                "previous_results": prev_results,
-                # Feature ⑥: Conversation Branching
-                "resume_mode": is_branch_request,
-                "branch_checkpoint": branch_checkpoint,
-                "attachment_contexts": attachment_contexts,
-            },
+            metadata=kernel_metadata,
+        )
+        try:
+            from kernel.turn_bootstrap import bootstrap_turn_intent
+
+            await bootstrap_turn_intent(kernel_request)
+            runtime_ctx.metadata = dict(kernel_request.metadata or {})
+            if kernel_request.query != req.query:
+                runtime_ctx.query = kernel_request.query
+        except Exception as exc:
+            logger.warning("chat_turn_bootstrap_skipped", error=str(exc))
+
+        dispatch_query = (
+            str(kernel_request.query or "").strip()
+            or str(getattr(runtime_ctx, "query", "") or "").strip()
+            or str(req.query or "").strip()
         )
 
     except AppException:
@@ -1425,7 +1452,8 @@ async def chat(
             parent_span_id=trace_ctx.root_span_id,
             payload={
                 "action": "chat.request.received",
-                "query": req.query,
+                "query": dispatch_query,
+                "raw_query": req.query,
                 "session_id": session_id,
                 "stream": req.stream,
                 "web_enabled": req.web_enabled,
@@ -1441,337 +1469,173 @@ async def chat(
         )
     )
 
-    # SQL retrieval intent: user is asking about the SQL from a previous turn
-    # e.g., "查询SQL语句是什么？", "刚才的SQL是什么"
-    if _is_sql_retrieval_intent(req.query):
-        prev_sql = await _get_previous_turn_sql(db, session_id)
-        if prev_sql:
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            content = f"上一轮查询执行的 SQL 如下：\n\n```sql\n{prev_sql}\n```"
-            exec_graph = {"route": "sql_retrieval", "sql": prev_sql}
+    from gateway.api_gateway.routers.data import DataQueryRequest, data_query
 
-            # Non-streaming: return direct response
-            if not req.stream:
-                # Save ConversationState for this fast path
-                state_patch = {
-                    "last_user_goal": req.query,
-                    "last_assistant_summary": content[:300],
-                    "last_plan": {"subtasks": [], "merge_strategy": "direct", "max_parallel": 0},
-                    "last_results": [
-                        {"agent_type": "data", "status": "success", "content": content[:300]}
-                    ],
-                }
-                updated_state = state_manager.apply_patch(conversation_state, state_patch)
-                updated_state = state_manager.advance_turn(updated_state, req.query, content)
-                state_manager.add_confidence(updated_state, updated_state.turn_sequence, 1.0)
-                updated_state = state_manager.compact(updated_state)
-                asyncio.create_task(_save_conversation_state_async(state_manager, updated_state))
-                return ChatResponse(
-                    session_id=session_id,
-                    content=content,
-                    decision_type="sql_retrieval",
-                    validation_score=1.0,
-                    passed_validation=True,
-                    intent_category="sql_retrieval",
-                    context_latency_ms=0,
-                    total_latency_ms=latency_ms,
-                    citations=[],
-                    annotations=[],
-                    execution_graph=exec_graph,
-                    state_version=updated_state.state_version,
-                )
-
-            # Streaming: emit SSE events
-            async def _sse_sql_retrieval() -> AsyncIterator[str]:
-                try:
-                    yield f"data: {json.dumps({'type': 'reasoning_step', 'data': {'id': 'sql_retrieval', 'stage': 'REASON', 'content': '从上一轮查询中获取 SQL 语句', 'node_id': 'node_sql_retrieval', 'status': 'done'}}, ensure_ascii=False)}\n\n"
-                    for i in range(0, len(content), 24):
-                        yield f"data: {json.dumps({'type': 'delta', 'data': {'text': content[i : i + 24]}}, ensure_ascii=False)}\n\n"
-                    yield f"data: {json.dumps({'type': 'final_answer', 'data': {'content': content, 'execution_graph': exec_graph, 'citations': [], 'annotations': [], 'state_patch': None, 'result_refs': []}}, ensure_ascii=False, default=str)}\n\n"
-                    yield ": done\n\n"
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.error("SQL retrieval stream error", error=str(exc))
-                    yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(exc)}}, ensure_ascii=False)}\n\n"
-                    yield ": done\n\n"
-
-            asyncio.create_task(
-                _save_trace(
-                    session_id,
-                    req.query,
-                    content,
-                    latency_ms,
-                    "sql_retrieval",
-                    1.0,
-                    [],
-                    exec_graph,
-                    parent_message_id=req.parent_message_id,
-                    attachment_ids=req.attachment_ids,
-                )
-            )
-            # Fire-and-forget: save ConversationState for fast path
-            sql_state_patch = {
-                "last_user_goal": req.query,
-                "last_assistant_summary": content[:300],
-                "last_plan": {"subtasks": [], "merge_strategy": "direct", "max_parallel": 0},
-                "last_results": [
-                    {"agent_type": "data", "status": "success", "content": content[:300]}
-                ],
-            }
-            sql_updated = state_manager.apply_patch(conversation_state, sql_state_patch)
-            sql_updated = state_manager.advance_turn(sql_updated, req.query, content)
-            state_manager.add_confidence(sql_updated, sql_updated.turn_sequence, 1.0)
-            sql_updated = state_manager.compact(sql_updated)
-            asyncio.create_task(_save_conversation_state_async(state_manager, sql_updated))
-            return StreamingResponse(
-                _sse_sql_retrieval(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    tier0_ctx = Tier0ChatContext(
+        db=db,
+        current_user=current_user,
+        data_query_fn=data_query,
+        data_query_request_factory=DataQueryRequest,
+    )
+    gateway = get_runtime_gateway()
+    tier0_outcome = await gateway.try_tier0_chat(
+        query=dispatch_query,
+        session_id=session_id,
+        request_id=request_id,
+        tier0_ctx=tier0_ctx,
+        force_database=bool(force_database and data_source_context.get("data_source_id")),
+        data_source_id=str(data_source_context.get("data_source_id") or "") or None,
+    )
+    sql_tier0 = tier0_outcome if tier0_outcome and tier0_outcome.decision_type == "sql_retrieval" else None
+    if sql_tier0 and sql_tier0.handled:
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        content = sql_tier0.content
+        exec_graph = sql_tier0.execution_graph
+        if not req.stream:
+            updated_state = state_manager.apply_patch(conversation_state, sql_tier0.state_patch)
+            updated_state = state_manager.advance_turn(updated_state, dispatch_query, content)
+            state_manager.add_confidence(updated_state, updated_state.turn_sequence, 1.0)
+            updated_state = state_manager.compact(updated_state)
+            asyncio.create_task(_save_conversation_state_async(state_manager, updated_state))
+            return ChatResponse(
+                session_id=session_id,
+                content=content,
+                decision_type=sql_tier0.decision_type,
+                validation_score=sql_tier0.validation_score,
+                passed_validation=True,
+                intent_category="sql_retrieval",
+                context_latency_ms=0,
+                total_latency_ms=latency_ms,
+                citations=[],
+                annotations=[],
+                execution_graph=exec_graph,
+                state_version=updated_state.state_version,
             )
 
-    if force_database and data_source_context.get("data_source_id"):
-        try:
-            from gateway.api_gateway.routers.data import DataQueryRequest, data_query
+        async def _sse_sql_retrieval() -> AsyncIterator[str]:
+            try:
+                async for event in stream_tier0_events(
+                    sse_sql_retrieval_events(content, exec_graph)
+                ):
+                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+                yield ": done\n\n"
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("SQL retrieval stream error", error=str(exc))
+                yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(exc)}}, ensure_ascii=False)}\n\n"
+                yield ": done\n\n"
 
-            direct = await data_query(
-                DataQueryRequest(
-                    question=req.query,
-                    data_source_id=str(data_source_context["data_source_id"]),
-                    dry_run=False,
-                    sql=None,
-                ),
-                current_user=current_user,
-                db=db,
+        asyncio.create_task(
+            _save_trace(
+                session_id,
+                dispatch_query,
+                content,
+                latency_ms,
+                sql_tier0.decision_type,
+                sql_tier0.validation_score,
+                [],
+                exec_graph,
+                parent_message_id=req.parent_message_id,
+                attachment_ids=req.attachment_ids,
             )
-            direct_sql = direct.get("sql")
-            direct_rows = direct.get("rows", [])
-            direct_summary = str(direct.get("summary") or direct_sql or direct_rows or "查询完成")
-            # If 0 rows returned, provide a helpful message instead of bare summary
-            if not direct_rows and "0 行" in direct_summary:
-                direct_summary = (
-                    f"{direct_summary}\n\n"
-                    f"可能原因：数据源中不存在与「{req.query}」相关的表或字段，或查询条件未匹配到数据。\n"
-                    "建议：\n"
-                    "- 在「数据源」页面检查已连接的表和结构。\n"
-                    "- 尝试使用更通用的查询条件，或指定具体的表名。"
+        )
+        sql_updated = state_manager.apply_patch(conversation_state, sql_tier0.state_patch)
+        sql_updated = state_manager.advance_turn(sql_updated, dispatch_query, content)
+        state_manager.add_confidence(sql_updated, sql_updated.turn_sequence, 1.0)
+        sql_updated = state_manager.compact(sql_updated)
+        asyncio.create_task(_save_conversation_state_async(state_manager, sql_updated))
+        return StreamingResponse(
+            _sse_sql_retrieval(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    db_tier0 = (
+        tier0_outcome
+        if tier0_outcome
+        and tier0_outcome.handled
+        and tier0_outcome.decision_type == "database_direct"
+        else None
+    )
+    if db_tier0 and db_tier0.handled:
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        direct_summary = db_tier0.content
+        exec_graph = db_tier0.execution_graph
+        reg_agent = str(exec_graph.get("agent_type") or "data")
+        if not req.stream:
+            db_updated = state_manager.apply_patch(conversation_state, db_tier0.state_patch)
+            db_updated = state_manager.advance_turn(db_updated, dispatch_query, direct_summary)
+            state_manager.add_confidence(db_updated, db_updated.turn_sequence, 0.9)
+            db_updated = state_manager.compact(db_updated)
+            asyncio.create_task(_save_conversation_state_async(state_manager, db_updated))
+            return ChatResponse(
+                session_id=session_id,
+                content=direct_summary,
+                decision_type=db_tier0.decision_type,
+                validation_score=db_tier0.validation_score,
+                passed_validation=True,
+                intent_category="data_query",
+                context_latency_ms=0,
+                total_latency_ms=latency_ms,
+                citations=[],
+                annotations=[],
+                execution_graph=exec_graph,
+                state_version=db_updated.state_version,
+            )
+
+        async def _sse_direct_query() -> AsyncIterator[str]:
+            try:
+                events = sse_database_direct_events(
+                    dispatch_query, direct_summary, exec_graph, registry_agent=reg_agent
                 )
-            exec_graph = {
-                "route": "data_query",
-                "data_source_id": data_source_context["data_source_id"],
-                "sql": direct_sql,
-                "rows": direct_rows[:20],
-            }
-
-            # Non-streaming: return direct response
-            if not req.stream:
-                latency_ms = int((time.monotonic() - t0) * 1000)
-                # Save ConversationState for this fast path
-                db_state_patch = {
-                    "last_user_goal": req.query,
-                    "last_assistant_summary": direct_summary[:300],
-                    "last_plan": {
-                        "subtasks": [
-                            {"agent_type": "data", "query": req.query, "params": {"data_source_id": data_source_context["data_source_id"]}}
-                        ],
-                        "merge_strategy": "direct",
-                        "max_parallel": 1,
-                    },
-                    "last_results": [
-                        {"agent_type": "data", "status": "success", "content": direct_summary[:300]}
-                    ],
-                }
-                db_updated = state_manager.apply_patch(conversation_state, db_state_patch)
-                db_updated = state_manager.advance_turn(db_updated, req.query, direct_summary)
-                state_manager.add_confidence(db_updated, db_updated.turn_sequence, 0.9)
-                db_updated = state_manager.compact(db_updated)
-                asyncio.create_task(_save_conversation_state_async(state_manager, db_updated))
-                return ChatResponse(
-                    session_id=session_id,
-                    content=direct_summary,
-                    decision_type="database_direct",
-                    validation_score=0.9,
-                    passed_validation=True,
-                    intent_category="data_query",
-                    context_latency_ms=0,
-                    total_latency_ms=latency_ms,
-                    citations=[],
-                    annotations=[],
-                    execution_graph=exec_graph,
-                    state_version=db_updated.state_version,
-                )
-
-            # Streaming: emit SSE events with direct query result (fast path)
-            async def _sse_direct_query() -> AsyncIterator[str]:
-                task_key = f"{session_id}:{request_id}"
-                queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
-
-                async def _runner() -> None:
-                    try:
-                        # Emit reasoning-like steps for UI feedback
-                        yield_reasoning = [
-                            {
-                                "type": "reasoning_step",
-                                "data": {
-                                    "id": "data_detect",
-                                    "stage": "REASON",
-                                    "content": "检测到数据查询请求，正在执行查询",
-                                    "node_id": "node_data",
-                                    "status": "done",
-                                },
-                            },
-                            {
-                                "type": "dag_node_start",
-                                "data": {
-                                    "node_id": "data_0",
-                                    "agent_type": "data",
-                                    "depends_on": [],
-                                },
-                            },
-                            {
-                                "type": "agent_start",
-                                "data": {
-                                    "agent_type": "data",
-                                    "task_id": "data_0",
-                                    "query": req.query,
-                                },
-                            },
-                            {
-                                "type": "agent_progress",
-                                "data": {
-                                    "agent_type": "data",
-                                    "task_id": "data_0",
-                                    "progress": 50,
-                                    "message": "执行中",
-                                },
-                            },
-                            {
-                                "type": "dag_node_complete",
-                                "data": {
-                                    "node_id": "data_0",
-                                    "agent_type": "data",
-                                    "status": "success",
-                                    "preview": str(direct_summary)[:200],
-                                },
-                            },
-                            {
-                                "type": "agent_complete",
-                                "data": {
-                                    "agent_type": "data",
-                                    "task_id": "data_0",
-                                    "status": "success",
-                                    "preview": str(direct_summary)[:200],
-                                },
-                            },
-                        ]
-                        for event in yield_reasoning:
-                            await queue.put(event)
-
-                        # Stream the answer character by character
-                        content = direct_summary
-                        for i in range(0, len(content), 24):
-                            await queue.put(
-                                {"type": "delta", "data": {"text": content[i : i + 24]}}
-                            )
-
-                        await queue.put(
-                            {
-                                "type": "final_answer",
-                                "data": {
-                                    "content": content,
-                                    "execution_graph": exec_graph,
-                                    "citations": [],
-                                    "annotations": [],
-                                    "state_patch": None,
-                                    "result_refs": [],
-                                },
-                            }
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        await queue.put({"type": "error", "data": {"message": str(exc)}})
-                    finally:
-                        await queue.put(None)
-
-                try:
-                    task = asyncio.create_task(_runner())
-                    _ACTIVE_STREAM_TASKS[task_key] = task
-                except Exception as setup_exc:
-                    logger.error("Direct query stream setup failed", error=str(setup_exc))
-                    yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(setup_exc)}}, ensure_ascii=False)}\n\n"
-                    yield ": done\n\n"
-                    return
-
-                try:
-                    while True:
-                        try:
-                            event = await queue.get()
-                        except asyncio.CancelledError:
-                            yield f"data: {json.dumps({'type': 'aborted', 'data': {'message': 'Cancelled by user'}}, ensure_ascii=False)}\n\n"
-                            return
-                        if event is None:
-                            break
-                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                except asyncio.CancelledError:
-                    task.cancel()
-                    with contextlib.suppress(Exception):
-                        await task
-                    yield f"data: {json.dumps({'type': 'aborted', 'data': {'message': 'Cancelled by user'}}, ensure_ascii=False)}\n\n"
-                    return
-                except Exception as exc:  # noqa: BLE001
-                    logger.error("Direct query stream error", error=str(exc))
-                    yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(exc)}}, ensure_ascii=False)}\n\n"
-                    return
-                finally:
-                    _ACTIVE_STREAM_TASKS.pop(task_key, None)
-                    if not task.done():
-                        task.cancel()
-                        with contextlib.suppress(Exception):
-                            await task
-
-                latency_ms = int((time.monotonic() - t0) * 1000)
+                async for event in stream_tier0_events(events):
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 asyncio.create_task(
                     _save_trace(
                         session_id,
-                        req.query,
+                        dispatch_query,
                         direct_summary,
-                        latency_ms,
-                        "database_direct",
-                        0.9,
+                        int((time.monotonic() - t0) * 1000),
+                        db_tier0.decision_type,
+                        db_tier0.validation_score,
                         [],
                         exec_graph,
                         parent_message_id=req.parent_message_id,
                         attachment_ids=req.attachment_ids,
                     )
                 )
-                # Fire-and-forget: save ConversationState
-                _db_stream_patch = {
-                    "last_user_goal": req.query,
-                    "last_assistant_summary": direct_summary[:300],
-                    "last_plan": {
-                        "subtasks": [
-                            {"agent_type": "data", "query": req.query, "params": {"data_source_id": data_source_context["data_source_id"]}}
-                        ],
-                        "merge_strategy": "direct",
-                        "max_parallel": 1,
-                    },
-                    "last_results": [
-                        {"agent_type": "data", "status": "success", "content": direct_summary[:300]}
-                    ],
-                }
-                _db_stream_state = state_manager.apply_patch(conversation_state, _db_stream_patch)
-                _db_stream_state = state_manager.advance_turn(_db_stream_state, req.query, direct_summary)
+                _db_stream_state = state_manager.apply_patch(
+                    conversation_state, db_tier0.state_patch
+                )
+                _db_stream_state = state_manager.advance_turn(
+                    _db_stream_state, dispatch_query, direct_summary
+                )
                 state_manager.add_confidence(_db_stream_state, _db_stream_state.turn_sequence, 0.9)
                 _db_stream_state = state_manager.compact(_db_stream_state)
-                asyncio.create_task(_save_conversation_state_async(state_manager, _db_stream_state))
+                asyncio.create_task(
+                    _save_conversation_state_async(state_manager, _db_stream_state)
+                )
                 yield ": done\n\n"
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Direct query stream error", error=str(exc))
+                yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(exc)}}, ensure_ascii=False)}\n\n"
 
-            return StreamingResponse(
-                _sse_direct_query(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-            )
-        except Exception as db_exc:  # noqa: BLE001
-            logger.warning("Database direct path failed, fallback to kernel", error=str(db_exc))
+        return StreamingResponse(
+            _sse_direct_query(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    if force_database and data_source_context.get("data_source_id") and not (
+        tier0_outcome and tier0_outcome.handled
+    ):
+        logger.warning(
+            "Database tier0 path failed, fallback to kernel",
+            data_source_id=data_source_context.get("data_source_id"),
+        )
 
     if req.stream:
 
@@ -1823,7 +1687,7 @@ async def chat(
                                     cs = conversation_state
                                 if final_state_patch is not None:
                                     state_manager.apply_patch(cs, final_state_patch)
-                                state_manager.advance_turn(cs, req.query, final_content)
+                                state_manager.advance_turn(cs, dispatch_query, final_content)
                                 score = data.get("validation_score", 0.85)
                                 try:
                                     confidence = float(score)
@@ -1945,7 +1809,7 @@ async def chat(
                     asyncio.create_task(
                         _save_trace(
                             session_id,
-                            req.query,
+                            dispatch_query,
                             interrupted_content,
                             int((time.monotonic() - t0) * 1000),
                             "interrupted",
@@ -1974,7 +1838,7 @@ async def chat(
             asyncio.create_task(
                 _save_trace(
                     session_id,
-                    req.query,
+                    dispatch_query,
                     final_content,
                     latency_ms,
                     "kernel",
@@ -1987,7 +1851,7 @@ async def chat(
             )
             if await _memory_learning_enabled(db, current_user.id):
                 asyncio.create_task(
-                    _save_user_memory_from_turn(current_user.id, req.query, final_content)
+                    _save_user_memory_from_turn(current_user.id, dispatch_query, final_content)
                 )
             tools_used = []
             try:
@@ -2018,7 +1882,7 @@ async def chat(
                     cs = await state_manager.load(session_id)
                     if cs:
                         state_manager.apply_patch(cs, final_state_patch)
-                        state_manager.advance_turn(cs, req.query, final_content)
+                        state_manager.advance_turn(cs, dispatch_query, final_content)
                         state_manager.add_confidence(
                             cs,
                             cs.turn_sequence,
@@ -2063,7 +1927,7 @@ async def chat(
 
                 direct = await data_query(
                     DataQueryRequest(
-                        question=req.query,
+                        question=dispatch_query,
                         data_source_id=str(data_source_context["data_source_id"]),
                         dry_run=False,
                         sql=None,
@@ -2114,7 +1978,7 @@ async def chat(
         asyncio.create_task(
             _save_trace(
                 session_id,
-                req.query,
+                dispatch_query,
                 fallback,
                 latency_ms,
                 "fallback",
@@ -2159,7 +2023,7 @@ async def chat(
     asyncio.create_task(
         _save_trace(
             session_id,
-            req.query,
+            dispatch_query,
             final_content,
             latency_ms,
             result.route,
@@ -2178,13 +2042,13 @@ async def chat(
         )
     )
     if await _memory_learning_enabled(db, current_user.id):
-        asyncio.create_task(_save_user_memory_from_turn(current_user.id, req.query, final_content))
+        asyncio.create_task(_save_user_memory_from_turn(current_user.id, dispatch_query, final_content))
 
     # ── Persist state_patch to ConversationState ──
     final_state_version = conversation_state.state_version
     if result.state_patch is not None:
         updated_state = state_manager.apply_patch(conversation_state, result.state_patch)
-        updated_state = state_manager.advance_turn(updated_state, req.query, final_content)
+        updated_state = state_manager.advance_turn(updated_state, dispatch_query, final_content)
         state_manager.add_confidence(
             updated_state,
             updated_state.turn_sequence,
@@ -2199,7 +2063,7 @@ async def chat(
         asyncio.create_task(state_manager.save(updated_state))
     else:
         # Still advance turn counter even if no state_patch
-        conversation_state = state_manager.advance_turn(conversation_state, req.query, final_content)
+        conversation_state = state_manager.advance_turn(conversation_state, dispatch_query, final_content)
         state_manager.add_confidence(
             conversation_state,
             conversation_state.turn_sequence,
@@ -2531,11 +2395,15 @@ async def resume_chat(
     session_id = req.session_id
     set_user_session_context(user_id=current_user.id, session_id=session_id)
 
-    from kernel.orchestrator import CognitiveOrchestrator
+    from kernel.runtime.resume_turn import resume_turn_via_gateway
 
-    orchestrator = CognitiveOrchestrator()
     try:
-        result = await orchestrator.resume(session_id=session_id, step_index=req.step_index)
+        result = await resume_turn_via_gateway(
+            db,
+            session_id=session_id,
+            user_id=current_user.id,
+            step_index=req.step_index,
+        )
     except ValueError as exc:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
     return ChatResponse(
@@ -2545,6 +2413,10 @@ async def resume_chat(
         validation_score=result.validation_score,
         passed_validation=result.passed_validation,
         intent_category=result.intent_category,
-        context_latency_ms=0,
-        total_latency_ms=0,
+        context_latency_ms=getattr(result, "context_latency_ms", 0) or 0,
+        total_latency_ms=getattr(result, "total_latency_ms", 0) or 0,
+        execution_graph=(
+            result.metadata.get("execution_graph") if isinstance(result.metadata, dict) else None
+        ),
+        result_refs=result.result_refs if isinstance(result.result_refs, list) else [],
     )

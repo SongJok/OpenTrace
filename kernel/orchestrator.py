@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from kernel.orchestrator_v4 import (
+from legacy.v4.orchestrator import (
     CognitiveOrchestratorV4,
     OrchestratorV4Request,
 )

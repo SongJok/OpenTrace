@@ -1,4 +1,4 @@
-"""Tests for dialect-aware JOIN path inference."""
+"""方言感知的 JOIN 路径推断测试。"""
 
 import pytest
 from kernel.data_cognition.table_graph import TableRelationshipGraph

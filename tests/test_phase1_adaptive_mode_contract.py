@@ -1,4 +1,5 @@
 import unittest
+from tests.orchestrator_v4_source import read_orchestrator_v4_implementation
 
 
 class Phase1AdaptiveModeContractTests(unittest.TestCase):
@@ -11,9 +12,7 @@ class Phase1AdaptiveModeContractTests(unittest.TestCase):
         self.assertIn("kernel_answer_draft_max_chars", code)
 
     def test_orchestrator_uses_adaptive_profile(self):
-        with open("kernel/orchestrator_v4.py", "r", encoding="utf-8") as f:
-            code = f.read()
-
+        code = read_orchestrator_v4_implementation()
         self.assertIn("def _get_adaptive_profile", code)
         self.assertIn("adaptive_profile = self._get_adaptive_profile(req.query, user_tags=all_tags)", code)
         self.assertIn('"rag_min_score"', code)

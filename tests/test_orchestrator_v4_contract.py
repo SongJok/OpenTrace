@@ -1,3 +1,4 @@
+from tests.orchestrator_v4_source import read_orchestrator_v4_implementation
 import unittest
 from pathlib import Path
 
@@ -16,13 +17,13 @@ class OrchestratorV4ContractTests(unittest.TestCase):
 
     def test_kernel_supports_v4_routing(self):
         txt = (ROOT / "kernel/cognitive_kernel.py").read_text(encoding="utf-8")
-        self.assertIn("CognitiveOrchestratorV4", txt)
-        self.assertIn("orchestrator_v4", txt)
-        self.assertNotIn("orchestrator_v2", txt)
-        self.assertNotIn("orchestrator_v3", txt)
+        self.assertIn("get_runtime_gateway", txt)
+        self.assertIn("cognitive_runtime_v2", txt)
+        shim = (ROOT / "kernel/orchestrator_v4.py").read_text(encoding="utf-8")
+        self.assertIn("legacy.v4.orchestrator", shim)
 
     def test_v4_has_database_and_rag_logic(self):
-        txt = (ROOT / "kernel/orchestrator_v4.py").read_text(encoding="utf-8")
+        txt = read_orchestrator_v4_implementation()
         rag_txt = (ROOT / "agents/rag_agent.py").read_text(encoding="utf-8")
         data_txt = (ROOT / "agents/data_agent.py").read_text(encoding="utf-8")
         plan_txt = (ROOT / "kernel/plan_agent.py").read_text(encoding="utf-8")

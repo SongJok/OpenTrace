@@ -1,4 +1,4 @@
-"""Semantic Layer — maps business terminology to database constructs."""
+"""语义层 — 将业务术语映射到数据库构造。"""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class TimeMacroDef:
     pattern: str
     column: str
     table: str = ""
-    operator: str = ">="  # >=, <=, between
+    operator: str = ">="  # >=, <=, 区间
     days: int = 0
     sql_template: str = ""
 
@@ -137,14 +137,14 @@ class SemanticLayer:
 
     @staticmethod
     def extract_time_intent(query: str) -> dict[str, Any] | None:
-        """Heuristic time intent extraction when semantic config is sparse.
+        """启发式时间意图提取，用于语义配置较稀疏时。
 
-        Returns:
+        返回：
             {"type": "time_window", "days": N, "column": str|None, "raw": str}
-        or for absolute ranges:
+        或绝对范围：
             {"type": "date_range", "start": "YYYY-MM-DD", "end": "YYYY-MM-DD", "column": str|None}
         """
-        # Absolute date range: "2024年1月15日到2024年3月20日"
+        # 绝对日期范围："2024年1月15日到2024年3月20日"
         m = re.search(
             r"(\d{4})[年-](\d{1,2})[月-](\d{1,2})\s*(?:到|至|~|-)\s*(\d{4})[年-](\d{1,2})[月-](\d{1,2})",
             query,
@@ -158,7 +158,7 @@ class SemanticLayer:
                 "raw": m.group(0),
             }
 
-        # Month range: "2024年1月到2024年6月"
+        # 月份范围："2024年1月到2024年6月"
         m = re.search(r"(\d{4})[年-](\d{1,2})月\s*(?:到|至|~|-)\s*(\d{4})[年-](\d{1,2})月", query)
         if m:
             import calendar
@@ -226,7 +226,7 @@ class SemanticLayer:
             col = SemanticLayer._guess_time_column_from_query(query)
             return {"type": "time_window", "days": days, "column": col, "raw": m.group(0)}
 
-        # Absolute date: "2024年1月" or "2024-01-15"
+        # 绝对日期："2024年1月" 或 "2024-01-15"
         m = re.search(r"(\d{4})[年-](\d{1,2})[月-](\d{1,2})", query)
         if m:
             date_str = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
@@ -242,8 +242,8 @@ class SemanticLayer:
 
     @staticmethod
     def _guess_time_column_from_query(query: str) -> str | None:
-        """Extract a likely time column hint from query text."""
-        # Check for explicit column mentions
+        """从查询文本中提取可能的时间列提示。"""
+        # 检查显式列提及
         time_col_patterns = [
             (r"(?:订单|下单|创建)(?:时|时间|日期)", "order_time"),
             (r"(?:支付|付款|成交)(?:时|时间|日期)", "pay_time"),

@@ -1,4 +1,4 @@
-"""Contract tests for DataAgentV2 Supervisor — pipeline structure, DAG topology, config flags."""
+"""DataAgentV2 Supervisor 契约测试 — 流水线结构、DAG 拓扑与配置开关。"""
 
 import unittest
 from pathlib import Path

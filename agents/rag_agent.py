@@ -10,6 +10,7 @@ from agents.base import AgentResult, BaseAgent, TaskMessage
 from infra.config.settings import settings
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import UserMemory
+from kernel.cognitive_controls import relevance_score
 from plugins.document_plugin import DocumentPlugin
 from plugins.document_retrieval import DocumentEvidenceGate, ScoredDocumentChunk
 from model.reranker.base import get_reranker
@@ -23,6 +24,22 @@ class RagAgent(BaseAgent):
     - 记忆检索（UserMemory：semantic / episodic）
     - 仅返回证据，不生成最终答案
     """
+
+    @staticmethod
+    def _retrieval_query_from_task(task: TaskMessage) -> str:
+        """当前轮检索 query：优先 task.query / raw_user_query，仅在多轮已展开时用 resolved。"""
+        params = task.params or {}
+        raw = str(params.get("raw_user_query", "") or "").strip()
+        base = raw or (task.query or "").strip()
+        mtr = params.get("multi_turn_resolution")
+        if isinstance(mtr, dict) and mtr.get("applied"):
+            rq = str(mtr.get("resolved_query", "") or "").strip()
+            if rq:
+                return rq
+        if base:
+            return base
+        miq = str(params.get("memory_injection_query", "") or "").strip()
+        return miq or base
 
     @staticmethod
     def _normalize_query(query: str) -> str:
@@ -365,14 +382,31 @@ class RagAgent(BaseAgent):
 
     async def execute(self, task: TaskMessage) -> AgentResult:
         try:
-            query = self._normalize_query(task.query or "")
+            query = self._normalize_query(self._retrieval_query_from_task(task))
             if not query:
-                return AgentResult(task_id=task.task_id, agent_type=self.agent_type, status="error", content="", error="query is required")
+                return AgentResult(
+                    task_id=task.task_id,
+                    agent_type=self.agent_type,
+                    status="error",
+                    content="",
+                    error="query is required",
+                    evidence_objects=[
+                        self._make_evidence_object(
+                            content="query is required",
+                            source_type="validation",
+                            credibility=0.0,
+                            relevance=0.0,
+                            turn_outcome="error",
+                        )
+                    ],
+                )
 
             # Rewrite query for better retrieval (remove fillers, normalize patterns)
             rewritten_query = self._rewrite_query(query)
 
             user_id = (task.user_id or str(task.params.get("user_id", ""))).strip() or "shared"
+            tenant_id = str(task.params.get("tenant_id", "") or "").strip() or None
+            workspace_id = str(task.params.get("workspace_id", "") or "").strip() or None
 
             top_k = int(task.params.get("top_k", 5))
             top_k = max(1, min(top_k, 20))
@@ -431,7 +465,11 @@ class RagAgent(BaseAgent):
                 async def _search_one(sq: str):
                     doc_chunks, wiki_chunks = await asyncio.gather(
                         DocumentPlugin().search_chunks(
-                            query=sq, user_id=user_id, top_k=max(top_k, 8),
+                            query=sq,
+                            user_id=user_id,
+                            top_k=max(top_k, 8),
+                            tenant_id=tenant_id,
+                            workspace_id=workspace_id,
                         ),
                         DocumentPlugin().search_llmwiki(
                             query=sq, user_id=user_id, top_k=effective_llmwiki_top_k,
@@ -474,6 +512,7 @@ class RagAgent(BaseAgent):
                     q = (
                         select(UserMemory)
                         .where(UserMemory.enabled == True)  # noqa: E712
+                        .where(UserMemory.user_id == user_id)
                         .order_by(UserMemory.updated_at.desc())
                         .limit(300)
                     )
@@ -522,6 +561,16 @@ class RagAgent(BaseAgent):
                     continue
                 seen.add(key)
                 deduped.append(e)
+
+            rrf_enabled = bool(getattr(settings, "rag_rrf_fusion_enabled", True))
+            if rrf_enabled and deduped:
+                from services.rag_retrieval_fusion import reciprocal_rank_fusion
+
+                deduped = reciprocal_rank_fusion(
+                    deduped,
+                    k=int(getattr(settings, "rag_rrf_k", 60) or 60),
+                    top_n=max(top_k * 3, 20),
+                )
 
             sorted_chunks = sorted(deduped, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:top_k]
             sorted_llmwiki_entries = sorted(llmwiki_entries, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:llmwiki_top_k]
@@ -577,8 +626,16 @@ class RagAgent(BaseAgent):
                 fallback_queries = [rewritten_query, " ".join(query_terms[:6])]
                 # Run fallback searches in parallel
                 parallel_fallback = await asyncio.gather(
-                    *[DocumentPlugin().search_chunks(query=sq, user_id=user_id, top_k=max(top_k, 8))
-                      for sq in fallback_queries],
+                    *[
+                        DocumentPlugin().search_chunks(
+                            query=sq,
+                            user_id=user_id,
+                            top_k=max(top_k, 8),
+                            tenant_id=tenant_id,
+                            workspace_id=workspace_id,
+                        )
+                        for sq in fallback_queries
+                    ],
                     return_exceptions=True,
                 )
                 for result in parallel_fallback:
@@ -656,16 +713,52 @@ class RagAgent(BaseAgent):
                     if chunk.get("source_type") == "document"
                 ]
                 gated = evidence_gate.passes(gate_input) if gate_input else bool(sorted_chunks)
-                answerable = gated and max_score >= min_score and confidence >= 0.35
+                top_text = "\n".join(
+                    str(chunk.get("text") or chunk.get("answer") or "")[:300]
+                    for chunk in sorted_chunks[:3]
+                )
+                anchor_score = relevance_score(query, top_text)
+                answerable = (
+                    gated
+                    and max_score >= min_score
+                    and confidence >= 0.35
+                    and anchor_score >= 0.30
+                )
             else:
                 avg_score = 0.0
                 max_score = 0.0
                 confidence = 0.25
                 top1_top3_gap = 0.0
+                anchor_score = 0.0
                 answerable = False
                 gated = False
 
+            if not answerable:
+                sorted_chunks = []
+                sorted_vector_chunks = []
+                sorted_llmwiki_entries = []
+                content = (
+                    f"未在知识库中找到与「{query}」直接相关的内容。"
+                    "请补充更具体的问题，或上传相关文档后再试。"
+                )
+                confidence = min(confidence, 0.2)
+                try:
+                    from kernel.agent_runtime.learning_hook import record_agent_learning_signal
+
+                    await record_agent_learning_signal(
+                        agent_type=self.agent_type,
+                        task_id=task.task_id,
+                        session_id=str(task.session_id or ""),
+                        passed=False,
+                        confidence=confidence,
+                        evidence_quality=float(max_score),
+                        metadata={"query_type": query_type, "query_preview": query[:120]},
+                    )
+                except Exception:
+                    pass
+
             evidence_items = []
+            evidence_objects = []
             for ch in sorted_chunks:
                 evidence_items.append(
                     self._make_evidence(
@@ -678,6 +771,18 @@ class RagAgent(BaseAgent):
                         evidence_tier=ch.get("evidence_tier", "contextual"),
                     )
                 )
+                text = str(ch.get("text") or ch.get("answer") or "")[:4000]
+                if text:
+                    evidence_objects.append(
+                        self._make_evidence_object(
+                            content=text,
+                            source_type=str(ch.get("source_type", "document")),
+                            credibility=float(ch.get("score", 0.5)),
+                            relevance=float(ch.get("score", 0.5)),
+                            chunk_id=ch.get("id", ""),
+                            evidence_tier=ch.get("evidence_tier", "contextual"),
+                        )
+                    )
             from kernel.result_reference import ResultRef, serialize_refs
 
             result_refs: list[ResultRef] = []
@@ -701,6 +806,74 @@ class RagAgent(BaseAgent):
                     source_agent="rag",
                     message_id=task.task_id,
                 ))
+            rag_intel: dict[str, Any] = {}
+            try:
+                from services.rag_evidence_intelligence import enrich_evidence_intelligence
+
+                chunk_dicts = []
+                for ch in sorted_chunks or []:
+                    if isinstance(ch, dict):
+                        chunk_dicts.append(
+                            {
+                                "id": ch.get("id", ""),
+                                "content": ch.get("text", ""),
+                                "source": ch.get("title", ""),
+                                "credibility_score": ch.get("score", 0.5),
+                                "relevance_score": ch.get("score", 0.5),
+                            }
+                        )
+                if chunk_dicts:
+                    rag_intel = enrich_evidence_intelligence(
+                        chunk_dicts, query=query, source_kind="document"
+                    )
+                    contradictions = rag_intel.get("contradictions") or []
+                    claim = (rag_intel.get("claim_verification") or {})
+                    if isinstance(claim, dict) and claim.get("needs_review") and answerable:
+                        confidence = min(confidence, 0.45)
+                        for ch in sorted_chunks:
+                            if isinstance(ch, dict):
+                                ch["needs_review"] = True
+                        if int(claim.get("unanchored_count") or 0) >= 2:
+                            answerable = False
+                            content = (
+                                f"检索片段与「{query}」锚定不足，已抑制自动作答。"
+                                "请补充更具体的问题或上传相关文档。"
+                            )
+                            confidence = min(confidence, 0.3)
+                    if contradictions and answerable:
+                        confidence = min(confidence, 0.55)
+                        for ch in sorted_chunks:
+                            if isinstance(ch, dict):
+                                ch["needs_review"] = True
+                        if len(contradictions) >= 2:
+                            answerable = False
+                            content = (
+                                f"知识库中关于「{query}」存在不一致表述，已抑制自动作答。"
+                                "请查看引用片段或补充更具体的问题。"
+                            )
+                            confidence = min(confidence, 0.35)
+            except Exception:
+                pass
+
+            try:
+                from kernel.agent_runtime.learning_hook import record_agent_learning_signal
+
+                await record_agent_learning_signal(
+                    agent_type=self.agent_type,
+                    task_id=task.task_id,
+                    session_id=str(task.session_id or ""),
+                    passed=bool(answerable),
+                    confidence=float(confidence),
+                    evidence_quality=float(max_score),
+                    metadata={
+                        "query_type": query_type,
+                        "query_preview": query[:120],
+                        "rewritten_query": rewritten_query[:120],
+                    },
+                )
+            except Exception:
+                pass
+
             return AgentResult(
                 task_id=task.task_id,
                 agent_type=self.agent_type,
@@ -721,12 +894,31 @@ class RagAgent(BaseAgent):
                         "avg_score": avg_score,
                         "max_score": max_score,
                         "top1_top3_gap": top1_top3_gap,
+                        "relevance_anchor": anchor_score,
                         "sufficient": avg_score >= float(task.params.get("min_evidence_score", os.getenv("RAG_MIN_SCORE", "0.35"))),
                         "answerable": answerable,
                         "gated": gated,
                     },
+                    "rag_evidence_intelligence": rag_intel,
                 },
                 evidence=evidence_items,
+                evidence_objects=evidence_objects,
             )
         except Exception as exc:  # noqa: BLE001
-            return AgentResult(task_id=task.task_id, agent_type=self.agent_type, status="error", content="", error=str(exc))
+            err = str(exc)
+            return AgentResult(
+                task_id=task.task_id,
+                agent_type=self.agent_type,
+                status="error",
+                content="",
+                error=err,
+                evidence_objects=[
+                    self._make_evidence_object(
+                        content=err[:2000],
+                        source_type="rag_execution",
+                        credibility=0.0,
+                        relevance=0.0,
+                        turn_outcome="error",
+                    )
+                ],
+            )

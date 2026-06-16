@@ -1,5 +1,5 @@
-"""TokenCounter — centralized tiktoken-based token counting and smart history truncation.
-Replaces the rough heuristic in context_composer.py.
+"""TokenCounter — 基于 tiktoken 的集中式 token 计数与智能历史截断。
+替代 context_composer 中的粗略启发式。
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ _MESSAGE_OVERHEAD_TOKENS = 4
 
 
 class TokenCounter:
-    """Accurate token counting using tiktoken with heuristic fallback."""
+    """基于 tiktoken 的精确 token 计数，含启发式降级方案。"""
 
     def __init__(self, encoding_name: str = "cl100k_base") -> None:
         self._encoding_name = encoding_name

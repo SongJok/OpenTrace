@@ -1,5 +1,5 @@
 """
-Intent engine public exports.
+意图引擎公共导出。
 """
 
 from kernel.intent_engine.engine import Intent, IntentEngine

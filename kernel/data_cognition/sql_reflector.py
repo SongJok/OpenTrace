@@ -1,4 +1,4 @@
-"""SQL Reflector — post-execution validation and reflection loop."""
+"""SQL 反思器 — 执行后校验与反思循环。"""
 
 from __future__ import annotations
 
@@ -24,13 +24,13 @@ class SQLReflector:
     ) -> ValidationResult:
         issues: list[str] = []
 
-        # Non-empty check
+        # 非空检查
         if not rows:
             issues.append(
                 "query returned 0 rows — may indicate incorrect filtering or no matching data"
             )
 
-        # Null value check for first row
+        # 首行 NULL 值检查
         if rows:
             first = rows[0] if isinstance(rows, list) else None
             if isinstance(first, dict):
@@ -38,7 +38,7 @@ class SQLReflector:
                     if v is None:
                         issues.append(f"column '{k}' returned NULL")
 
-        # Numeric range sanity check
+        # 数值范围合理性检查
         if rows and len(rows) == 1 and isinstance(rows[0], dict):
             for k, v in rows[0].items():
                 if isinstance(v, (int, float)) and v < 0:
@@ -48,7 +48,7 @@ class SQLReflector:
                         f"column '{k}' returned extremely large value ({v}) — possible cartesian product"
                     )
 
-        # Time consistency check
+        # 时间一致性检查
         if semantic_ctx and semantic_ctx.time_macros:
             for tm in semantic_ctx.time_macros:
                 col = tm.get("column", "")

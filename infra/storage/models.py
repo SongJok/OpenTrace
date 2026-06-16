@@ -79,6 +79,9 @@ class ChatSession(Base):
     archived_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    org_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
 
     user: Mapped[User] = relationship(back_populates="sessions")
     trace_logs: Mapped[list[TraceLog]] = relationship(
@@ -176,6 +179,8 @@ class Document(Base):
     owner_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     file_type: Mapped[str] = mapped_column(String(20), default="text")  # pdf|txt|docx|md
     file_size: Mapped[int] = mapped_column(Integer, default=0)

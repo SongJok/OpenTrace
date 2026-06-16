@@ -1,6 +1,6 @@
-"""Semantic History Retriever — session-scoped vector index of conversation turns.
-Embeds each assistant response and retrieves top-K related turns via cosine similarity,
-so that deictic references (e.g. "那华南呢?") resolve to the correct prior context.
+"""语义历史检索 — 会话级对话轮次向量索引。
+嵌入助手回复并用余弦相似度取 top-K 相关轮次，
+使指代（如「那华南呢？」）解析到正确上文。
 """
 
 from __future__ import annotations
@@ -28,12 +28,11 @@ class HistoryTurn:
 
 
 class SemanticHistoryRetriever:
-    """Session-scoped semantic index over conversation turns.
+    """会话级对话轮次语义索引。
 
-    Each turn (query + answer) is embedded and stored in the session's vector index.
-    On retrieval, the current query is embedded and the top-K most similar past turns
-    are returned — enabling the model to recall relevant prior discussion without
-    needing every turn in the prompt.
+    每轮（query + answer）被嵌入并存储在会话的向量索引中。
+    检索时，当前查询被嵌入，返回 top-K 最相似的历史轮次 —
+    使模型能回忆相关的前文讨论，而无需将每轮都放入提示词。
     """
 
     def __init__(self, embedder: BaseEmbedder | None = None) -> None:

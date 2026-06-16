@@ -87,6 +87,7 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
         await _ensure_chat_sessions_columns(conn)
         await _ensure_conversation_states_columns(conn)
+        await _ensure_enterprise_tenant_tables(conn)
     logger.info("Database tables initialised")
 
 
@@ -102,6 +103,8 @@ async def ensure_runtime_schema() -> None:
         async with engine.begin() as conn:
             await _ensure_chat_sessions_columns(conn)
             await _ensure_conversation_states_columns(conn)
+            await _ensure_enterprise_tenant_tables(conn)
+            await _ensure_documents_tenant_columns(conn)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Runtime schema guard failed", error=str(exc))
 
@@ -123,6 +126,14 @@ async def _ensure_chat_sessions_columns(conn) -> None:
         "ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP WITH TIME ZONE",
         "CREATE INDEX IF NOT EXISTS ix_chat_sessions_archived_at "
         "ON public.chat_sessions (archived_at)",
+        "ALTER TABLE IF EXISTS public.chat_sessions "
+        "ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE IF EXISTS public.chat_sessions "
+        "ADD COLUMN IF NOT EXISTS org_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE IF EXISTS public.chat_sessions "
+        "ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "CREATE INDEX IF NOT EXISTS ix_chat_sessions_tenant "
+        "ON public.chat_sessions (tenant_id, org_id, workspace_id)",
     ]
     for stmt in statements:
         await conn.execute(text(stmt))
@@ -148,6 +159,73 @@ async def _ensure_conversation_states_columns(conn) -> None:
     ]
     for stmt in statements:
         await conn.execute(text(stmt))
+
+
+async def _ensure_documents_tenant_columns(conn) -> None:
+    """Idempotently add Document tenant/workspace columns for RAG scope."""
+    statements = [
+        "ALTER TABLE IF EXISTS public.documents "
+        "ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE IF EXISTS public.documents "
+        "ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "CREATE INDEX IF NOT EXISTS ix_documents_tenant_id ON public.documents (tenant_id)",
+        "CREATE INDEX IF NOT EXISTS ix_documents_tenant_workspace "
+        "ON public.documents (tenant_id, workspace_id)",
+    ]
+    for stmt in statements:
+        await conn.execute(text(stmt))
+
+
+async def _ensure_enterprise_tenant_tables(conn) -> None:
+    """Multi-tenant skeleton tables for tenant_store upsert."""
+    statements = [
+        """
+        CREATE TABLE IF NOT EXISTS public.tenants (
+            tenant_id VARCHAR(128) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL DEFAULT '',
+            tier VARCHAR(64) NOT NULL DEFAULT 'standard',
+            data_residency VARCHAR(64) NOT NULL DEFAULT 'global',
+            metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS public.tenant_workspaces (
+            workspace_id VARCHAR(128) NOT NULL,
+            tenant_id VARCHAR(128) NOT NULL REFERENCES public.tenants(tenant_id) ON DELETE CASCADE,
+            org_id VARCHAR(128) NOT NULL DEFAULT 'default',
+            name VARCHAR(255) NOT NULL DEFAULT '',
+            policy_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            PRIMARY KEY (tenant_id, workspace_id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS public.compliance_audit_events (
+            event_id UUID PRIMARY KEY,
+            tenant_id VARCHAR(128) NOT NULL DEFAULT 'default',
+            session_id VARCHAR(128),
+            user_id VARCHAR(128),
+            frameworks JSONB NOT NULL DEFAULT '[]'::jsonb,
+            violations JSONB NOT NULL DEFAULT '[]'::jsonb,
+            allowed BOOLEAN NOT NULL DEFAULT TRUE,
+            payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_compliance_audit_tenant "
+        "ON public.compliance_audit_events (tenant_id, created_at DESC)",
+        "ALTER TABLE IF EXISTS public.chat_sessions "
+        "ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE IF EXISTS public.chat_sessions "
+        "ADD COLUMN IF NOT EXISTS org_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE IF EXISTS public.chat_sessions "
+        "ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "CREATE INDEX IF NOT EXISTS ix_chat_sessions_tenant "
+        "ON public.chat_sessions (tenant_id, org_id, workspace_id)",
+    ]
+    for stmt in statements:
+        await conn.execute(text(stmt.strip()))
 
 
 async def close_db() -> None:

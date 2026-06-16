@@ -15,7 +15,13 @@ env/
 .env
 !.env.example
 !CLAUDE.md
-docs/
+
+# macOS / editor
+.DS_Store
+**/.DS_Store
+
+# Local attachments (not source)
+/tmp/
 
 .idea/
 .vscode/

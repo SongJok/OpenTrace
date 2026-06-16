@@ -16,9 +16,11 @@ class RagWebFallbackContractTests(unittest.TestCase):
 
     def test_dispatcher_contains_quality_gate_and_web_fallback(self):
         txt = self._read("kernel/dispatcher.py")
-        self.assertIn('def _is_rag_quality_sufficient', txt)
-        self.assertIn('fallback_to_web', txt)
-        self.assertIn('rag_insufficient', txt)
+        # Phase 2 removed RAG→web fallback pattern; Dispatcher now delegates to
+        # ExecutionRuntime when available and uses RuntimeSupervisor for quality.
+        self.assertIn("RuntimeSupervisor", txt)
+        self.assertIn("self.supervisor", txt)
+        self.assertIn("ExecutionRuntime", txt)
 
     def test_rag_agent_exposes_quality_metadata(self):
         txt = self._read("agents/rag_agent.py")

@@ -139,6 +139,9 @@ class MessageOut(BaseModel):
     model: Optional[str] = None
     version: int = 1
     status: str = "done"
+    metadata: Optional[dict] = None
+    citations: list[dict] = Field(default_factory=list)
+    annotations: list[dict] = Field(default_factory=list)
 
 
 class UpdateConversationRequest(BaseModel):
@@ -521,6 +524,21 @@ async def get_messages(
             )
         )
         if log.response:
+            meta: dict = {}
+            citations: list[dict] = []
+            annotations: list[dict] = []
+            if isinstance(execution_graph, dict):
+                gov = execution_graph.get("governance")
+                if isinstance(gov, dict):
+                    meta.update(gov)
+                meta.setdefault("route", execution_graph.get("route"))
+                meta.setdefault("capability_type", execution_graph.get("capability_type"))
+                meta.setdefault("agent_type", execution_graph.get("agent_type"))
+                if execution_graph.get("needs_clarification"):
+                    meta["needs_clarification"] = True
+                    meta["turn_outcome"] = meta.get("turn_outcome") or "clarification"
+                if isinstance(execution_graph.get("clarification"), dict):
+                    meta["clarification"] = execution_graph["clarification"]
             messages.append(
                 MessageOut(
                     id=log.id + "_a",
@@ -531,6 +549,12 @@ async def get_messages(
                     validation_score=log.validation_score,
                     reasoning_steps=reasoning_steps,
                     execution_graph=execution_graph,
+                    metadata=meta or None,
+                    citations=citations,
+                    annotations=annotations,
+                    prompt_tokens=int(log.prompt_tokens or 0),
+                    completion_tokens=int(log.completion_tokens or 0),
+                    model=log.model,
                 )
             )
     return messages

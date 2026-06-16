@@ -495,7 +495,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                   <Circle size={10} className={x.status === 'active' ? 'fill-emerald-500 text-emerald-500' : x.status === 'error' ? 'fill-rose-500 text-rose-500' : 'fill-slate-400 text-slate-400'} />
                   <span>状态：{x.status}</span>
                 </div>
-                <div className="text-[var(--text-secondary)]">表数：{x.table_count ?? 0} · 上次同步：{x.last_schema_sync_at || x.synced_at || '—'}</div>
+                <div className="text-[var(--text-secondary)]">
+                  表数：{x.table_count ?? 0} · 更新：{x.updated_at || '—'} · 上次同步：{x.last_schema_sync_at || x.synced_at || '—'}
+                </div>
               </div>
             ))}
           </div>

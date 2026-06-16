@@ -1,4 +1,4 @@
-"""Query Planner — converts semantic parse results into a LogicalPlan (IR)."""
+"""查询规划器 — 将语义解析结果转为 LogicalPlan（中间表示）。"""
 
 from __future__ import annotations
 
@@ -21,11 +21,10 @@ from model.model_gateway.gateway import LLMRole, get_model_gateway
 
 class QueryPlanner:
     """
-    Converts a SemanticParseResult into a LogicalPlan (dialect-independent IR).
+    将 SemanticParseResult 转换为 LogicalPlan（方言无关的 IR）。
 
-    Uses LLM to generate the logical plan structure, then validates it against
-    the schema to ensure table/column references are valid. Supports multi-round
-    planning with error feedback for self-correction.
+    使用 LLM 生成逻辑计划结构，然后根据模式验证表/列引用的有效性。
+    支持多轮规划与错误反馈的自修正。
     """
 
     MAX_PLAN_ROUNDS = 2
@@ -44,7 +43,7 @@ class QueryPlanner:
         dialect: SQLDialectSpec | None = None,
         table_columns: dict[str, list[str]] | None = None,
     ) -> LogicalPlan:
-        """Generate a LogicalPlan from semantic parse result."""
+        """从语义解析结果生成 LogicalPlan。"""
         tables = table_names or self._table_names or []
         summary = schema_summary or self._schema_summary
         cols = table_columns or {}
@@ -67,7 +66,7 @@ class QueryPlanner:
 
             plan = self._build_plan_from_dict(plan_dict, tables, cols)
 
-            # Validate plan against schema
+            # 根据模式验证计划
             issues = self._validate_plan(plan, tables, cols)
             if not issues:
                 break
@@ -79,10 +78,10 @@ class QueryPlanner:
 
         plan = self._build_plan_from_dict(plan_dict, tables, cols)
 
-        # Fix join paths using table relationship graph
+        # 使用表关系图修正 JOIN 路径
         plan = self._validate_joins(plan, tables)
 
-        # Apply time window filter from semantics
+        # 从语义中应用时间窗口过滤
         if semantics.time_window and semantics.time_window.get("days"):
             days = semantics.time_window["days"]
             plan.filters.append(
@@ -92,7 +91,7 @@ class QueryPlanner:
                 )
             )
 
-        # Store time column hint in metadata for SQLBuilder
+        # 在元数据中存储时间列提示，供 SQLBuilder 使用
         if semantics.time_window and semantics.time_window.get("column_hint"):
             plan.metadata["time_column"] = semantics.time_window["column_hint"]
 
@@ -107,7 +106,7 @@ class QueryPlanner:
         table_columns: dict[str, list[str]],
         previous_errors: list[str] | None = None,
     ) -> dict[str, Any] | None:
-        """Use LLM to generate a logical plan JSON."""
+        """使用 LLM 生成逻辑计划 JSON。"""
         tables_info = ""
         for table, columns in table_columns.items():
             tables_info += f"- {table}: [{', '.join(columns)}]\n"
@@ -190,27 +189,27 @@ class QueryPlanner:
         tables: list[str],
         table_columns: dict[str, list[str]],
     ) -> list[str]:
-        """Validate a LogicalPlan against available schema. Returns list of issues."""
+        """根据可用模式验证 LogicalPlan，返回问题列表。"""
         issues: list[str] = []
         available_tables = set(tables)
         col_map: dict[str, set[str]] = {}
         for t, cols in table_columns.items():
             col_map[t] = set(c.lower() for c in cols)
 
-        # Check table names exist
+        # 检查表名是否存在
         for t in plan.tables:
             tname = t.split()[0] if " " in t else t
             if tname not in available_tables:
                 issues.append(f"Table '{tname}' not found in available tables")
 
-        # Check join table references
+        # 检查 JOIN 表引用
         for j in plan.joins:
             if j.left_table not in available_tables:
                 issues.append(f"Join left table '{j.left_table}' not found")
             if j.right_table not in available_tables:
                 issues.append(f"Join right table '{j.right_table}' not found")
 
-        # Check projection column references (basic)
+        # 检查投影列引用（基础）
         for p in plan.projections:
             if p.expr == "*":
                 continue
@@ -220,7 +219,7 @@ class QueryPlanner:
                 if not found and col_map:
                     issues.append(f"Projection column '{col}' not found in any table")
 
-        # Check GROUP BY / aggregation consistency
+        # 检查 GROUP BY / 聚合一致性
         if plan.group_by:
             non_agg = [p for p in plan.projections if not p.agg_func and p.expr != "*"]
             for p in non_agg:
@@ -236,7 +235,7 @@ class QueryPlanner:
         tables: list[str],
         table_columns: dict[str, list[str]],
     ) -> LogicalPlan:
-        """Convert LLM output dict into a LogicalPlan."""
+        """将 LLM 输出字典转换为 LogicalPlan。"""
         plan_tables = data.get("tables", [])
         if not plan_tables and tables:
             plan_tables = tables[:3]
@@ -305,14 +304,14 @@ class QueryPlanner:
         query: str,
         dialect: SQLDialectSpec | None,
     ) -> LogicalPlan:
-        """Create a fallback plan when LLM generation fails.
+        """LLM 生成失败时创建后备计划。
 
-        Uses identified metrics and entities to build a minimal but meaningful plan,
-        rather than falling back to SELECT *.
+        使用已识别的指标和实体构建一个最小但有效的计划，
+        而非回退到 SELECT *。
         """
         projections: list[Projection] = []
 
-        # Build projections from detected metrics
+        # 从检测到的指标构建投影
         for m in semantics.metrics:
             if m.agg and m.mapped_column:
                 projections.append(
@@ -323,13 +322,13 @@ class QueryPlanner:
                     )
                 )
 
-        # If no metrics, try entity columns
+        # 若无指标，尝试实体列
         if not projections:
             for e in semantics.entities:
                 if e.mapped_table:
                     projections.append(Projection(expr=f"{e.mapped_table}.*", alias=""))
 
-        # Last resort: projection from filters / group_by hints
+        # 最后手段：从过滤条件 / 分组提示构建投影
         if not projections and semantics.group_by:
             for g in semantics.group_by:
                 projections.append(Projection(expr=g, alias=g))
@@ -337,12 +336,12 @@ class QueryPlanner:
         if not projections:
             projections.append(Projection(expr="*", alias=""))
 
-        # Determine tables from entities
+        # 从实体确定表
         plan_tables = [e.mapped_table for e in semantics.entities if e.mapped_table]
         if not plan_tables:
             plan_tables = tables[:3] if tables else ["unknown"]
 
-        # Apply time window to metadata
+        # 将时间窗口应用到元数据
         metadata: dict[str, Any] = {"fallback": True, "query": query}
         if semantics.time_window and semantics.time_window.get("column_hint"):
             metadata["time_column"] = semantics.time_window["column_hint"]
@@ -361,7 +360,7 @@ class QueryPlanner:
         )
 
     def _validate_joins(self, plan: LogicalPlan, tables: list[str]) -> LogicalPlan:
-        """Validate and auto-fill join paths using table relationship graph."""
+        """使用表关系图验证并自动填充 JOIN 路径。"""
         if len(plan.tables) < 2 or plan.joins:
             return plan
 

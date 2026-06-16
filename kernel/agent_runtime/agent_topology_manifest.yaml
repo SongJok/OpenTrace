@@ -1,0 +1,261 @@
+# Agent Topology Manifest — single source of truth for capability/agent topology.
+# Version bumps require contract test updates (test_agent_runtime_v3_contract.py).
+version: "3.1.0"
+
+runtimes:
+  tier0_kernel:
+    description: Cognitive kernel + gateway + supervisor
+  tier1_executive:
+    description: cognitive_executive capability dispatch
+  tier1_data:
+    description: data_intelligence runtime (DataAgent V2 supervisor + DAG)
+  tier2_nodes:
+    description: Internal DAG / pipeline nodes (not direct capability dispatch)
+
+entries:
+  # ── Tier-1 capabilities (bootstrap + worker must register) ──
+  data:
+    runtime: tier1
+    owner_runtime: tier1_data
+    capability_type: data_query
+    registry_name: data
+    bootstrap: true
+    worker: true
+    bus_eligible: true
+    contract:
+      risk_tier: medium
+      max_latency_ms: 120000
+      dependencies: []
+
+  rag:
+    runtime: tier1
+    owner_runtime: tier1_executive
+    capability_type: document_retrieval
+    registry_name: rag
+    bootstrap: true
+    worker: true
+    bus_eligible: true
+    contract:
+      risk_tier: low
+      max_latency_ms: 60000
+      dependencies: []
+
+  web:
+    runtime: tier1
+    owner_runtime: tier1_executive
+    capability_type: web_search
+    registry_name: web
+    bootstrap: false
+    worker: false
+    bus_eligible: false
+    contract:
+      risk_tier: medium
+      max_latency_ms: 45000
+      dependencies: []
+    topology:
+      superseded_by: web_intelligence
+    notes: Legacy Serper path; dispatch resolves to web_intelligence when preferred
+
+  web_intelligence:
+    runtime: tier1
+    owner_runtime: tier1_executive
+    capability_type: web_search
+    registry_name: web_intelligence
+    bootstrap: true
+    worker: true
+    bus_eligible: true
+    contract:
+      risk_tier: medium
+      max_latency_ms: 60000
+      dependencies: []
+    topology:
+      preferred_over: web
+
+  tool:
+    runtime: tier1
+    owner_runtime: tier1_executive
+    capability_type: tool
+    registry_name: tool
+    bootstrap: true
+    worker: true
+    bus_eligible: true
+    contract:
+      risk_tier: low
+      max_latency_ms: 30000
+      dependencies: []
+
+  vision:
+    runtime: tier1
+    owner_runtime: tier1_executive
+    capability_type: vision_analysis
+    registry_name: vision
+    bootstrap: true
+    worker: true
+    bus_eligible: true
+    contract:
+      risk_tier: medium
+      max_latency_ms: 90000
+      dependencies: []
+    notes: Multimodal image/chart analysis; params image_urls / image_data
+
+  skills:
+    runtime: tier1
+    owner_runtime: tier1_executive
+    capability_type: skill_execution
+    registry_name: skills
+    bootstrap: true
+    worker: true
+    bus_eligible: true
+    contract:
+      risk_tier: low
+      max_latency_ms: 60000
+      dependencies: []
+    notes: Installed marketplace skills; not data_agent_v2 skills_engine
+
+  rules:
+    runtime: tier1
+    owner_runtime: tier1_executive
+    capability_type: policy_rules
+    registry_name: rules
+    bootstrap: true
+    worker: true
+    bus_eligible: false
+    contract:
+      risk_tier: low
+      max_latency_ms: 30000
+      dependencies: []
+    notes: Keyword + LLM rule interpretation; aligns with governance policy_runtime
+
+  data_intelligence:
+    runtime: tier1
+    owner_runtime: tier1_data
+    capability_type: data_query
+    registry_name: data
+    bootstrap: false
+    worker: false
+    bus_eligible: false
+    contract:
+      risk_tier: medium
+      max_latency_ms: 180000
+      dependencies: []
+    notes: External capability_type for dispatch; executes via data agent + V2 supervisor
+
+  # ── Tier-2 Data V2 DAG nodes (manifest only; not CapabilityRegistry agents) ──
+  data_knowledge:
+    runtime: tier2
+    owner_runtime: tier1_data
+    capability_type: data_query
+    node_role: knowledge
+    bootstrap: false
+    worker: false
+
+  data_intent:
+    runtime: tier2
+    owner_runtime: tier1_data
+    capability_type: data_query
+    node_role: intent
+    bootstrap: false
+    worker: false
+
+  data_entity:
+    runtime: tier2
+    owner_runtime: tier1_data
+    capability_type: data_query
+    node_role: entity
+    bootstrap: false
+    worker: false
+
+  data_metric:
+    runtime: tier2
+    owner_runtime: tier1_data
+    capability_type: data_query
+    node_role: metric
+    bootstrap: false
+    worker: false
+
+  data_time:
+    runtime: tier2
+    owner_runtime: tier1_data
+    capability_type: data_query
+    node_role: time
+    bootstrap: false
+    worker: false
+
+  data_join:
+    runtime: tier2
+    owner_runtime: tier1_data
+    capability_type: data_query
+    node_role: join
+    bootstrap: false
+    worker: false
+
+  data_semantic:
+    runtime: tier2
+    owner_runtime: tier1_data
+    capability_type: data_query
+    node_role: semantic
+    bootstrap: false
+    worker: false
+    topology:
+      depends_on_nodes: [data_intent, data_entity]
+
+  data_business_semantic:
+    runtime: tier2
+    owner_runtime: tier1_data
+    capability_type: data_query
+    node_role: business_semantic
+    bootstrap: false
+    worker: false
+    topology:
+      depends_on_nodes: [data_metric, data_time, data_intent]
+
+  data_planner:
+    runtime: tier2
+    owner_runtime: tier1_data
+    capability_type: data_query
+    node_role: planner
+    bootstrap: false
+    worker: false
+
+  data_compiler:
+    runtime: tier2
+    owner_runtime: tier1_data
+    capability_type: data_query
+    node_role: compiler
+    bootstrap: false
+    worker: false
+
+  data_verification:
+    runtime: tier2
+    owner_runtime: tier1_data
+    capability_type: data_query
+    node_role: verification
+    bootstrap: false
+    worker: false
+
+topology_edges:
+  - from: data_query
+    to: fusion
+  - from: document_retrieval
+    to: fusion
+  - from: web_search
+    to: fusion
+
+bootstrap_agent_types:
+  - data
+  - rag
+  - web_intelligence
+  - tool
+  - vision
+  - skills
+  - rules
+
+worker_agent_types:
+  - data
+  - rag
+  - web_intelligence
+  - tool
+  - vision
+  - skills
+  - rules
+  - rules

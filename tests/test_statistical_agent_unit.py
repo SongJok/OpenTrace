@@ -1,4 +1,4 @@
-"""Unit tests for StatisticalAgent — fully deterministic agent with stats, outliers, trends."""
+"""StatisticalAgent 单元测试 — 完全确定性，含统计、离群与趋势。"""
 
 import unittest
 import sys

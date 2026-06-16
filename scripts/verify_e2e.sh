@@ -2,11 +2,11 @@
 # =============================================================================
 # OpenTrace — 端到端验收脚本（登录/会话/聊天/历史/文档/UI设置）
 # 用法: bash scripts/verify_e2e.sh
-# 可选: BASE_URL=http://127.0.0.1:14101 bash scripts/verify_e2e.sh
+# 可选: BASE_URL=http://127.0.0.1:14100 bash scripts/verify_e2e.sh
 # =============================================================================
 set -euo pipefail
 
-BASE_URL="${BASE_URL:-http://127.0.0.1:14101}"
+BASE_URL="${BASE_URL:-http://127.0.0.1:14100}"
 
 py_get() {
   local json="$1"

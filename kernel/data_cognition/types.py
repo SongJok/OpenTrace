@@ -23,7 +23,7 @@ class DataQueryResult:
 
 @dataclass
 class SemanticContext:
-    """Resolved semantic mappings for a query."""
+    """查询的已解析语义映射。"""
 
     dimension_mappings: dict[str, dict[str, Any]] = field(default_factory=dict)
     metric_defs: dict[str, str] = field(default_factory=dict)
@@ -33,7 +33,7 @@ class SemanticContext:
 
 @dataclass
 class CandidateSQL:
-    """A candidate SQL statement with ranking metadata."""
+    """带排序元数据的候选 SQL 语句。"""
 
     sql: str
     score: float = 0.0
@@ -43,7 +43,7 @@ class CandidateSQL:
 
 @dataclass
 class LogicalPlan:
-    """Logical query plan — intermediate representation between intent and SQL."""
+    """逻辑查询计划 — 意图与 SQL 之间的中间表示。"""
     tables: list[str] = field(default_factory=list)
     columns: list[str] = field(default_factory=list)
     conditions: list[str] = field(default_factory=list)
@@ -55,7 +55,7 @@ class LogicalPlan:
 
 @dataclass
 class ValidationResult:
-    """Result of post-execution validation."""
+    """执行后验证结果。"""
 
     passed: bool
     issues: list[str] = field(default_factory=list)
@@ -64,32 +64,32 @@ class ValidationResult:
 
 @dataclass
 class EntityMapping:
-    """A natural language mention mapped to a database table.
+    """自然语言提及映射到数据库表。
 
-    When mapped_column and mapped_value are set, this entity also acts as a
-    categorical filter (e.g. "队长" → dim_user.role = 'captain').
+    当 mapped_column 和 mapped_value 被设置时，该实体同时充当
+    分类过滤条件（例如 "队长" → dim_user.role = 'captain'）。
     """
 
     mention: str = ""
     mapped_table: str = ""
-    mapped_column: str = ""       # column for categorical filter (e.g. "role")
-    mapped_value: str = ""        # DB value for filter (e.g. "captain")
-    mapped_value_label: str = ""  # human-readable label (e.g. "队长")
+    mapped_column: str = ""       # 分类过滤的列（例如 "role"）
+    mapped_value: str = ""        # 过滤的数据库值（例如 "captain"）
+    mapped_value_label: str = ""  # 可读标签（例如 "队长"）
     confidence: float = 0.0
 
 
 @dataclass
 class MetricMapping:
-    """A natural language metric mapped to a column + aggregation."""
+    """自然语言指标映射到列 + 聚合函数。"""
 
     mention: str = ""
     mapped_column: str = ""
-    agg: str = ""  # SUM, COUNT, AVG, MAX, MIN, or empty for raw column
+    agg: str = ""  # SUM, COUNT, AVG, MAX, MIN，或空表示原始列
 
 
 @dataclass
 class ParsedFilter:
-    """A parsed filter condition."""
+    """解析后的过滤条件。"""
 
     field: str = ""
     operator: str = "="  # =, !=, >, <, >=, <=, LIKE, IN, >=
@@ -99,7 +99,7 @@ class ParsedFilter:
 
 @dataclass
 class SemanticParseResult:
-    """Structured semantic parsing output from SemanticParser."""
+    """SemanticParser 的结构化语义解析输出。"""
 
     entities: list[EntityMapping] = field(default_factory=list)
     metrics: list[MetricMapping] = field(default_factory=list)
@@ -112,7 +112,7 @@ class SemanticParseResult:
 
 @dataclass
 class Explanation:
-    """Human-readable explanation of a query."""
+    """查询的可读说明。"""
 
     understood_query: str = ""
     tables_used: list[str] = field(default_factory=list)

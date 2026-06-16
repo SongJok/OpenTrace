@@ -1,4 +1,4 @@
-"""Rule engine — CRUD for YAML-based business rules."""
+"""规则引擎 — 基于 YAML 的业务规则增删改查。"""
 
 from __future__ import annotations
 

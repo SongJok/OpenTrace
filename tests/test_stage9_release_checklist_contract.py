@@ -19,7 +19,7 @@ class Stage9ReleaseChecklistContractTests(unittest.TestCase):
 
     def test_runtime_health_reports_orchestrator(self):
         txt = (ROOT / "gateway/api_gateway/routers/health.py").read_text(encoding="utf-8")
-        self.assertIn("kernel_orchestrator_version", txt)
+        self.assertIn("resolve_orchestrator_label", txt)
         self.assertIn("RuntimeCognitionHealthResponse", txt)
 
 

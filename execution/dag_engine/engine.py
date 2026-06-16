@@ -1,14 +1,14 @@
 """
-Cognitive Execution Engine — world-class DAG engine.
+认知执行引擎 — DAG 执行核心。
 
-Upgrades over the original:
-  - Dynamic DAG: tasks can inject new tasks at runtime
-  - Resource-aware: CPU/GPU/IO slot limits via ResourceScheduler
-  - Retry + rollback: per-task retry counter + rollback_fn hook
-  - Checkpoint: auto-save every N completions, resume from Redis
-  - EventBus: lifecycle events for external subscribers
-  - Cognitive nodes: fn can be reasoning / tool / agent / model
-  - Backwards-compatible: old Task dataclass still accepted
+相对原版的增强：
+  - 动态 DAG：运行时可注入新任务
+  - 资源感知：ResourceScheduler 限制 CPU/GPU/IO
+  - 重试与回滚：每任务重试计数 + rollback_fn
+  - 检查点：每 N 次完成自动落盘，可从 Redis 恢复
+  - 事件总线：生命周期事件供外部订阅
+  - 认知节点：fn 可为 reasoning/tool/agent/model
+  - 向后兼容：仍接受旧 Task dataclass
 """
 from __future__ import annotations
 

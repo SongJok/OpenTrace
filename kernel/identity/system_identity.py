@@ -1,4 +1,4 @@
-"""System identity and persona enforcement for all model calls."""
+"""系统身份与人设 — 对所有模型调用强制统一人设。"""
 
 from __future__ import annotations
 
@@ -84,6 +84,19 @@ def is_identity_user_query(text: str) -> bool:
     return bool(_IDENTITY_USER.search(text.strip()))
 
 
+def is_canonical_identity_response(text: str) -> bool:
+    """True when assistant text matches the fixed CANONICAL identity blurb (exact or near-exact)."""
+    if not (text or "").strip():
+        return False
+    a = (text or "").strip()
+    b = CANONICAL_IDENTITY_RESPONSE.strip()
+    if a == b:
+        return True
+    # Allow minor whitespace / full-width punctuation drift
+    norm = lambda s: re.sub(r"\s+", "", s)
+    return norm(a) == norm(b)
+
+
 def last_user_text(messages: Iterable[LLMMessage]) -> str:
     buffered = list(messages)
     for message in reversed(buffered):
@@ -110,11 +123,10 @@ def build_identity_llm_messages(
     conversation_context: dict[str, object] | None = None,
     recent_turns: list[dict[str, object]] | None = None,
 ) -> list[LLMMessage]:
-    """Build context-rich messages for an identity query LLM call.
+    """为身份查询 LLM 调用构建上下文丰富的消息。
 
-    Assembles a system message (SYSTEM_IDENTITY + SelfModel identity prompt)
-    and a user message that injects conversation context so the LLM can
-    produce a natural, context-aware identity response.
+    组装系统消息（SYSTEM_IDENTITY + SelfModel 身份提示词）
+    和用户消息，注入对话上下文，使 LLM 能生成自然、上下文感知的身份回答。
     """
     system_text = SYSTEM_IDENTITY.strip()
     if identity_prompt:

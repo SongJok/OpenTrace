@@ -1,10 +1,10 @@
 """
-TimeReasoningAgent — converts fuzzy time expressions to precise time windows.
+TimeReasoningAgent — 将模糊时间表达转为精确时间窗口。
 
-Uses Knowledge Layer column_semantics to identify time columns, then applies:
-1. Config-driven time_macro resolution (from semantic_config)
-2. Heuristic regex extraction (absolute ranges, relative days, month offsets)
-3. Time column inference
+借助知识层 column_semantics 识别时间列，再依次：
+1. 配置驱动的时间宏解析（semantic_config）
+2. 启发式正则抽取（绝对区间、相对天/月）
+3. 时间列推断
 """
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ from agents.data_agent_v2.types import (
 
 
 class TimeReasoningAgent(BaseAgent):
-    """Resolve time expressions into concrete time windows with column hints."""
+    """将时间表达解析为带列提示的具体时间窗口。"""
 
-    # Pre-compiled patterns for time extraction
+    # 预编译的时间抽取正则
     _RELATIVE_DAYS = re.compile(r"最近\s*(\d+)\s*天")
     _RELATIVE_MONTHS = re.compile(r"最近\s*(\d+)\s*(个)?月")
     _RELATIVE_HOURS = re.compile(r"最近\s*(\d+)\s*(个)?(小时|钟头)")
@@ -78,21 +78,21 @@ class TimeReasoningAgent(BaseAgent):
     async def _resolve_time(self, ctx: CognitiveContext) -> dict:
         query = ctx.query
 
-        # Priority 1: Config-driven time macros
+        # 优先级 1：配置驱动的时间宏
         result = self._resolve_time_macros(query, ctx)
         if result:
             return result
 
-        # Priority 2: Heuristic regex extraction
+        # 优先级 2：启发式正则抽取
         result = self._extract_heuristic(query)
         if result:
-            # Augment with column hint from schema_metadata
+            # 用 schema_metadata 补充列提示
             col_hint = self._infer_time_column(ctx)
             if col_hint:
                 result["column_hint"] = col_hint
             return result
 
-        # No time intent detected
+        # 未检测到时间意图
         return {
             "type": "none",
             "description": "no time constraint",
@@ -100,7 +100,7 @@ class TimeReasoningAgent(BaseAgent):
         }
 
     def _resolve_time_macros(self, query: str, ctx: CognitiveContext) -> dict | None:
-        """Check semantic_config.time_macros for matching patterns."""
+        """检查 semantic_config.time_macros 中是否有匹配的模式。"""
         macros = ctx.semantic_config.get("time_macros", [])
         best: dict | None = None
         best_len = 0
@@ -126,10 +126,10 @@ class TimeReasoningAgent(BaseAgent):
         return best
 
     def _extract_heuristic(self, query: str) -> dict | None:
-        """Regex-based time extraction."""
+        """基于正则的时间抽取。"""
         now = datetime.now()
 
-        # Relative days
+        # 相对天数
         if m := self._RELATIVE_DAYS.search(query):
             days = int(m.group(1))
             start = now - timedelta(days=days)
@@ -142,7 +142,7 @@ class TimeReasoningAgent(BaseAgent):
                 "confidence": 0.90,
             }
 
-        # Relative months
+        # 相对月数
         if m := self._RELATIVE_MONTHS.search(query):
             months = int(m.group(1))
             start = now - timedelta(days=months * 30)
@@ -156,7 +156,7 @@ class TimeReasoningAgent(BaseAgent):
                 "confidence": 0.88,
             }
 
-        # Relative hours
+        # 相对小时
         if m := self._RELATIVE_HOURS.search(query):
             hours = int(m.group(1))
             start = now - timedelta(hours=hours)
@@ -169,7 +169,7 @@ class TimeReasoningAgent(BaseAgent):
                 "confidence": 0.90,
             }
 
-        # Absolute date range
+        # 绝对日期区间
         if m := self._ABSOLUTE_RANGE.search(query):
             return {
                 "type": "absolute_range",
@@ -179,7 +179,7 @@ class TimeReasoningAgent(BaseAgent):
                 "confidence": 0.92,
             }
 
-        # Yesterday
+        # 昨天
         if self._YESTERDAY.search(query):
             d = now - timedelta(days=1)
             return {
@@ -190,7 +190,7 @@ class TimeReasoningAgent(BaseAgent):
                 "confidence": 0.95,
             }
 
-        # Today
+        # 今天
         if self._TODAY.search(query):
             return {
                 "type": "absolute",
@@ -200,7 +200,7 @@ class TimeReasoningAgent(BaseAgent):
                 "confidence": 0.95,
             }
 
-        # This week
+        # 本周
         if self._THIS_WEEK.search(query):
             start = now - timedelta(days=now.weekday())
             return {
@@ -212,7 +212,7 @@ class TimeReasoningAgent(BaseAgent):
                 "confidence": 0.88,
             }
 
-        # This month
+        # 本月
         if self._THIS_MONTH.search(query):
             start = now.replace(day=1)
             return {
@@ -224,7 +224,7 @@ class TimeReasoningAgent(BaseAgent):
                 "confidence": 0.88,
             }
 
-        # Last week
+        # 上周
         if self._LAST_WEEK.search(query):
             end = now - timedelta(days=now.weekday() + 1)
             start = end - timedelta(days=6)
@@ -236,7 +236,7 @@ class TimeReasoningAgent(BaseAgent):
                 "confidence": 0.88,
             }
 
-        # Last month
+        # 上月
         if self._LAST_MONTH.search(query):
             end = now.replace(day=1) - timedelta(days=1)
             start = end.replace(day=1)
@@ -248,7 +248,7 @@ class TimeReasoningAgent(BaseAgent):
                 "confidence": 0.88,
             }
 
-        # Past year
+        # 过去一年
         if self._PAST_YEAR.search(query):
             start = now - timedelta(days=365)
             return {
@@ -260,7 +260,7 @@ class TimeReasoningAgent(BaseAgent):
                 "confidence": 0.90,
             }
 
-        # MoM comparison
+        # 环比
         if self._MOM.search(query):
             return {
                 "type": "comparison",
@@ -272,7 +272,7 @@ class TimeReasoningAgent(BaseAgent):
                 "confidence": 0.85,
             }
 
-        # YoY comparison
+        # 同比
         if self._YOY.search(query):
             return {
                 "type": "comparison",
@@ -288,13 +288,13 @@ class TimeReasoningAgent(BaseAgent):
         return None
 
     def _infer_time_column(self, ctx: CognitiveContext) -> str | None:
-        """Find columns marked as time_column in schema_metadata."""
+        """查找 schema_metadata 中标记为 time_column 的列。"""
         if ctx.column_semantics:
             for col in ctx.column_semantics:
                 if col.get("is_time_column"):
                     return f"{col['table_name']}.{col['column_name']}"
 
-        # Heuristic: check query for time-related column mentions
+        # 启发式：检查查询中是否提及时间相关列
         time_patterns = [
             r"(?:created_at|create_time|下单时间|创建时间|updated_at|update_time|order_time|订单时间)",
         ]
@@ -305,10 +305,10 @@ class TimeReasoningAgent(BaseAgent):
         return None
 
     def _normalize_date(self, s: str) -> str:
-        """Normalize Chinese date formats to YYYY-MM-DD."""
+        """将中文日期格式标准化为 YYYY-MM-DD。"""
         s = re.sub(r"[年月]", "-", s)
         s = re.sub(r"[日号]", "", s)
-        # Ensure YYYY-MM-DD format
+        # 确保 YYYY-MM-DD 格式
         parts = s.split("-")
         if len(parts) == 3:
             return f"{int(parts[0]):04d}-{int(parts[1]):02d}-{int(parts[2]):02d}"

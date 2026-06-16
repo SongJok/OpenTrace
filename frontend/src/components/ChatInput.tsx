@@ -19,6 +19,27 @@ import {
 } from '../api/client'
 import clsx from 'clsx'
 import { isDatabaseQuestion } from '../lib/chatDatabase'
+import { normalizeFinalAnswerEnvelope, type TurnMetaEnvelope } from '../utils/streamEnvelope'
+
+function applyFinalAnswerEnvelope(
+  store: ReturnType<typeof useChatStore.getState>,
+  sessionId: string,
+  assistantMessageId: string,
+  envelope: TurnMetaEnvelope,
+) {
+  if (envelope.execution_graph) {
+    store.setExecutionGraph(sessionId, assistantMessageId, envelope.execution_graph as any)
+  }
+  const display = normalizeAnswerContent(envelope.content) || '（空响应）'
+  store.finishLastAssistantMessage(sessionId, display)
+  if (envelope.citations?.length) {
+    store.setLastAssistantCitations(sessionId, envelope.citations as any)
+  }
+  if (envelope.annotations?.length) {
+    store.setLastAssistantAnnotations(sessionId, envelope.annotations as any)
+  }
+  store.setLastAssistantTurnMeta(sessionId, envelope)
+}
 
 type PrefillDetail = string | { text: string; autoSend?: boolean }
 type ChatInputVariant = 'default' | 'welcome'
@@ -400,20 +421,8 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
               })
             }
           },
-          onFinalAnswer: async (...args: any[]) => {
-            const [content, executionGraph, citations, annotations] = args as any[]
-            if (executionGraph) {
-              store.setExecutionGraph(currentSessionId, assistantMessageId, executionGraph)
-            }
-            const normalized = normalizeAnswerContent(content)
-            const display = normalized || '（空响应）'
-            store.finishLastAssistantMessage(currentSessionId, display)
-            if (Array.isArray(citations) && citations.length) {
-              store.setLastAssistantCitations(currentSessionId, citations as any)
-            }
-            if (Array.isArray(annotations) && annotations.length) {
-              store.setLastAssistantAnnotations(currentSessionId, annotations as any)
-            }
+          onFinalAnswer: async (envelope) => {
+            applyFinalAnswerEnvelope(store, currentSessionId, assistantMessageId, envelope)
             window.dispatchEvent(new Event(`opentrace:assistant-stream-done:${assistantMessageId}`))
           },
           onError: async (err) => {
@@ -446,17 +455,20 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
                 confirmation_granted: Boolean(toolPermissionToken),
                 attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
               })
-              const display = sync.content || '（空响应）'
-              store.finishLastAssistantMessage(currentSessionId, display)
-              if (sync.execution_graph) {
-                store.setExecutionGraph(currentSessionId, assistantMessageId, sync.execution_graph)
-              }
-              if (Array.isArray(sync.citations) && sync.citations.length) {
-                store.setLastAssistantCitations(currentSessionId, sync.citations as any)
-              }
-              if (Array.isArray(sync.annotations) && sync.annotations.length) {
-                store.setLastAssistantAnnotations(currentSessionId, sync.annotations as any)
-              }
+              applyFinalAnswerEnvelope(
+                store,
+                currentSessionId,
+                assistantMessageId,
+                normalizeFinalAnswerEnvelope({
+                  content: sync.content,
+                  execution_graph: sync.execution_graph,
+                  citations: sync.citations,
+                  annotations: sync.annotations,
+                  metadata: sync.metadata ?? {},
+                  prompt_tokens: sync.prompt_tokens,
+                  completion_tokens: sync.completion_tokens,
+                }),
+              )
             } catch {
               store.failLastAssistantMessage(currentSessionId, `Error: ${errMsg}`)
             }
@@ -638,17 +650,8 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
           onDelta: (text) => text && store.appendStreamingChunk(activeId, text),
           onToolCall: (payload) => store.updateToolStatus(activeId, payload),
           onToolResult: (payload) => store.updateToolResult(activeId, payload),
-          onFinalAnswer: async (content, executionGraph, citations, annotations) => {
-            if (executionGraph) store.setExecutionGraph(activeId, assistantMessageId, executionGraph)
-            const normalized = normalizeAnswerContent(content)
-            const display = normalized || '（空响应）'
-            store.finishLastAssistantMessage(activeId, display)
-            if (Array.isArray(citations) && citations.length) {
-              store.setLastAssistantCitations(activeId, citations as any)
-            }
-            if (Array.isArray(annotations) && annotations.length) {
-              store.setLastAssistantAnnotations(activeId, annotations as any)
-            }
+          onFinalAnswer: async (envelope) => {
+            applyFinalAnswerEnvelope(store, activeId, assistantMessageId, envelope)
           },
           onError: (err) => {
             if (err instanceof Error && err.message === 'REQUEST_ABORTED') {

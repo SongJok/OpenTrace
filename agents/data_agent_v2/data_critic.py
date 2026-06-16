@@ -1,9 +1,8 @@
 """
-DataCriticAdapter — bridges CriticEngine into the DataAgent V2 pipeline.
+DataCriticAdapter — 将 CriticEngine 接入 DataAgent V2 流水线。
 
-Adapts data query results (content + confidence + metadata) into CriticInput,
-runs CriticEngine, and returns enriched output with explainable confidence
-breakdown, quality warnings, and improved_answer when applicable.
+将数据查询结果（内容、置信度、元数据）适配为 CriticInput，运行 CriticEngine，
+返回含可解释置信度分解、质量告警及改进答案（若适用）的增强输出。
 """
 from __future__ import annotations
 
@@ -12,11 +11,10 @@ from kernel.critic_engine.models import CriticInput, CriticOutput
 
 
 class DataCriticAdapter:
-    """Adapt CriticEngine for data query result quality assessment.
+    """将 CriticEngine 适配为数据查询结果质量评估器。
 
-    CriticEngine provides: decomposed confidence, refusal detection,
-    specificity scoring, and answer substance evaluation. This adapter
-    tailors it for structured data results (SQL + rows).
+    CriticEngine 提供：分解置信度、拒绝检测、特异性评分和答案实质评估。
+    本适配器针对结构化数据结果（SQL + 行数据）进行定制。
     """
 
     def __init__(self) -> None:
@@ -33,28 +31,28 @@ class DataCriticAdapter:
         error: str = "",
         verification_report: dict | None = None,
     ) -> CriticOutput:
-        """Assess data query result quality through CriticEngine.
+        """通过 CriticEngine 评估数据查询结果质量。
 
         Args:
-            query: Original user query
-            content: Formatted result content
-            confidence: Pre-critic confidence score
-            fusion_context: Additional context from fusion engine (if any)
-            rows: Query result rows
-            sql: Executed SQL
-            error: Execution error if any
-            verification_report: Verification agent output
+            query: 原始用户查询
+            content: 格式化的结果内容
+            confidence: 评估前的置信度分数
+            fusion_context: 来自融合引擎的额外上下文（如有）
+            rows: 查询结果行
+            sql: 已执行的 SQL
+            error: 执行错误（如有）
+            verification_report: 验证 Agent 输出
 
         Returns:
-            CriticOutput with need_fix, improved_answer, confidence_breakdown
+            包含 need_fix、improved_answer、confidence_breakdown 的 CriticOutput
         """
-        # Build fusion context from data-specific information
+        # 从数据特定信息构建融合上下文
         ctx_parts: list[str] = []
         if sql:
             ctx_parts.append(f"[data] SQL: {sql[:500]}")
         if rows:
             ctx_parts.append(f"[data] Rows returned: {len(rows)}")
-            # Sample column names for context
+            # 采样列名作为上下文
             if rows and rows[0]:
                 cols = list(rows[0].keys())[:20]
                 ctx_parts.append(f"[data] Columns: {', '.join(cols)}")
@@ -87,11 +85,11 @@ class DataCriticAdapter:
         error: str = "",
         verification_report: dict | None = None,
     ) -> dict:
-        """Run critic assessment and return enriched result fields.
+        """运行 Critic 评估并返回增强结果字段。
 
-        Returns dict with keys suitable for merging into AgentResult:
-        - content (possibly improved)
-        - confidence (adjusted)
+        返回适合合并到 AgentResult 的字典：
+        - content（可能已改进）
+        - confidence（已调整）
         - confidence_breakdown
         - confidence_explanation
         - critic_feedback
@@ -120,11 +118,11 @@ class DataCriticAdapter:
     def _adjust_confidence(
         self, original: float, critic_out: CriticOutput
     ) -> float:
-        """Blend original confidence with critic signals."""
+        """将原始置信度与 Critic 信号混合。"""
         if not critic_out.confidence_breakdown:
             return original
 
-        # Average of non-refusal and specificity as critic signal
+        # 以非拒绝和特异性的平均值作为 Critic 信号
         non_refusal = critic_out.confidence_breakdown.get("non_refusal", 0.5)
         specificity = critic_out.confidence_breakdown.get("specificity", 0.5)
         substance = critic_out.confidence_breakdown.get("answer_substance", 0.5)
@@ -132,10 +130,10 @@ class DataCriticAdapter:
 
         critic_signal = (non_refusal + specificity + substance + source_coverage) / 4.0
 
-        # Blend: 60% original, 40% critic
+        # 混合比例：60% 原始，40% Critic
         blended = original * 0.6 + critic_signal * 0.4
 
-        # If critic says need_fix, apply a penalty
+        # 若 Critic 认为需要修复，施加惩罚
         if critic_out.need_fix:
             blended -= 0.10
 

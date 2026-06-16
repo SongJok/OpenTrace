@@ -1,4 +1,4 @@
-"""Contract tests for skills create/get/test API endpoints."""
+"""技能 create/get/test API 端点契约测试。"""
 import unittest
 from unittest.mock import patch, Mock
 

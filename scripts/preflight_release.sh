@@ -11,7 +11,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 
-BASE_URL="${BASE_URL:-http://127.0.0.1:14101}"
+BASE_URL="${BASE_URL:-http://127.0.0.1:14100}"
 MODE="${1:---full}"
 
 check_cmd() {

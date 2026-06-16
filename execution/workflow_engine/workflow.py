@@ -1,5 +1,5 @@
 """
-Workflow Engine — named, reusable multi-step workflows.
+工作流引擎 — 具名、可复用的多步骤工作流。
 """
 from __future__ import annotations
 

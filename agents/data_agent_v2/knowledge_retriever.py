@@ -1,11 +1,8 @@
 """
-KnowledgeRetrieverAgent — queries knowledge asset tables and injects
-grounded business context into the cognitive pipeline.
+KnowledgeRetrieverAgent — 查询知识资产表并向认知流水线注入已 grounding 的业务上下文。
 
-This agent bridges the Knowledge Layer and Reasoning Layer: it retrieves
-metric definitions, schema metadata, table relationships, analytical skills,
-and query patterns, then attaches them to CognitiveContext so downstream
-agents never need to guess business logic.
+连接知识层与推理层：拉取指标定义、schema 元数据、表关系、分析技能与查询模式，
+写入 CognitiveContext，下游 Agent 无需猜测业务逻辑。
 """
 from __future__ import annotations
 
@@ -25,11 +22,11 @@ from agents.data_agent_v2.types import (
 
 
 class KnowledgeRetrieverAgent(BaseAgent):
-    """Retrieve relevant knowledge assets for a given analytical query.
+    """为给定分析查询检索相关知识资产。
 
-    Reads from: metric_definitions, schema_metadata, table_relationships,
-    analytical_skills, query_patterns.
-    Injects results into CognitiveContext.
+    读取：metric_definitions、schema_metadata、table_relationships、
+    analytical_skills、query_patterns。
+    将结果注入 CognitiveContext。
     """
 
     def __init__(self) -> None:
@@ -91,12 +88,12 @@ class KnowledgeRetrieverAgent(BaseAgent):
                 metadata={"cognitive_context": ctx.to_dict()},
             )
 
-    # ── Retrieval Methods ──────────────────────────────────────────────
+    # ── 检索方法 ──────────────────────────────────────────────────
 
     async def _retrieve_metric_definitions(
         self, db: AsyncSession, ctx: CognitiveContext, spec: KnowledgeRetrievalSpec,
     ) -> None:
-        """Match metric_definitions by name/alias and data_source_id."""
+        """按名称/别名和 data_source_id 匹配 metric_definitions。"""
         from infra.storage.models import MetricDefinition
 
         conditions = [MetricDefinition.data_source_id == spec.data_source_id]
@@ -104,10 +101,10 @@ class KnowledgeRetrieverAgent(BaseAgent):
 
         for name in spec.metric_names:
             keyword_conditions.append(MetricDefinition.name.ilike(f"%{name}%"))
-            # Also check aliases (ARRAY containment is dialect-specific, use OR)
+            # 同时检查别名（ARRAY 包含查询因方言而异，使用 OR）
             keyword_conditions.append(MetricDefinition.aliases.any(name))
 
-        # Also try to match from query text directly
+        # 同时尝试从查询文本直接匹配
         query_words = spec.query.lower().split()
         for word in query_words:
             if len(word) >= 2:
@@ -143,7 +140,7 @@ class KnowledgeRetrieverAgent(BaseAgent):
     async def _retrieve_column_semantics(
         self, db: AsyncSession, ctx: CognitiveContext, spec: KnowledgeRetrievalSpec,
     ) -> None:
-        """Retrieve schema_metadata for tables involved in this query."""
+        """检索本查询涉及表的 schema_metadata。"""
         from infra.storage.models import SchemaMetadata
 
         if not spec.table_names:
@@ -183,7 +180,7 @@ class KnowledgeRetrieverAgent(BaseAgent):
     async def _retrieve_table_relationships(
         self, db: AsyncSession, ctx: CognitiveContext, spec: KnowledgeRetrievalSpec,
     ) -> None:
-        """Retrieve verified table relationships for the involved tables."""
+        """检索涉及表的已验证关系。"""
         from infra.storage.models import TableRelationship
 
         if len(spec.table_names) < 2:
@@ -223,7 +220,7 @@ class KnowledgeRetrieverAgent(BaseAgent):
     async def _retrieve_analytical_skills(
         self, db: AsyncSession, ctx: CognitiveContext, spec: KnowledgeRetrievalSpec,
     ) -> None:
-        """Match analytical_skills by intent type."""
+        """按意图类型匹配 analytical_skills。"""
         from infra.storage.models import AnalyticalSkill
 
         conditions = [AnalyticalSkill.status == "active"]
@@ -256,7 +253,7 @@ class KnowledgeRetrieverAgent(BaseAgent):
     async def _check_query_patterns(
         self, db: AsyncSession, ctx: CognitiveContext, spec: KnowledgeRetrievalSpec,
     ) -> None:
-        """Check if a similar query has been executed successfully before."""
+        """检查是否有相似查询曾成功执行。"""
         from infra.storage.models import QueryPattern
 
         pattern_key = f"{spec.intent_type}|{','.join(sorted(spec.entity_names))}|{','.join(sorted(spec.metric_names))}"
@@ -277,7 +274,7 @@ class KnowledgeRetrieverAgent(BaseAgent):
                 "avg_confidence": row.avg_confidence,
             }
 
-    # ── Helpers ────────────────────────────────────────────────────────
+    # ── 辅助方法 ──────────────────────────────────────────────────
 
     def _empty_result(
         self, task: TaskMessage, ctx: CognitiveContext, reason: str = ""

@@ -1,4 +1,4 @@
-"""Contract tests for DataAgent V2 agents — structure, interface compliance, determinism."""
+"""DataAgent V2 Agent 契约测试 — 结构、接口合规与确定性。"""
 
 import unittest
 from pathlib import Path
@@ -213,9 +213,14 @@ class ErrorClassifierContractTests(unittest.TestCase):
         self.assertIn("REPAIR_STRATEGIES", self.txt)
 
     def test_has_four_error_domains(self):
-        domains = ["SQL", "LOGIC", "DATA_QUALITY", "SEMANTIC"]
-        found = sum(1 for d in domains if d.lower() in self.txt.lower())
-        self.assertGreaterEqual(found, 2)
+        """Module doc + ErrorCategory cover SQL / logic / data quality / semantic buckets."""
+        self.assertIn("SQL", self.txt)
+        self.assertIn("逻辑", self.txt)
+        self.assertIn("数据质量", self.txt)
+        self.assertIn("语义", self.txt)
+        self.assertIn("JOIN_AMPLIFICATION", self.txt)
+        self.assertIn("EMPTY_RESULT", self.txt)
+        self.assertIn("AMBIGUOUS_ENTITY", self.txt)
 
 
 class DataCriticAdapterContractTests(unittest.TestCase):
