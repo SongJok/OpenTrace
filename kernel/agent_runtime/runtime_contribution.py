@@ -165,8 +165,10 @@ def _world_from_metadata(md: dict[str, Any], session_id: str = "") -> list[World
                         projection_hint="current",
                     )
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            from infra.observability.logger import get_logger
+
+            get_logger(__name__).warning("world_projection_metadata_invalid", error=str(exc))
     ws = md.get("world_state") or md.get("world_snapshot")
     if isinstance(ws, dict) and ws and not updates:
         updates.append(

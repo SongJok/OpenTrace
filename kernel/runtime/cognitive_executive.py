@@ -489,8 +489,10 @@ class CognitiveExecutive:
         await self._evidence_bus.publish_results(agent_results)
 
         evidence_objects: list[Any] = []
+        agent_evidence_objects: list[Any] = []
         for r in agent_results:
             if hasattr(r, "evidence_objects") and r.evidence_objects:
+                agent_evidence_objects.extend(r.evidence_objects)
                 evidence_objects.extend(r.evidence_objects)
             if getattr(r, "status", "") == "error" and getattr(r, "error", ""):
                 agent_errors.append(f"{r.agent_type}: {r.error}")
@@ -503,8 +505,12 @@ class CognitiveExecutive:
             usable = await self._evidence_bus.get_usable()
             if usable:
                 evidence_objects = usable
+            elif agent_evidence_objects:
+                evidence_objects = agent_evidence_objects
         except Exception as exc:
             logger.debug("Evidence resolution skipped", error=str(exc))
+            if not evidence_objects and agent_evidence_objects:
+                evidence_objects = agent_evidence_objects
 
         self._runtime_fabric_evolve(
             ctx,

@@ -1,6 +1,4 @@
-"""
-Built-in tools: datetime, calculator, web_search, python_repl, summarize.
-"""
+"""Built-in tools for time, calculation, web, weather and safe code tasks."""
 from __future__ import annotations
 
 import datetime
@@ -81,13 +79,47 @@ async def tool_web_search(query: str = "", **_) -> str:
             )
             resp.raise_for_status()
             data = resp.json()
-        snippets = [
-            f"{r.get('title', '')}: {r.get('snippet', '')}"
-            for r in data.get("organic", [])[:5]
+        items = [
+            {
+                "title": str(result.get("title") or ""),
+                "snippet": str(result.get("snippet") or ""),
+                "url": str(result.get("link") or ""),
+                "position": result.get("position"),
+            }
+            for result in data.get("organic", [])[:5]
+            if isinstance(result, dict)
         ]
-        return "\n".join(snippets) if snippets else "No results found."
+        return json.dumps({"query": query, "items": items}, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001
         return f"Web search error: {exc}"
+
+
+@registry.tool(
+    name="web_fetch",
+    description="Fetch readable text from an approved public webpage URL.",
+    tags=["fetch", "url", "webpage", "read page", "网页", "网址", "链接", "读取网页"],
+)
+async def tool_web_fetch(url: str = "", query: str = "", **_) -> str:
+    from infra.security.outbound_url import (
+        OutboundURLValidationError,
+        fetch_public_webpage,
+    )
+
+    target = (url or query or "").strip()
+    try:
+        page = await fetch_public_webpage(target)
+    except OutboundURLValidationError as exc:
+        return f"Web fetch unavailable: {exc}"
+    except Exception:
+        return "Web fetch error: upstream request failed"
+    item = {
+        "title": page.get("title") or page.get("url") or "Web page",
+        "snippet": str(page.get("content") or "")[:4000],
+        "url": page.get("url") or target,
+        "content_type": page.get("content_type"),
+        "truncated": bool(page.get("truncated")),
+    }
+    return json.dumps({"query": target, "items": [item], "fetched": True}, ensure_ascii=False)
 
 
 @registry.tool(

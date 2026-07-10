@@ -11,7 +11,7 @@
 | 前端 dev | **14108** | `FRONTEND_PORT` / Vite |
 | `VITE_API_URL` | `http://localhost:14100` | 浏览器访问宿主机 API |
 
-**已废弃/易混淆**：`.env` 中的 `GATEWAY_PORT=14101` 若存在，**不参与**当前 Dockerfile/Compose/健康检查；请勿将 `preflight` 或前端指向 14101，除非全栈已同步改端口。
+**已废弃/易混淆**：`.env` 中的 `GATEWAY_PORT=14101` 若存在，**不参与**当前 Dockerfile/Compose/健康检查；请勿将 `preflight` 或前端指向 14101，除非全栈已同步改端口。`development` 会给出 warning；`staging` / `production` 中 `GATEWAY_PORT != APP_PORT` 会启动失败。
 
 ## 数据与缓存（Docker 网络 vs 宿主机）
 
@@ -34,7 +34,13 @@
 ## 密钥
 
 - 所有 `*_API_KEY`、`SMTP_PASS`、`APP_SECRET_KEY` 仅放在 `.env` 或密钥管理系统。
+- `staging` / `production` 必须显式配置非占位的 `APP_SECRET_KEY`、`JWT_SECRET`、`DATA_SECRET_KEY`；启用 `ENTERPRISE_TENANT_RLS_ENABLED` 时还必须配置 `TRUSTED_TENANT_HEADER_SECRET`，缺失会在配置加载时失败。
 - 文档与 README 只使用占位符 `<your-*>`。
+
+## Schema 与迁移
+
+- `development` 启动时允许 `ensure_runtime_schema()` 做本地兼容性 DDL 修复。
+- `staging` / `production` 启动时只做只读 schema readiness 校验；缺少 Alembic 迁移会启动失败，请先执行 `alembic upgrade head`。
 
 ## 健康检查 `orchestrator` 字段
 

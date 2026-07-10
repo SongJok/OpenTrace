@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agents.base import TaskMessage
 from agents.data_agent import DataAgent
 from gateway.api_gateway.routers.auth import get_current_user
+from gateway.api_gateway.resource_scope import get_owned_data_source
+from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.security.data_source_secrets import decrypt_data_source_secret
 from infra.config.settings import get_settings
 from infra.errors import AppException, ErrorCodes
@@ -17,8 +19,8 @@ from infra.metadata.schema_inspector import build_schema_hint, load_schema_inspe
 from infra.storage.database import db_session_dependency as get_db
 from execution.data.db_router import DBConnectionInfo, DBRouter
 from execution.data.query_intents import build_structured_database_query
-from infra.storage.models import DataSource, DataSourceSchema, User
-from kernel.data_cognition.sql_dialect import detect_sql_dialect, render_time_window
+from infra.storage.models import DataSourceSchema, User
+from kernel.data_cognition.sql_dialect import detect_sql_dialect
 from kernel.data_cognition.sql_postprocess import normalize_sql_for_dialect
 from kernel.data_cognition.sql_planner import SQLPlanner
 from kernel.data_cognition.sql_ranker import SQLRanker
@@ -52,15 +54,21 @@ async def data_query(
     req: DataQueryRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    http_request: Request = None,
 ) -> dict:
     settings = get_settings()
-
-    r = await db.execute(
-        select(DataSource).where(
-            DataSource.id == req.data_source_id,
-        )
+    tenant_md = (
+        build_tenant_metadata(http_request, user_id=current_user.id)
+        if http_request is not None
+        else {"tenant_id": "default", "workspace_id": "default"}
     )
-    source = r.scalar_one_or_none()
+
+    source = await get_owned_data_source(
+        db,
+        user_id=current_user.id,
+        tenant_metadata=tenant_md,
+        data_source_id=req.data_source_id,
+    )
     if source is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="data source not found")
 
@@ -316,6 +324,7 @@ class DataSchemaSyncRequest(BaseModel):
 
 @router.post("/data/schema/sync")
 async def data_schema_sync(
+    http_request: Request,
     req: DataSchemaSyncRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -326,21 +335,24 @@ async def data_schema_sync(
         database_id=req.data_source_id,
         current_user=current_user,
         db=db,
+        http_request=http_request,
     )
 
 
 @router.get("/data/schema")
 async def data_schema(
+    http_request: Request,
     data_source_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    r = await db.execute(
-        select(DataSource).where(
-            DataSource.id == data_source_id,
-        )
+    tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
+    source = await get_owned_data_source(
+        db,
+        user_id=current_user.id,
+        tenant_metadata=tenant_md,
+        data_source_id=data_source_id,
     )
-    source = r.scalar_one_or_none()
     if source is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="data source not found")
 

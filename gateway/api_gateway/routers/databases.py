@@ -4,7 +4,7 @@ import json
 import time
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +17,12 @@ from execution.data.database_hosts import (
 )
 from execution.data.sql_executor import SQLExecutor
 from gateway.api_gateway.routers.auth import get_current_user
-from infra.config.settings import get_settings
+from gateway.api_gateway.resource_scope import (
+    get_owned_data_source,
+    normalized_tenant_scope,
+    owned_data_sources_statement,
+)
+from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.security.data_source_secrets import (
     decrypt_data_source_secret,
     encrypt_data_source_secret,
@@ -30,6 +35,21 @@ router = APIRouter()
 
 
 SUPPORTED_SOURCE_TYPES = {"mysql", "clickhouse", "doris", "postgres"}
+
+
+async def _owned_data_source(
+    db: AsyncSession,
+    request: Request,
+    current_user: User,
+    database_id: str,
+) -> DataSource | None:
+    tenant_md = build_tenant_metadata(request, user_id=current_user.id)
+    return await get_owned_data_source(
+        db,
+        user_id=current_user.id,
+        tenant_metadata=tenant_md,
+        data_source_id=database_id,
+    )
 
 
 class DataSourceCreateRequest(BaseModel):
@@ -144,11 +164,20 @@ def _validate_database_host(host: str) -> str:
 
 
 @router.post("/databases")
-async def create_database(req: DataSourceCreateRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
+async def create_database(
+    http_request: Request,
+    req: DataSourceCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     host = _validate_database_host(req.host)
+    tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
+    tenant_id, workspace_id = normalized_tenant_scope(tenant_md)
     row = DataSource(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
         name=req.name,
         source_type=req.source_type,
         host=host,
@@ -164,10 +193,15 @@ async def create_database(req: DataSourceCreateRequest, current_user: User = Dep
 
 
 @router.patch("/databases/{database_id}")
-async def update_database(database_id: str, req: DataSourceUpdateRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
+async def update_database(
+    http_request: Request,
+    database_id: str,
+    req: DataSourceUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     host = _validate_database_host(req.host)
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
-    x = r.scalar_one_or_none()
+    x = await _owned_data_source(db, http_request, current_user, database_id)
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
     x.name = req.name
@@ -176,15 +210,25 @@ async def update_database(database_id: str, req: DataSourceUpdateRequest, curren
     x.port = req.port
     x.database = req.database
     x.username = req.username
-    x.password_encrypted = _enc(req.password)
+    x.password_encrypted = encrypt_data_source_secret(req.password)
     x.status = "active"
     await db.commit()
     return {"id": x.id, "updated": True}
 
 
 @router.get("/databases")
-async def list_databases(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
-    r = await db.execute(select(DataSource).order_by(DataSource.created_at.desc()))
+async def list_databases(
+    http_request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
+    r = await db.execute(
+        owned_data_sources_statement(
+            user_id=current_user.id,
+            tenant_metadata=tenant_md,
+        ).order_by(DataSource.created_at.desc())
+    )
     items = r.scalars().all()
     payloads = []
     for x in items:
@@ -220,9 +264,13 @@ async def list_databases(current_user: User = Depends(get_current_user), db: Asy
 
 
 @router.get("/databases/{database_id}")
-async def get_database(database_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
-    x = r.scalar_one_or_none()
+async def get_database(
+    http_request: Request,
+    database_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    x = await _owned_data_source(db, http_request, current_user, database_id)
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
     return {
@@ -238,21 +286,29 @@ async def get_database(database_id: str, current_user: User = Depends(get_curren
 
 
 @router.delete("/databases/{database_id}")
-async def delete_database(database_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
-    x = r.scalar_one_or_none()
+async def delete_database(
+    http_request: Request,
+    database_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    x = await _owned_data_source(db, http_request, current_user, database_id)
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
     await db.execute(delete(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id))
-    await db.execute(delete(DataSource).where(DataSource.id == database_id))
+    await db.execute(delete(DataSource).where(DataSource.id == x.id))
     await db.commit()
     return {"deleted": True}
 
 
 @router.post("/databases/{database_id}/test-connection")
-async def test_connection(database_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
-    x = r.scalar_one_or_none()
+async def test_connection(
+    http_request: Request,
+    database_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    x = await _owned_data_source(db, http_request, current_user, database_id)
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
 
@@ -279,9 +335,13 @@ async def test_connection(database_id: str, current_user: User = Depends(get_cur
 
 
 @router.post("/databases/{database_id}/sync-schema")
-async def sync_schema(database_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
-    x = r.scalar_one_or_none()
+async def sync_schema(
+    http_request: Request,
+    database_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    x = await _owned_data_source(db, http_request, current_user, database_id)
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
 
@@ -292,7 +352,7 @@ async def sync_schema(database_id: str, current_user: User = Depends(get_current
             port=x.port,
             database=x.database,
             username=x.username,
-            password=_dec(x.password_encrypted),
+            password=decrypt_data_source_secret(x.password_encrypted),
         )
     )
 
@@ -372,11 +432,16 @@ class SemanticMappingUpdate(BaseModel):
 
 
 @router.post("/databases/{database_id}/query")
-async def query_database(database_id: str, req: DatabaseQueryRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
+async def query_database(
+    http_request: Request,
+    database_id: str,
+    req: DatabaseQueryRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     from gateway.api_gateway.routers.data import DataQueryRequest, data_query
 
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
-    x = r.scalar_one_or_none()
+    x = await _owned_data_source(db, http_request, current_user, database_id)
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
 
@@ -389,6 +454,7 @@ async def query_database(database_id: str, req: DatabaseQueryRequest, current_us
             DataQueryRequest(question=req.question, data_source_id=database_id, dry_run=False, sql=req.sql),
             current_user=current_user,
             db=db,
+            http_request=http_request,
         )
         return out
     except Exception as exc:  # noqa: BLE001
@@ -420,9 +486,13 @@ async def query_database(database_id: str, req: DatabaseQueryRequest, current_us
 
 
 @router.get("/databases/{database_id}/schema")
-async def get_database_schema(database_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
-    x = r.scalar_one_or_none()
+async def get_database_schema(
+    http_request: Request,
+    database_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    x = await _owned_data_source(db, http_request, current_user, database_id)
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
 
@@ -439,13 +509,13 @@ async def get_database_schema(database_id: str, current_user: User = Depends(get
 
 @router.post("/databases/{database_id}/analysis")
 async def analyze_database(
+    http_request: Request,
     database_id: str,
     req: DatabaseAnalysisRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
-    x = r.scalar_one_or_none()
+    x = await _owned_data_source(db, http_request, current_user, database_id)
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
 
@@ -492,7 +562,7 @@ async def analyze_database(
             port=x.port,
             database=x.database,
             username=x.username,
-            password=_dec(x.password_encrypted),
+            password=decrypt_data_source_secret(x.password_encrypted),
         )
     )
     rows = await SQLExecutor().run_on_dsn(dsn, trend_sql)
@@ -535,13 +605,13 @@ async def analyze_database(
 
 @router.get("/databases/{database_id}/semantic")
 async def get_semantic_config(
+    http_request: Request,
     database_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Get semantic mappings for a data source."""
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
-    x = r.scalar_one_or_none()
+    x = await _owned_data_source(db, http_request, current_user, database_id)
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
 
@@ -556,14 +626,14 @@ async def get_semantic_config(
 
 @router.put("/databases/{database_id}/semantic")
 async def update_semantic_config(
+    http_request: Request,
     database_id: str,
     req: SemanticMappingUpdate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Update semantic mappings for a data source."""
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
-    x = r.scalar_one_or_none()
+    x = await _owned_data_source(db, http_request, current_user, database_id)
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
 
@@ -644,13 +714,13 @@ def _auto_extract_semantics_from_schema(schema_payload: dict) -> dict:
 
 @router.post("/databases/{database_id}/semantic/auto-extract")
 async def auto_extract_semantic(
+    http_request: Request,
     database_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Auto-extract semantic mappings from table/column comments."""
-    r = await db.execute(select(DataSource).where(DataSource.id == database_id))
-    x = r.scalar_one_or_none()
+    x = await _owned_data_source(db, http_request, current_user, database_id)
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
 

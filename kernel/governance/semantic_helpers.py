@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from infra.observability.runtime_degraded import record_degradation_in_context
+
 
 def extract_semantic_turn_signals(
     request: Any,
@@ -79,7 +81,13 @@ def record_kernel_turn_health(
         from kernel.cognitive_supervisor.run_outcomes import governance_kwargs_from_ctx
 
         gkw = governance_kwargs_from_ctx(ctx, request)
-    except Exception:
+    except Exception as exc:
+        record_degradation_in_context(
+            ctx,
+            subsystem="semantic_health",
+            detail="governance_kwargs_from_ctx_kernel_finalize",
+            exc=exc,
+        )
         gg = md.get("goal_graph") or {}
         goals = gg.get("goals") if isinstance(gg, dict) else []
         gkw["sub_goal_count"] = max(0, len(goals) - 1) if isinstance(goals, list) else 0
@@ -134,8 +142,13 @@ def record_kernel_turn_health(
             out["self_optimizing_runtime"] = report.to_metadata().get(
                 "self_optimizing_runtime", {}
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        record_degradation_in_context(
+            ctx,
+            subsystem="self_optimizing_runtime",
+            detail="record_kernel_turn_health",
+            exc=exc,
+        )
 
     return out
 
@@ -163,8 +176,13 @@ def record_executive_turn_health(
         from kernel.cognitive_supervisor.run_outcomes import governance_kwargs_from_ctx
 
         gkw = governance_kwargs_from_ctx(ctx, request)
-    except Exception:
-        pass
+    except Exception as exc:
+        record_degradation_in_context(
+            ctx,
+            subsystem="semantic_health",
+            detail="governance_kwargs_from_ctx_executive",
+            exc=exc,
+        )
 
     signals = extract_semantic_turn_signals(request, ctx, result)
     pipe = get_semantic_metrics_pipeline()
@@ -212,7 +230,12 @@ def record_executive_turn_health(
             out["self_optimizing_runtime"] = report.to_metadata().get(
                 "self_optimizing_runtime", {}
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        record_degradation_in_context(
+            ctx,
+            subsystem="self_optimizing_runtime",
+            detail="record_executive_turn_health",
+            exc=exc,
+        )
 
     return out

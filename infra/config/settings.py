@@ -6,9 +6,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal, Self
-from urllib.parse import urlparse, urlunparse
-
-from pydantic import Field, field_validator, model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -189,11 +187,26 @@ class AppSettings(BaseSettings):
     vite_api_url: str = "http://localhost:14100"
     vite_ws_url: str = "ws://localhost:14100"
 
+    # Gateway trust boundary. Non-default tenant headers must be signed by a
+    # trusted reverse proxy and are bound to the authenticated user.
+    trusted_tenant_header_secret: str = ""
+    trusted_tenant_header_max_age_seconds: int = 300
+    cors_allowed_origins: str = "http://localhost:14108,http://127.0.0.1:14108"
+
     use_pgvector: bool = True
     max_agent_steps: int = 8
     agent_timeout: int = 120
 
     serper_api_key: str = ""
+    web_fetch_enabled: bool = False
+    web_fetch_allowed_domains: str = ""
+    web_fetch_timeout_seconds: float = 10.0
+    web_fetch_max_redirects: int = 3
+    web_fetch_max_response_bytes: int = 1_000_000
+    connector_allowed_redirect_origins: str = (
+        "http://localhost:14108,http://127.0.0.1:14108"
+    )
+    connector_oauth_state_ttl_seconds: int = 600
 
     # Weather
     weather_api_key: str = ""
@@ -253,8 +266,6 @@ class AppSettings(BaseSettings):
     kernel_multi_goal_sequential_enabled: bool = True
     # Route data_query goals via services.data_intelligence_runtime (DataAgent V2 path)
     kernel_data_intelligence_routing_enabled: bool = True
-    # When True, data_intelligence runtime re-enters full CognitiveExecutive (higher cost)
-    kernel_data_intelligence_route_executive: bool = False
     # When True, data_intelligence runtime delegates to full CognitiveExecutive after data agent
     kernel_data_intelligence_route_executive: bool = False
     kernel_refine_replan_enabled: bool = True
@@ -374,8 +385,16 @@ class AppSettings(BaseSettings):
     text2sql_enabled: bool = True
     text2sql_max_retry: int = 2
     text2sql_default_limit: int = 100
+    text2sql_max_result_rows: int = 500
+    text2sql_statement_timeout_ms: int = 15000
     text2sql_join_inference_enabled: bool = True
     text2sql_max_join_depth: int = 3
+
+    # Shared marketplace management is admin-only. Dynamic Python execution is
+    # explicitly opt-in for local development until an isolated runner exists.
+    skills_git_install_enabled: bool = False
+    skills_local_create_enabled: bool = False
+    skills_inprocess_execution_enabled: bool = False
     rag_min_evidence_score: float = 0.65
     rag_auto_fallback_to_web: bool = True
     rag_rerank_enabled: bool = True
@@ -511,6 +530,26 @@ class AppSettings(BaseSettings):
     kernel_canary_latency_multiplier: float = 2.0
     kernel_canary_min_samples: int = 100
 
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [item for item in self.cors_allowed_origins.split(",") if item]
+
+    @property
+    def web_fetch_domain_list(self) -> list[str]:
+        return [
+            item.strip().lower().rstrip(".")
+            for item in self.web_fetch_allowed_domains.split(",")
+            if item.strip()
+        ]
+
+    @property
+    def connector_redirect_origin_list(self) -> list[str]:
+        return [
+            item.strip().lower().rstrip("/")
+            for item in self.connector_allowed_redirect_origins.split(",")
+            if item.strip()
+        ]
+
 
 class Settings(
     AppSettings,
@@ -539,7 +578,7 @@ class Settings(
         try:
             data = info.data if hasattr(info, "data") else {}
             app_port = int(data.get("app_port", 14100))
-            if v != app_port and data.get("app_env") != "production":
+            if v != app_port and data.get("app_env") == "development":
                 import warnings
 
                 warnings.warn(
@@ -550,6 +589,16 @@ class Settings(
         except Exception:
             pass
         return v
+
+    @model_validator(mode="after")
+    def _require_managed_env_port_alignment(self) -> Self:
+        """staging/production 端口配置必须一致，避免健康检查与前端指向漂移。"""
+        if self.app_env in {"staging", "production"} and self.gateway_port != self.app_port:
+            raise ValueError(
+                f"{self.app_env} requires GATEWAY_PORT ({self.gateway_port}) "
+                f"to equal APP_PORT ({self.app_port})"
+            )
+        return self
 
     @model_validator(mode="after")
     def _apply_staging_profile(self) -> Self:
@@ -573,8 +622,10 @@ class Settings(
             self.kernel_agent_runtime_v3_strict = True
         if not self.kernel_unified_evidence_strict:
             self.kernel_unified_evidence_strict = True
-        if not self.kernel_agent_learning_auto_apply:
-            self.kernel_agent_learning_auto_apply = True
+        self.kernel_agent_learning_auto_apply = False
+        self.skills_git_install_enabled = False
+        self.skills_local_create_enabled = False
+        self.skills_inprocess_execution_enabled = False
         return self
 
     @model_validator(mode="after")
@@ -594,6 +645,46 @@ class Settings(
             self.kernel_agent_runtime_v3_strict = True
         if not self.kernel_unified_evidence_strict:
             self.kernel_unified_evidence_strict = True
+        self.kernel_agent_learning_auto_apply = False
+        self.skills_git_install_enabled = False
+        self.skills_local_create_enabled = False
+        self.skills_inprocess_execution_enabled = False
+        return self
+
+    @field_validator("cors_allowed_origins", "connector_allowed_redirect_origins")
+    @classmethod
+    def _validate_cors_origins(cls, value: str) -> str:
+        origins = [item.strip() for item in str(value or "").split(",") if item.strip()]
+        if "*" in origins:
+            raise ValueError("origin allowlists must not contain '*'")
+        return ",".join(origins)
+
+    @model_validator(mode="after")
+    def _require_runtime_secrets_for_managed_envs(self) -> Self:
+        """staging/production 必须显式配置运行时密钥，避免空 key 进入签名与加密路径。"""
+        if self.app_env not in {"staging", "production"}:
+            return self
+        missing = []
+        placeholder_values = {"", "change-me", "change-me-in-production"}
+        required = {
+            "APP_SECRET_KEY": self.app_secret_key,
+            "JWT_SECRET": self.jwt_secret,
+            "DATA_SECRET_KEY": self.data_secret_key,
+        }
+        if self.enterprise_tenant_rls_enabled:
+            required["TRUSTED_TENANT_HEADER_SECRET"] = self.trusted_tenant_header_secret
+        for env_name, value in required.items():
+            if str(value or "").strip() in placeholder_values:
+                missing.append(env_name)
+        if missing:
+            joined = ", ".join(missing)
+            raise ValueError(
+                f"{self.app_env} requires explicit non-placeholder secrets: {joined}"
+            )
+        if self.web_fetch_enabled and not self.web_fetch_domain_list:
+            raise ValueError(
+                f"{self.app_env} requires WEB_FETCH_ALLOWED_DOMAINS when web fetch is enabled"
+            )
         return self
 
 

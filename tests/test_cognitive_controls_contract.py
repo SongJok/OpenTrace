@@ -1,6 +1,20 @@
 import asyncio
 
 
+def test_hungry_chat_does_not_inherit_data_query_on_follow_up_phase():
+    from kernel.cognitive_controls import _detect_follow_up, classify_intent
+
+    assert _detect_follow_up("我饿了", "follow_up") is False
+    lock = classify_intent(
+        "我饿了",
+        prior_intent="data_query",
+        conversation_phase="follow_up",
+    )
+    assert lock.task_type == "general_qa"
+    assert "data.query" in lock.disallowed_capabilities
+    assert lock.allowed_capabilities == ["model.answer"]
+
+
 def test_intent_lock_for_capability_help_disables_complex_runtime():
     from kernel.cognitive_controls import classify_intent, direct_answer_for_intent
 
@@ -21,6 +35,57 @@ def test_relevance_anchor_rejects_unrelated_document_text():
 
     assert relevance_score("你可以做什么", text) < 0.30
     assert passes_relevance_anchor("你可以做什么", text, threshold=0.30) is False
+
+
+def test_relevance_anchor_for_captain_procedure_with_routing_prefix():
+    from kernel.cognitive_controls import passes_relevance_anchor, relevance_score
+
+    query = "根据文档/知识库，请基于检索内容回答：如何成为队长？"
+    text = (
+        "队长是狼人杀房间的管理角色，需要满足等级与活跃条件。"
+        "申请队长可在个人中心提交，审核通过后即可担任队长。"
+    )
+    assert relevance_score(query, text) >= 0.30
+    assert passes_relevance_anchor(query, text, threshold=0.30) is True
+
+
+def test_substantive_terms_do_not_inflate_with_every_single_char():
+    from kernel.cognitive_controls import _substantive_query_terms
+
+    terms = _substantive_query_terms("如何成为队长")
+    assert "队长" in terms
+    assert len(terms) < 12
+
+
+def test_detect_one_sentence_format_under_rag_style_question():
+    from kernel.cognitive_controls import detect_response_format_hint
+
+    q = "什么是队长，请你总结成一句话告诉我"
+    assert detect_response_format_hint(q) == "one_sentence"
+
+
+def test_document_qa_not_blocked_by_summary_keywords():
+    from kernel.cognitive_controls import classify_intent
+
+    lock = classify_intent("根据知识库，什么是队长，请你总结成一句话告诉我")
+    assert lock.task_type == "document_qa"
+    assert "rag.retrieve" in lock.allowed_capabilities
+
+
+def test_strip_user_document_preamble_for_captain_question():
+    from kernel.cognitive_controls import (
+        _strip_rag_routing_query,
+        passes_relevance_anchor,
+        relevance_score,
+    )
+
+    q = "通过文档信息或者知识库信息，告知我：怎么可以成为队长。"
+    stripped = _strip_rag_routing_query(q)
+    assert "文档信息" not in stripped or "队长" in stripped
+    assert "队长" in stripped
+    text = "申请队长可在个人中心提交，审核通过后即可担任队长。"
+    assert relevance_score(q, text) >= 0.30
+    assert passes_relevance_anchor(q, text, threshold=0.30) is True
 
 
 def test_rewrite_engine_preserves_protected_simple_intent():
@@ -71,5 +136,10 @@ def test_cognitive_kernel_directly_answers_capability_help_without_runtime():
         assert resp.intent_category == "capability_help"
         assert "文档" in resp.content
         assert "搜索" in resp.content
+        envelope = resp.metadata.get("turn_envelope") or {}
+        assert envelope.get("version") == "turn_envelope_v1"
+        assert envelope.get("tool_planning", {}).get("need_tool") is False
+        assert envelope.get("execution", {}).get("path") == "l0_direct"
+        assert envelope.get("finalize", {}).get("stop_reason") == "direct_answer"
 
     asyncio.run(_run())

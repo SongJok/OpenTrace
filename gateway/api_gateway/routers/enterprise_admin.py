@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Query
 
 from gateway.api_gateway.routers.admin import get_current_admin_user
 from infra.storage.models import User

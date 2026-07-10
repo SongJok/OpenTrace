@@ -101,12 +101,79 @@ async def ensure_runtime_schema() -> None:
     """
     try:
         async with engine.begin() as conn:
+            if settings.app_env in {"staging", "production"}:
+                await _verify_runtime_schema(conn)
+                return
             await _ensure_chat_sessions_columns(conn)
             await _ensure_conversation_states_columns(conn)
             await _ensure_enterprise_tenant_tables(conn)
             await _ensure_documents_tenant_columns(conn)
     except Exception as exc:  # noqa: BLE001
+        if settings.app_env in {"staging", "production"}:
+            logger.error("Runtime schema readiness failed", error=str(exc))
+            raise
         logger.warning("Runtime schema guard failed", error=str(exc))
+
+
+async def _verify_runtime_schema(conn) -> None:
+    """staging/production 只读校验 schema；迁移缺失时让启动失败。"""
+    required_columns = {
+        "chat_sessions": {
+            "display_title",
+            "turn_count",
+            "last_decision_type",
+            "tags",
+            "pinned",
+            "archived_at",
+            "tenant_id",
+            "org_id",
+            "workspace_id",
+        },
+        "conversation_states": {
+            "active_mode",
+            "active_data_source_id",
+            "active_document_ids",
+            "active_attachment_ids",
+            "pending_clarification",
+            "state_version",
+            "state_extension",
+        },
+        "documents": {"tenant_id", "workspace_id"},
+    }
+    missing: list[str] = []
+    for table, columns in required_columns.items():
+        rows = await conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = :table
+                """
+            ),
+            {"table": table},
+        )
+        present = {str(row[0]) for row in rows}
+        for column in sorted(columns - present):
+            missing.append(f"{table}.{column}")
+
+    required_tables = {"tenants", "tenant_workspaces", "compliance_audit_events"}
+    table_rows = await conn.execute(
+        text(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+            """
+        )
+    )
+    present_tables = {str(row[0]) for row in table_rows}
+    for table in sorted(required_tables - present_tables):
+        missing.append(table)
+
+    if missing:
+        raise RuntimeError(
+            "runtime schema is not migration-ready; missing: " + ", ".join(missing)
+        )
 
 
 async def _ensure_chat_sessions_columns(conn) -> None:

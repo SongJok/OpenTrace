@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Any
 
 from infra.config.settings import settings
 from infra.observability.logger import get_logger
 from kernel.identity.system_identity import (
+    finalize_assistant_content,
     is_canonical_identity_response,
     is_identity_user_query,
 )
@@ -178,6 +178,7 @@ async def stream_v5_fast_path_from_result(
     """Yield SSE events for an already-resolved V5 fast path."""
     from kernel.cognitive_kernel import KernelRequest, _emit_streaming_answer
     from kernel.runtime_gateway import get_runtime_gateway
+    from kernel.turn_envelope import attach_turn_envelope, build_turn_envelope
 
     if fp.route == "force_mode" and fp.force_mode:
         from kernel.cognitive_controls import classify_intent
@@ -232,8 +233,25 @@ async def stream_v5_fast_path_from_result(
     else:
         label = f"L0 规则匹配: {fp.route}"
 
+    content = finalize_assistant_content(fp.content or "", getattr(request, "query", "") or "")
+    envelope = build_turn_envelope(
+        request=request,
+        intent_lock=(getattr(request, "metadata", {}) or {}).get("intent_lock"),
+        route=fp.route,
+        path="v5_fast_path",
+        mode="sse",
+        answer_source=fp.route,
+        stop_reason="fast_path_hit",
+        tool_decision={
+            "need_tool": False,
+            "reason": f"{fp.route}_fast_path",
+            "allowed_capabilities": [],
+        },
+        memory_status="semantic_cache" if fp.route == "semantic_cache" else "skipped",
+        output_guard="identity_guard" if fp.route == "identity" else "normal",
+    )
     async for event in _emit_streaming_answer(
-        fp.content,
+        content,
         reasoning_step={
             "type": "reasoning_step",
             "data": {
@@ -244,5 +262,6 @@ async def stream_v5_fast_path_from_result(
                 "status": "done",
             },
         },
+        metadata=attach_turn_envelope(dict(fp.metadata or {}), envelope),
     ):
         yield event

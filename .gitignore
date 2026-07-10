@@ -40,3 +40,7 @@ logs/
 
 alembic/versions/*.py
 !alembic/versions/.gitkeep
+# Security migrations introduced by the enterprise release work.
+!alembic/versions/20260710_data_sources_tenant_workspace.py
+!alembic/versions/20260711_chat_session_skills.py
+!alembic/versions/20260712_connector_credentials.py

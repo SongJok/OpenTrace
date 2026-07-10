@@ -87,7 +87,14 @@ def enrich_world_projection_for_turn(
                 wp,
                 query=query,
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        from infra.observability.runtime_degraded import record_degradation_in_context
+
+        record_degradation_in_context(
+            ctx,
+            subsystem="predictive_world",
+            detail="enrich_world_projection_with_predictions",
+            exc=exc,
+        )
     ctx.metadata = md
     return bundle

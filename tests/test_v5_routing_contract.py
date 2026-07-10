@@ -495,7 +495,8 @@ class TestContextAssembler:
 
         asyncio.run(_run())
 
-    def test_memory_injection_query_uses_last_user_turn(self):
+    def test_memory_injection_query_uses_current_turn_query(self):
+        """记忆/RAG 检索必须用当前轮 query，勿用 history 末条 user（易串轮、答非所问）。"""
         from kernel.context_assembler import ContextAssembler
         from kernel.turn_context import TurnContext
 
@@ -510,7 +511,7 @@ class TestContextAssembler:
                 ],
             )
             result = await assembler.assemble(tctx)
-            assert result.memory_injection_query == "第二次提问"
+            assert result.memory_injection_query == "当前问题"
 
         asyncio.run(_run())
 

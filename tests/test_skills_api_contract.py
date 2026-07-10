@@ -1,8 +1,5 @@
 """技能 create/get/test API 端点契约测试。"""
 import unittest
-from unittest.mock import patch, Mock
-
-from skills.store.marketplace import InstalledSkill
 
 
 class TestSkillsCreateApiContract(unittest.TestCase):
@@ -11,10 +8,22 @@ class TestSkillsCreateApiContract(unittest.TestCase):
         marketplace.uninstall(skill_id)
 
     def setUp(self):
+        from infra.config.settings import settings
+
+        self._old_local_create = settings.skills_local_create_enabled
+        self._old_inprocess_execution = settings.skills_inprocess_execution_enabled
+        settings.skills_local_create_enabled = True
+        settings.skills_inprocess_execution_enabled = True
         # Clean up any stale test skills
         from skills.store.marketplace import marketplace
         for sid in ["test_skill@1.0.0", "echo_skill@1.0.0", "fetch_skill@0.2.0", "dup_skill@1.0.0", "list_skill@1.0.0", "router_skill@0.1.0"]:
             marketplace.uninstall(sid)
+
+    def tearDown(self):
+        from infra.config.settings import settings
+
+        settings.skills_local_create_enabled = self._old_local_create
+        settings.skills_inprocess_execution_enabled = self._old_inprocess_execution
 
     def test_create_local_writes_manifest_and_config(self):
         from skills.store.marketplace import marketplace, INSTALLED_DIR

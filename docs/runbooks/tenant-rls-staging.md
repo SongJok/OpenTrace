@@ -10,10 +10,15 @@
 ```bash
 export DATABASE_URL=postgresql://...   # staging 实例，勿用生产
 export APP_ENV=staging
+export APP_SECRET_KEY=...
+export JWT_SECRET=...
+export DATA_SECRET_KEY=...
 export ENTERPRISE_TENANT_RLS_ENABLED=true
 
 python -m alembic upgrade head
 ```
+
+应用启动时只做只读 schema readiness 校验；如果 `tenants`、`tenant_workspaces`、`compliance_audit_events` 或关键租户列缺失，API 应启动失败而不是自动修表。
 
 验证：
 

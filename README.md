@@ -64,6 +64,9 @@ REDIS_URL=redis://redis:6379/10
 APP_PORT=14100
 VITE_API_URL=http://localhost:14100
 FRONTEND_PORT=14108
+APP_SECRET_KEY=<your-app-secret>
+JWT_SECRET=<your-jwt-secret>
+DATA_SECRET_KEY=<your-data-secret>
 
 DASHSCOPE_API_KEY=<your-dashscope-key>
 DEFAULT_LLM_QUERY_API_KEY=<your-dashscope-key>

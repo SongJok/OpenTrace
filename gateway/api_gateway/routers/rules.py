@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from gateway.api_gateway.routers.auth import get_current_user
+from gateway.api_gateway.routers.admin import get_current_admin_user
 from infra.observability.logger import get_logger
+from infra.storage.models import User
 
 logger = get_logger(__name__)
 
@@ -34,7 +35,10 @@ def _rule_path(filename: str) -> Path:
 
 
 @router.get("/rules")
-async def list_rules(request: Request):
+async def list_rules(
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+):
     _ensure_dir()
     items = []
     for p in sorted(RULES_DIR.glob("*.yml")):
@@ -50,7 +54,11 @@ async def list_rules(request: Request):
 
 
 @router.get("/rules/{filename}")
-async def get_rule(filename: str, request: Request):
+async def get_rule(
+    filename: str,
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+):
     _ensure_dir()
     path = _rule_path(filename)
     if not path.exists():
@@ -60,7 +68,10 @@ async def get_rule(filename: str, request: Request):
 
 
 @router.post("/rules")
-async def create_rule(request: Request):
+async def create_rule(
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+):
     _ensure_dir()
     body = await request.json()
     name = (body.get("name") or "untitled").strip()
@@ -73,7 +84,11 @@ async def create_rule(request: Request):
 
 
 @router.put("/rules/{filename}")
-async def update_rule(filename: str, request: Request):
+async def update_rule(
+    filename: str,
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+):
     _ensure_dir()
     path = _rule_path(filename)
     if not path.exists():
@@ -86,7 +101,10 @@ async def update_rule(filename: str, request: Request):
 
 
 @router.delete("/rules/{filename}")
-async def delete_rule(filename: str):
+async def delete_rule(
+    filename: str,
+    current_user: User = Depends(get_current_admin_user),
+):
     _ensure_dir()
     path = _rule_path(filename)
     if not path.exists():
@@ -97,7 +115,10 @@ async def delete_rule(filename: str):
 
 
 @router.post("/rules/generate")
-async def generate_rule(request: Request):
+async def generate_rule(
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+):
     body = await request.json()
     name = (body.get("name") or "generated_rule").strip()
     desc = (body.get("description") or "").strip()

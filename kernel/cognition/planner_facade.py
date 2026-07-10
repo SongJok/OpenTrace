@@ -125,9 +125,15 @@ class StrategicPlanner:
         from infra.config.settings import settings
 
         preferred_runtime = "cognitive_executive"
+        allowed = list(lock.get("allowed_capabilities") or task.constraints.allowed_capabilities or [])
+        disallowed = set(lock.get("disallowed_capabilities") or task.constraints.disallowed_capabilities or [])
+        data_allowed = (
+            "data.query" in allowed or "data_query" in allowed
+        ) and "data.query" not in disallowed and "data_query" not in disallowed
         if (
             bool(getattr(settings, "kernel_data_intelligence_routing_enabled", True))
             and (intent == "data_query" or lock.get("task_type") == "data_query")
+            and data_allowed
         ):
             preferred_runtime = "data_intelligence"
         elif sub_count >= 2:
@@ -157,9 +163,15 @@ class StrategicPlanner:
         from infra.config.settings import settings
 
         preferred_runtime = "cognitive_executive"
+        allowed = list(lock.get("allowed_capabilities") or [])
+        disallowed = set(lock.get("disallowed_capabilities") or [])
+        data_allowed = (
+            "data.query" in allowed or "data_query" in allowed
+        ) and "data.query" not in disallowed and "data_query" not in disallowed
         if (
             bool(getattr(settings, "kernel_data_intelligence_routing_enabled", True))
             and intent == "data_query"
+            and data_allowed
         ):
             preferred_runtime = "data_intelligence"
         elif sub_count >= 2 or goal_execution_hints.get("parallel_eligible"):

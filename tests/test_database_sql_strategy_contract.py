@@ -17,7 +17,7 @@ class DatabaseSqlStrategyContractTests(unittest.TestCase):
             code = f.read()
 
         self.assertIn('detect_sql_dialect', code)
-        self.assertIn('render_time_window', code)
+        self.assertIn('normalize_sql_for_dialect', code)
         self.assertIn('SQLPlanner().plan', code)
         self.assertIn('SQLRewriter().rewrite', code)
         self.assertIn('data_source_id', code)

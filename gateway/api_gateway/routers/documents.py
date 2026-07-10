@@ -28,6 +28,8 @@ from plugins.document_plugin import generate_llmwiki_entries
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.routers.auth import get_current_user
+from gateway.api_gateway.resource_scope import normalized_tenant_scope, scoped_documents_statement
+from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.audit.logger import write_audit_log
 from infra.errors import AppException, ErrorCodes
 from infra.observability.logger import get_logger
@@ -535,13 +537,18 @@ def _doc_out(d: Document) -> DocumentOut:
 
 @router.get("/documents", response_model=list[DocumentOut])
 async def list_documents(
+    http_request: Request,
     limit: int = 50,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[DocumentOut]:
+    tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
     result = await db.execute(
-        select(Document)
+        scoped_documents_statement(
+            user_id=current_user.id,
+            tenant_metadata=tenant_md,
+        )
         .order_by(Document.created_at.desc())
         .limit(limit)
         .offset(offset)
@@ -563,8 +570,6 @@ async def upload_document(
     filename = file.filename or "document"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
     text = await _extract_text(raw, filename)
-
-    from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 
     tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
     doc_tenant = str(tenant_md.get("tenant_id") or "default")
@@ -616,13 +621,17 @@ async def upload_document(
 
 @router.get("/documents/{doc_id}", response_model=DocumentDetail)
 async def get_document(
+    http_request: Request,
     doc_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentDetail:
+    tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
     result = await db.execute(
-        select(Document).where(
-            Document.id == doc_id,
+        scoped_documents_statement(
+            user_id=current_user.id,
+            tenant_metadata=tenant_md,
+            document_id=doc_id,
         )
     )
     doc = result.scalar_one_or_none()
@@ -634,14 +643,20 @@ async def get_document(
 
 @router.delete("/documents/{doc_id}")
 async def delete_document(
+    http_request: Request,
     doc_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
+    tenant_id, workspace_id = normalized_tenant_scope(tenant_md)
     # Use a narrow existence check first so we do not trigger ORM relationship loading.
     result = await db.execute(
         select(Document.id, Document.title).where(
             Document.id == doc_id,
+            Document.owner_id == current_user.id,
+            Document.tenant_id == tenant_id,
+            Document.workspace_id == workspace_id,
         )
     )
     row = result.first()
@@ -650,7 +665,19 @@ async def delete_document(
 
     # Use raw SQL deletes to avoid ORM cascade / lazy-load behavior entirely.
     await db.execute(text("DELETE FROM document_chunks WHERE document_id = :doc_id"), {"doc_id": doc_id})
-    await db.execute(text("DELETE FROM documents WHERE id = :doc_id"), {"doc_id": doc_id})
+    await db.execute(
+        text(
+            "DELETE FROM documents "
+            "WHERE id = :doc_id AND owner_id = :owner_id "
+            "AND tenant_id = :tenant_id AND workspace_id = :workspace_id"
+        ),
+        {
+            "doc_id": doc_id,
+            "owner_id": current_user.id,
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+        },
+    )
     await db.commit()
     try:
         await write_audit_log(
@@ -667,6 +694,7 @@ async def delete_document(
 
 @router.put("/documents/{doc_id}", response_model=DocumentOut)
 async def update_document(
+    http_request: Request,
     doc_id: str,
     background_tasks: BackgroundTasks,
     file: Optional[UploadFile] = File(None),
@@ -675,9 +703,12 @@ async def update_document(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentOut:
+    tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
     result = await db.execute(
-        select(Document).where(
-            Document.id == doc_id,
+        scoped_documents_statement(
+            user_id=current_user.id,
+            tenant_metadata=tenant_md,
+            document_id=doc_id,
         )
     )
     doc = result.scalar_one_or_none()
@@ -707,11 +738,20 @@ async def update_document(
 
 @router.post("/documents/search", response_model=list[SearchResult])
 async def search_documents(
+    http_request: Request,
     req: SearchRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[SearchResult]:
-    candidates = await fetch_document_candidates(user_id=current_user.id, query=req.query, limit=200)
+    tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
+    tenant_id, workspace_id = normalized_tenant_scope(tenant_md)
+    candidates = await fetch_document_candidates(
+        user_id=current_user.id,
+        query=req.query,
+        limit=200,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
     scored = await score_document_candidates(query=req.query, candidates=candidates)
     return [
         SearchResult(

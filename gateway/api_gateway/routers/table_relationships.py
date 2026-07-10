@@ -13,17 +13,51 @@ Endpoints:
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.routers.auth import get_current_user
+from gateway.api_gateway.resource_scope import get_owned_data_source, normalized_tenant_scope
+from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
-from infra.storage.models import TableRelationship, User
+from infra.storage.models import DataSource, TableRelationship, User
 
 router = APIRouter()
+
+
+def _scoped_relationships_statement(request: Request, current_user: User):
+    tenant_md = build_tenant_metadata(request, user_id=current_user.id)
+    tenant_id, workspace_id = normalized_tenant_scope(tenant_md)
+    return (
+        select(TableRelationship)
+        .join(DataSource, TableRelationship.data_source_id == DataSource.id)
+        .where(
+            DataSource.user_id == current_user.id,
+            DataSource.tenant_id == tenant_id,
+            DataSource.workspace_id == workspace_id,
+        )
+    )
+
+
+async def _require_owned_source(
+    db: AsyncSession,
+    request: Request,
+    current_user: User,
+    data_source_id: str,
+) -> DataSource:
+    tenant_md = build_tenant_metadata(request, user_id=current_user.id)
+    source = await get_owned_data_source(
+        db,
+        user_id=current_user.id,
+        tenant_metadata=tenant_md,
+        data_source_id=data_source_id,
+    )
+    if source is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="data source not found")
+    return source
 
 
 # ── Pydantic Schemas ─────────────────────────────────────────────────
@@ -53,6 +87,7 @@ class RelationshipUpdateRequest(BaseModel):
 
 @router.get("/table-relationships")
 async def list_relationships(
+    http_request: Request,
     data_source_id: str = Query(default=""),
     table_name: str = Query(default=""),
     is_verified: bool | None = None,
@@ -73,7 +108,7 @@ async def list_relationships(
     if is_verified is not None:
         conditions.append(TableRelationship.is_verified == is_verified)
 
-    query = select(TableRelationship)
+    query = _scoped_relationships_statement(http_request, current_user)
     if conditions:
         query = query.where(and_(*conditions))
     query = query.order_by(
@@ -91,15 +126,33 @@ async def list_relationships(
     }
 
 
+@router.get("/table-relationships/graph")
+async def get_relationship_graph(
+    http_request: Request,
+    data_source_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await _build_relationship_graph(
+        http_request=http_request,
+        data_source_id=data_source_id,
+        current_user=current_user,
+        db=db,
+    )
+
+
 @router.get("/table-relationships/{rel_id}")
 async def get_relationship(
+    http_request: Request,
     rel_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Get a single table relationship."""
     result = await db.execute(
-        select(TableRelationship).where(TableRelationship.id == rel_id)
+        _scoped_relationships_statement(http_request, current_user).where(
+            TableRelationship.id == rel_id
+        )
     )
     rel = result.scalar()
     if not rel:
@@ -109,11 +162,13 @@ async def get_relationship(
 
 @router.post("/table-relationships")
 async def create_relationship(
+    http_request: Request,
     req: RelationshipCreateRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Create a new table relationship."""
+    await _require_owned_source(db, http_request, current_user, req.data_source_id)
     rel = TableRelationship(
         data_source_id=req.data_source_id,
         left_table=req.left_table,
@@ -132,6 +187,7 @@ async def create_relationship(
 
 @router.put("/table-relationships/{rel_id}")
 async def update_relationship(
+    http_request: Request,
     rel_id: str,
     req: RelationshipUpdateRequest,
     current_user: User = Depends(get_current_user),
@@ -139,7 +195,9 @@ async def update_relationship(
 ) -> dict:
     """Update a table relationship."""
     result = await db.execute(
-        select(TableRelationship).where(TableRelationship.id == rel_id)
+        _scoped_relationships_statement(http_request, current_user).where(
+            TableRelationship.id == rel_id
+        )
     )
     rel = result.scalar()
     if not rel:
@@ -154,13 +212,16 @@ async def update_relationship(
 
 @router.delete("/table-relationships/{rel_id}")
 async def delete_relationship(
+    http_request: Request,
     rel_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Delete a table relationship."""
     result = await db.execute(
-        select(TableRelationship).where(TableRelationship.id == rel_id)
+        _scoped_relationships_statement(http_request, current_user).where(
+            TableRelationship.id == rel_id
+        )
     )
     rel = result.scalar()
     if not rel:
@@ -172,6 +233,7 @@ async def delete_relationship(
 
 @router.post("/table-relationships/{rel_id}/verify")
 async def verify_relationship(
+    http_request: Request,
     rel_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -180,7 +242,9 @@ async def verify_relationship(
     from datetime import datetime, timezone
 
     result = await db.execute(
-        select(TableRelationship).where(TableRelationship.id == rel_id)
+        _scoped_relationships_statement(http_request, current_user).where(
+            TableRelationship.id == rel_id
+        )
     )
     rel = result.scalar()
     if not rel:
@@ -194,15 +258,16 @@ async def verify_relationship(
     return {"relationship": _rel_to_dict(rel)}
 
 
-@router.get("/table-relationships/graph")
-async def get_relationship_graph(
+async def _build_relationship_graph(
+    http_request: Request,
     data_source_id: str = Query(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Get the full join graph for a data source (nodes + edges for DAG visualization)."""
+    await _require_owned_source(db, http_request, current_user, data_source_id)
     result = await db.execute(
-        select(TableRelationship).where(
+        _scoped_relationships_statement(http_request, current_user).where(
             TableRelationship.data_source_id == data_source_id
         ).order_by(
             TableRelationship.is_verified.desc(),

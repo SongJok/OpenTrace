@@ -54,8 +54,13 @@ fi
 API_PORT="$(work_default_api_port)"
 
 if work_port_listening "$API_PORT"; then
-  echo "✗ 端口 ${API_PORT} 已被占用，请先执行: bash scripts/work/backend-stop.sh"
-  exit 1
+  if [[ "$MODE" == "docker" && "$INFRA_ONLY" != "1" ]] \
+    && docker compose ps api 2>/dev/null | grep -q "Up"; then
+    echo "▸ 端口 ${API_PORT} 已由当前 Docker API 服务占用，将复用并刷新后端栈"
+  else
+    echo "✗ 端口 ${API_PORT} 已被占用，请先执行: bash scripts/work/backend-stop.sh"
+    exit 1
+  fi
 fi
 
 work_docker_preflight "$ROOT"

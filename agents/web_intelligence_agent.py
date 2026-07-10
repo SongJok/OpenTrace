@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 
-from agents.base import AgentResult, BaseAgent, TaskMessage
+from agents.base import AgentResult, TaskMessage
 from agents.cognitive_agent import CognitiveAgent
 from execution.tool_router.router import ToolRouter
 from services.evidence_graph.engine import rank_evidence
@@ -63,9 +64,17 @@ class WebIntelligenceAgent(CognitiveAgent):
     async def execute_core(self, task: TaskMessage, plan: dict) -> AgentResult:
         search_q = self._search_query_from_task(task)
         router = ToolRouter()
-        out = await router.execute_by_name(
-            name="web_search", query=search_q, session_id=task.session_id or ""
-        )
+        url_match = re.search(r"https?://[^\s<>'\"]+", search_q, re.IGNORECASE)
+        if url_match:
+            out = await router.execute_by_name(
+                name="web_fetch",
+                url=url_match.group(0).rstrip(".,，。!?！？"),
+                session_id=task.session_id or "",
+            )
+        else:
+            out = await router.execute_by_name(
+                name="web_search", query=search_q, session_id=task.session_id or ""
+            )
         raw = str(out or "").strip()
         items = self._items_from_raw(raw)
         if not items:
@@ -90,7 +99,7 @@ class WebIntelligenceAgent(CognitiveAgent):
                 max_rounds = int(getattr(settings, "kernel_web_coverage_max_rounds", 2) or 2)
                 round_idx = 0
                 report = evaluate_coverage(search_q, ranked, round_index=round_idx)
-                while report.should_supplement and round_idx + 1 < max_rounds:
+                while not url_match and report.should_supplement and round_idx + 1 < max_rounds:
                     sup_q = (report.supplement_queries or [search_q])[0]
                     extra_raw = await router.execute_by_name(
                         name="web_search", query=sup_q, session_id=task.session_id or ""

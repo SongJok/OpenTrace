@@ -20,10 +20,11 @@ class RagRetrievalE2EContractTests(unittest.TestCase):
         self.assertIn("title_boost", txt)
 
     def test_rag_agent_tries_title_seeded_queries(self):
-        txt = self._read("agents/rag_agent.py")
-        self.assertIn("search_queries = [rewritten_query]", txt)
-        self.assertIn("title_seed = \" \".join(query_terms[:4])", txt)
-        self.assertIn("matched_query", txt)
+        agent = self._read("agents/rag_agent.py")
+        planner = self._read("services/rag_query_planning.py")
+        self.assertIn("search_queries = list(rag_plan.query_variants", agent)
+        self.assertIn("title_seed = \" \".join(query_terms[:4])", planner)
+        self.assertIn("matched_query", agent)
 
 
 if __name__ == "__main__":

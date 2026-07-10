@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from agents.base import AgentResult, BaseAgent, TaskMessage
 from execution.tool_router.router import ToolRouter
@@ -44,10 +45,29 @@ class WebAgent(BaseAgent):
     async def execute(self, task: TaskMessage) -> AgentResult:
         try:
             router = ToolRouter()
-            out = await router.execute_by_name(name="web_search", query=task.query, session_id=task.session_id or "")
+            url_match = re.search(r"https?://[^\s<>'\"]+", task.query or "", re.IGNORECASE)
+            if url_match:
+                out = await router.execute_by_name(
+                    name="web_fetch",
+                    url=url_match.group(0).rstrip(".,，。!?！？"),
+                    session_id=task.session_id or "",
+                )
+            else:
+                out = await router.execute_by_name(
+                    name="web_search",
+                    query=task.query,
+                    session_id=task.session_id or "",
+                )
             raw = str(out or "").strip()
             low = raw.lower()
-            if (not raw) or low.startswith("web search unavailable") or low.startswith("web search error") or low.startswith("tool error"):
+            if (
+                (not raw)
+                or low.startswith("web search unavailable")
+                or low.startswith("web search error")
+                or low.startswith("web fetch unavailable")
+                or low.startswith("web fetch error")
+                or low.startswith("tool error")
+            ):
                 return AgentResult(
                     task_id=task.task_id,
                     agent_type=self.agent_type,

@@ -8,6 +8,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
 
+from infra.config.settings import settings
 from skills.runtime.loader import skill_loader
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -44,6 +45,8 @@ def _generate_signature(name: str, version: str, entrypoint: str) -> str:
 
 class SkillMarketplace:
     def install_from_git(self, git_url: str, ref: str = "main") -> InstalledSkill:
+        if not settings.skills_git_install_enabled:
+            raise PermissionError("Git skill installation is disabled by policy")
         temp = TMP_DIR / f"skill_{abs(hash((git_url, ref)))}"
         if temp.exists():
             shutil.rmtree(temp)
@@ -82,6 +85,8 @@ class SkillMarketplace:
         test_cases: list[dict[str, Any]] | None = None,
         data_source_id: str = "",
     ) -> InstalledSkill:
+        if not settings.skills_local_create_enabled:
+            raise PermissionError("Local skill creation is disabled by policy")
         skill_id = _compute_skill_id(name, version)
         target = INSTALLED_DIR / skill_id
         if target.exists():
@@ -165,6 +170,13 @@ class SkillMarketplace:
         skill = self.get_skill(skill_id)
         if not skill:
             return {"success": False, "error": f"skill {skill_id} not found"}
+
+        if skill.code and skill.entrypoint.endswith(".py") and not settings.skills_inprocess_execution_enabled:
+            return {
+                "success": False,
+                "error": "In-process Python skill execution is disabled by policy",
+                "skill_id": skill_id,
+            }
 
         result: dict[str, Any] = {"skill_id": skill_id, "input": test_input}
 

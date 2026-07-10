@@ -6,6 +6,7 @@ import uuid
 from dataclasses import asdict
 from typing import Any
 
+from kernel.identity.system_identity import finalize_assistant_content
 from kernel.protocol.runtime_contract import (
     ArtifactState,
     ExecutionTrace,
@@ -220,7 +221,9 @@ def executive_result_to_kernel_response(
 
     if getattr(result, "policy_denied", False):
         return KernelResponse(
-            content=result.answer,
+            content=finalize_assistant_content(
+                result.answer or "", getattr(request, "query", "") or ""
+            ),
             session_id=request.session_id,
             route="cognitive_runtime_v2_denied",
             validation_score=1.0,
@@ -443,7 +446,9 @@ def executive_result_to_kernel_response(
                 obs["degradations"] = (obs["degradations"] + list(deg_trace))[-32:]
 
     return KernelResponse(
-        content=result.answer,
+        content=finalize_assistant_content(
+            result.answer or "", getattr(request, "query", "") or ""
+        ),
         session_id=request.session_id,
         route=str(meta_out.get("route") or "cognitive_runtime_v2"),
         validation_score=getattr(critic, "factuality", 0.9) if critic else 0.9,
@@ -567,7 +572,9 @@ def multi_question_to_kernel_response(mq: Any, request: Any, total_ms: int) -> A
             meta, subsystem="enterprise_outcomes", detail="enrich_turn_metadata", exc=exc
         )
     return KernelResponse(
-        content=mq.content,
+        content=finalize_assistant_content(
+            mq.content or "", getattr(request, "query", "") or ""
+        ),
         session_id=request.session_id,
         route=mq.route,
         validation_score=mq.validation_score,

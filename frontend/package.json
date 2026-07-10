@@ -22,6 +22,7 @@
     "recharts": "^3.8.1",
     "rehype-raw": "^7.0.0",
     "remark-gfm": "^4.0.0",
+    "run": "^1.5.0",
     "shiki": "^1.12.1",
     "zustand": "^4.5.2"
   },

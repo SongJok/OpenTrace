@@ -1,4 +1,4 @@
-"""P0 capability boost — verification replan, RAG RRF, staging learning."""
+"""P0 capability boost — verification replan, RAG RRF, governed learning."""
 
 from __future__ import annotations
 
@@ -35,13 +35,19 @@ def test_rag_rrf_promotes_cross_lane_item():
     assert all("rrf_score" in x for x in merged)
 
 
-def test_staging_profile_enables_learning_auto_apply(monkeypatch):
-    monkeypatch.setenv("APP_ENV", "staging")
+def test_staging_profile_keeps_learning_in_shadow():
     from infra.config.settings import Settings
 
-    s = Settings()
+    s = Settings(
+        app_env="staging",
+        app_port=14100,
+        gateway_port=14100,
+        app_secret_key="test-app-secret",
+        jwt_secret="test-jwt-secret",
+        data_secret_key="test-data-secret",
+    )
     assert s.app_env == "staging"
-    assert s.kernel_agent_learning_auto_apply is True
+    assert s.kernel_agent_learning_auto_apply is False
 
 
 @pytest.mark.asyncio

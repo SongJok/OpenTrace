@@ -44,7 +44,7 @@ class Text2SqlRegressionTests(unittest.TestCase):
             db = _make_db_mock()
 
             with patch("gateway.api_gateway.routers.data.get_settings") as settings_mock, \
-                 patch("gateway.api_gateway.routers.data._dec", return_value="secret"), \
+                 patch("gateway.api_gateway.routers.data.decrypt_data_source_secret", return_value="secret"), \
                  patch("gateway.api_gateway.routers.data.SQLPlanner") as planner_cls, \
                  patch("gateway.api_gateway.routers.data.SQLValidator") as validator_cls, \
                  patch("gateway.api_gateway.routers.data.normalize_sql_for_dialect") as normalize_mock, \
@@ -92,7 +92,7 @@ class Text2SqlRegressionTests(unittest.TestCase):
             db = _make_db_mock()
 
             with patch("gateway.api_gateway.routers.data.get_settings") as settings_mock, \
-                 patch("gateway.api_gateway.routers.data._dec", return_value="secret"), \
+                 patch("gateway.api_gateway.routers.data.decrypt_data_source_secret", return_value="secret"), \
                  patch("gateway.api_gateway.routers.data.SQLPlanner") as planner_cls, \
                  patch("gateway.api_gateway.routers.data.SQLValidator") as validator_cls, \
                  patch("gateway.api_gateway.routers.data.normalize_sql_for_dialect") as normalize_mock, \
@@ -163,7 +163,7 @@ class Text2SqlRegressionTests(unittest.TestCase):
 
             with patch("agents.data_agent.settings.data_agent_v2_enabled", False), \
                  patch("agents.data_agent.AsyncSessionLocal") as session_mock, \
-                 patch("agents.data_agent._dec", return_value="secret"), \
+                 patch("agents.data_agent.decrypt_data_source_secret", return_value="secret"), \
                  patch("agents.data_agent.DBRouter") as router_cls, \
                  patch("agents.data_agent.SQLExecutor_from_executor") as exec_fn, \
                  patch("agents.data_agent.SemanticParser") as sp_cls, \

@@ -38,9 +38,18 @@ from kernel.cognitive_controls import (
     classify_intent,
     direct_answer_for_intent,
 )
-from kernel.identity.system_identity import CANONICAL_IDENTITY_RESPONSE, is_identity_user_query
+from kernel.identity.system_identity import (
+    CANONICAL_IDENTITY_RESPONSE,
+    finalize_assistant_content,
+    is_identity_user_query,
+)
 from kernel.json_parser import parse_llm_json
 from kernel.protocol.events import trace_context_for_request
+from kernel.turn_envelope import (
+    attach_turn_envelope,
+    build_turn_envelope,
+    tool_decision_from_intent_lock,
+)
 from memory.working_memory.working_memory import (
     cache_identity_answer,
     get_cached_identity_answer,
@@ -65,6 +74,7 @@ async def _emit_streaming_answer(
     annotations: list | None = None,
     state_patch: dict | None = None,
     result_refs: list | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield delta chunks followed by final_answer for a streaming effect."""
     if reasoning_step:
@@ -86,6 +96,8 @@ async def _emit_streaming_answer(
         final_data["state_patch"] = state_patch
     if result_refs is not None:
         final_data["result_refs"] = result_refs
+    if metadata is not None:
+        final_data["metadata"] = metadata
     yield {"type": "final_answer", "data": final_data}
 
 
@@ -269,12 +281,22 @@ class CognitiveKernel:
             from kernel.turn_bootstrap import bootstrap_turn_intent
 
             boot = await bootstrap_turn_intent(request)
-            effective_query = boot.effective_query
             intent_lock = boot.intent_lock
 
             direct_answer = direct_answer_for_intent(intent_lock)
             if direct_answer and not force_mode_from_meta:
                 total_ms = int((time.monotonic() - t0) * 1000)
+                envelope = build_turn_envelope(
+                    request=request,
+                    intent_lock=intent_lock,
+                    route="intent_lock_direct",
+                    path="l0_direct",
+                    mode="sync",
+                    answer_source="deterministic_intent_answer",
+                    stop_reason="direct_answer",
+                    tool_decision=tool_decision_from_intent_lock(intent_lock),
+                    memory_status="skipped",
+                )
                 return KernelResponse(
                     content=direct_answer,
                     session_id=request.session_id,
@@ -286,7 +308,10 @@ class CognitiveKernel:
                     intent_complexity=intent_lock.complexity_level,
                     context_latency_ms=0,
                     total_latency_ms=total_ms,
-                    metadata={"intent_lock": intent_lock.to_dict()},
+                    metadata=attach_turn_envelope(
+                        {"intent_lock": intent_lock.to_dict()},
+                        envelope,
+                    ),
                 )
 
             from kernel.fast_tool_path import should_use_tool_fast_path
@@ -314,6 +339,21 @@ class CognitiveKernel:
                             span.set_attribute("total.latency_ms", total_ms)
                             span.set_attribute("identity.cache_hit", True)
                             span.set_attribute("identity.llm_enabled", True)
+                            envelope = build_turn_envelope(
+                                request=request,
+                                intent_lock=intent_lock,
+                                route="working_memory",
+                                path="identity_cache",
+                                mode="sync",
+                                answer_source="working_memory_identity_cache",
+                                stop_reason="cache_hit",
+                                tool_decision={
+                                    "need_tool": False,
+                                    "reason": "identity_cache",
+                                    "allowed_capabilities": [],
+                                },
+                                memory_status="cache_hit",
+                            )
                             return KernelResponse(
                                 content=cached,
                                 session_id=sid,
@@ -325,7 +365,10 @@ class CognitiveKernel:
                                 intent_complexity="loop",
                                 context_latency_ms=0,
                                 total_latency_ms=total_ms,
-                                metadata={"identity_cache": True, "identity_llm": True},
+                                metadata=attach_turn_envelope(
+                                    {"identity_cache": True, "identity_llm": True},
+                                    envelope,
+                                ),
                             )
                         # Cache expired — fall through to orchestrator for LLM regeneration
                         span.set_attribute("identity.cache_expired", True)
@@ -334,6 +377,21 @@ class CognitiveKernel:
                         total_ms = int((time.monotonic() - t0) * 1000)
                         span.set_attribute("total.latency_ms", total_ms)
                         span.set_attribute("identity.cache_hit", True)
+                        envelope = build_turn_envelope(
+                            request=request,
+                            intent_lock=intent_lock,
+                            route="working_memory",
+                            path="identity_cache",
+                            mode="sync",
+                            answer_source="working_memory_identity_cache",
+                            stop_reason="cache_hit",
+                            tool_decision={
+                                "need_tool": False,
+                                "reason": "identity_cache",
+                                "allowed_capabilities": [],
+                            },
+                            memory_status="cache_hit",
+                        )
                         return KernelResponse(
                             content=cached,
                             session_id=sid,
@@ -345,7 +403,7 @@ class CognitiveKernel:
                             intent_complexity="loop",
                             context_latency_ms=0,
                             total_latency_ms=total_ms,
-                            metadata={"identity_cache": True},
+                            metadata=attach_turn_envelope({"identity_cache": True}, envelope),
                         )
 
             # ── V5 Routing Tier ───────────────────────────────────────
@@ -386,6 +444,7 @@ class CognitiveKernel:
                             trace_ctx=trace_ctx,
                             conversation_state=request.conversation_state,
                         )
+                        conv_state = getattr(request, "conversation_state", None)
                         lock_fp = classify_intent(
                             force_req.query,
                             fp.force_mode,
@@ -401,8 +460,24 @@ class CognitiveKernel:
                                 return tool_fp
                         gw_resp = await get_runtime_gateway().run(force_req)
                         total_ms = int((time.monotonic() - t0) * 1000)
+                        envelope = build_turn_envelope(
+                            request=force_req,
+                            intent_lock=lock_fp,
+                            route=gw_resp.route,
+                            path="force_mode_runtime",
+                            mode="sync",
+                            answer_source="runtime_gateway",
+                            stop_reason="runtime_completed",
+                            tool_decision=tool_decision_from_intent_lock(
+                                lock_fp,
+                                force_mode=fp.force_mode,
+                            ),
+                            memory_status="runtime_managed",
+                        )
                         return KernelResponse(
-                            content=gw_resp.content,
+                            content=finalize_assistant_content(
+                                gw_resp.content or "", request.query or ""
+                            ),
                             session_id=request.session_id,
                             route=gw_resp.route,
                             validation_score=gw_resp.validation_score,
@@ -414,14 +489,34 @@ class CognitiveKernel:
                             total_latency_ms=total_ms,
                             state_patch=gw_resp.state_patch,
                             result_refs=gw_resp.result_refs or [],
-                            metadata=gw_resp.metadata or {},
+                            metadata=attach_turn_envelope(gw_resp.metadata or {}, envelope),
                         )
                     if fp.route in ("identity", "faq") and sid:
                         cache_identity_answer(sid, request.query, fp.content)
                         _record_identity_turn_seq(sid)
                     total_ms = int((time.monotonic() - t0) * 1000)
+                    fp_meta = dict(fp.metadata or {})
+                    fp_decision = {
+                        "need_tool": False,
+                        "reason": f"{fp.route}_fast_path",
+                        "allowed_capabilities": [],
+                    }
+                    envelope = build_turn_envelope(
+                        request=request,
+                        intent_lock=intent_lock,
+                        route=fp.route,
+                        path="v5_fast_path",
+                        mode="sync",
+                        answer_source=fp.route,
+                        stop_reason="fast_path_hit",
+                        tool_decision=fp_decision,
+                        memory_status="skipped" if fp.route != "semantic_cache" else "semantic_cache",
+                        output_guard="identity_guard" if fp.route == "identity" else "normal",
+                    )
                     return KernelResponse(
-                        content=fp.content,
+                        content=finalize_assistant_content(
+                            fp.content or "", request.query or ""
+                        ),
                         session_id=request.session_id,
                         route=fp.route,
                         validation_score=1.0,
@@ -431,7 +526,7 @@ class CognitiveKernel:
                         intent_complexity="simple",
                         context_latency_ms=0,
                         total_latency_ms=total_ms,
-                        metadata=fp.metadata or {},
+                        metadata=attach_turn_envelope(fp_meta, envelope),
                     )
             # ── End V5 Routing Tier ────────────────────────────────────
 
@@ -454,6 +549,22 @@ class CognitiveKernel:
                     if sid:
                         cache_identity_answer(sid, request.query, CANONICAL_IDENTITY_RESPONSE)
                         _record_identity_turn_seq(sid)
+                    envelope = build_turn_envelope(
+                        request=request,
+                        intent_lock=intent_lock,
+                        route="self_model_guard",
+                        path="identity_guard",
+                        mode="sync",
+                        answer_source="canonical_identity_guard",
+                        stop_reason="guarded_direct_answer",
+                        tool_decision={
+                            "need_tool": False,
+                            "reason": "identity_guard",
+                            "allowed_capabilities": [],
+                        },
+                        memory_status="skipped",
+                        output_guard="identity_guard",
+                    )
                     return KernelResponse(
                         content=CANONICAL_IDENTITY_RESPONSE,
                         session_id=request.session_id,
@@ -468,8 +579,21 @@ class CognitiveKernel:
                         metadata={
                             "capability_assessment": asdict(assessment),
                             "identity_guard": True,
+                            "turn_envelope": envelope,
                         },
                     )
+                envelope = build_turn_envelope(
+                    request=request,
+                    intent_lock=intent_lock,
+                    route="self_model_guard",
+                    path="self_model_guard",
+                    mode="sync",
+                    answer_source="guardrail_message",
+                    stop_reason="capability_unavailable",
+                    tool_decision=tool_decision_from_intent_lock(intent_lock),
+                    memory_status="skipped",
+                    safety_status="blocked",
+                )
                 return KernelResponse(
                     content=(
                         "抱歉，我目前无法处理这类请求。"
@@ -485,7 +609,10 @@ class CognitiveKernel:
                     intent_complexity="guarded",
                     context_latency_ms=0,
                     total_latency_ms=total_ms,
-                    metadata={"capability_assessment": asdict(assessment)},
+                    metadata=attach_turn_envelope(
+                        {"capability_assessment": asdict(assessment)},
+                        envelope,
+                    ),
                 )
 
             identity_prompt = self.self_model.get_identity_prompt()
@@ -656,8 +783,25 @@ class CognitiveKernel:
 
             resp_metadata = resp.metadata or {}
             execution_graph = resp_metadata.get("execution_graph")
+            envelope = build_turn_envelope(
+                request=gw_request,
+                intent_lock=intent_lock,
+                route=resp.route,
+                path="runtime_gateway",
+                mode="sync",
+                answer_source="cognitive_runtime",
+                stop_reason="runtime_completed",
+                tool_decision=tool_decision_from_intent_lock(
+                    intent_lock,
+                    force_mode=force_mode_from_meta,
+                ),
+                memory_status="retrieved" if memory_context else "not_required",
+                output_guard="identity_guard" if is_identity_user_query(request.query) else "normal",
+            )
             return KernelResponse(
-                content=resp.content,
+                content=finalize_assistant_content(
+                    resp.content or "", request.query or ""
+                ),
                 session_id=request.session_id,
                 route=resp.route,
                 validation_score=resp.validation_score,
@@ -667,10 +811,13 @@ class CognitiveKernel:
                 intent_complexity="loop",
                 context_latency_ms=0,
                 total_latency_ms=total_ms,
-                metadata={
-                    **resp_metadata,
-                    "execution_graph": execution_graph,
-                },
+                metadata=attach_turn_envelope(
+                    {
+                        **resp_metadata,
+                        "execution_graph": execution_graph,
+                    },
+                    envelope,
+                ),
                 state_patch=resp.state_patch,
                 result_refs=resp.result_refs,
                 prompt_tokens=getattr(resp, "prompt_tokens", 0),
@@ -691,6 +838,17 @@ class CognitiveKernel:
 
         direct_answer = direct_answer_for_intent(intent_lock)
         if direct_answer and not force_mode_from_meta:
+            envelope = build_turn_envelope(
+                request=request,
+                intent_lock=intent_lock,
+                route="intent_lock_direct",
+                path="l0_direct",
+                mode="sse",
+                answer_source="deterministic_intent_answer",
+                stop_reason="direct_answer",
+                tool_decision=tool_decision_from_intent_lock(intent_lock),
+                memory_status="skipped",
+            )
             async for event in _emit_streaming_answer(
                 direct_answer,
                 reasoning_step={
@@ -703,6 +861,10 @@ class CognitiveKernel:
                         "status": "done",
                     },
                 },
+                metadata=attach_turn_envelope(
+                    {"intent_lock": intent_lock.to_dict()},
+                    envelope,
+                ),
             ):
                 yield event
             return
@@ -732,6 +894,21 @@ class CognitiveKernel:
                     except Exception:
                         cache_valid = False
                 if cache_valid:
+                    envelope = build_turn_envelope(
+                        request=request,
+                        intent_lock=intent_lock,
+                        route="working_memory",
+                        path="identity_cache",
+                        mode="sse",
+                        answer_source="working_memory_identity_cache",
+                        stop_reason="cache_hit",
+                        tool_decision={
+                            "need_tool": False,
+                            "reason": "identity_cache",
+                            "allowed_capabilities": [],
+                        },
+                        memory_status="cache_hit",
+                    )
                     async for event in _emit_streaming_answer(
                         cached,
                         reasoning_step={
@@ -744,6 +921,10 @@ class CognitiveKernel:
                                 "status": "done",
                             },
                         },
+                        metadata=attach_turn_envelope(
+                            {"identity_cache": True, "identity_llm": identity_llm},
+                            envelope,
+                        ),
                     ):
                         yield event
                     return
@@ -813,6 +994,42 @@ class CognitiveKernel:
             async for event in get_runtime_gateway().stream(stream_req):
                 if event.get("type") == "final_answer":
                     data = event.get("data", {})
+                    if isinstance(data, dict) and data.get("content") is not None:
+                        data["content"] = finalize_assistant_content(
+                            str(data.get("content") or ""),
+                            request.query or "",
+                        )
+                        existing_meta = (
+                            data.get("metadata")
+                            if isinstance(data.get("metadata"), dict)
+                            else {}
+                        )
+                        envelope = build_turn_envelope(
+                            request=stream_req,
+                            intent_lock=intent_lock,
+                            route=str(data.get("route") or stream_req.metadata.get("route") or ""),
+                            path="runtime_gateway",
+                            mode="sse",
+                            answer_source="cognitive_runtime",
+                            stop_reason="runtime_completed",
+                            tool_decision=tool_decision_from_intent_lock(
+                                intent_lock,
+                                force_mode=force_mode_from_meta,
+                            ),
+                            memory_status=(
+                                "retrieved" if memory_context_stream else "not_required"
+                            ),
+                            output_guard=(
+                                "identity_guard"
+                                if is_identity_user_query(request.query)
+                                else "normal"
+                            ),
+                        )
+                        data["metadata"] = attach_turn_envelope(
+                            dict(existing_meta),
+                            envelope,
+                        )
+                        event["data"] = data
                     final_content = data.get("content") if isinstance(data, dict) else None
                     try:
                         from kernel.runtime.finalize_turn import post_turn_enterprise_accounting
@@ -899,7 +1116,29 @@ class CognitiveKernel:
             # ── End Active Memory Detection ───────────────────────────
         except Exception as exc:  # noqa: BLE001
             if is_identity_user_query(request.query):
-                async for event in _emit_streaming_answer(CANONICAL_IDENTITY_RESPONSE):
+                envelope = build_turn_envelope(
+                    request=request,
+                    intent_lock=intent_lock,
+                    route="identity_fallback",
+                    path="identity_exception_fallback",
+                    mode="sse",
+                    answer_source="canonical_identity_guard",
+                    stop_reason="runtime_exception_identity_fallback",
+                    tool_decision={
+                        "need_tool": False,
+                        "reason": "identity_exception_fallback",
+                        "allowed_capabilities": [],
+                    },
+                    memory_status="skipped",
+                    output_guard="identity_guard",
+                )
+                async for event in _emit_streaming_answer(
+                    CANONICAL_IDENTITY_RESPONSE,
+                    metadata=attach_turn_envelope(
+                        {"identity_guard": True, "fallback": True},
+                        envelope,
+                    ),
+                ):
                     yield event
                 return
             yield {"type": "error", "data": {"message": str(exc)}}

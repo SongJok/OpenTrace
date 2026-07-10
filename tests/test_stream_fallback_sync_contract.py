@@ -14,7 +14,7 @@ class StreamFallbackSyncBehaviorTests(unittest.TestCase):
         self.assertFalse(_database_intent("帮我写一段 Python 代码"))
 
     def test_plan_agent_attaches_data_source_id_for_data_intent(self):
-        from kernel.plan_agent import PlanAgent, SubTask
+        from kernel.plan_agent import PlanAgent
 
         agent = PlanAgent()
         # Use the real rule function through generate_plan by stubbing the LLM response.
@@ -59,7 +59,7 @@ class StreamFallbackSyncBehaviorTests(unittest.TestCase):
             ]
 
             with patch("gateway.api_gateway.routers.data.get_settings") as settings_mock, \
-                 patch("gateway.api_gateway.routers.data._dec", return_value="secret"), \
+                 patch("gateway.api_gateway.routers.data.decrypt_data_source_secret", return_value="secret"), \
                  patch("gateway.api_gateway.routers.data.SQLPlanner") as planner_cls, \
                  patch("gateway.api_gateway.routers.data.SQLValidator") as validator_cls, \
                  patch("gateway.api_gateway.routers.data.SQLRewriter") as rewriter_cls, \

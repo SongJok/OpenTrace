@@ -123,6 +123,9 @@ class TestAgentRuntimeV3Alignment:
             kernel_unified_evidence_strict=False,
             gateway_port=14100,
             app_port=14100,
+            app_secret_key="test-app-secret",
+            jwt_secret="test-jwt-secret",
+            data_secret_key="test-data-secret",
         )
         assert s.kernel_agent_runtime_v3_strict is True
         assert s.kernel_unified_evidence_strict is True

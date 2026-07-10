@@ -33,7 +33,11 @@ if [[ ${#INSTALL_ARG[@]} -eq 0 ]] && [[ ! -d "$ROOT/frontend/node_modules" ]]; t
   INSTALL_ARG=(--install)
 fi
 
-bash "$SCRIPT_DIR/frontend-start.sh" "${INSTALL_ARG[@]}"
+if [[ ${#INSTALL_ARG[@]} -gt 0 ]]; then
+  bash "$SCRIPT_DIR/frontend-start.sh" "${INSTALL_ARG[@]}"
+else
+  bash "$SCRIPT_DIR/frontend-start.sh"
+fi
 
 echo ""
 echo "----------------------------------------------"

@@ -8,6 +8,12 @@ import pytest
 
 from infra.config.settings import AppSettings, Settings, get_settings
 
+MANAGED_ENV_SECRETS = {
+    "app_secret_key": "test-app-secret",
+    "jwt_secret": "test-jwt-secret",
+    "data_secret_key": "test-data-secret",
+}
+
 
 @pytest.fixture(autouse=True)
 def _fresh_settings_cache():
@@ -49,6 +55,7 @@ class TestStagingProfile:
             kernel_memory_fabric_primary_only=False,
             gateway_port=14100,
             app_port=14100,
+            **MANAGED_ENV_SECRETS,
         )
         assert s.kernel_memory_fabric_primary_only is True
 
@@ -58,6 +65,7 @@ class TestStagingProfile:
             kernel_cognitive_state_persist_enabled=False,
             gateway_port=14100,
             app_port=14100,
+            **MANAGED_ENV_SECRETS,
         )
         assert s.kernel_cognitive_state_persist_enabled is True
 
@@ -68,6 +76,7 @@ class TestStagingProfile:
             kernel_world_state_persist_enabled=False,
             gateway_port=14100,
             app_port=14100,
+            **MANAGED_ENV_SECRETS,
         )
         assert s.kernel_memory_fabric_primary_only is True
         assert s.kernel_world_state_persist_enabled is True
@@ -79,6 +88,7 @@ class TestStagingProfile:
             kernel_unified_evidence_strict=False,
             gateway_port=14100,
             app_port=14100,
+            **MANAGED_ENV_SECRETS,
         )
         assert s.kernel_agent_runtime_v3_strict is True
         assert s.kernel_unified_evidence_strict is True
@@ -90,6 +100,7 @@ class TestStagingProfile:
             kernel_unified_evidence_strict=False,
             gateway_port=14100,
             app_port=14100,
+            **MANAGED_ENV_SECRETS,
         )
         assert s.kernel_agent_runtime_v3_strict is True
         assert s.kernel_unified_evidence_strict is True
@@ -101,6 +112,7 @@ class TestStagingProfile:
             kernel_policy_mutation_fail_closed=False,
             gateway_port=14100,
             app_port=14100,
+            **MANAGED_ENV_SECRETS,
         )
         assert s.kernel_world_state_persist_enabled is True
         assert s.kernel_policy_mutation_fail_closed is True
@@ -112,8 +124,20 @@ class TestStagingProfile:
             kernel_staging_phase_transition_strict=True,
             gateway_port=14100,
             app_port=14100,
+            **MANAGED_ENV_SECRETS,
         )
         assert s.kernel_runtime_phase_transition_strict is True
+
+    def test_managed_env_requires_runtime_secrets(self):
+        with pytest.raises(ValueError, match="requires explicit non-placeholder secrets"):
+            Settings(
+                app_env="production",
+                gateway_port=14100,
+                app_port=14100,
+                app_secret_key="change-me-in-production",
+                jwt_secret="",
+                data_secret_key="",
+            )
 
 
 class TestFlagGovernance:
@@ -181,3 +205,12 @@ class TestGatewayPortWarning:
             Settings(app_env="development", app_port=14100, gateway_port=14101)
         msgs = [str(w.message) for w in caught]
         assert any("GATEWAY_PORT" in m and "APP_PORT" in m for m in msgs)
+
+    def test_mismatched_gateway_port_fails_in_managed_env(self):
+        with pytest.raises(ValueError, match="requires GATEWAY_PORT"):
+            Settings(
+                app_env="staging",
+                app_port=14100,
+                gateway_port=14101,
+                **MANAGED_ENV_SECRETS,
+            )

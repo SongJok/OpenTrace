@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 import type { ReasoningStep, ToolRunStatus } from '../api/client'
 import { normalizeFinalAnswerEnvelope, type TurnMetaEnvelope } from '../utils/streamEnvelope'
-import type { TurnMetaEnvelope } from '../utils/streamEnvelope'
 
 export interface ExecutionGraphNode {
   id: string

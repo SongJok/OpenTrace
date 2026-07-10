@@ -24,8 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from execution.data.query_intents import is_database_question
 from gateway.api_gateway.routers.auth import get_current_user
+from gateway.api_gateway.resource_scope import owned_data_sources_statement
 from gateway.api_gateway.tier0_paths import (
-    get_previous_turn_sql,
     is_sql_retrieval_intent as _tier0_is_sql_retrieval_intent,
     sse_database_direct_events,
     sse_sql_retrieval_events,
@@ -54,6 +54,7 @@ from infra.storage.models import (
     DataSource,
     DataSourceSchema,
     Feedback,
+    Message,
     ReasoningTrace,
     ToolStat,
     TraceLog,
@@ -70,6 +71,12 @@ router = APIRouter()
 
 _ACTIVE_STREAM_TASKS: dict[str, asyncio.Task] = {}
 _ACTIVE_STREAM_CONTEXTS: dict[str, dict[str, Any]] = {}
+
+
+def _public_stream_error(exc: Exception) -> str:
+    if settings.debug and settings.app_env == "development":
+        return str(exc)
+    return "请求处理失败，请稍后重试。"
 
 
 class ChatRequest(BaseModel):
@@ -443,12 +450,15 @@ async def _load_data_source_context(
     data_source_id: str | None,
     query: str | None = None,
     force_database: bool = False,
+    tenant_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source = None
     if data_source_id:
         r = await db.execute(
-            select(DataSource).where(
-                DataSource.id == data_source_id,
+            owned_data_sources_statement(
+                user_id=current_user.id,
+                tenant_metadata=tenant_metadata,
+                data_source_id=data_source_id,
             )
         )
         source = r.scalar_one_or_none()
@@ -458,8 +468,10 @@ async def _load_data_source_context(
         q = query.strip().lower()
         if q:
             r = await db.execute(
-                select(DataSource)
-                .order_by(DataSource.created_at.desc())
+                owned_data_sources_statement(
+                    user_id=current_user.id,
+                    tenant_metadata=tenant_metadata,
+                ).order_by(DataSource.created_at.desc())
             )
             candidates = r.scalars().all()
             for item in candidates:
@@ -476,8 +488,11 @@ async def _load_data_source_context(
                     break
     if source is None and force_database:
         r = await db.execute(
-            select(DataSource)
-            .where(DataSource.status == "active")
+            owned_data_sources_statement(
+                user_id=current_user.id,
+                tenant_metadata=tenant_metadata,
+                active_only=True,
+            )
             .order_by(DataSource.updated_at.desc())
             .limit(1)
         )
@@ -493,7 +508,7 @@ async def _load_data_source_context(
     if schema_row is not None:
         try:
             schema_payload = json.loads(schema_row.schema_json or "{}")
-        except Exception as exc:
+        except Exception:
             schema_payload = None
 
     return {
@@ -631,7 +646,7 @@ async def _save_trace(
                 score_raw = step.get("score")
                 try:
                     score = float(score_raw) if score_raw is not None else None
-                except Exception as exc:
+                except Exception:
                     score = None
                 db.add(
                     ReasoningTrace(
@@ -662,7 +677,7 @@ async def _save_trace(
                         latency_v = n.get("latency_ms")
                         try:
                             avg_latency_ms = float(latency_v) if latency_v is not None else 0.0
-                        except Exception as exc:
+                        except Exception:
                             avg_latency_ms = 0.0
                         db.add(
                             ToolStat(
@@ -1215,11 +1230,20 @@ async def chat(
         )
         if force_database and not data_source_id:
             data_source_context = await _load_data_source_context(
-                db, current_user, None, req.query, force_database=True
+                db,
+                current_user,
+                None,
+                req.query,
+                force_database=True,
+                tenant_metadata=tenant_md,
             )
         else:
             data_source_context = await _load_data_source_context(
-                db, current_user, data_source_id, None if data_source_id else req.query
+                db,
+                current_user,
+                data_source_id,
+                None if data_source_id else req.query,
+                tenant_metadata=tenant_md,
             )
 
         if not data_source_context.get("data_source_id") and not force_database:
@@ -1253,7 +1277,11 @@ async def chat(
             )
             if internal_intent:
                 data_source_context = await _load_data_source_context(
-                    db, current_user, None, req.query
+                    db,
+                    current_user,
+                    None,
+                    req.query,
+                    tenant_metadata=tenant_md,
                 )
         # Load previous turn context for multi-turn enhancement features
         prev_plan, prev_results = await _load_previous_turn_context(db, session_id)
@@ -1523,7 +1551,7 @@ async def chat(
                 raise
             except Exception as exc:
                 logger.error("SQL retrieval stream error", error=str(exc))
-                yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(exc)}}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'data': {'message': _public_stream_error(exc)}}, ensure_ascii=False)}\n\n"
                 yield ": done\n\n"
 
         asyncio.create_task(
@@ -1621,7 +1649,7 @@ async def chat(
                 raise
             except Exception as exc:
                 logger.error("Direct query stream error", error=str(exc))
-                yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(exc)}}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'data': {'message': _public_stream_error(exc)}}, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(
             _sse_direct_query(),
@@ -1768,7 +1796,9 @@ async def chat(
                             source="chat_router",
                         )
                     )
-                    await queue.put({"type": "error", "data": {"message": str(exc)}})
+                    await queue.put(
+                        {"type": "error", "data": {"message": _public_stream_error(exc)}}
+                    )
                 finally:
                     await queue.put(None)
 
@@ -1824,7 +1854,7 @@ async def chat(
                 return
             except Exception as exc:  # noqa: BLE001
                 logger.error("Kernel stream error", error=str(exc))
-                yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(exc)}}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'data': {'message': _public_stream_error(exc)}}, ensure_ascii=False)}\n\n"
                 return
             finally:
                 _ACTIVE_STREAM_TASKS.pop(task_key, None)
@@ -1861,7 +1891,7 @@ async def chat(
                         ((final_execution_graph or {}).get("state") or {}).get("tools_used") or []
                     )
                 ]
-            except Exception as exc:
+            except Exception:
                 tools_used = []
             if tools_used:
                 tool_anomaly_detector.record(tools_used)
@@ -1934,6 +1964,7 @@ async def chat(
                     ),
                     current_user=current_user,
                     db=db,
+                    http_request=http_request,
                 )
                 latency_ms = int((time.monotonic() - t0) * 1000)
                 return ChatResponse(

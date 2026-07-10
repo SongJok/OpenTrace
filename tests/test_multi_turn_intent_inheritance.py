@@ -169,7 +169,8 @@ class TestDetectFollowUp:
     """_detect_follow_up() 追问检测逻辑。"""
 
     def test_follow_up_phase(self):
-        assert _detect_follow_up("任意文本", "follow_up") is True
+        assert _detect_follow_up("任意文本", "follow_up") is False
+        assert _detect_follow_up("这个是什么", "follow_up") is True
 
     def test_drill_down_phase(self):
         assert _detect_follow_up("任意文本", "drill_down") is True

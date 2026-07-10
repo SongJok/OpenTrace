@@ -114,6 +114,9 @@ class CapabilityAdapter:
                 prefix_matches = [p for p in profiles if p.agent_type == source]
             if prefix_matches:
                 if source == "web":
+                    for p in prefix_matches:
+                        if p.capability_type == "web.search":
+                            return p.capability_type
                     try:
                         from kernel.agent_runtime.manifest import get_manifest
 

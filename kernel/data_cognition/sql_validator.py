@@ -3,6 +3,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
+try:
+    from sqlglot import exp, parse
+    from sqlglot.errors import ParseError
+except ImportError:  # pragma: no cover - packaging contract covers the dependency
+    exp = None
+    parse = None
+    ParseError = ValueError
+
 from kernel.data_cognition.types import SemanticContext, SemanticParseResult
 
 
@@ -11,35 +19,140 @@ class SQLValidationError(ValueError):
 
 
 class SQLValidator:
-    FORBIDDEN = ["insert", "update", "delete", "alter", "drop", "truncate", "grant", "revoke"]
+    FORBIDDEN_NODE_NAMES = {
+        "Alter",
+        "Analyze",
+        "Attach",
+        "Cache",
+        "Command",
+        "Commit",
+        "Copy",
+        "Create",
+        "Delete",
+        "Detach",
+        "Drop",
+        "Execute",
+        "Grant",
+        "Insert",
+        "Into",
+        "LoadData",
+        "Lock",
+        "Merge",
+        "Pragma",
+        "Rollback",
+        "Set",
+        "Transaction",
+        "TruncateTable",
+        "Uncache",
+        "Update",
+        "Use",
+    }
+    FORBIDDEN_FUNCTIONS = {
+        "benchmark",
+        "dblink_connect",
+        "dblink_exec",
+        "load_file",
+        "lo_export",
+        "lo_import",
+        "nextval",
+        "pg_ls_dir",
+        "pg_read_binary_file",
+        "pg_read_file",
+        "pg_sleep",
+        "read_blob",
+        "read_csv",
+        "read_csv_auto",
+        "read_json",
+        "read_json_auto",
+        "read_parquet",
+        "set_config",
+        "sleep",
+        "sys_eval",
+        "sys_exec",
+    }
 
-    def __init__(self, default_limit: int = 100) -> None:
+    def __init__(self, default_limit: int = 100, max_limit: int | None = None) -> None:
         self.default_limit = default_limit
+        self.max_limit = max_limit or default_limit
 
     def validate(self, sql: str) -> str:
         text = (sql or "").strip()
         if not text:
             raise SQLValidationError("empty sql")
+        if self._contains_comment(text):
+            raise SQLValidationError("sql comments are not allowed")
+        if parse is None or exp is None:
+            raise SQLValidationError("SQL AST parser is unavailable")
 
-        lowered = text.lower()
-        if ";" in lowered:
+        try:
+            statements = [statement for statement in parse(text) if statement is not None]
+        except ParseError as exc:
+            raise SQLValidationError(f"invalid sql: {exc}") from exc
+        if len(statements) != 1:
             raise SQLValidationError("multiple statements are not allowed")
 
-        if not (lowered.startswith("select") or lowered.startswith("with")):
-            raise SQLValidationError("only SELECT/WITH queries are allowed")
+        expression = statements[0]
+        if not isinstance(expression, exp.Query):
+            raise SQLValidationError("only read-only query expressions are allowed")
 
-        if any(tok in lowered for tok in self.FORBIDDEN):
-            raise SQLValidationError("write/ddl statements are forbidden")
+        for node in expression.walk():
+            node_name = type(node).__name__
+            if node_name in self.FORBIDDEN_NODE_NAMES:
+                raise SQLValidationError(f"forbidden SQL operation: {node_name}")
+            if isinstance(node, exp.Func):
+                function_name = str(
+                    node.name if isinstance(node, exp.Anonymous) else node.sql_name() or ""
+                ).lower()
+                if function_name in self.FORBIDDEN_FUNCTIONS:
+                    raise SQLValidationError(f"forbidden SQL function: {function_name}")
 
-        if " limit " not in lowered:
-            text = f"{text} LIMIT {self.default_limit}"
+        if expression.args.get("locks"):
+            raise SQLValidationError("locking queries are not allowed")
 
-        # anti comment-injection: strip string literals first to avoid false positives
-        stripped = re.sub(r"'[^']*'", "''", lowered)
-        if re.search(r"--|/\*|\*/", stripped):
-            raise SQLValidationError("sql comments are not allowed")
+        configured_limit = max(1, int(self.default_limit))
+        maximum_limit = max(configured_limit, int(self.max_limit))
+        limit_node = expression.args.get("limit")
+        if limit_node is None:
+            expression = expression.limit(configured_limit)
+        else:
+            limit_expression = getattr(limit_node, "expression", None)
+            try:
+                requested_limit = int(str(limit_expression.name))
+            except (AttributeError, TypeError, ValueError):
+                raise SQLValidationError("LIMIT must be a positive integer literal")
+            if requested_limit < 1:
+                raise SQLValidationError("LIMIT must be greater than zero")
+            if requested_limit > maximum_limit:
+                expression = expression.limit(maximum_limit)
 
-        return text
+        return expression.sql()
+
+    @staticmethod
+    def _contains_comment(sql: str) -> bool:
+        quote: str | None = None
+        index = 0
+        while index < len(sql):
+            char = sql[index]
+            next_char = sql[index + 1] if index + 1 < len(sql) else ""
+            if quote:
+                if char == quote:
+                    if next_char == quote:
+                        index += 2
+                        continue
+                    quote = None
+                elif char == "\\":
+                    index += 2
+                    continue
+                index += 1
+                continue
+            if char in {"'", '"', "`"}:
+                quote = char
+                index += 1
+                continue
+            if (char == "-" and next_char == "-") or (char == "/" and next_char == "*"):
+                return True
+            index += 1
+        return False
 
     def validate_semantic(self, sql: str, semantic_ctx: SemanticContext | None = None) -> list[str]:
         """Check semantic合理性: LIMIT 0, WHERE 1=0, full table scan risk."""
@@ -97,7 +210,6 @@ class SQLValidator:
                 issues.append(f"Entity table '{e.mapped_table}' not referenced in SQL")
 
         # 3. Check GROUP BY consistency
-        group_by_lower = [g.lower().strip() for g in parse_result.group_by]
         has_group_by = "group by" in lowered
         has_agg = any(kw in lowered for kw in ("sum(", "count(", "avg(", "max(", "min("))
 

@@ -36,6 +36,7 @@ from gateway.api_gateway.routers import (
     ui_settings,
 )
 from infra.message_bus.subscribers import memory_event_subscriber
+from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
 from infra.observability.logger import get_logger
 from infra.storage.database import ensure_runtime_schema
@@ -47,7 +48,7 @@ _subscriber_task: asyncio.Task | None = None
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -95,7 +96,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     payload = {
         "code": spec.code,
         "message": spec.message,
-        "details": str(exc),
+        "details": str(exc) if settings.debug and settings.app_env == "development" else None,
         "request_id": request_id,
         "timestamp": int(time.time()),
     }

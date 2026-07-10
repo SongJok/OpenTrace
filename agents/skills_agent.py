@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from agents.base import BaseAgent, AgentResult, TaskMessage
+from infra.config.settings import settings
 from kernel.result_reference import ResultRef, serialize_refs
 from skills.store.marketplace import marketplace
 
@@ -22,6 +23,16 @@ class SkillsAgent(BaseAgent):
         super().__init__(agent_type="skills")
 
     async def execute(self, task: TaskMessage) -> AgentResult:
+        if not settings.skills_inprocess_execution_enabled:
+            return AgentResult(
+                task_id=task.task_id,
+                agent_type=self.agent_type,
+                status="error",
+                content="技能执行已被系统安全策略禁用。",
+                confidence=0.0,
+                error="skill execution disabled by policy",
+                metadata={"policy_blocked": True},
+            )
         skills = marketplace.list_installed()
         if not skills:
             return AgentResult(

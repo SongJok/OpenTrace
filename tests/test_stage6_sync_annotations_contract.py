@@ -14,9 +14,10 @@ class Stage6SyncAnnotationsContractTests(unittest.TestCase):
 
     def test_chat_input_sync_fallback_writes_annotations(self):
         txt = (ROOT / "frontend/src/components/ChatInput.tsx").read_text(encoding="utf-8")
-        self.assertIn("if (Array.isArray(sync.annotations) && sync.annotations.length)", txt)
+        self.assertIn("annotations: sync.annotations", txt)
         self.assertIn("setLastAssistantAnnotations", txt)
-        self.assertIn("if (sync.execution_graph)", txt)
+        self.assertIn("execution_graph: sync.execution_graph", txt)
+        self.assertIn("applyFinalAnswerEnvelope", txt)
 
 
 if __name__ == "__main__":

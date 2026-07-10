@@ -22,6 +22,8 @@
 | 开关 | 行为 |
 |------|------|
 | `APP_ENV` | `staging` |
+| `APP_SECRET_KEY` / `JWT_SECRET` / `DATA_SECRET_KEY` | **必须为非占位值** |
+| `GATEWAY_PORT` / `APP_PORT` | **必须一致** |
 | `kernel_memory_fabric_primary_only` | **强制 true**（即使 .env 写 false） |
 | `kernel_cognitive_state_persist_enabled` | **强制 true** |
 | `kernel_world_state_persist_enabled` | **强制 true**（Redis `world_state:{session_id}`） |
@@ -31,7 +33,7 @@
 | `kernel_unified_evidence_strict` | **强制 true**（成功回合须带 `UnifiedEvidence`） |
 | `enterprise_quota_redis_enabled` | **true**（日额度/成本走 Redis 原子 INCR；多副本一致） |
 | `enterprise_usage_redis_enabled` | **true**（租户用量 HINCRBY 日聚合） |
-| `kernel_agent_learning_auto_apply` | **true**（`learning_hook` 高置信成功写入 `StrategyMemory`；dev 默认 false 仅 `strategy_shadow`） |
+| `kernel_agent_learning_auto_apply` | **false**（仅记录 `strategy_shadow`；候选策略经离线评估和审批后再发布） |
 | `data_agent_v2_verification_replan_enabled` | true（校验 fail 有限次重跑 DAG） |
 | `rag_rrf_fusion_enabled` | true（document/llmwiki/memory 分路 RRF 后再 evidence intelligence） |
 
@@ -53,6 +55,8 @@ Worker 与 in-process dispatch 在 `kernel_agent_runtime_v3_enabled=true` 时走
 |------|------|
 | `APP_ENV` | `production` |
 | `DEBUG` | **false** |
+| `APP_SECRET_KEY` / `JWT_SECRET` / `DATA_SECRET_KEY` | **必须为非占位值** |
+| `GATEWAY_PORT` / `APP_PORT` | **必须一致** |
 | `kernel_memory_fabric_primary_only` | **强制 true** |
 | `kernel_cognitive_state_persist_enabled` | **强制 true** |
 | `kernel_world_state_persist_enabled` | **强制 true** |
@@ -63,7 +67,7 @@ Worker 与 in-process dispatch 在 `kernel_agent_runtime_v3_enabled=true` 时走
 | `kernel_semantic_alerts_enabled` | true |
 | `TRACE_ENABLED` | true（配合 OTLP） |
 
-实现见 `infra/config/settings.py` 中 `_apply_staging_profile` / `_apply_production_profile`。
+实现见 `infra/config/settings.py` 中 `_apply_staging_profile` / `_apply_production_profile` / `_require_runtime_secrets_for_managed_envs`。`staging` / `production` 启动前必须执行 Alembic 迁移；应用启动只做只读 schema readiness 校验，不再自动补 DDL。
 
 ## 降本 / 调试（仅非生产）
 

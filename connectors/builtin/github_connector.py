@@ -19,7 +19,7 @@ class GitHubConnector:
                 "client_id": self.client_id or "github-client-id",
                 "redirect_uri": redirect_uri,
                 "scope": "repo read:user",
-                "state": f"{user_id}:{state}",
+                "state": state,
             }
         )
         return f"https://github.com/login/oauth/authorize?{q}"

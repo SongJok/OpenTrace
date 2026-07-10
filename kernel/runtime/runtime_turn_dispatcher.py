@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from infra.observability.logger import get_logger
+from kernel.identity.system_identity import finalize_assistant_content
 
 logger = get_logger(__name__)
 
@@ -119,13 +120,13 @@ class RuntimeTurnDispatcher:
                         "status": "done",
                     },
                 }
-                text = mq.content or ""
+                kr = multi_question_to_kernel_response(mq, request, 0)
+                text = kr.content or ""
                 for i in range(0, len(text), _STREAM_CHUNK):
                     yield {"type": "delta", "data": {"text": text[i : i + _STREAM_CHUNK]}}
                     import asyncio
 
                     await asyncio.sleep(_STREAM_DELAY)
-                kr = multi_question_to_kernel_response(mq, request, 0)
                 mq_meta = dict(kr.metadata or {})
                 mq_final: dict[str, Any] = {
                     "content": text,
@@ -177,6 +178,7 @@ class RuntimeTurnDispatcher:
         content, stream_meta = await self._stream_executive(
             request, prepared, runtime_name, _collect
         )
+        content = finalize_assistant_content(content or "", getattr(request, "query", "") or "")
         for ev in pending:
             yield ev
         for i in range(0, len(content), _STREAM_CHUNK):
@@ -217,6 +219,22 @@ class RuntimeTurnDispatcher:
     def resolve_runtime_name(self, request: Any, prepared: Any) -> str:
         strategy = (request.metadata or {}).get("strategy_projection") or {}
         preferred = strategy.get("preferred_runtime", "cognitive_executive")
+        lock = (request.metadata or {}).get("intent_lock") or {}
+        allowed = set(lock.get("allowed_capabilities") or [])
+        disallowed = set(lock.get("disallowed_capabilities") or [])
+        data_ok = (
+            ("data.query" in allowed or "data_query" in allowed)
+            and "data.query" not in disallowed
+            and "data_query" not in disallowed
+        )
+        if preferred == "data_intelligence" and not data_ok:
+            preferred = "cognitive_executive"
+            request.metadata = dict(request.metadata or {})
+            request.metadata["strategy_projection"] = {
+                **strategy,
+                "preferred_runtime": "cognitive_executive",
+                "data_intelligence_skipped": "intent_lock_disallows_data",
+            }
         if preferred == "data_intelligence":
             return "data_intelligence"
         if preferred == "multi_goal":

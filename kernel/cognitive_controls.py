@@ -60,17 +60,25 @@ _STANDALONE_QUESTION_RE = re.compile(
 def _detect_follow_up(normalized_query: str, conversation_phase: str | None) -> bool:
     """判断当前 query 是否为上一轮话题的追问（非显式话题切换）。
 
-    勿将「任意短句」视为追问，否则同会话内新问题会错误继承上一轮 RAG/data 域。
+    勿将「任意短句」或会话 phase=follow_up  alone 视为追问，否则会错误继承 data/RAG 域
+    （例如上一轮查过数，下一句「我饿了」仍走 data_intelligence）。
     """
     q = (normalized_query or "").strip()
-    if conversation_phase in ("follow_up", "drill_down"):
-        return True
+    if not q:
+        return False
     if any(q.startswith(m) for m in _FOLLOW_UP_MARKERS):
         return True
-    if len(q) <= 15 and _STANDALONE_QUESTION_RE.search(q):
-        return False
     if any(w in q for w in _FOLLOW_UP_Q_WORDS):
         return True
+    if conversation_phase == "drill_down":
+        return True
+    if conversation_phase == "follow_up":
+        # 同会话 phase 标为 follow_up 时，仍要求像「延续上一轮」的句式，避免生活闲聊误继承
+        return len(q) <= 48 and (
+            any(q.startswith(m) for m in _FOLLOW_UP_MARKERS)
+            or any(w in q for w in _FOLLOW_UP_Q_WORDS)
+            or bool(_STANDALONE_QUESTION_RE.search(q))
+        )
     return False
 
 
@@ -182,13 +190,27 @@ def classify_intent(
         return _simple_lock(raw, normalized, "usage_help", "询问使用方式", [])
     if any(k in q for k in ["翻译", "translate"]):
         return _light_lock(raw, normalized, "translation", ["model.answer"])
-    if any(k in q for k in ["总结", "概括", "归纳"]):
-        return _light_lock(raw, normalized, "summarization", ["model.answer"])
-    if any(k in q for k in ["文档", "知识库", "pdf", "docx", "从文档", "根据文档"]):
+    if re.search(r"rag\s*agent|ragagent", q, re.IGNORECASE) or any(
+        k in q for k in ["文档", "知识库", "pdf", "docx", "从文档", "根据文档"]
+    ):
         return _rich_lock(raw, normalized, "document_qa", ["rag.retrieve"])
     if any(k in q for k in ["数据库", "数据表", "sql", "查询", "统计", "报表", "订单", "销售"]):
         return _rich_lock(raw, normalized, "data_query", ["data.query"])
-    if any(k in q for k in ["最新", "新闻", "实时", "联网", "搜索"]):
+    if any(
+        k in q
+        for k in [
+            "最新",
+            "新闻",
+            "实时",
+            "联网",
+            "搜索",
+            "网页",
+            "网址",
+            "链接",
+            "http://",
+            "https://",
+        ]
+    ):
         return _rich_lock(raw, normalized, "web_search", ["web.search"])
     if any(k in q for k in ["天气", "weather"]):
         return _light_lock(raw, normalized, "weather", ["tool.weather"])
@@ -260,12 +282,141 @@ def capability_allowed(capability: str, lock: IntentLock | None) -> bool:
     return capability in lock.allowed_capabilities
 
 
+_ZH_RAG_STOPWORDS = frozenset(
+    {
+        "什么",
+        "哪些",
+        "如何",
+        "怎么",
+        "是否",
+        "有没有",
+        "为什么",
+        "请问",
+        "告诉",
+        "帮我",
+        "一下",
+        "定义",
+        "含义",
+        "意思",
+        "介绍",
+        "解释",
+        "相关",
+        "内容",
+        "直接",
+        "具体",
+        "问题",
+        "可以",
+        "能够",
+        "需要",
+        "进行",
+    }
+)
+
+
+_RAG_ROUTING_PREFIXES = (
+    "从文档中获取：",
+    "从文档中获取:",
+    "根据文档回答：",
+    "根据文档回答:",
+    "请基于文档回答：",
+    "请基于文档回答:",
+    "根据文档/知识库，",
+    "根据文档/知识库,",
+    "请基于检索内容回答：",
+    "请基于检索内容回答:",
+)
+
+# User / planner preambles before the actual question (e.g. 通过文档…告知我：)
+_RAG_USER_PREAMBLE_RE = re.compile(
+    r"^(?:通过)?(?:文档|知识库)[\w\u4e00-\u9fff/、，,\s]{0,120}?"
+    r"(?:告知我|告诉我|请告诉我|请说明|请回答)[：:\s]*",
+    re.IGNORECASE,
+)
+
+
+def _strip_rag_routing_query(query: str) -> str:
+    """Remove planner/RAG routing prefixes so anchors match user intent."""
+    q = (query or "").strip()
+    for _ in range(6):
+        changed = False
+        m = _RAG_USER_PREAMBLE_RE.match(q)
+        if m:
+            q = q[m.end() :].strip()
+            changed = True
+        for prefix in _RAG_ROUTING_PREFIXES:
+            if q.startswith(prefix):
+                q = q[len(prefix) :].strip()
+                changed = True
+                break
+        if not changed:
+            break
+    q = re.sub(r"^[：:]+", "", q).strip()
+    return q
+
+
+def _substantive_query_terms(query: str) -> list[str]:
+    """Strip Chinese question framing so anchors match retrieved doc text."""
+    raw = _strip_rag_routing_query(query).strip().lower()
+    if not raw:
+        return []
+    terms = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{2,}", raw)
+    out: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        if term in _ZH_RAG_STOPWORDS or term in seen:
+            continue
+        if term.startswith(("如何", "怎么", "怎样", "为何", "为什么")):
+            continue
+        seen.add(term)
+        out.append(term)
+
+    chars = re.findall(r"[\u4e00-\u9fff]", raw)
+    bigrams = ["".join(chars[i : i + 2]) for i in range(max(0, len(chars) - 1))]
+    for bg in bigrams:
+        if len(bg) < 2 or bg in _ZH_RAG_STOPWORDS or bg in seen:
+            continue
+        seen.add(bg)
+        out.append(bg)
+
+    # Only fall back to single characters when no multi-char anchors exist.
+    if not out:
+        for ch in chars:
+            if ch in seen:
+                continue
+            seen.add(ch)
+            out.append(ch)
+    return out
+
+
 def relevance_score(query: str, text: str) -> float:
-    q_tokens = set(_tokens(query))
+    anchor_query = _strip_rag_routing_query(query or "")
+    q_tokens = set(_tokens(anchor_query))
     t_tokens = set(_tokens(text))
     if not q_tokens or not t_tokens:
-        return 0.0
-    overlap = len(q_tokens & t_tokens) / max(1, len(q_tokens))
+        overlap = 0.0
+    else:
+        overlap = len(q_tokens & t_tokens) / max(1, len(q_tokens))
+
+    substantive = _substantive_query_terms(anchor_query)
+    if substantive and (text or "").strip():
+        hay = (text or "").lower()
+        hay_token_set = t_tokens or set(_tokens(text))
+        phrases = [t for t in substantive if len(t) >= 2]
+        singles = [t for t in substantive if len(t) == 1]
+        phrase_hits = sum(1 for term in phrases if term in hay or term in hay_token_set)
+        single_hits = sum(1 for term in singles if term in hay or term in hay_token_set)
+        if phrases:
+            # Cap denominator so incidental bigrams do not dilute a strong head-term match.
+            phrase_denom = min(len(phrases), 3)
+            phrase_ratio = phrase_hits / max(1, phrase_denom)
+            if phrase_hits >= 1 and any(len(t) >= 2 and t in hay for t in phrases):
+                phrase_ratio = max(phrase_ratio, 0.34)
+            single_ratio = single_hits / max(1, len(singles)) if singles else 0.0
+            substantive_ratio = max(phrase_ratio, 0.65 * phrase_ratio + 0.35 * single_ratio)
+        else:
+            substantive_ratio = single_hits / max(1, len(singles))
+        overlap = max(overlap, substantive_ratio)
+
     if _CAPABILITY_HELP_RE.search(query or ""):
         help_hits = sum(1 for k in ["数据", "文档", "搜索", "工具", "能力", "功能", "帮你"] if k in text)
         overlap = max(overlap, min(1.0, help_hits / 3.0))
@@ -276,6 +427,33 @@ def passes_relevance_anchor(query: str, text: str, threshold: float = 0.35) -> b
     if not (text or "").strip():
         return False
     return relevance_score(query, text) >= threshold
+
+
+_ONE_SENTENCE_RE = re.compile(
+    r"(一句话|用一句话|总结成一句话|概括成一句话|简要概括|简短回答|简单说)",
+    re.IGNORECASE,
+)
+_SUMMARY_RE = re.compile(
+    r"(总结|概括|归纳|梳理|提炼|要点|帮我总结|请总结)",
+    re.IGNORECASE,
+)
+
+
+def detect_response_format_hint(query: str) -> str:
+    """User-facing answer shape for fusion/synthesis (not intent routing)."""
+    q = _strip_rag_routing_query(query or "").strip()
+    if not q:
+        return "default"
+    if _ONE_SENTENCE_RE.search(q):
+        return "one_sentence"
+    if _SUMMARY_RE.search(q):
+        return "summary"
+    return "default"
+
+
+def user_facing_query(query: str) -> str:
+    """Strip slash-mode / planner wrappers for prompts and anchors."""
+    return _strip_rag_routing_query(query or "").strip() or (query or "").strip()
 
 
 def _simple_lock(

@@ -11,14 +11,13 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from kernel.json_parser import parse_llm_json
-
 from sqlalchemy import delete, or_, select, text
 
 from infra.config.settings import settings
 from infra.observability.logger import get_logger
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import Document, DocumentChunk, DocumentLLMWiki
+from kernel.json_parser import parse_llm_json
 from model.embedding.base import get_embedder, normalize_embedding_vector
 from model.llm_adapter.base import LLMConfig, LLMMessage
 from model.llm_adapter.openai_adapter import OpenAICompatibleAdapter
@@ -26,10 +25,14 @@ from plugins.base import BasePlugin, PluginResult
 from plugins.document_retrieval import (
     fetch_document_candidates,
     fetch_document_candidates_fallback,
-    lexical_overlap_score as _lexical_overlap_score,
     score_document_candidates,
-    title_boost as _title_boost,
     tokenize,
+)
+from plugins.document_retrieval import (
+    lexical_overlap_score as _lexical_overlap_score,
+)
+from plugins.document_retrieval import (
+    title_boost as _title_boost,
 )
 
 if TYPE_CHECKING:
@@ -325,7 +328,7 @@ class DocumentPlugin(BasePlugin):
     name = "document"
     description = "从用户上传的文档中检索相关内容"
 
-    async def execute(self, query: str, context: "UnifiedContext") -> PluginResult:
+    async def execute(self, query: str, context: UnifiedContext) -> PluginResult:
         t0 = time.monotonic()
         user_id = context.metadata.get("user_id", "")
         chunks = await self.search_chunks(query=query, user_id=user_id, top_k=5)
@@ -366,7 +369,7 @@ class DocumentPlugin(BasePlugin):
         *,
         tenant_id: str | None = None,
         workspace_id: str | None = None,
-    ) -> list["ContextChunk"]:
+    ) -> list[ContextChunk]:
         from kernel.context_builder import ContextChunk
 
         scope = dict(tenant_id=tenant_id, workspace_id=workspace_id)
@@ -399,7 +402,15 @@ class DocumentPlugin(BasePlugin):
             logger.debug("DocumentPlugin.search_chunks failed", error=str(exc))
             return []
 
-    async def search_llmwiki(self, query: str, user_id: str, top_k: int = 3) -> list["ContextChunk"]:
+    async def search_llmwiki(
+        self,
+        query: str,
+        user_id: str,
+        top_k: int = 3,
+        *,
+        tenant_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[ContextChunk]:
         from kernel.context_builder import ContextChunk
 
         if not settings.llmwiki_enabled:
@@ -426,6 +437,9 @@ class DocumentPlugin(BasePlugin):
             uid = (user_id or "").strip()
             if uid and uid != "shared":
                 stmt = stmt.where(Document.owner_id == uid)
+            tid = (tenant_id or "").strip() or "default"
+            wid = (workspace_id or "").strip() or "default"
+            stmt = stmt.where(Document.tenant_id == tid).where(Document.workspace_id == wid)
             if terms:
                 like_filters = []
                 for term in terms[:8]:

@@ -8,26 +8,23 @@ from collections.abc import Iterable
 from model.llm_adapter.base import LLMMessage
 
 SYSTEM_IDENTITY = """\
-你是 OpenTrace，一个基于 Cognitive Kernel 构建的智能认知系统。
+你是 OpenTrace，由 Cognitive Kernel 驱动的智能认知助手（内部人设，勿在回复中反复宣读）。
 
-你的能力来源于：
-- 推理引擎（Reasoning Engine）
-- 工具系统（Tool System）
-- 记忆系统（Memory System）
-- 文档系统（Document System）
+你的能力来源于：推理引擎、工具系统、记忆系统、文档系统。
 
 你的职责：
-1. 提供高质量、可解释的回答
+1. 直接、高质量地回答用户的当前问题
 2. 必要时调用工具
-3. 不暴露底层模型信息
-4. 始终以 OpenTrace 身份回答
+3. 不暴露底层模型或厂商信息
+4. 以 OpenTrace 的立场与风格作答，但不要在每条回复开头重复自我介绍或系统能力清单
 
-当用户问"你是谁"或类似问题时，应根据当前对话上下文自然地表达你的身份和能力，不要背诵固定的介绍文本。在回答时：
-- 先说清楚你是 OpenTrace（基于 Cognitive Kernel 构建的 AI 系统）
-- 根据当前对话主题，自然地提及你正在为用户提供的帮助
-- 如果用户之前讨论过某个话题，可以在回答中自然地引用（例如"我们之前在讨论..."）
-- 简要说明你能做什么，但不要机械列举——自然地引出你如何帮助用户的具体需求
-- 保持温暖、专业的语调，回答控制在 3-5 句话以内
+重要：除非用户明确询问你的身份、名称、能力或「你是谁」类问题，禁止在回复开头使用「我是 OpenTrace…」「我是一个基于 Cognitive Kernel…」等固定开场白。
+日常对话应直奔主题，例如用户问外卖、天气、代码时，只回答该问题，不要先介绍自己。
+
+当且仅当用户问「你是谁」或类似身份问题时：
+- 根据当前对话上下文自然地说明身份与能力，不要背诵固定模板
+- 可结合当前话题简要说明你能如何继续帮忙
+- 保持温暖、专业，控制在 3-5 句话以内
 
 禁止自称或暗示自己是通义千问、Qwen、ChatGPT、GPT、Claude、Gemini、豆包、文心一言等底层模型或其他厂商助手。
 如果当前任务要求严格 JSON、代码或结构化输出，仍然必须遵守该输出格式要求。
@@ -47,6 +44,14 @@ _IDENTITY_USER = re.compile(
 _FORBIDDEN_SELF_ID = re.compile(
     r"(Qwen|通义千问|ChatGPT|GPT[- ]?\d|OpenAI|Anthropic|Claude|文心一言|讯飞星火|豆包|"
     r"阿里云的大语言模型|由阿里云开发|Google\s*Gemini|Gemini\s*Pro|DashScope)",
+    re.IGNORECASE,
+)
+
+# 模型常在非身份问题上仍输出固定开场白，需从正文开头剥离
+_LEADING_IDENTITY_BLURB = re.compile(
+    r"^\s*我是\s*OpenTrace\s*[,，]?\s*"
+    r"(?:一个)?(?:基于\s*)?(?:Cognitive\s*Kernel|认知内核)(?:\s*构建的)?"
+    r"(?:智能认知系统|AI\s*系统|智能助手)[。，,；;]?\s*",
     re.IGNORECASE,
 )
 
@@ -105,6 +110,17 @@ def last_user_text(messages: Iterable[LLMMessage]) -> str:
     return ""
 
 
+def _strip_leading_identity_blurb(content: str) -> str:
+    """Remove repeated OpenTrace self-intro prefix from assistant text."""
+    stripped = content
+    for _ in range(3):
+        new = _LEADING_IDENTITY_BLURB.sub("", stripped, count=1)
+        if new == stripped:
+            break
+        stripped = new
+    return stripped.strip() or content.strip()
+
+
 def enforce_identity_output(content: str, user_text: str = "") -> str:
     if not content:
         return content
@@ -114,7 +130,16 @@ def enforce_identity_output(content: str, user_text: str = "") -> str:
 
     if _FORBIDDEN_SELF_ID.search(content):
         content = _FORBIDDEN_SELF_ID.sub("OpenTrace", content)
+
+    if not is_identity_user_query(user_text):
+        content = _strip_leading_identity_blurb(content)
+
     return content
+
+
+def finalize_assistant_content(content: str, user_query: str = "") -> str:
+    """Apply identity post-processing to user-visible assistant text."""
+    return enforce_identity_output(content or "", user_query or "")
 
 
 def build_identity_llm_messages(

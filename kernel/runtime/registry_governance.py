@@ -40,11 +40,14 @@ def evaluate_registry_dispatch(
 
     runtime_caps: list[str] = []
     if runtime_name == "data_intelligence":
-        runtime_caps = ["data_query"]
+        runtime_caps = ["data.query"]
     elif runtime_name == "multi_goal":
         runtime_caps = ["planner", "model.answer"]
+    elif allowed_caps:
+        runtime_caps = list(allowed_caps)
     else:
-        runtime_caps = list(allowed_caps) if allowed_caps else ["model.answer", "rag.retrieve", "web.search"]
+        # 无 intent_lock 时勿默认挂上 rag/web（会与 general_qa 的 disallowed 误杀整轮）
+        runtime_caps = ["model.answer"]
 
     try:
         from kernel.capability_runtime.selector import rank_capabilities_for_intent
@@ -65,15 +68,26 @@ def evaluate_registry_dispatch(
         if gate.violations:
             gate.allowed = False
 
-    if runtime_name == "data_intelligence" and "data_query" in disallowed:
-        gate.allowed = False
-        gate.violations.append("data_intelligence_denied")
+    if runtime_name == "data_intelligence":
+        blocked = (
+            "data.query" in disallowed
+            or "data_query" in disallowed
+            or "data" in disallowed
+        )
+        if blocked or (
+            allowed_caps and "data.query" not in allowed_caps and "data_query" not in allowed_caps
+        ):
+            gate.allowed = False
+            gate.violations.append("data_intelligence_denied")
 
     try:
         from kernel.governance.execution_guardrails import ExecutionGuardrails
 
         guard = ExecutionGuardrails()
-        for cap in runtime_caps[:8]:
+        caps_to_check = runtime_caps[:8]
+        if allowed_caps:
+            caps_to_check = [c for c in caps_to_check if c in allowed_caps]
+        for cap in caps_to_check:
             gr = guard.evaluate_dispatch(
                 cap,
                 allowed_list=allowed_caps or None,

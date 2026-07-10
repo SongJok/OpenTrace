@@ -61,13 +61,42 @@ class FusionEngineV2:
                 method="error_aggregation",
             )
 
+        from kernel.cognitive_controls import detect_response_format_hint, user_facing_query
+
+        user_query = user_facing_query(
+            getattr(ctx, "raw_user_query", "") or query
+        ) or user_facing_query(query)
+        format_hint = detect_response_format_hint(user_query)
+        task_type = str(getattr(ctx, "task_type", "") or "")
+        force_mode = str(getattr(ctx, "force_mode", "") or "")
+        rag_turn = force_mode == "rag" or task_type in (
+            "document_qa",
+            "rag",
+            "summarization",
+        )
+
         # 在决定是否使用 LLM 融合前检测矛盾
         has_contradiction, contradiction_detail = self._detect_contradictions(success_evidence)
 
-        if self.llm_enabled and has_contradiction and len(evidence_list) >= 2:
-            return await self._llm_fuse(query, ctx, success_evidence)
+        use_llm = bool(self.llm_enabled) and (
+            (has_contradiction and len(success_evidence) >= 2)
+            or rag_turn
+            or format_hint in ("one_sentence", "summary")
+        )
 
-        result = self._heuristic_fuse(query, success_evidence)
+        if use_llm:
+            result = await self._llm_fuse(
+                user_query,
+                ctx,
+                success_evidence,
+                format_hint=format_hint,
+                rag_turn=rag_turn,
+            )
+            if has_contradiction:
+                result.contradictions = [contradiction_detail]
+            return result
+
+        result = self._heuristic_fuse(user_query, success_evidence)
         if has_contradiction:
             result.contradictions = [contradiction_detail]
         return result
@@ -77,34 +106,61 @@ class FusionEngineV2:
         query: str,
         ctx: Any,
         evidence_list: list[Any],
+        *,
+        format_hint: str = "default",
+        rag_turn: bool = False,
     ) -> FusionResult:
         """LLM 驱动的语义融合。"""
+        deduped = self._dedupe_evidence_chunks(evidence_list)
         context_blocks: list[str] = []
-        for i, ev in enumerate(evidence_list):
+        for i, ev in enumerate(deduped):
             source = getattr(ev.provenance, "source", "unknown")
             confidence = getattr(ev, "credibility_score", 0.5)
+            body = (ev.content or "").strip()
+            if not body:
+                continue
             context_blocks.append(
-                f"[来源{i+1}: {source} | 置信度: {confidence:.2f}]\n{ev.content[:1500]}"
+                f"[片段{i+1} | 来源: {source} | 置信度: {confidence:.2f}]\n{body[:2000]}"
             )
 
         evidence_ids = [getattr(e, "evidence_id", "") for e in evidence_list]
 
         evidence_text = "\n\n---\n\n".join(context_blocks)
 
+        if format_hint == "one_sentence":
+            shape_rule = (
+                "必须只用**一句**完整中文回答（可含分号，但不要分点、不要标题、不要复述政策条文）。"
+                "先直接给出定义或结论，不要以「根据文档」开头。"
+            )
+            max_tokens = 256
+        elif format_hint == "summary":
+            shape_rule = (
+                "用 3～6 条简短要点或一小段结构化总结作答；合并重复信息，不要大段粘贴原文。"
+            )
+            max_tokens = 800
+        elif rag_turn:
+            shape_rule = (
+                "基于证据用自然语言直接回答用户问题；合并重复表述，不要逐段堆砌原文，"
+                "不要输出「01-」类文档标题除非用户要求列条款。"
+            )
+            max_tokens = 1000
+        else:
+            shape_rule = "输出融合后的连贯回答（纯文本）。"
+            max_tokens = 1200
+
         system_prompt = (
-            "你是证据融合专家。将多个来源的查询结果融合为连贯的回答。\n"
+            "你是知识库问答助手，只根据给定证据作答。\n"
             "规则：\n"
-            "1. 去重：语义相似的表述合并，保留置信度最高的\n"
-            "2. 矛盾检测：如果两个来源给出不同答案，明确指出差异\n"
-            "3. 置信度表达：对不确定的信息使用「可能」「据现有信息」等措辞\n"
-            "4. 优先使用置信度高的来源\n"
-            "5. 保持客观，不编造信息"
+            "1. 去重合并相似内容\n"
+            "2. 不得编造证据中不存在的事实\n"
+            "3. 若证据不足以回答，明确说明缺失项\n"
+            f"4. 输出格式：{shape_rule}"
         )
 
         user_prompt = (
-            f"## 用户提问\n{query}\n\n"
-            f"## 各来源证据\n{evidence_text}\n\n"
-            "请输出融合后的回答（纯文本，不含 markdown 标记）。"
+            f"## 用户问题\n{query}\n\n"
+            f"## 检索到的证据\n{evidence_text}\n\n"
+            "请直接输出最终答案（不要 markdown 代码块，不要「证据片段」字样）。"
         )
 
         try:
@@ -118,7 +174,7 @@ class FusionEngineV2:
                 ],
                 role=LLMRole.QUERY,
                 temperature=0.1,
-                max_tokens=1200,
+                max_tokens=max_tokens,
             )
             return FusionResult(
                 merged_context=(resp.content or "").strip(),
@@ -130,13 +186,30 @@ class FusionEngineV2:
             logger.warning("FusionV2 LLM call failed, falling back to heuristic", error=str(exc))
             return self._heuristic_fuse(query, evidence_list)
 
-    def _heuristic_fuse(self, query: str, evidence_list: list[Any]) -> FusionResult:
-        """简单优先级合并：最高置信度优先，拼接内容。"""
+    @staticmethod
+    def _dedupe_evidence_chunks(evidence_list: list[Any]) -> list[Any]:
+        """Drop near-duplicate chunks before LLM fusion (reduces messy paste)."""
         sorted_ev = sorted(
             evidence_list,
             key=lambda e: getattr(e, "credibility_score", 0.5),
             reverse=True,
         )
+        seen: set[str] = set()
+        out: list[Any] = []
+        for ev in sorted_ev:
+            body = (getattr(ev, "content", "") or "").strip()
+            if not body:
+                continue
+            key = body[:200]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(ev)
+        return out[:8]
+
+    def _heuristic_fuse(self, query: str, evidence_list: list[Any]) -> FusionResult:
+        """简单优先级合并：最高置信度优先，拼接内容。"""
+        sorted_ev = self._dedupe_evidence_chunks(evidence_list)
 
         parts: list[str] = []
         for ev in sorted_ev:

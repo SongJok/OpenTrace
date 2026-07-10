@@ -93,8 +93,15 @@ async def record_agent_learning_signal(
                         )
                     )
                     out["strategy_hint_stored"] = True
-            except Exception:
-                pass
+            except Exception as strategy_exc:
+                from infra.observability.logger import get_logger
+
+                out["strategy_error"] = str(strategy_exc)[:120]
+                get_logger(__name__).warning(
+                    "agent_strategy_learning_failed",
+                    agent_type=agent_type,
+                    error=str(strategy_exc),
+                )
     except Exception as exc:
         out["error"] = str(exc)[:200]
     return out

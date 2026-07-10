@@ -15,7 +15,14 @@ from kernel.agent_runtime.executor import AgentRuntimeExecutor
 def test_staging_profile_forces_v3_strict_flags():
     from infra.config.settings import Settings
 
-    s = Settings(app_env="staging")
+    s = Settings(
+        app_env="staging",
+        gateway_port=14100,
+        app_port=14100,
+        app_secret_key="test-app-secret",
+        jwt_secret="test-jwt-secret",
+        data_secret_key="test-data-secret",
+    )
     assert s.kernel_agent_runtime_v3_strict is True
     assert s.kernel_unified_evidence_strict is True
 

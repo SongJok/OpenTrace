@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.api_gateway.routers.auth import get_current_user
+from gateway.api_gateway.routers.admin import get_current_admin_user
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import AnalyticalSkill, User
@@ -64,7 +64,7 @@ async def list_skills(
     search: str = Query(default=""),
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """List analytical skills with optional filtering."""
@@ -95,7 +95,7 @@ async def list_skills(
 @router.get("/analytical-skills/{skill_id}")
 async def get_skill(
     skill_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Get a single analytical skill."""
@@ -111,7 +111,7 @@ async def get_skill(
 @router.post("/analytical-skills")
 async def create_skill(
     req: SkillCreateRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Create a new analytical skill."""
@@ -140,7 +140,7 @@ async def create_skill(
 async def update_skill(
     skill_id: str,
     req: SkillUpdateRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Update an analytical skill (creates new version)."""
@@ -188,7 +188,7 @@ async def update_skill(
 @router.delete("/analytical-skills/{skill_id}")
 async def delete_skill(
     skill_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Delete an analytical skill."""
@@ -206,7 +206,7 @@ async def delete_skill(
 @router.post("/analytical-skills/{skill_id}/activate")
 async def activate_skill(
     skill_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Activate an analytical skill."""
@@ -226,7 +226,7 @@ async def activate_skill(
 @router.post("/analytical-skills/{skill_id}/deprecate")
 async def deprecate_skill(
     skill_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Deprecate an analytical skill."""
@@ -245,7 +245,7 @@ async def deprecate_skill(
 
 @router.post("/analytical-skills/seed")
 async def seed_default_skills(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Seed the database with default analytical skill templates."""

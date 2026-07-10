@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import time
 from typing import Any
 
 from fastapi import Request
 
+from infra.config.settings import settings
+from infra.errors import AppException, ErrorCodes
 from infra.observability.logger import get_logger
 from tenant.tenant_context import resolve_tenant_context
 from tenant.tenant_manager import TenantManager, TenantRecord
@@ -21,6 +26,117 @@ def tenant_headers_from_request(request: Request) -> dict[str, Any]:
         "workspace_id": h.get("x-workspace-id") or h.get("X-Workspace-Id"),
         "data_residency": h.get("x-data-residency") or h.get("X-Data-Residency"),
     }
+
+
+def _tenant_signature_payload(
+    *,
+    user_id: str | None,
+    tenant_id: str,
+    org_id: str,
+    workspace_id: str,
+    data_residency: str,
+    timestamp: str,
+) -> bytes:
+    values = (
+        user_id or "",
+        tenant_id,
+        org_id,
+        workspace_id,
+        data_residency,
+        timestamp,
+    )
+    return "\n".join(values).encode("utf-8")
+
+
+def sign_tenant_headers(
+    *,
+    user_id: str | None,
+    tenant_id: str = "default",
+    org_id: str = "default",
+    workspace_id: str = "default",
+    data_residency: str = "",
+    timestamp: int | None = None,
+    secret: str | None = None,
+) -> dict[str, str]:
+    """Build headers for a trusted reverse proxy or integration test."""
+    signing_secret = str(secret if secret is not None else settings.trusted_tenant_header_secret)
+    if not signing_secret:
+        raise ValueError("trusted tenant header secret is not configured")
+    ts = str(int(timestamp if timestamp is not None else time.time()))
+    payload = _tenant_signature_payload(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        org_id=org_id,
+        workspace_id=workspace_id,
+        data_residency=data_residency,
+        timestamp=ts,
+    )
+    signature = hmac.new(signing_secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    headers = {
+        "X-Tenant-Id": tenant_id,
+        "X-Org-Id": org_id,
+        "X-Workspace-Id": workspace_id,
+        "X-Tenant-Timestamp": ts,
+        "X-Tenant-Signature": signature,
+    }
+    if data_residency:
+        headers["X-Data-Residency"] = data_residency
+    return headers
+
+
+def _require_trusted_tenant_headers(
+    request: Request,
+    *,
+    user_id: str | None,
+    tenant_id: str,
+    org_id: str,
+    workspace_id: str,
+    data_residency: str,
+) -> None:
+    custom_scope = (
+        tenant_id != "default"
+        or org_id != "default"
+        or workspace_id != "default"
+        or bool(data_residency)
+    )
+    if not custom_scope:
+        return
+
+    signature = request.headers.get("x-tenant-signature", "").strip()
+    timestamp = request.headers.get("x-tenant-timestamp", "").strip()
+    secret = str(settings.trusted_tenant_header_secret or "")
+    if not secret or not signature or not timestamp:
+        raise AppException(
+            ErrorCodes.PERMISSION_DENIED.code,
+            message="Untrusted tenant scope",
+        )
+    try:
+        age_seconds = abs(int(time.time()) - int(timestamp))
+    except ValueError as exc:
+        raise AppException(
+            ErrorCodes.PERMISSION_DENIED.code,
+            message="Invalid tenant signature timestamp",
+        ) from exc
+    if age_seconds > max(1, int(settings.trusted_tenant_header_max_age_seconds)):
+        raise AppException(
+            ErrorCodes.PERMISSION_DENIED.code,
+            message="Expired tenant scope signature",
+        )
+
+    payload = _tenant_signature_payload(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        org_id=org_id,
+        workspace_id=workspace_id,
+        data_residency=data_residency,
+        timestamp=timestamp,
+    )
+    expected = hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        raise AppException(
+            ErrorCodes.PERMISSION_DENIED.code,
+            message="Invalid tenant scope signature",
+        )
 
 
 def ensure_tenant_registered(tenant_id: str, *, tier: str = "standard") -> None:
@@ -50,11 +166,28 @@ def ensure_tenant_registered(tenant_id: str, *, tier: str = "standard") -> None:
 
 def build_tenant_metadata(request: Request, user_id: str | None = None) -> dict[str, Any]:
     hdr = tenant_headers_from_request(request)
-    md: dict[str, Any] = {k: v for k, v in hdr.items() if v}
+    tenant_id = str(hdr.get("tenant_id") or "default").strip() or "default"
+    org_id = str(hdr.get("org_id") or "default").strip() or "default"
+    workspace_id = str(hdr.get("workspace_id") or "default").strip() or "default"
+    data_residency = str(hdr.get("data_residency") or "").strip()
+    _require_trusted_tenant_headers(
+        request,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        org_id=org_id,
+        workspace_id=workspace_id,
+        data_residency=data_residency,
+    )
+    md: dict[str, Any] = {
+        "tenant_id": tenant_id,
+        "org_id": org_id,
+        "workspace_id": workspace_id,
+    }
+    if data_residency:
+        md["data_residency"] = data_residency
     if user_id:
         md["user_id"] = user_id
-    tid = str(md.get("tenant_id") or "default")
-    ensure_tenant_registered(tid)
+    ensure_tenant_registered(tenant_id)
     ctx = resolve_tenant_context(user_id=user_id, metadata=md)
     try:
         from tenant.policy_manager import PolicyManager

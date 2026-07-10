@@ -57,6 +57,9 @@ jobs:
       APP_ENV: staging
       GATEWAY_PORT: "14100"
       APP_PORT: "14100"
+      APP_SECRET_KEY: "ci-staging-app-secret"
+      JWT_SECRET: "ci-staging-jwt-secret"
+      DATA_SECRET_KEY: "ci-staging-data-secret"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

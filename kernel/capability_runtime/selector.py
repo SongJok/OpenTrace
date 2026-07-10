@@ -25,8 +25,10 @@ def rank_capabilities_for_intent(
                 capability_types,
                 intent_category=intent_category,
             )[:max_items]
-    except Exception:
-        pass
+    except Exception as exc:
+        from infra.observability.logger import get_logger
+
+        get_logger(__name__).warning("capability_score_ranking_failed", error=str(exc))
     from kernel.capability_runtime.capability_control_plane import (
         get_capability_descriptor,
         rank_capabilities_for_intent as control_plane_rank,

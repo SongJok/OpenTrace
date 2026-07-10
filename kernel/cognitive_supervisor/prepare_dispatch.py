@@ -127,8 +127,17 @@ def runtime_task_from_request(request: Any) -> RuntimeTask:
 
             decision = apply_goal_supervisor_to_request(request, graph)
             graph = decision.graph
-    except Exception:
-        pass
+    except Exception as exc:
+        from infra.observability.logger import get_logger
+        from infra.observability.runtime_degraded import record_runtime_degradation
+
+        get_logger(__name__).warning("goal_supervisor_apply_failed", error=str(exc))
+        record_runtime_degradation(
+            request.metadata if isinstance(getattr(request, "metadata", None), dict) else None,
+            subsystem="goal_supervisor",
+            detail="apply_goal_supervisor_to_request",
+            exc=exc,
+        )
     try:
         from kernel.goal.state_machine import initialize_graph_states
 

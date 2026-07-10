@@ -7,7 +7,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ARRAY
 
 try:
@@ -82,6 +82,8 @@ class ChatSession(Base):
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
     org_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    enabled_skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    disabled_skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
     user: Mapped[User] = relationship(back_populates="sessions")
     trace_logs: Mapped[list[TraceLog]] = relationship(
@@ -482,6 +484,8 @@ class DataSource(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     source_type: Mapped[str] = mapped_column(
         String(20), nullable=False
@@ -510,6 +514,32 @@ class DataSourceSchema(Base):
     auto_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     relationship_hints: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     last_analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ConnectorCredential(Base):
+    __tablename__ = "connector_credentials"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "tenant_id",
+            "workspace_id",
+            "provider",
+            name="uq_connector_credential_scope_provider",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    account_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    credential_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

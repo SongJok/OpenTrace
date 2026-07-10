@@ -50,6 +50,13 @@ class AlembicIdempotentContractTests(unittest.TestCase):
         self.assertIn("ensure_runtime_schema", code)
         self.assertIn("await ensure_runtime_schema()", code)
 
+    def test_managed_env_schema_guard_is_readonly(self):
+        p = ROOT / "infra" / "storage" / "database.py"
+        code = p.read_text(encoding="utf-8")
+        self.assertIn('settings.app_env in {"staging", "production"}', code)
+        self.assertIn("await _verify_runtime_schema(conn)", code)
+        self.assertIn("Runtime schema readiness failed", code)
+
 
 if __name__ == "__main__":
     unittest.main()
