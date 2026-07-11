@@ -400,6 +400,16 @@ class AppSettings(BaseSettings):
     rag_rerank_enabled: bool = True
     rag_claim_anchor_enabled: bool = True
     rag_evidence_cluster_enabled: bool = True
+    # Governed Knowledge Orchestration — knowledge is the primary RAG lane.
+    knowledge_orchestration_enabled: bool = True
+    knowledge_query_enabled: bool = True
+    knowledge_auto_compile_enabled: bool = True
+    # Deterministic compiler output remains publishable for compatibility;
+    # production deployments can require review before promotion.
+    knowledge_auto_publish: bool = True
+    knowledge_max_relation_hops: int = 2
+    knowledge_query_candidate_budget: int = 60
+    knowledge_stale_after_days: int = 30
     llmwiki_enabled: bool = True
     llmwiki_model: str = "qwen3.5-27b"
     llmwiki_top_k: int = 3

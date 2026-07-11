@@ -2,10 +2,13 @@
 import { normalizeFinalAnswerEnvelope, type TurnMetaEnvelope } from '../utils/streamEnvelope'
 
 const BASE = '/api/v1'
+const RESPONSES_BASE = '/api/v2'
 
 export type { TurnMetaEnvelope }
 const ENV_API = (import.meta as any)?.env?.VITE_API_URL as string | undefined
+const RESPONSES_API_V2_ENABLED = String((import.meta as any)?.env?.VITE_RESPONSES_API_V2_ENABLED ?? '').toLowerCase() === 'true'
 const BACKEND_DIRECT = `${(ENV_API && ENV_API.trim()) ? ENV_API.trim() : 'http://localhost:14100'}/api/v1`
+const RESPONSES_BACKEND_DIRECT = `${(ENV_API && ENV_API.trim()) ? ENV_API.trim() : 'http://localhost:14100'}/api/v2`
 
 if (typeof window !== 'undefined') {
   const configured = (ENV_API && ENV_API.trim()) ? ENV_API.trim() : '(unset)'
@@ -79,6 +82,31 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
       throw error
     }
     return fetch(`${BACKEND_DIRECT}${path}`, init)
+  }
+}
+
+async function apiFetchResponses(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(`${RESPONSES_BASE}${path}`, init)
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error
+    }
+    return fetch(`${RESPONSES_BACKEND_DIRECT}${path}`, init)
+  }
+}
+
+function responseToLegacyChat(payload: any): any {
+  const output = Array.isArray(payload?.output) ? payload.output : []
+  const message = output.find((item: any) => item?.type === 'message' && item?.role === 'assistant')
+  const metadata = payload?.metadata ?? message?.payload ?? {}
+  return {
+    content: message?.content ?? '',
+    metadata,
+    citations: metadata.citations ?? [],
+    evidence_refs: metadata.evidence_refs ?? [],
+    trace_id: metadata.trace_id,
+    model: payload?.model,
   }
 }
 
@@ -315,6 +343,15 @@ export async function apiChatSync(
   query: string,
   options: Record<string, unknown> = {}
 ): Promise<any> {
+  if (RESPONSES_API_V2_ENABLED) {
+    const res = await apiFetchResponses('/responses', {
+      method: 'POST',
+      headers: authHeaders(token),
+      body: JSON.stringify({ input: query, conversation_id: sessionId, stream: false, ...options }),
+    })
+    if (!res.ok) throw new Error(await readApiError(res, 'Responses sync failed'))
+    return responseToLegacyChat(await res.json())
+  }
   const payload = { session_id: sessionId, query, stream: false, ...options }
   const res = await apiFetch('/chat', {
     method: 'POST',
@@ -375,8 +412,12 @@ export async function streamSseResponse(
         const type = String(event.type || '')
         const data = event.data ?? {}
 
-        if (type === 'delta') {
+        if (type === 'delta' || type === 'answer.delta' || type === 'response.output_text.delta') {
           callbacks.onDelta?.(String(data.text ?? data.delta ?? ''))
+          continue
+        }
+        if (type === 'response.progress') {
+          callbacks.onThinking?.(data)
           continue
         }
         if (type === 'thinking') {
@@ -407,15 +448,19 @@ export async function streamSseResponse(
           callbacks.onForceMode?.(data?.mode ?? null)
           continue
         }
-        if (type === 'final_answer') {
+        if (type === 'final_answer' || type === 'answer.final' || type === 'response.completed') {
           const envelope = normalizeFinalAnswerEnvelope(data)
           await callbacks.onFinalAnswer?.(envelope)
           continue
         }
-        if (type === 'aborted') {
+        if (type === 'knowledge.ingest.status' || type === 'knowledge.operation.status' || type === 'route.selected' || type === 'turn.accepted') {
+          callbacks.onThinking?.(data)
+          continue
+        }
+        if (type === 'aborted' || type === 'response.cancelled') {
           throw new DOMException('Aborted', 'AbortError')
         }
-        if (type === 'error') {
+        if (type === 'error' || type === 'response.failed') {
           throw new Error(data?.message ? String(data.message) : 'Streaming error')
         }
       }
@@ -455,12 +500,19 @@ export async function apiChatStream(
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   const finalPayload = { session_id: sessionId, query, stream: true, ...payload, ...(graphControls ? { graph_controls: graphControls } : {}) }
   try {
-    const res = await apiFetch('/chat', {
+    const res = await (RESPONSES_API_V2_ENABLED
+      ? apiFetchResponses('/responses', {
+          method: 'POST',
+          headers: authHeaders(token),
+          body: JSON.stringify({ input: query, conversation_id: sessionId, stream: true, ...payload, ...(graphControls ? { graph_controls: graphControls } : {}) }),
+          signal,
+        })
+      : apiFetch('/chat', {
       method: 'POST',
       headers: authHeaders(token),
       body: JSON.stringify(finalPayload),
       signal,
-    })
+      }))
 
     if (res.status === 404 || res.headers.get('content-type')?.includes('application/json') && !res.headers.get('content-type')?.includes('text/event-stream')) {
       const sync = await apiChatSync(token, sessionId, query, { ...payload, stream: false, ...(graphControls ? { graph_controls: graphControls } : {}) })
@@ -1000,6 +1052,8 @@ export interface AttachmentUploadResponse {
   content_summary: string
   content_hash: string
   is_duplicate: boolean
+  scope?: 'session' | 'workspace'
+  ingest_status?: string
 }
 
 export interface AttachmentInfo {
@@ -1012,6 +1066,9 @@ export interface AttachmentInfo {
   status: string
   message_id: string | null
   created_at: string
+  scope?: 'session' | 'workspace'
+  ingest_status?: string
+  promoted_document_id?: string | null
 }
 
 export interface AttachmentListResponse {
@@ -1031,6 +1088,7 @@ export interface AttachmentItem {
   contentSummary?: string
   isDuplicate?: boolean
   error?: string
+  ingestStatus?: string
 }
 
 export async function apiUploadAttachment(
@@ -1110,4 +1168,61 @@ export async function apiDeleteAttachment(
   return res.json()
 }
 
+export async function apiPromoteAttachment(
+  token: string,
+  attachmentId: string,
+  publishPolicy: 'review' | 'auto' = 'review',
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${BASE}/chat/attachments/${attachmentId}/promote?publish_policy=${publishPolicy}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ message: 'Promote failed' }))
+    throw new Error(err.message || err.detail || 'Promote failed')
+  }
+  return res.json()
+}
 
+// ── Personalization API ──────────────────────────────────────────────────
+
+export interface CustomInstructions {
+  id?: string
+  about_user: string
+  response_style: string
+  enabled: boolean
+  version: number
+  tenant_id?: string
+  workspace_id?: string
+  updated_at?: string | null
+}
+
+export async function apiGetCustomInstructions(token: string): Promise<CustomInstructions> {
+  const res = await apiFetch('/personalization/custom-instructions', {
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error('Failed to load custom instructions')
+  return res.json()
+}
+
+export async function apiSetCustomInstructions(
+  token: string,
+  payload: Pick<CustomInstructions, 'about_user' | 'response_style' | 'enabled'>,
+): Promise<CustomInstructions> {
+  const res = await apiFetch('/personalization/custom-instructions', {
+    method: 'PUT',
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error('Failed to save custom instructions')
+  return res.json()
+}
+
+export async function apiDeleteCustomInstructions(token: string): Promise<{ deleted: boolean }> {
+  const res = await apiFetch('/personalization/custom-instructions', {
+    method: 'DELETE',
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error('Failed to delete custom instructions')
+  return res.json()
+}

@@ -13,6 +13,7 @@ import {
   apiCreateMemory,
   apiListDatabases,
   apiUploadAttachment,
+  apiPromoteAttachment,
   type ReasoningStep,
   type AttachmentItem,
   type AttachmentUploadResponse,
@@ -315,6 +316,16 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
     return serverIds
   }
 
+  async function promoteAttachment(att: AttachmentItem) {
+    if (!att.serverId || att.status !== 'done') return
+    try {
+      await apiPromoteAttachment(token, att.serverId, 'review')
+      setAttachments((prev) => prev.map((item) => item.id === att.id ? { ...item, ingestStatus: 'queued' } : item))
+    } catch (err: any) {
+      setAttachments((prev) => prev.map((item) => item.id === att.id ? { ...item, error: err?.message || 'Promote failed' } : item))
+    }
+  }
+
   async function send(overrideText?: string) {
     const rawQuery = (overrideText ?? text).trim()
     if (!rawQuery || streaming) return
@@ -454,6 +465,9 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
                 tool_permission_token: toolPermissionToken,
                 confirmation_granted: Boolean(toolPermissionToken),
                 attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
+                knowledge: {
+                  action: 'auto', scope: 'session', attachment_ids: attachmentIds, publish_policy: 'review',
+                },
               })
               applyFinalAnswerEnvelope(
                 store,
@@ -486,6 +500,9 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
           force_database: needDataSource,
           force_mode: effectiveMode,
           attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
+          knowledge: {
+            action: 'auto', scope: 'session', attachment_ids: attachmentIds, publish_policy: 'review',
+          },
         },
         graphControls
       )
@@ -711,6 +728,13 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
                   <FileText size={12} className="flex-shrink-0" />
                 )}
                 <span className="max-w-[140px] truncate">{att.name}</span>
+                {att.status === 'done' && att.serverId && (
+                  <button
+                    onClick={() => void promoteAttachment(att)}
+                    className="ml-1 rounded px-1 text-[10px] text-[var(--accent)] hover:bg-[var(--accent)]/10"
+                    title="加入工作区知识库"
+                  >入库</button>
+                )}
                 {att.isDuplicate && (
                   <span className="text-amber-500 flex-shrink-0" title="此文件内容与已上传的文件相同">
                     <AlertCircle size={10} />

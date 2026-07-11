@@ -329,10 +329,10 @@ npm run build
 
 API 启动时会执行 `ensure_runtime_schema()`，用于保证运行期核心表结构存在。迁移系统使用 Alembic，配置入口为 `alembic.ini` 和 `alembic/env.py`。
 
-Docker 环境执行迁移：
+Docker 环境执行迁移（推荐；宿主机 `.env` 的 `postgres` 主机名仅容器内可解析）：
 
 ```bash
-docker compose exec -T api alembic upgrade head
+bash scripts/migrate.sh
 ```
 
 验证迁移幂等：

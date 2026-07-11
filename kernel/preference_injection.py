@@ -92,11 +92,19 @@ async def apply_preference_injection_for_turn(
     layered.extend(_prefs_from_conversation_state(conversation_state))
     layered.extend(await _load_user_memory_preferences(user_id, session_id))
 
+    custom = str(md.get("custom_instruction_block") or "").strip()
+
     if not layered:
+        if custom:
+            md["user_preference_context_block"] = f"## 用户明确指令\n{custom[:8000]}"
         return md
 
     block = build_layered_context_block(layered)
-    md["user_preference_context_block"] = block
+    md["user_preference_context_block"] = (
+        f"## 用户明确指令\n{custom[:8000]}\n\n## 用户偏好\n{block}"
+        if custom
+        else block
+    )
     md["user_preferences"] = [lm.content for lm in layered[:24]]
     md["preference_layers"] = [
         {"layer": lm.layer.value, "content": lm.content, "tags": list(lm.tags)}

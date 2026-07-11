@@ -16,8 +16,7 @@ from kernel.identity.system_identity import finalize_assistant_content
 
 logger = get_logger(__name__)
 
-_STREAM_CHUNK = 16
-_STREAM_DELAY = 0.015
+_STREAM_DELAY = 0.0
 
 
 class RuntimeTurnDispatcher:
@@ -122,11 +121,8 @@ class RuntimeTurnDispatcher:
                 }
                 kr = multi_question_to_kernel_response(mq, request, 0)
                 text = kr.content or ""
-                for i in range(0, len(text), _STREAM_CHUNK):
-                    yield {"type": "delta", "data": {"text": text[i : i + _STREAM_CHUNK]}}
-                    import asyncio
-
-                    await asyncio.sleep(_STREAM_DELAY)
+                if text:
+                    yield {"type": "delta", "data": {"text": text}}
                 mq_meta = dict(kr.metadata or {})
                 mq_final: dict[str, Any] = {
                     "content": text,
@@ -143,6 +139,12 @@ class RuntimeTurnDispatcher:
                     "capabilities_used",
                     "prompt_tokens",
                     "completion_tokens",
+                    "citations",
+                    "evidence_refs",
+                    "knowledge_operations",
+                    "confidence",
+                    "uncertainty",
+                    "trace_id",
                 ):
                     if key in mq_meta:
                         mq_final[key] = mq_meta[key]
@@ -181,11 +183,8 @@ class RuntimeTurnDispatcher:
         content = finalize_assistant_content(content or "", getattr(request, "query", "") or "")
         for ev in pending:
             yield ev
-        for i in range(0, len(content), _STREAM_CHUNK):
-            yield {"type": "delta", "data": {"text": content[i : i + _STREAM_CHUNK]}}
-            import asyncio
-
-            await asyncio.sleep(_STREAM_DELAY)
+        if content:
+            yield {"type": "delta", "data": {"text": content}}
         stream_meta.setdefault("cognitive_runtime_v2", True)
         stream_meta.setdefault("runtime_name", runtime_name)
         final_data: dict[str, Any] = {
@@ -206,6 +205,12 @@ class RuntimeTurnDispatcher:
             "cognitive_runtime_p3",
             "world_projection",
             "data_intelligence",
+            "citations",
+            "evidence_refs",
+            "knowledge_operations",
+            "confidence",
+            "uncertainty",
+            "trace_id",
         ):
             if key in stream_meta:
                 final_data[key] = stream_meta[key]

@@ -161,7 +161,7 @@ async def stream_tool_fast_path(request: Any):
     """Yield SSE events for tool fast path."""
     import asyncio
 
-    from kernel.cognitive_kernel import _STREAM_CHUNK_SIZE, _STREAM_DELAY
+    from kernel.cognitive_kernel import _STREAM_DELAY
 
     resp = await run_tool_fast_path(request)
     cap, reg = get_manifest().resolve_capability_alias("tool")
@@ -176,9 +176,8 @@ async def stream_tool_fast_path(request: Any):
         },
     }
     text = resp.content or ""
-    for i in range(0, len(text), _STREAM_CHUNK_SIZE):
-        yield {"type": "delta", "data": {"text": text[i : i + _STREAM_CHUNK_SIZE]}}
-        await asyncio.sleep(_STREAM_DELAY)
+    if text:
+        yield {"type": "delta", "data": {"text": text}}
     yield {
         "type": "final_answer",
         "data": {

@@ -116,8 +116,8 @@ bash scripts/verify_migration_idempotent.sh
 ### 数据库迁移与维护
 
 ```bash
-# Docker 环境执行迁移
-docker compose exec -T api alembic upgrade head
+# Docker 环境执行迁移（推荐；不要在宿主机直接使用容器内部 postgres 主机名）
+bash scripts/migrate.sh
 
 docker compose exec -T api alembic history --verbose
 docker compose exec -T api alembic revision --autogenerate -m "description"

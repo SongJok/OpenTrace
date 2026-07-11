@@ -4,6 +4,14 @@
 
 **RAG（Retrieval-Augmented Generation）检索增强模块**是 OpenTrace 系统的核心检索组件，负责从文档知识库、LLMWiki 和用户记忆中检索相关证据，为问答提供上下文支持。其核心价值在于将大语言模型的生成能力与外部知识库相结合，显著提升回答的准确性和时效性，有效缓解幻觉问题。
 
+当前主链采用知识编排优先的检索顺序：已发布的 `KnowledgePage`、`KnowledgeClaim` 和
+`KnowledgeRelation` 先作为可治理证据，原始 `DocumentChunk`、LLMWiki 和记忆作为补充 lane。
+知识结果必须保留 source version、chunk/span 和访问范围，答案不能只引用无来源的摘要。
+
+元数据层由 `KnowledgeRule` 版本化管理编译 schema/instructions，只有 `approved` 规则会被编译器采用；
+Lint 会记录 `KnowledgeObservation`，并通过 `/api/v1/knowledge/evolution/proposal` 生成需人工批准的演化建议。
+跨 active source 的重复声明会形成 `KnowledgeMergeCase`，通过合并审核接口闭环，不会静默覆盖来源。
+
 ## 2. 核心职责
 
 - **文档分块检索**：从向量数据库中检索与查询相关的文档片段
@@ -12,6 +20,8 @@
 - **查询优化**：对用户查询进行改写和扩展，提升检索效果
 - **结果重排序**：使用神经重排序模型优化检索结果顺序
 - **证据质量评估**：评估检索结果的可信度和相关性
+- **知识编排查询**：按摘要→页面→声明→关系→原始证据渐进式披露
+- **知识健康治理**：对孤立页、死链接、过期版本和无证据声明执行 Lint
 
 ## 3. 关键策略与算法
 

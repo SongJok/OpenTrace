@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from knowledge.query import build_knowledge_query_plan
+
 RAG_PLAN_VERSION = "rag_query_plan_v1"
 RAG_EVIDENCE_VERSION = "rag_evidence_object_v1"
 
@@ -38,6 +40,7 @@ class RagQueryPlan:
     min_score: float
     answerability_gate: dict[str, Any] = field(default_factory=dict)
     budget: dict[str, Any] = field(default_factory=dict)
+    knowledge_plan: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -58,17 +61,18 @@ def _dedupe_keep_order(values: list[str]) -> list[str]:
 
 def _lane_weights(query_type: str) -> dict[str, float]:
     weights = {
+        "knowledge": 1.12,
         "document": 1.0,
         "llmwiki": 0.9,
         "memory": 0.75,
         "episodic": 0.65,
     }
     if query_type == "definition":
-        weights.update({"llmwiki": 1.15, "document": 0.95})
+        weights.update({"knowledge": 1.25, "llmwiki": 1.15, "document": 0.95})
     elif query_type == "fact":
-        weights.update({"document": 1.15, "llmwiki": 0.95})
+        weights.update({"knowledge": 1.2, "document": 1.15, "llmwiki": 0.95})
     elif query_type == "procedure":
-        weights.update({"document": 1.1, "llmwiki": 0.85})
+        weights.update({"knowledge": 1.2, "document": 1.1, "llmwiki": 0.85})
     elif query_type == "comparison":
         weights.update({"document": 1.0, "llmwiki": 1.0, "memory": 0.65})
     elif query_type == "memory":
@@ -100,6 +104,13 @@ def build_rag_query_plan(
     source_set = {str(src) for src in sources}
 
     lanes = [
+        RagRetrievalLane(
+            name="knowledge",
+            enabled="knowledge" in source_set,
+            weight=weights["knowledge"],
+            top_k=max(top_k, 6),
+            reason="published knowledge pages and traceable claims",
+        ),
         RagRetrievalLane(
             name="document",
             enabled="documents" in source_set,
@@ -171,6 +182,7 @@ def build_rag_query_plan(
             "max_candidates": max(top_k * 3, 20),
             "rerank_top_k": min(top_k * 3, 20),
         },
+        knowledge_plan=build_knowledge_query_plan(query_type, top_k).to_dict(),
     )
 
 
@@ -184,6 +196,8 @@ def lane_weight(plan: RagQueryPlan, source_type: str) -> float:
 
 def lane_from_source_type(source_type: str) -> str:
     st = (source_type or "document").lower()
+    if st in {"knowledge", "knowledge_page", "knowledge_claim", "knowledge_relation"}:
+        return "knowledge"
     if st == "llmwiki":
         return "llmwiki"
     if st in {"memory", "semantic_memory"}:
@@ -220,8 +234,16 @@ def normalize_rag_evidence(
         "document_id": item.get("document_id"),
         "chunk_id": item.get("chunk_id") or item.get("id"),
         "chunk_index": item.get("chunk_index"),
+        "knowledge_page_id": item.get("knowledge_page_id"),
+        "claim_id": item.get("claim_id"),
+        "relation_id": item.get("relation_id"),
+        "target_page_id": item.get("target_page_id"),
+        "source_id": item.get("source_id"),
+        "source_version_id": item.get("source_version_id"),
+        "provenance": dict(item.get("provenance") or {}),
         "matched_query": item.get("matched_query") or plan.rewritten_query,
         "evidence_tier": item.get("evidence_tier", "contextual"),
+        "disclosure_stage": item.get("disclosure_stage", "source_evidence"),
         "citation": citation or {},
         "access_scope": dict(plan.filters),
         "answer_anchor": {
@@ -234,6 +256,8 @@ def normalize_rag_evidence(
             "rerank_score": item.get("_rerank_score"),
             "rrf_score": item.get("rrf_score"),
             "memory_type": item.get("memory_type"),
+            "authority": item.get("authority"),
+            "knowledge_status": item.get("knowledge_status"),
         },
     }
 

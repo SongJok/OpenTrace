@@ -25,9 +25,12 @@ from gateway.api_gateway.routers import (
     documents,
     feedback,
     health,
+    knowledge,
     memories,
     metrics,
+    personalization,
     prometheus,
+    responses,
     rules,
     sandbox,
     skills,
@@ -131,9 +134,12 @@ app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(prometheus.router, prefix="/api/v1", tags=["observability"])
 app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
+app.include_router(responses.router, prefix="/api/v2", tags=["responses"])
+app.include_router(personalization.router, prefix="/api/v1", tags=["personalization"])
 app.include_router(conversations.router, prefix="/api/v1", tags=["conversations"])
 app.include_router(cognitive.router, prefix="/api/v1", tags=["cognitive"])
 app.include_router(documents.router, prefix="/api/v1", tags=["documents"])
+app.include_router(knowledge.router, prefix="/api/v1", tags=["knowledge"])
 app.include_router(memories.router, prefix="/api/v1", tags=["memories"])
 app.include_router(tasks.router, prefix="/api/v1", tags=["tasks"])
 app.include_router(audit.router, prefix="/api/v1", tags=["audit"])

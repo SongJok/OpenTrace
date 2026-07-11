@@ -25,12 +25,14 @@ from pydantic import BaseModel
 from sqlalchemy import delete, select, text
 from plugins.document_retrieval import fetch_document_candidates, score_document_candidates
 from plugins.document_plugin import generate_llmwiki_entries
+from knowledge.jobs import enqueue_document_compile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.resource_scope import normalized_tenant_scope, scoped_documents_statement
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.audit.logger import write_audit_log
+from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
 from infra.observability.logger import get_logger
 from infra.storage.database import db_session_dependency as get_db
@@ -616,6 +618,10 @@ async def upload_document(
     )
     if doc.status == "ready":
         background_tasks.add_task(generate_llmwiki_entries, doc.id)
+        if getattr(settings, "knowledge_orchestration_enabled", True) and getattr(
+            settings, "knowledge_auto_compile_enabled", True
+        ):
+            background_tasks.add_task(enqueue_document_compile, doc.id)
     return _doc_out(doc)
 
 
@@ -663,6 +669,10 @@ async def delete_document(
     if not row:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Document not found")
 
+    # Remove governed derivatives first; raw evidence and source assets never
+    # outlive their underlying document.
+    if await _has_table(db, "knowledge_sources"):
+        await db.execute(text("DELETE FROM knowledge_sources WHERE document_id = :doc_id"), {"doc_id": doc_id})
     # Use raw SQL deletes to avoid ORM cascade / lazy-load behavior entirely.
     await db.execute(text("DELETE FROM document_chunks WHERE document_id = :doc_id"), {"doc_id": doc_id})
     await db.execute(
@@ -729,6 +739,10 @@ async def update_document(
         await _ingest(db, doc, text)
         if doc.status == "ready":
             background_tasks.add_task(generate_llmwiki_entries, doc.id)
+            if getattr(settings, "knowledge_orchestration_enabled", True) and getattr(
+                settings, "knowledge_auto_compile_enabled", True
+            ):
+                background_tasks.add_task(enqueue_document_compile, doc.id)
     else:
         await db.commit()
 

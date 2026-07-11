@@ -40,6 +40,33 @@ def governance_kwargs_from_ctx(ctx: Any, request: Any) -> dict[str, Any]:
     }
 
 
+def _evidence_output_metadata(evidence: list[Any]) -> dict[str, Any]:
+    """Promote Agent citations into the runtime's stable final envelope."""
+    citations: list[dict[str, Any]] = []
+    evidence_refs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in evidence:
+        item_citations = getattr(item, "citations", None) or []
+        for citation in item_citations:
+            if not isinstance(citation, dict):
+                continue
+            key = str(citation.get("source_version_id") or citation.get("chunk_id") or citation.get("id") or len(citations))
+            if key not in seen:
+                seen.add(key)
+                citations.append(citation)
+        metadata = getattr(item, "metadata", None) or {}
+        provenance = metadata.get("provenance") if isinstance(metadata, dict) else {}
+        evidence_refs.append({
+            "evidence_id": getattr(item, "evidence_id", ""),
+            "source_type": getattr(getattr(item, "provenance", None), "source", ""),
+            "content": (getattr(item, "content", "") or "")[:240],
+            "citations": item_citations[:3],
+            "provenance": provenance or {},
+            "state": getattr(item, "state", ""),
+        })
+    return {"citations": citations, "evidence_refs": evidence_refs}
+
+
 def build_runtime_artifact(result: Any, request: Any, ctx: Any | None = None) -> RuntimeArtifact:
     artifact_meta_sink: dict[str, Any] = {}
     trace = ExecutionTrace(
@@ -323,6 +350,8 @@ def executive_result_to_kernel_response(
             "evidence": gov_bundle.evidence,
             "risk": gov_bundle.risk,
         },
+        **_evidence_output_metadata(list(getattr(result, "evidence_objects", None) or [])),
+        "trace_id": str((request.metadata or {}).get("request_id", "")),
     }
     exec_gov = (request.metadata or {}).get("governance")
     if exec_gov:
@@ -481,6 +510,8 @@ def build_stream_final_metadata(
             "evidence": gov_bundle.evidence,
             "risk": gov_bundle.risk,
         },
+        **_evidence_output_metadata(list(getattr(result, "evidence_objects", None) or [])),
+        "trace_id": str((request.metadata or {}).get("request_id", "")),
     }
     exec_gov = (request.metadata or {}).get("governance")
     if exec_gov:

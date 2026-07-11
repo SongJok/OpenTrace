@@ -14,10 +14,7 @@ if ! docker compose ps api >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "▸ first upgrade head"
-docker compose exec -T api alembic upgrade head >/dev/null
-
-echo "▸ second upgrade head"
-docker compose exec -T api alembic upgrade head >/dev/null
+echo "▸ first and second upgrade head"
+bash scripts/migrate.sh --verify >/dev/null
 
 echo "✓ migration idempotent check passed"

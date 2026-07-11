@@ -36,6 +36,7 @@ class RuntimeContext:
     allowed_capabilities: list[str] = field(default_factory=list)
     disallowed_capabilities: list[str] = field(default_factory=list)
     intent_confidence: float = 0.0
+    turn_decision: dict[str, Any] = field(default_factory=dict)
     cognitive_budget: dict[str, Any] = field(default_factory=dict)
     relevance_threshold: float = 0.35
 
@@ -54,6 +55,7 @@ class RuntimeContext:
     user_preferences: list[str] = field(default_factory=list)
     user_style_hints: dict[str, str | None] | None = None
     preference_context_block: str = ""
+    custom_instruction_block: str = ""
 
     # ── 数据源绑定 ───────────────────────────────────────────────────
     data_source_context: dict[str, Any] = field(default_factory=dict)
@@ -65,6 +67,7 @@ class RuntimeContext:
     # ── 快捷 / 强制模式 ──────────────────────────────────────────────
     force_mode: str | None = None  # 10 个 VALID_FORCE_MODES 之一，或 None
     web_enabled: bool = False
+    memory_mode: str = "enabled"
     graph_controls: dict[str, Any] = field(default_factory=dict)
 
     # ── 对话分支 ─────────────────────────────────────────────────────
@@ -111,6 +114,7 @@ class RuntimeContext:
             "allowed_capabilities": self.allowed_capabilities,
             "disallowed_capabilities": self.disallowed_capabilities,
             "intent_confidence": self.intent_confidence,
+            "turn_decision": self.turn_decision,
             "cognitive_budget": self.cognitive_budget,
             "relevance_threshold": self.relevance_threshold,
             "graph_controls": self.graph_controls,
@@ -118,6 +122,7 @@ class RuntimeContext:
             "disabled_skills": self.disabled_skills,
             "user_preferences": self.user_preferences,
             "user_preference_context_block": self.preference_context_block,
+            "custom_instruction_block": self.custom_instruction_block,
             "data_source_id": self.data_source_context.get("data_source_id"),
             "data_source_name": self.data_source_context.get("data_source_name"),
             "data_source_database": self.data_source_context.get("database"),
@@ -133,6 +138,7 @@ class RuntimeContext:
             "branch_checkpoint": self.branch_checkpoint,
             "attachment_contexts": self.attachment_contexts,
             "web_enabled": self.web_enabled,
+            "memory_mode": self.memory_mode,
             "memory_context": self.memory_context,
             "history": list(self.conversation_history or []),
             **(self.metadata or {}),

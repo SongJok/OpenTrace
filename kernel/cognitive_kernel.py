@@ -62,8 +62,9 @@ from memory.working_memory.working_memory import (
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
 
-_STREAM_CHUNK_SIZE = 16
-_STREAM_DELAY = 0.015
+# Keep compatibility output non-blocking.  Native adapter chunks use the same
+# event contract; buffered runtime answers are emitted atomically below.
+_STREAM_DELAY = 0.0
 
 
 async def _emit_streaming_answer(
@@ -81,9 +82,11 @@ async def _emit_streaming_answer(
         yield reasoning_step
 
     text = content or ""
-    for i in range(0, len(text), _STREAM_CHUNK_SIZE):
-        yield {"type": "delta", "data": {"text": text[i : i + _STREAM_CHUNK_SIZE]}}
-        await asyncio.sleep(_STREAM_DELAY)
+    if text:
+        # Runtime-generated answers are already buffered by the executive.
+        # Emit one atomic delta rather than pretending character slices are
+        # model-token streaming; native adapter chunks use the same event type.
+        yield {"type": "delta", "data": {"text": text}}
 
     final_data: dict[str, Any] = {"content": text}
     if execution_graph is not None:
@@ -113,6 +116,11 @@ def _context_hash(history: list[dict[str, Any]] | None) -> str:
     import hashlib
 
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
+
+
+def _personalization_memory_enabled(request: Any) -> bool:
+    mode = str((getattr(request, "metadata", None) or {}).get("memory_mode") or "enabled")
+    return mode.strip().lower() == "enabled"
 
 
 def _record_identity_turn_seq(session_id: str) -> None:
@@ -278,6 +286,7 @@ class CognitiveKernel:
 
             is_multi = _is_mq(request.query) or self._is_multi_question(request.query)
             force_mode_from_meta: str | None = request.metadata.get("force_mode")
+            personalization_memory_enabled = _personalization_memory_enabled(request)
             from kernel.turn_bootstrap import bootstrap_turn_intent
 
             boot = await bootstrap_turn_intent(request)
@@ -323,11 +332,11 @@ class CognitiveKernel:
                     return tool_resp
 
             # Recover WorkingMemory from Redis if process was restarted
-            if sid:
+            if sid and personalization_memory_enabled:
                 await load_or_create_session_memory(sid)
 
             # ── Working memory identity cache ──────────────────────
-            if sid and is_identity_user_query(request.query) and not is_multi:
+            if sid and personalization_memory_enabled and is_identity_user_query(request.query) and not is_multi:
                 cached = get_cached_identity_answer(sid)
                 if cached:
                     identity_llm = bool(getattr(settings, "kernel_identity_llm_enabled", True))
@@ -417,7 +426,7 @@ class CognitiveKernel:
                 if has_attachments:
                     span.set_attribute("routing.has_attachments", True)
                 span.set_attribute("routing.skip_v5", True)
-            elif settings.kernel_v5_routing_enabled:
+            elif personalization_memory_enabled and settings.kernel_v5_routing_enabled:
                 from kernel.routing.v5_facade import get_v5_routing_facade
 
                 fp = await get_v5_routing_facade(self).try_fast_path(
@@ -491,7 +500,7 @@ class CognitiveKernel:
                             result_refs=gw_resp.result_refs or [],
                             metadata=attach_turn_envelope(gw_resp.metadata or {}, envelope),
                         )
-                    if fp.route in ("identity", "faq") and sid:
+                    if personalization_memory_enabled and fp.route in ("identity", "faq") and sid:
                         cache_identity_answer(sid, request.query, fp.content)
                         _record_identity_turn_seq(sid)
                     total_ms = int((time.monotonic() - t0) * 1000)
@@ -546,7 +555,7 @@ class CognitiveKernel:
             if assessment.level == CapabilityLevel.UNAVAILABLE:
                 total_ms = int((time.monotonic() - t0) * 1000)
                 if is_identity_user_query(request.query):
-                    if sid:
+                    if personalization_memory_enabled and sid:
                         cache_identity_answer(sid, request.query, CANONICAL_IDENTITY_RESPONSE)
                         _record_identity_turn_seq(sid)
                     envelope = build_turn_envelope(
@@ -673,12 +682,12 @@ class CognitiveKernel:
             )()
             span.set_attribute("routing.path", "cognitive_runtime_v2")
 
-            if sid and is_identity_user_query(request.query) and resp.content:
+            if personalization_memory_enabled and sid and is_identity_user_query(request.query) and resp.content:
                 cache_identity_answer(sid, request.query, resp.content)
                 _record_identity_turn_seq(sid)
 
             # Store in semantic cache for future hits
-            if settings.kernel_semantic_cache_enabled and resp.content:
+            if settings.kernel_semantic_cache_enabled and personalization_memory_enabled and resp.content:
                 await self._get_semantic_cache().store(
                     request.query,
                     resp.content,
@@ -686,7 +695,7 @@ class CognitiveKernel:
                 )
 
             # ── Save turns to WorkingMemory + EpisodicMemory ────────────
-            if settings.kernel_memory_context_enabled and sid and resp.content:
+            if settings.kernel_memory_context_enabled and personalization_memory_enabled and sid and resp.content:
                 try:
                     wm = get_or_create_session_memory(sid)
                     wm.add_turn("user", request.query)
@@ -746,7 +755,7 @@ class CognitiveKernel:
             # ── End turn saving ──────────────────────────────────────────
 
             # ── Feature ③: Active Memory Detection ─────────────────────
-            if sid and request.user_id:
+            if personalization_memory_enabled and sid and request.user_id:
                 memory_intent = self._detect_active_memory_intent(request.query)
                 if memory_intent:
                     asyncio.create_task(
@@ -831,6 +840,7 @@ class CognitiveKernel:
         sid = request.session_id
         is_multi = self._is_multi_question(request.query)
         force_mode_from_meta: str | None = request.metadata.get("force_mode")
+        personalization_memory_enabled = _personalization_memory_enabled(request)
         from kernel.turn_bootstrap import bootstrap_turn_intent
 
         boot = await bootstrap_turn_intent(request)
@@ -878,10 +888,10 @@ class CognitiveKernel:
             return
 
         # Recover WorkingMemory from Redis if process was restarted
-        if sid:
+        if sid and personalization_memory_enabled:
             await load_or_create_session_memory(sid)
 
-        if sid and is_identity_user_query(request.query) and not is_multi:
+        if sid and personalization_memory_enabled and is_identity_user_query(request.query) and not is_multi:
             cached = get_cached_identity_answer(sid)
             if cached:
                 identity_llm = bool(getattr(settings, "kernel_identity_llm_enabled", True))
@@ -941,7 +951,7 @@ class CognitiveKernel:
             pass  # Skip V5 — explicit force_mode from slash command
         elif has_stream_attachments:
             pass  # Skip V5 — attachment contexts require full orchestrator
-        elif settings.kernel_v5_routing_enabled:
+        elif personalization_memory_enabled and settings.kernel_v5_routing_enabled:
             from kernel.routing.v5_facade import (
                 get_v5_routing_facade,
                 stream_v5_fast_path_from_result,
@@ -1057,11 +1067,11 @@ class CognitiveKernel:
                 yield event
 
             # Store in semantic cache after streaming completes
-            if settings.kernel_semantic_cache_enabled and final_content:
+            if settings.kernel_semantic_cache_enabled and personalization_memory_enabled and final_content:
                 await self._get_semantic_cache().store(request.query, final_content)
 
             # ── Save turns to WorkingMemory + EpisodicMemory ────────────
-            if settings.kernel_memory_context_enabled and sid and final_content:
+            if settings.kernel_memory_context_enabled and personalization_memory_enabled and sid and final_content:
                 try:
                     wm = get_or_create_session_memory(sid)
                     wm.add_turn("user", request.query)
@@ -1107,7 +1117,7 @@ class CognitiveKernel:
             # ── End turn saving ──────────────────────────────────────────
 
             # ── Feature ③: Active Memory Detection (stream path) ──────
-            if sid and request.user_id:
+            if personalization_memory_enabled and sid and request.user_id:
                 memory_intent = self._detect_active_memory_intent(request.query)
                 if memory_intent:
                     asyncio.create_task(

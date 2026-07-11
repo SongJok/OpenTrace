@@ -209,7 +209,7 @@ def _fallback_single_node(
         params["data_source_id"] = data_source_id
     if capability == "rag.retrieve":
         params.setdefault("top_k", 8)
-        params.setdefault("sources", ["documents", "semantic_memory"])
+        params.setdefault("sources", ["knowledge", "documents", "semantic_memory"])
 
     nid = f"{sq_id}:fallback"
     return [

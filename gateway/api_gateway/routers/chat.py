@@ -59,6 +59,7 @@ from infra.storage.models import (
     ToolStat,
     TraceLog,
     User,
+    UserCustomInstruction,
     UserMemory,
     UserMemorySettings,
 )
@@ -79,10 +80,28 @@ def _public_stream_error(exc: Exception) -> str:
     return "请求处理失败，请稍后重试。"
 
 
+def _sanitize_assistant_output(text: str) -> str:
+    """Apply the output safety layer before persistence or SSE delivery."""
+    from safety.guardrails.guardrails import guardrails
+
+    result = guardrails.check_output(text or "")
+    return result.sanitized if result.sanitized is not None else (text or "")
+
+
+class KnowledgeControl(BaseModel):
+    action: str = Field(default="auto", pattern="^(auto|query|ingest|link|lint|merge|evolve|trace)$")
+    scope: str = Field(default="session", pattern="^(session|workspace)$")
+    attachment_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+    publish_policy: str = Field(default="review", pattern="^(review|auto)$")
+    resolution: dict[str, Any] = Field(default_factory=dict)
+
+
 class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=8192)
     session_id: str | None = None
     stream: bool = False
+    memory_mode: str = Field(default="enabled", pattern="^(enabled|disabled|temporary)$")
     web_enabled: bool = False
     request_id: str | None = None
     graph_controls: dict[str, Any] = Field(default_factory=dict)
@@ -105,6 +124,7 @@ class ChatRequest(BaseModel):
     reference_id: str | None = None
     reference_type: str | None = None
     state_version: int | None = None
+    knowledge: KnowledgeControl = Field(default_factory=KnowledgeControl)
 
 
 class AttachmentUploadResponse(BaseModel):
@@ -112,6 +132,8 @@ class AttachmentUploadResponse(BaseModel):
     content_summary: str
     content_hash: str = ""
     is_duplicate: bool = False
+    scope: str = "session"
+    ingest_status: str = "temporary"
 
 
 class AttachmentInfo(BaseModel):
@@ -124,6 +146,9 @@ class AttachmentInfo(BaseModel):
     status: str
     message_id: str | None = None
     created_at: str
+    scope: str = "session"
+    ingest_status: str = "temporary"
+    promoted_document_id: str | None = None
 
 
 class AttachmentListResponse(BaseModel):
@@ -142,10 +167,15 @@ class ChatResponse(BaseModel):
     context_latency_ms: int = 0
     total_latency_ms: int = 0
     citations: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
     annotations: list[dict[str, Any]] = Field(default_factory=list)
     execution_graph: dict[str, Any] | None = None
     result_refs: list[dict[str, Any]] = Field(default_factory=list)
     state_version: int = 1
+    knowledge_operations: list[dict[str, Any]] = Field(default_factory=list)
+    confidence: float | None = None
+    uncertainty: list[str] = Field(default_factory=list)
+    trace_id: str | None = None
 
 
 class ResumeRequest(BaseModel):
@@ -438,6 +468,42 @@ async def _load_user_memory_preferences(
     # Build structured context block from all layers
     context_block = build_layered_context_block(layered)
     return contents, tags, context_block
+
+
+async def _load_custom_instruction_block(
+    db: AsyncSession,
+    user_id: str,
+    tenant_metadata: dict[str, Any] | None = None,
+) -> str:
+    """Load explicit user instructions for the current tenant/workspace scope.
+
+    Custom instructions are intentionally independent from learned memory: they
+    remain active for temporary chats, while memory reads/writes can be disabled.
+    """
+    from gateway.api_gateway.resource_scope import normalized_tenant_scope
+
+    tenant_id, workspace_id = normalized_tenant_scope(tenant_metadata or {})
+    row = (
+        await db.execute(
+            select(UserCustomInstruction).where(
+                UserCustomInstruction.user_id == user_id,
+                UserCustomInstruction.tenant_id == tenant_id,
+                UserCustomInstruction.workspace_id == workspace_id,
+                UserCustomInstruction.enabled.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return ""
+
+    parts: list[str] = []
+    about_user = (row.about_user or "").strip()
+    response_style = (row.response_style or "").strip()
+    if about_user:
+        parts.append(f"用户明确提供的背景信息：\n{about_user[:4000]}")
+    if response_style:
+        parts.append(f"用户明确要求的回答风格：\n{response_style[:4000]}")
+    return "\n\n".join(parts)
 
 
 def _database_intent(query: str) -> bool:
@@ -983,6 +1049,8 @@ async def upload_attachment(
         content_summary=summary,
         content_hash=content_hash,
         is_duplicate=duplicate_of is not None,
+        scope=getattr(attachment, "scope", "session"),
+        ingest_status=getattr(attachment, "ingest_status", "temporary"),
     )
 
 
@@ -1055,11 +1123,50 @@ async def list_attachments(
                 status=att.status,
                 message_id=att.message_id,
                 created_at=att.created_at.isoformat() if att.created_at else "",
+                scope=getattr(att, "scope", "session"),
+                ingest_status=getattr(att, "ingest_status", "temporary"),
+                promoted_document_id=getattr(att, "promoted_document_id", None),
             )
             for att in rows
         ],
         total=len(rows),
     )
+
+
+@router.post("/chat/attachments/{attachment_id}/promote", response_model=dict)
+async def promote_chat_attachment(
+    http_request: Request,
+    attachment_id: str,
+    publish_policy: str = "review",
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Promote a session attachment into the governed workspace knowledge flow."""
+    from gateway.api_gateway.tenant_middleware import build_tenant_metadata
+    from gateway.api_gateway.resource_scope import normalized_tenant_scope
+    from knowledge.chat_actions import promote_attachment_to_document
+
+    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
+    if publish_policy not in {"review", "auto"}:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Invalid publish policy")
+    try:
+        result = await promote_attachment_to_document(
+            db,
+            attachment_id=attachment_id,
+            user=current_user,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            publish_policy=publish_policy,
+        )
+        await db.commit()
+        from knowledge.jobs import enqueue_document_compile
+
+        if result.get("document_id") and result.get("status") == "queued":
+            result.update(await enqueue_document_compile(result["document_id"]))
+        return result
+    except ValueError as exc:
+        await db.rollback()
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
 
 
 @router.delete("/chat/attachments/{attachment_id}", response_model=dict)
@@ -1110,7 +1217,13 @@ async def chat(
     except AppException:
         raise
     except Exception as exc:
-        logger.warning("Chat API operation failed", error=str(exc))
+        # A safety subsystem outage must not silently turn into an unrestricted
+        # model call.  Fail closed and expose a stable public error.
+        logger.error("Chat input safety check unavailable", error=str(exc))
+        raise AppException(
+            ErrorCodes.UPSTREAM_UNAVAILABLE.code,
+            message="安全检查暂时不可用，请稍后重试。",
+        ) from exc
 
     try:
         from gateway.api_gateway.tenant_middleware import build_tenant_metadata
@@ -1164,8 +1277,14 @@ async def chat(
         trace_ctx = trace_context_for_request(
             request_id, session_id=session_id, user_id=current_user.id
         )
-        user_preferences, user_preference_tags, pref_context_block = await _load_user_memory_preferences(
-            db, current_user.id, session_id=session_id
+        if req.memory_mode == "enabled":
+            user_preferences, _user_preference_tags, pref_context_block = await _load_user_memory_preferences(
+                db, current_user.id, session_id=session_id
+            )
+        else:
+            user_preferences, _user_preference_tags, pref_context_block = [], [], ""
+        custom_instruction_block = await _load_custom_instruction_block(
+            db, current_user.id, tenant_metadata=tenant_md
         )
 
         risk = assess_query_risk(req.query)
@@ -1237,7 +1356,7 @@ async def chat(
                 force_database=True,
                 tenant_metadata=tenant_md,
             )
-        else:
+        elif data_source_id:
             data_source_context = await _load_data_source_context(
                 db,
                 current_user,
@@ -1246,43 +1365,6 @@ async def chat(
                 tenant_metadata=tenant_md,
             )
 
-        if not data_source_context.get("data_source_id") and not force_database:
-            q_lower = req.query.strip().lower()
-            internal_intent = any(
-                k in q_lower
-                for k in [
-                    "文档",
-                    "手册",
-                    "知识库",
-                    "项目内",
-                    "系统内",
-                    "本项目",
-                    "内部",
-                    "代码",
-                    "配置",
-                    "规则",
-                    "说明",
-                    "根据文档",
-                    "从文档",
-                    "总结",
-                    "归纳",
-                    "读取",
-                    "附件",
-                    ".pdf",
-                    ".doc",
-                    ".docx",
-                    ".txt",
-                    ".md",
-                ]
-            )
-            if internal_intent:
-                data_source_context = await _load_data_source_context(
-                    db,
-                    current_user,
-                    None,
-                    req.query,
-                    tenant_metadata=tenant_md,
-                )
         # Load previous turn context for multi-turn enhancement features
         prev_plan, prev_results = await _load_previous_turn_context(db, session_id)
 
@@ -1384,6 +1466,7 @@ async def chat(
             conversation_state=conversation_state,
             user_preferences=user_preferences,
             preference_context_block=pref_context_block,
+            custom_instruction_block=custom_instruction_block,
             data_source_context=data_source_context,
             attachment_contexts=attachment_contexts,
             force_mode=req.force_mode,
@@ -1404,6 +1487,7 @@ async def chat(
                 "requires_confirmation": risk.requires_confirmation,
             },
             tool_permission_token=req.tool_permission_token,
+            memory_mode=req.memory_mode,
             stream=req.stream,
             trace_ctx=trace_ctx,
         )
@@ -1425,6 +1509,7 @@ async def chat(
         kernel_metadata.setdefault("tenant_id", str(tenant_md.get("tenant_id") or "default"))
         kernel_metadata.setdefault("workspace_id", str(tenant_md.get("workspace_id") or "default"))
         kernel_metadata["history"] = list(conversation_history or [])
+        kernel_metadata["knowledge_control"] = req.knowledge.model_dump()
         kernel_request = KernelRequest(
             query=req.query,
             session_id=session_id,
@@ -1496,6 +1581,72 @@ async def chat(
             source="chat_router",
         )
     )
+
+    # Explicit conversational knowledge primitives are handled before data or
+    # general execution.  Ordinary knowledge questions keep flowing through
+    # the single runtime router and RAG lane.
+    from gateway.api_gateway.resource_scope import normalized_tenant_scope
+    from knowledge.chat_actions import infer_knowledge_action, perform_knowledge_action
+
+    knowledge_control = req.knowledge or KnowledgeControl()
+    knowledge_action = knowledge_control.action
+    if knowledge_action == "auto":
+        knowledge_action = infer_knowledge_action(dispatch_query)
+    if knowledge_action != "query":
+        try:
+            action_result = await perform_knowledge_action(
+                db,
+                action=knowledge_action,
+                user=current_user,
+                tenant_id=normalized_tenant_scope(tenant_md)[0],
+                workspace_id=normalized_tenant_scope(tenant_md)[1],
+                attachment_ids=knowledge_control.attachment_ids or effective_attachment_ids,
+                source_ids=knowledge_control.source_ids,
+                publish_policy=knowledge_control.publish_policy,
+                resolution=knowledge_control.resolution,
+            )
+        except ValueError as exc:
+            raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
+        action_data = action_result.to_dict()
+        action_text = action_result.message
+        action_metadata = {
+            "knowledge_action": action_data,
+            "route": "knowledge_action",
+            "trace_id": trace_id,
+            "uncertainty": [],
+        }
+        if not req.stream:
+            return ChatResponse(
+                session_id=session_id,
+                content=action_text,
+                decision_type=f"knowledge_{knowledge_action}",
+                validation_score=1.0,
+                passed_validation=True,
+                intent_category=f"knowledge_{knowledge_action}",
+                total_latency_ms=int((time.monotonic() - t0) * 1000),
+                execution_graph={"route": "knowledge_action", "action": knowledge_action},
+                knowledge_operations=action_result.operations,
+                confidence=1.0 if action_result.status in {"completed", "queued", "published"} else 0.5,
+                trace_id=trace_id,
+            )
+
+        async def _sse_knowledge_action() -> AsyncIterator[str]:
+            events = [
+                {"type": "turn.accepted", "data": {"trace_id": trace_id}},
+                {"type": "route.selected", "data": {"route": "knowledge_action", "action": knowledge_action}},
+                {"type": "knowledge.ingest.status" if knowledge_action == "ingest" else "knowledge.operation.status", "data": action_data},
+                {"type": "answer.delta", "data": {"text": action_text}},
+                {"type": "answer.final", "data": {"content": action_text, **action_metadata, "knowledge_operations": action_result.operations}},
+                {"type": "turn.completed", "data": {"trace_id": trace_id, "route": "knowledge_action"}},
+            ]
+            for event in events:
+                yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+
+        return StreamingResponse(
+            _sse_knowledge_action(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     from gateway.api_gateway.routers.data import DataQueryRequest, data_query
 
@@ -1699,7 +1850,8 @@ async def chat(
                                 )
                             )
                         elif event_type == "final_answer" and isinstance(data, dict):
-                            final_content = str(data.get("content", ""))
+                            final_content = _sanitize_assistant_output(str(data.get("content", "")))
+                            data["content"] = final_content
                             graph = data.get("execution_graph")
                             if isinstance(graph, dict):
                                 final_execution_graph = graph
@@ -1879,7 +2031,7 @@ async def chat(
                     attachment_ids=req.attachment_ids,
                 )
             )
-            if await _memory_learning_enabled(db, current_user.id):
+            if req.memory_mode == "enabled" and await _memory_learning_enabled(db, current_user.id):
                 asyncio.create_task(
                     _save_user_memory_from_turn(current_user.id, dispatch_query, final_content)
                 )
@@ -2033,6 +2185,7 @@ async def chat(
     final_content = (
         result.content or ""
     ).strip() or "我已经完成了分析，但当前没有可直接展示的最终答案。请补充更多信息后再试。"
+    final_content = _sanitize_assistant_output(final_content)
     await cognitive_event_bus.publish(
         cognitive_event_bus.emit_learning(
             trace_id=trace_id,
@@ -2072,7 +2225,7 @@ async def chat(
             ),
         )
     )
-    if await _memory_learning_enabled(db, current_user.id):
+    if req.memory_mode == "enabled" and await _memory_learning_enabled(db, current_user.id):
         asyncio.create_task(_save_user_memory_from_turn(current_user.id, dispatch_query, final_content))
 
     # ── Persist state_patch to ConversationState ──
@@ -2116,6 +2269,23 @@ async def chat(
         total_latency_ms=result.total_latency_ms,
         citations=(
             result.metadata.get("citations", []) if isinstance(result.metadata, dict) else []
+        ),
+        evidence_refs=(
+            result.metadata.get("evidence_refs", []) if isinstance(result.metadata, dict) else []
+        ),
+        knowledge_operations=(
+            result.metadata.get("knowledge_operations", []) if isinstance(result.metadata, dict) else []
+        ),
+        confidence=(
+            result.metadata.get("confidence", result.validation_score)
+            if isinstance(result.metadata, dict)
+            else result.validation_score
+        ),
+        uncertainty=(
+            result.metadata.get("uncertainty", []) if isinstance(result.metadata, dict) else []
+        ),
+        trace_id=(
+            result.metadata.get("trace_id", trace_id) if isinstance(result.metadata, dict) else trace_id
         ),
         annotations=(
             result.metadata.get("annotations", []) if isinstance(result.metadata, dict) else []

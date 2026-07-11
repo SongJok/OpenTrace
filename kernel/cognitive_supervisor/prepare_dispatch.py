@@ -55,6 +55,7 @@ def build_runtime_context_from_kernel_request(request: Any) -> Any:
         ctx.relevance_threshold = float(
             intent_lock_payload.get("relevance_threshold") or 0.35
         )
+    ctx.turn_decision = dict(request.metadata.get("turn_decision") or {})
     pref_block = request.metadata.get("user_preference_context_block")
     if pref_block and not getattr(ctx, "preference_context_block", None):
         ctx.preference_context_block = str(pref_block)

@@ -32,6 +32,13 @@ async def bootstrap_turn_intent(
 ) -> TurnBootstrapResult:
     """Resolve query, hydrate world, classify intent; mutates request.metadata."""
     md = dict(getattr(request, "metadata", None) or {})
+    # Gateway and kernel share one immutable TurnDecision.  Once present, do
+    # not rerun multi-turn/world hydration or any semantic classifier in a
+    # downstream entry point; reconstruct the lock below and reuse it.
+    decision_reuse = bool(md.get("turn_decision") and md.get("intent_lock"))
+    if decision_reuse:
+        apply_multi_turn = False
+        apply_world_hydrate = False
     force_mode = md.get("force_mode") or getattr(request, "force_mode", None)
     conv_state = getattr(request, "conversation_state", None)
     original_query = (getattr(request, "query", "") or "").strip()
@@ -106,6 +113,19 @@ async def bootstrap_turn_intent(
         )
 
     if hasattr(request, "metadata"):
+        # A single immutable routing decision is shared by gateway, kernel and
+        # runtime.  Downstream stages may enrich it but must not reclassify the
+        # user turn.
+        md["turn_decision"] = {
+            "task_type": intent_lock.task_type,
+            "normalized_query": intent_lock.normalized_query,
+            "allowed_capabilities": list(intent_lock.allowed_capabilities),
+            "disallowed_capabilities": list(intent_lock.disallowed_capabilities),
+            "confidence": intent_lock.confidence,
+            "relevance_threshold": intent_lock.relevance_threshold,
+            "cognitive_budget": intent_lock.to_dict().get("cognitive_budget", {}),
+            "force_mode": force_mode,
+        }
         request.metadata = md
     if multi_applied and effective_query != original_query:
         request.query = effective_query

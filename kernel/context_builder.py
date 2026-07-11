@@ -162,7 +162,13 @@ class ContextBuilder:
         results = await asyncio.gather(
             self._fetch_memory(query, user_id, session_id),
             self._fetch_documents(query, user_id),
-            self._fetch_knowledge(query, user_id),
+            self._fetch_knowledge(
+                query,
+                user_id,
+                tenant_id=str(metadata.get("tenant_id") or "default"),
+                workspace_id=str(metadata.get("workspace_id") or "default"),
+                session_id=session_id,
+            ),
             self._fetch_web(query, user_id) if enable_web else noop(),
             return_exceptions=True,
         )
@@ -244,22 +250,42 @@ class ContextBuilder:
             logger.debug("Document fetch failed", error=str(exc))
             return []
 
-    async def _fetch_knowledge(self, query: str, user_id: str) -> list[ContextChunk]:
+    async def _fetch_knowledge(
+        self,
+        query: str,
+        user_id: str,
+        *,
+        tenant_id: str = "default",
+        workspace_id: str = "default",
+        session_id: str = "",
+    ) -> list[ContextChunk]:
         try:
-            from memory.semantic_memory.semantic_memory import InMemorySemanticStore
-            from model.embedding.base import get_embedder
+            from knowledge.query import search_knowledge
 
-            store = InMemorySemanticStore(embedder=get_embedder())
-            chunks = await store.search(query, top_k=self.top_k)
+            chunks = await search_knowledge(
+                query=query,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                top_k=self.top_k,
+                session_id=session_id,
+            )
             return [
                 ContextChunk(
-                    content=c.content,
-                    source_type="knowledge",
-                    score=c.score,
-                    confidence=c.score,
+                    content=str(c.get("text") or ""),
+                    source_type=str(c.get("source_type") or "knowledge"),
+                    score=float(c.get("score") or 0.0),
+                    confidence=float(c.get("score") or 0.0),
                     metadata=self._normalize_metadata(
                         "knowledge",
-                        c.metadata,
+                        {
+                            **(c.get("provenance") or {}),
+                            "knowledge_page_id": c.get("knowledge_page_id"),
+                            "knowledge_claim_id": c.get("knowledge_claim_id"),
+                            "knowledge_relation_id": c.get("knowledge_relation_id"),
+                            "disclosure_stage": c.get("disclosure_stage"),
+                            "authority": c.get("authority"),
+                        },
                         user_id=user_id,
                         defaults={"source": "knowledge_base"},
                     ),

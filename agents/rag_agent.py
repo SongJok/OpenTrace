@@ -18,6 +18,7 @@ from kernel.cognitive_controls import (
 from model.reranker.base import get_reranker
 from plugins.document_plugin import DocumentPlugin
 from plugins.document_retrieval import DocumentEvidenceGate, ScoredDocumentChunk
+from knowledge.query import search_knowledge
 from services.rag_query_planning import (
     assess_answerability,
     build_rag_query_plan,
@@ -412,9 +413,14 @@ class RagAgent(BaseAgent):
             top_k = max(1, min(top_k, 20))
             llmwiki_top_k = int(task.params.get("llmwiki_top_k", settings.llmwiki_top_k or 3))
             llmwiki_top_k = max(1, min(llmwiki_top_k, 10))
-            sources = task.params.get("sources", ["documents", "semantic_memory"])
+            sources = task.params.get("sources", ["knowledge", "documents", "semantic_memory"])
             if not isinstance(sources, list):
-                sources = ["documents", "semantic_memory"]
+                sources = ["knowledge", "documents", "semantic_memory"]
+            if not (
+                getattr(settings, "knowledge_orchestration_enabled", True)
+                and getattr(settings, "knowledge_query_enabled", True)
+            ):
+                sources = [source for source in sources if source != "knowledge"]
 
             # Query type classification for strategy tuning (use rewritten for better matching)
             qtype_info = self._classify_query_type(rewritten_query)
@@ -422,7 +428,13 @@ class RagAgent(BaseAgent):
             hints = qtype_info["hints"]
 
             # Base retrieval threshold — adjusted by query type
-            min_score = float(task.params.get("min_score", os.getenv("RAG_MIN_SCORE", "0.35")))
+            configured_min_score = task.params.get("min_score")
+            if configured_min_score is None:
+                configured_min_score = task.params.get(
+                    "min_evidence_score",
+                    getattr(settings, "rag_min_evidence_score", os.getenv("RAG_MIN_SCORE", "0.35")),
+                )
+            min_score = float(configured_min_score)
             if "lower_threshold" in hints:
                 min_score = max(0.20, min_score - 0.08)
             elif "higher_precision" in hints:
@@ -458,6 +470,49 @@ class RagAgent(BaseAgent):
             doc_evidence_count = 0
             llmwiki_entries: list[dict[str, Any]] = []
             vector_chunks: list[dict[str, Any]] = []
+
+            if "knowledge" in sources:
+                knowledge_results = await asyncio.gather(
+                    *[
+                        search_knowledge(
+                            query=search_query,
+                            user_id=user_id,
+                            tenant_id=tenant_id,
+                            workspace_id=workspace_id,
+                            top_k=max(top_k, 6),
+                            query_type=query_type,
+                            session_id=task.session_id or task.params.get("session_id"),
+                        )
+                        for search_query in (rag_plan.query_variants or [rewritten_query])
+                    ],
+                    return_exceptions=True,
+                )
+                seen_knowledge: set[str] = set()
+                for result in knowledge_results:
+                    if isinstance(result, Exception):
+                        continue
+                    for item in result:
+                        key = f"{item.get('source_type')}:{item.get('id')}"
+                        if key in seen_knowledge:
+                            continue
+                        seen_knowledge.add(key)
+                        item["matched_query"] = rewritten_query
+                        evidence.append(item)
+                        citations.append(
+                            {
+                                "id": len(citations) + 1,
+                                "title": item.get("title") or "Knowledge",
+                                "url": "",
+                                "snippet": str(item.get("text") or "")[:160],
+                                "source_type": item.get("source_type", "knowledge"),
+                                "knowledge_page_id": item.get("knowledge_page_id"),
+                                "claim_id": item.get("claim_id"),
+                                "relation_id": item.get("relation_id"),
+                                "source_id": item.get("source_id"),
+                                "source_version_id": item.get("source_version_id"),
+                                "provenance": dict(item.get("provenance") or {}),
+                            }
+                        )
 
             if "documents" in sources:
                 search_queries = list(rag_plan.query_variants or [rewritten_query])
@@ -583,9 +638,15 @@ class RagAgent(BaseAgent):
                     deduped,
                     k=int(getattr(settings, "rag_rrf_k", 60) or 60),
                     top_n=max(top_k * 3, 20),
+                    lane_weights={lane.name: lane.weight for lane in rag_plan.lanes},
                 )
 
             sorted_chunks = sorted(deduped, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:top_k]
+            sorted_knowledge_chunks = sorted(
+                [e for e in deduped if str(e.get("source_type", "")).startswith("knowledge")],
+                key=lambda x: float(x.get("score", 0.0) or 0.0),
+                reverse=True,
+            )[:top_k]
             sorted_llmwiki_entries = sorted(llmwiki_entries, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:llmwiki_top_k]
             sorted_vector_chunks = sorted(vector_chunks, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:top_k]
 
@@ -593,6 +654,11 @@ class RagAgent(BaseAgent):
             if settings.rag_rerank_enabled and deduped:
                 deduped = await self._rerank_evidence(rewritten_query, deduped, top_k)
                 sorted_chunks = sorted(deduped, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:top_k]
+                sorted_knowledge_chunks = sorted(
+                    [e for e in deduped if str(e.get("source_type", "")).startswith("knowledge")],
+                    key=lambda x: float(x.get("score", 0.0) or 0.0),
+                    reverse=True,
+                )[:top_k]
                 sorted_llmwiki_entries = sorted(
                     [e for e in deduped if e.get("source_type") == "llmwiki"],
                     key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True,
@@ -603,6 +669,14 @@ class RagAgent(BaseAgent):
                 )[:top_k]
 
             content_parts = []
+            for i, chunk in enumerate(sorted_knowledge_chunks, start=1):
+                title_ctx = chunk.get("title", "")
+                prefix = f"[{title_ctx}] " if title_ctx else ""
+                content_parts.append(
+                    f"[Knowledge {i}] stage={chunk.get('disclosure_stage', '-')} "
+                    f"tier={chunk.get('evidence_tier', '-')} score={float(chunk.get('score', 0.0)):.3f}\n"
+                    f"{prefix}{chunk.get('text', '')[:300]}"
+                )
             for i, chunk in enumerate(sorted_llmwiki_entries, start=1):
                 title_ctx = chunk.get('title', '')
                 prefix = f"[{title_ctx}] " if title_ctx else ""
@@ -689,7 +763,22 @@ class RagAgent(BaseAgent):
                         )
 
                 sorted_chunks = sorted(evidence, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:top_k]
+                sorted_knowledge_chunks = sorted(
+                    [e for e in sorted_chunks if str(e.get("source_type", "")).startswith("knowledge")],
+                    key=lambda x: float(x.get("score", 0.0) or 0.0),
+                    reverse=True,
+                )[:top_k]
                 sorted_vector_chunks = sorted(vector_chunks, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:top_k]
+                if not content_parts and sorted_vector_chunks:
+                    content_parts = [
+                        (
+                            f"[Doc {i}] tier={chunk.get('evidence_tier', '-')} "
+                            f"score={float(chunk.get('score', 0.0)):.3f}\n"
+                            f"[{chunk.get('title', '')}] {chunk.get('text', '')[:240]}"
+                        )
+                        for i, chunk in enumerate(sorted_vector_chunks[:top_k], start=1)
+                    ]
+                    content = "\n\n".join(content_parts)
 
             # Improved confidence: weighted by max_score, avg_score, score spread, source diversity
             if sorted_chunks:
@@ -778,6 +867,7 @@ class RagAgent(BaseAgent):
                     confidence = min(confidence, 0.42)
                 else:
                     sorted_chunks = []
+                    sorted_knowledge_chunks = []
                     sorted_vector_chunks = []
                     sorted_llmwiki_entries = []
                     content = (
@@ -810,7 +900,17 @@ class RagAgent(BaseAgent):
                         and citation.get("chunk_index") == chunk.get("chunk_index")
                     )
                     same_type = citation.get("source_type") == chunk.get("source_type")
-                    if same_type and (same_doc or same_chunk):
+                    same_knowledge = (
+                        citation.get("claim_id")
+                        and citation.get("claim_id") == chunk.get("claim_id")
+                    ) or (
+                        citation.get("knowledge_page_id")
+                        and citation.get("knowledge_page_id") == chunk.get("knowledge_page_id")
+                    ) or (
+                        citation.get("relation_id")
+                        and citation.get("relation_id") == chunk.get("relation_id")
+                    )
+                    if same_type and (same_doc or same_chunk or same_knowledge):
                         return citation
                 return {}
 
@@ -833,6 +933,16 @@ class RagAgent(BaseAgent):
             evidence_items = []
             evidence_objects = []
             for ch in sorted_chunks:
+                matching_citations = [
+                    citation for citation in citations
+                    if (
+                        citation.get("document_id") == ch.get("document_id")
+                        or citation.get("chunk_id") == ch.get("chunk_id")
+                        or citation.get("knowledge_page_id") == ch.get("knowledge_page_id")
+                        or citation.get("claim_id") == ch.get("claim_id")
+                        or citation.get("relation_id") == ch.get("relation_id")
+                    )
+                ]
                 protocol = protocol_by_id.get(str(ch.get("id"))) or normalize_rag_evidence(
                     ch,
                     plan=rag_plan,
@@ -861,6 +971,15 @@ class RagAgent(BaseAgent):
                             evidence_tier=ch.get("evidence_tier", "contextual"),
                             rag_evidence=protocol,
                             access_scope=rag_plan.filters,
+                            citations=matching_citations[:3],
+                            provenance=ch.get("provenance") or {},
+                            knowledge_page_id=ch.get("knowledge_page_id"),
+                            claim_id=ch.get("claim_id"),
+                            relation_id=ch.get("relation_id"),
+                            source_version_id=ch.get("source_version_id"),
+                            evidence_chunk_id=ch.get("chunk_id"),
+                            evidence_start=ch.get("evidence_start"),
+                            evidence_end=ch.get("evidence_end"),
                         )
                     )
             from kernel.result_reference import ResultRef, serialize_refs

@@ -156,7 +156,26 @@ async def _verify_runtime_schema(conn) -> None:
         for column in sorted(columns - present):
             missing.append(f"{table}.{column}")
 
-    required_tables = {"tenants", "tenant_workspaces", "compliance_audit_events"}
+    required_tables = {
+        "tenants",
+        "tenant_workspaces",
+        "compliance_audit_events",
+        "knowledge_sources",
+        "knowledge_source_versions",
+        "knowledge_pages",
+        "knowledge_claims",
+        "knowledge_relations",
+        "knowledge_compilation_jobs",
+        "knowledge_lint_issues",
+        "knowledge_feedback",
+        "knowledge_rules",
+        "knowledge_observations",
+        "knowledge_merge_cases",
+        "responses",
+        "response_items",
+        "response_events",
+        "user_custom_instructions",
+    }
     table_rows = await conn.execute(
         text(
             """

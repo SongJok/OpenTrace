@@ -94,7 +94,7 @@ class PlanAgent:
             "若涉及数据库分析，必须包含 data 子任务；且必须在 data.params 中传入 data_source_id（从 context.metadata.data_source_id 获取）。"
             "若 context.metadata.data_source_id 为空，则不要生成 data 子任务。"
             "若问题需要参考内部文档、历史知识、用户偏好，优先加入 rag 子任务。"
-            "rag 可在 params 指定 top_k 和 sources，默认 top_k=8, sources=[documents, semantic_memory]。"
+            "rag 可在 params 指定 top_k 和 sources，默认 top_k=8, sources=[knowledge, documents, semantic_memory]。"
             "若用户一次提多个目标（如 查询+图表+分析），可同时返回 data + tool 子任务并行执行。"
         )
         # 如有可用，注入澄清上下文（特性⑤）
@@ -321,7 +321,7 @@ class PlanAgent:
                         query=user_query,
                         params={
                             "top_k": 8,
-                            "sources": ["documents", "semantic_memory"],
+                            "sources": ["knowledge", "documents", "semantic_memory"],
                             "min_evidence_score": float(
                                 getattr(settings, "rag_min_evidence_score", 0.65)
                             ),
@@ -363,7 +363,7 @@ class PlanAgent:
                             query=user_query,
                             params={
                                 "top_k": 8,
-                                "sources": ["documents", "semantic_memory"],
+                                "sources": ["knowledge", "documents", "semantic_memory"],
                                 "min_evidence_score": 0.65,
                                 "fallback_to_web": True,
                             },
@@ -385,7 +385,7 @@ class PlanAgent:
                         SubTask(
                             agent_type="rag",
                             query=user_query,
-                            params={"top_k": 8, "sources": ["documents", "semantic_memory"]},
+                            params={"top_k": 8, "sources": ["knowledge", "documents", "semantic_memory"]},
                         )
                     )
                 elif web_intent and "web" not in has:
@@ -451,7 +451,7 @@ class PlanAgent:
                         query=user_query,
                         params={
                             "top_k": 8,
-                            "sources": ["documents", "semantic_memory"],
+                            "sources": ["knowledge", "documents", "semantic_memory"],
                             "min_evidence_score": float(
                                 getattr(settings, "rag_min_evidence_score", 0.65)
                             ),
@@ -585,7 +585,7 @@ class PlanAgent:
             params.update(
                 {
                     "top_k": 8,
-                    "sources": ["documents", "semantic_memory"],
+                    "sources": ["knowledge", "documents", "semantic_memory"],
                     "min_evidence_score": 0.65,
                     "fallback_to_web": True,
                 }
@@ -679,7 +679,7 @@ class PlanAgent:
             "- 根据每个子问题的 domain 选择 agent_type\n"
             f"{chr(10).join(context_hints) if context_hints else ''}\n"
             "- query 字段可以改写原问题使其更精准，也可以保持原样\n"
-            '- 如果 rag agent 可用，为文档检索类问题添加 params: {"top_k": 8, "sources": ["documents", "semantic_memory"]}\n'
+            '- 如果 rag agent 可用，为文档检索类问题添加 params: {"top_k": 8, "sources": ["knowledge", "documents", "semantic_memory"]}\n'
             '- 如果 data agent 可用且有数据源，为数据查询类问题添加 params: {"data_source_id": "..."}\n'
             '- 输出 JSON：{"subtasks": [{"agent_type": "rag", "query": "...", "params": {}}]}\n'
             f"{history_hint}"

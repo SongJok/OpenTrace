@@ -174,6 +174,80 @@ class Message(Base):
         return f"<Message id={self.id} role={self.role} session={self.session_id}>"
 
 
+class ResponseRecord(Base):
+    """Canonical, resumable result of one chat turn.
+
+    ``TraceLog`` remains the legacy aggregate.  New response clients use this
+    record together with ``ResponseItem`` and ``ResponseEvent`` so synchronous
+    and streaming clients observe the same durable turn state.
+    """
+
+    __tablename__ = "responses"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_responses_tenant_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    parent_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="sync")
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ResponseItem(Base):
+    """A response message, tool call, tool result, citation, or artifact."""
+
+    __tablename__ = "response_items"
+    __table_args__ = (
+        UniqueConstraint("response_id", "sequence_number", name="uq_response_items_sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    response_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("responses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    item_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    role: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ResponseEvent(Base):
+    """Append-only semantic events used for SSE replay and auditing."""
+
+    __tablename__ = "response_events"
+    __table_args__ = (
+        UniqueConstraint("response_id", "sequence_number", name="uq_response_events_sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    response_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("responses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Document(Base):
     __tablename__ = "documents"
 
@@ -267,6 +341,270 @@ class DocumentLLMWiki(Base):
 
     def __repr__(self) -> str:
         return f"<DocumentLLMWiki id={self.id} doc={self.document_id} chunk={self.chunk_id}>"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Knowledge Orchestration — raw assets are compiled into governed knowledge.
+# DocumentChunk remains an evidence segment; it is deliberately not a knowledge
+# page or claim.  This preserves provenance and prevents generated summaries
+# from becoming authoritative without an explicit publication state.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class KnowledgeSource(Base):
+    __tablename__ = "knowledge_sources"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "workspace_id", "document_id", name="uq_knowledge_source_document_scope"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    document_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    source_type: Mapped[str] = mapped_column(String(64), nullable=False, default="document")
+    external_ref: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    authority: Mapped[str] = mapped_column(String(32), nullable=False, default="contextual")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
+    active_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class KnowledgeSourceVersion(Base):
+    __tablename__ = "knowledge_source_versions"
+    __table_args__ = (
+        UniqueConstraint("source_id", "version_number", name="uq_knowledge_source_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    source_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_sources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    compiler_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
+    raw_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    compiled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgePage(Base):
+    __tablename__ = "knowledge_pages"
+    __table_args__ = (
+        UniqueConstraint("source_version_id", "slug", name="uq_knowledge_page_version_slug"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    source_version_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_source_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    page_type: Mapped[str] = mapped_column(String(32), nullable=False, default="overview", index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(255), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    schema_name: Mapped[str] = mapped_column(String(128), nullable=False, default="knowledge_page_v1")
+    authority: Mapped[str] = mapped_column(String(32), nullable=False, default="contextual")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
+    page_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class KnowledgeClaim(Base):
+    __tablename__ = "knowledge_claims"
+    __table_args__ = (
+        UniqueConstraint("page_id", "claim_hash", name="uq_knowledge_claim_page_hash"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    source_version_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_source_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    page_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_pages.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    claim_type: Mapped[str] = mapped_column(String(32), nullable=False, default="fact", index=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_text: Mapped[str] = mapped_column(Text, nullable=False)
+    claim_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    evidence_chunk_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    evidence_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    authority: Mapped[str] = mapped_column(String(32), nullable=False, default="contextual")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class KnowledgeRelation(Base):
+    __tablename__ = "knowledge_relations"
+    __table_args__ = (
+        UniqueConstraint("source_page_id", "target_page_id", "relation_type", name="uq_knowledge_relation"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    source_version_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_source_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    source_page_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_pages.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    target_page_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_pages.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    relation_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    authority: Mapped[str] = mapped_column(String(32), nullable=False, default="contextual")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
+    relation_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgeCompilationJob(Base):
+    __tablename__ = "knowledge_compilation_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    source_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    source_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    compiler_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgeLintIssue(Base):
+    __tablename__ = "knowledge_lint_issues"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "workspace_id", "issue_key", name="uq_knowledge_lint_issue_scope"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    issue_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="warning", index=True)
+    code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open", index=True)
+    details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class KnowledgeFeedback(Base):
+    __tablename__ = "knowledge_feedback"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    session_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    target_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    target_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    feedback_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    correction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    feedback_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgeRule(Base):
+    """Executable metadata-layer rule/schema with explicit approval state."""
+
+    __tablename__ = "knowledge_rules"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "workspace_id", "rule_key", "version", name="uq_knowledge_rule_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    rule_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    rule_type: Mapped[str] = mapped_column(String(32), nullable=False, default="schema")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", index=True)
+    schema_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provenance: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class KnowledgeObservation(Base):
+    """Metacognition telemetry used to propose rule evolution."""
+
+    __tablename__ = "knowledge_observations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    metric: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    dimensions: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    trigger: Mapped[str] = mapped_column(String(64), nullable=False, default="scheduled")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class KnowledgeMergeCase(Base):
+    """Human-in-the-loop case for conflicting claims or duplicate concepts."""
+
+    __tablename__ = "knowledge_merge_cases"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    entity_key: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    conflict_type: Mapped[str] = mapped_column(String(64), nullable=False, default="duplicate_claim")
+    candidate_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open", index=True)
+    resolution: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    resolved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class RedisShadowKV(Base):
@@ -366,6 +704,30 @@ class UserMemorySettings(Base):
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False, unique=True)
     memory_learning_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     preference_learning_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserCustomInstruction(Base):
+    """Explicit user instructions, kept separate from learned memory."""
+
+    __tablename__ = "user_custom_instructions"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "tenant_id", "workspace_id", name="uq_custom_instruction_scope"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False, default="default")
+    workspace_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False, default="default")
+    about_user: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    response_style: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -757,6 +1119,10 @@ class Attachment(Base):
     image_mime: Mapped[str] = mapped_column(String(100), nullable=True)
     message_id: Mapped[str] = mapped_column(String(50), nullable=True)
     duplicate_of: Mapped[str] = mapped_column(String(36), nullable=True)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False, default="session")
+    ingest_status: Mapped[str] = mapped_column(String(32), nullable=False, default="temporary", index=True)
+    promoted_document_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    asset_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

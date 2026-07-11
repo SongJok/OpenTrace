@@ -191,7 +191,13 @@ class AgentWorker:
 
     async def run_forever(self) -> None:
         consumers = self._bus_consumer_agent_types()
-        await asyncio.gather(self._heartbeat(), *(self._consume(k) for k in consumers))
+        from knowledge.jobs import knowledge_job_loop
+
+        await asyncio.gather(
+            self._heartbeat(),
+            knowledge_job_loop(),
+            *(self._consume(k) for k in consumers),
+        )
 
 
 async def main() -> None:

@@ -16,6 +16,11 @@ export interface TurnMetaEnvelope {
   clarification?: Record<string, unknown>
   turn_outcome?: string
   governance_warnings?: string[]
+  evidence_refs?: unknown[]
+  knowledge_operations?: unknown[]
+  confidence?: number
+  uncertainty?: string[]
+  trace_id?: string
 }
 
 export function normalizeFinalAnswerEnvelope(data: unknown): TurnMetaEnvelope {
@@ -57,6 +62,8 @@ export function normalizeFinalAnswerEnvelope(data: unknown): TurnMetaEnvelope {
         : undefined
 
   const result_refs = (d.result_refs as unknown[] | undefined) ?? (meta.result_refs as unknown[] | undefined)
+  const evidence_refs = (d.evidence_refs as unknown[] | undefined) ?? (meta.evidence_refs as unknown[] | undefined)
+  const knowledge_operations = (d.knowledge_operations as unknown[] | undefined) ?? (meta.knowledge_operations as unknown[] | undefined)
 
   const needs_clarification = Boolean(
     d.needs_clarification ?? meta.needs_clarification ?? meta.turn_outcome === 'clarification',
@@ -97,5 +104,10 @@ export function normalizeFinalAnswerEnvelope(data: unknown): TurnMetaEnvelope {
     clarification,
     turn_outcome: turn_outcome || undefined,
     governance_warnings,
+    evidence_refs,
+    knowledge_operations,
+    confidence: typeof d.confidence === 'number' ? d.confidence : typeof meta.confidence === 'number' ? meta.confidence : undefined,
+    uncertainty: Array.isArray(d.uncertainty) ? d.uncertainty as string[] : Array.isArray(meta.uncertainty) ? meta.uncertainty as string[] : [],
+    trace_id: typeof d.trace_id === 'string' ? d.trace_id : typeof meta.trace_id === 'string' ? meta.trace_id : undefined,
   }
 }

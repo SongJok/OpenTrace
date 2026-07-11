@@ -43,6 +43,17 @@ def _memory_budget_allowed(lock: dict[str, Any] | None) -> bool:
     return True
 
 
+def personalization_memory_enabled(metadata: dict[str, Any] | None) -> bool:
+    """Whether a turn may read or write cross-turn personalization memory.
+
+    ``temporary`` intentionally keeps the current request and its explicit
+    conversation history, but must not retrieve or update saved preferences,
+    semantic memory, episodic memory, or history indexes.
+    """
+    mode = str((metadata or {}).get("memory_mode") or "enabled").strip().lower()
+    return mode == "enabled"
+
+
 def inject_multi_turn_constraints_into_metadata(
     metadata: dict[str, Any],
     mtr: Any,
@@ -131,6 +142,22 @@ async def apply_preference_and_memory(
     conv_state = getattr(request, "conversation_state", None)
     md = dict(base.metadata if base else (getattr(request, "metadata", None) or {}))
     query = (base.query if base else getattr(request, "query", "")) or ""
+
+    if not personalization_memory_enabled(md):
+        custom = str(md.get("custom_instruction_block") or "").strip()
+        md.pop("user_preference_context_block", None)
+        md.pop("user_preferences", None)
+        md.pop("preference_layers", None)
+        if custom:
+            md["user_preference_context_block"] = f"## 用户明确指令\n{custom[:8000]}"
+        md["memory_context"] = []
+        md["memory_status"] = "disabled"
+        if hasattr(request, "metadata"):
+            request.metadata = md
+        out = base or TurnEnrichmentResult(query=query, metadata=md)
+        out.metadata = md
+        out.memory_context = []
+        return out
 
     try:
         from kernel.preference_injection import apply_preference_injection_for_turn
