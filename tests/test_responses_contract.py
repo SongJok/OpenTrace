@@ -11,6 +11,7 @@ from gateway.api_gateway.routers.responses import (
     _json_safe,
 )
 from gateway.api_gateway.turn_coordinator import _request_instruction_text
+from gateway.api_gateway.turn_coordinator import extract_profile_facts
 from infra.storage.models import ResponseRecord, ResponseToolExecution
 
 
@@ -126,12 +127,28 @@ def test_runtime_evidence_is_json_safe_at_response_boundary() -> None:
     assert payload["evidence"]["provenance"]["source"] == "test"
 
 
+def test_explicit_profile_facts_are_extracted_for_durable_memory() -> None:
+    assert extract_profile_facts("我姓宋，今天88岁了") == [
+        ("姓氏", "用户姓宋"),
+        ("年龄", "用户今年88岁"),
+    ]
+    assert extract_profile_facts("随便说吧") == []
+
+
 def test_stream_disconnect_persists_cancelled_lifecycle_event() -> None:
     source = Path(__file__).resolve().parents[1] / "gateway/api_gateway/routers/responses.py"
     text = source.read_text(encoding="utf-8")
     assert "except asyncio.CancelledError:" in text
     assert '"client_disconnected"' in text
     assert '"response.cancelled"' in text
+
+
+def test_responses_history_reads_typed_items_and_profile_memory() -> None:
+    source = Path(__file__).resolve().parents[1] / "gateway/api_gateway/turn_coordinator.py"
+    text = source.read_text(encoding="utf-8")
+    assert "select(ResponseItem, ResponseRecord.created_at)" in text
+    assert "_persist_profile_facts" in text
+    assert "_load_profile_memory_context" in text
 
 
 def test_legacy_chat_route_is_explicitly_retired() -> None:

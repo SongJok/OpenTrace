@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
+import json
+import re
 from typing import Any
 
 from sqlalchemy import select
@@ -18,7 +21,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gateway.api_gateway.resource_scope import normalized_tenant_scope
 from infra.errors import AppException, ErrorCodes
 from infra.observability.request_context import set_user_session_context
-from infra.storage.models import ChatSession, Message, TraceLog, User, UserCustomInstruction
+from infra.storage.models import (
+    ChatSession,
+    Message,
+    ResponseItem,
+    ResponseRecord,
+    TraceLog,
+    User,
+    UserCustomInstruction,
+    UserMemory,
+    UserMemorySettings,
+)
 from kernel.cognitive_kernel import CognitiveKernel, KernelRequest, KernelResponse
 from kernel.protocol.events import trace_context_for_request
 
@@ -98,6 +111,41 @@ async def _load_history(db: AsyncSession, conversation_id: str, *, limit: int = 
         except Exception:
             return out
 
+    # The canonical Responses API persists typed ResponseItems rather than
+    # legacy Message rows.  Read those items as the authoritative history so
+    # a second turn in the same conversation receives the first turn's input
+    # and assistant answer.  This fallback is intentionally below Message
+    # loading to preserve compatibility with older /api/v1/chat sessions.
+    response_items = (
+        await db.execute(
+            select(ResponseItem, ResponseRecord.created_at)
+            .join(ResponseRecord, ResponseRecord.id == ResponseItem.response_id)
+            .where(ResponseRecord.conversation_id == conversation_id)
+            .order_by(ResponseRecord.created_at.asc(), ResponseItem.sequence_number.asc())
+            .limit(limit * 2)
+        )
+    ).all()
+    if response_items:
+        out = []
+        for item, _created_at in response_items:
+            if item.role not in {"user", "assistant", "system", "developer", "tool"}:
+                continue
+            content = str(item.content or "").strip()
+            if not content:
+                continue
+            entry: dict[str, Any] = {"role": item.role, "content": content}
+            payload = item.payload if isinstance(item.payload, dict) else {}
+            if item.item_type == "function_call_output":
+                entry["tool_call_id"] = payload.get("call_id") or item.id
+            out.append(entry)
+        if out:
+            try:
+                from kernel.token_counter import truncate_messages
+
+                return truncate_messages(out, max_tokens=4096, strategy="keep_system_recent", keep_recent_turns=4)
+            except Exception:
+                return out
+
     traces = (
         await db.execute(
             select(TraceLog)
@@ -118,6 +166,116 @@ async def _load_history(db: AsyncSession, conversation_id: str, *, limit: int = 
         return truncate_messages(out, max_tokens=4096, strategy="keep_system_recent", keep_recent_turns=4)
     except Exception:
         return out
+
+
+def extract_profile_facts(query: str) -> list[tuple[str, str]]:
+    """Extract high-confidence, user-authored profile facts from a turn.
+
+    This deliberately handles only explicit identity statements.  It avoids
+    turning arbitrary model output or ambiguous numbers into durable memory,
+    while covering natural Chinese forms such as ``我姓宋`` and ``今天88岁``.
+    """
+    text = str(query or "").strip()
+    facts: list[tuple[str, str]] = []
+    surname = re.search(r"(?:我姓|我的姓是)\s*([\u4e00-\u9fff])", text)
+    if surname:
+        facts.append(("姓氏", f"用户姓{surname.group(1)}"))
+    age = re.search(r"(?:我(?:今年|现在|今天)?|今年|现在|今天)\s*(\d{1,3})\s*岁", text)
+    if age:
+        years = int(age.group(1))
+        if 0 < years < 130:
+            facts.append(("年龄", f"用户今年{years}岁"))
+    return facts
+
+
+async def _persist_profile_facts(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    query: str,
+) -> list[tuple[str, str]]:
+    """Upsert explicit profile facts in durable user-scoped memory."""
+    settings_row = await db.scalar(
+        select(UserMemorySettings).where(UserMemorySettings.user_id == user_id)
+    )
+    if settings_row is not None and not bool(settings_row.memory_learning_enabled):
+        return []
+    facts = extract_profile_facts(query)
+    if not facts:
+        return []
+    changed = False
+    for title, content in facts:
+        existing = await db.scalar(
+            select(UserMemory).where(
+                UserMemory.user_id == user_id,
+                UserMemory.kind == "profile",
+                UserMemory.title == title,
+            )
+        )
+        if existing is None:
+            db.add(
+                UserMemory(
+                    id=str(uuid.uuid4()),
+                    user_id=user_id,
+                    memory_type="semantic",
+                    kind="profile",
+                    title=title,
+                    content=content,
+                    tags_json=json.dumps(["profile", "explicit"], ensure_ascii=False),
+                    metadata_json=json.dumps({"source": "user_turn", "confidence": 1.0}, ensure_ascii=False),
+                    enabled=True,
+                    pinned=True,
+                    score=1.0,
+                    access_count=1,
+                    last_accessed_at=datetime.now(UTC),
+                )
+            )
+        else:
+            existing.content = content
+            existing.enabled = True
+            existing.pinned = True
+            existing.score = max(float(existing.score or 0), 1.0)
+            existing.access_count = int(existing.access_count or 0) + 1
+            existing.last_accessed_at = datetime.now(UTC)
+        changed = True
+    if changed:
+        await db.commit()
+    return facts
+
+
+async def _load_profile_memory_context(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    memory_mode: str,
+) -> str:
+    """Build a compact, trusted system block from durable profile memory."""
+    if str(memory_mode or "enabled").lower() != "enabled":
+        return ""
+    settings_row = await db.scalar(
+        select(UserMemorySettings).where(UserMemorySettings.user_id == user_id)
+    )
+    if settings_row is not None and not bool(settings_row.memory_learning_enabled):
+        return ""
+    rows = (
+        await db.execute(
+            select(UserMemory)
+            .where(
+                UserMemory.user_id == user_id,
+                UserMemory.enabled.is_(True),
+                UserMemory.kind.in_(["profile", "preference", "project_fact", "fact"]),
+            )
+            .order_by(UserMemory.pinned.desc(), UserMemory.score.desc(), UserMemory.updated_at.desc())
+            .limit(24)
+        )
+    ).scalars().all()
+    if not rows:
+        return ""
+    lines = [
+        "以下是用户明确提供并允许用于后续对话的长期记忆。仅在相关时使用，不要臆造或泄露："
+    ]
+    lines.extend(f"- {str(row.content).strip()[:500]}" for row in rows if str(row.content or "").strip())
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 async def _load_custom_instructions(
@@ -193,7 +351,31 @@ async def prepare_response_turn(
         tenant_metadata=tenant_metadata,
     )
     set_user_session_context(user_id=user.id, session_id=conversation_id)
+    memory_mode = str(getattr(request, "memory_mode", "enabled") or "enabled")
+    if memory_mode == "enabled":
+        # Persist explicit profile statements before loading context.  This
+        # makes the current turn and every later turn observe the same durable
+        # user fact, independent of process restarts or embedding quality.
+        await _persist_profile_facts(db, user_id=user.id, query=query)
     history = await _load_history(db, conversation_id)
+    if memory_mode == "enabled":
+        # Backfill facts from turns that were created before the durable
+        # profile extractor existed.  This makes upgrading an existing chat
+        # seamless instead of requiring the user to repeat their biography.
+        for history_item in history:
+            if history_item.get("role") == "user":
+                await _persist_profile_facts(
+                    db,
+                    user_id=user.id,
+                    query=str(history_item.get("content") or ""),
+                )
+    profile_memory_block = await _load_profile_memory_context(
+        db,
+        user_id=user.id,
+        memory_mode=memory_mode,
+    )
+    if profile_memory_block:
+        history = [{"role": "system", "content": profile_memory_block}, *history]
     custom_instruction_block = await _load_custom_instructions(
         db, user_id=user.id, tenant_metadata=tenant_metadata
     )
@@ -226,7 +408,7 @@ async def prepare_response_turn(
         "request_id": request_id,
         "model_required": True,
         "answer_policy": "primary_model",
-        "memory_mode": getattr(request, "memory_mode", "enabled"),
+        "memory_mode": memory_mode,
         "tool_choice": getattr(request, "tool_choice", "auto"),
         "requested_model": getattr(request, "model", None),
         "instructions": getattr(request, "instructions", None),
@@ -251,6 +433,7 @@ async def prepare_response_turn(
         "attachment_ids": list(getattr(request, "attachment_ids", None) or []),
         "knowledge_control": dict(getattr(request, "knowledge", None) or {}),
         "custom_instruction_block": custom_instruction_block,
+        "profile_memory_context": profile_memory_block,
         "history": history,
         "input_items": input_items,
         "input_modalities": sorted(set(modalities)),

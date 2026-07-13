@@ -183,25 +183,70 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
     if (resolvedStreaming && contentRef.current) contentRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [resolvedContent, resolvedStreaming])
 
-  return <div className={`group py-5 ${isUser ? 'bg-transparent' : ''}`} onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)}>
-    <div className="mx-auto max-w-3xl px-4 sm:px-6"><div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`flex-1 ${isUser ? 'max-w-[82%]' : 'max-w-full'}`}>
-        <div className={`mb-1 flex items-center gap-2 text-xs text-[var(--text-secondary)] ${isUser ? 'justify-end' : ''}`}><span>{isUser ? '你' : 'OpenTrace'}</span>{levelBadge(annotations?.[0]?.annotation?.level ?? epistemic.level)}{isHovered && !isUser && onBranch && <button onClick={onBranch} className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent)]">分支</button>}</div>
-        {!isUser && (progress.length > 0 || resolvedSteps.length > 0) && <ProgressSummary progress={progress} steps={resolvedSteps as any[]} complete={!resolvedStreaming} />}
-        <div ref={contentRef} className={`prose max-w-none text-[15px] leading-7 ${isUser ? 'rounded-2xl rounded-tr-md bg-[var(--user-bubble)] px-4 py-2.5 text-[var(--text)]' : 'text-[var(--text)]'}`}>{visibleContent ? <MarkdownMessage content={visibleContent} /> : (resolvedStreaming && !isUser ? '正在生成…' : '')}{resolvedStreaming && !isUser && <span className="ml-1 inline-block h-4 w-1.5 animate-pulse bg-[var(--accent)] align-middle" />}</div>
-        {!isUser && toolCard && <ToolCardView toolCard={toolCard} />}
-        {!isUser && annotations?.[0]?.annotation?.confidence !== undefined && <div className="mt-2 text-xs text-[var(--text-secondary)]">置信度：{Math.round(annotations?.[0]?.annotation?.confidence * 100)}%{annotations?.[0]?.annotation?.caveats?.length ? ` · ${annotations?.[0]?.annotation?.caveats.join('；')}` : ''}</div>}
-        {!isUser && (resolvedCitations.length > 0 || evidenceRefs.length > 0) && <div className="mt-3 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--text-secondary)]"><div className="flex gap-3"><span>DB 证据 {Math.round(sourceRatio.db * 100)}%</span><span>Doc / Web {Math.round(sourceRatio.docWeb * 100)}%</span></div>{topCitations.map((citation, index) => <div className="mt-1" key={`${citation.title}-${index}`}>[{index + 1}] {citation.title}</div>)}<button onClick={() => setShowCitations(!showCitations)} className="mt-2 text-xs text-gray-500 hover:text-gray-700">{showCitations ? '收起证据明细' : '展开证据明细'}</button>{showCitations && <div className="mt-2 space-y-1 pl-4 border-l-2 border-gray-200">{resolvedCitations.map((citation, index) => <a key={`${citation.title}-${index}`} href={citation.url || '#'} target="_blank" rel="noopener noreferrer" className="block text-xs text-gray-500 hover:text-blue-500">[{index + 1}] {citation.title}{typeof citation.relevance === 'number' ? ` (${Math.round(citation.relevance * 100)}%)` : ''}</a>)}</div>}</div>}
-        {!isUser && !resolvedStreaming && <div className="mt-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100" data-testid="message-actions">
-          <button type="button" aria-label="复制回答" title="复制" onClick={() => void copyMessage()} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]">{copied ? <Check size={14} /> : <Copy size={14} />}</button>
-          <button type="button" aria-label="重新生成" title="重新生成" onClick={regenerate} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><RefreshCw size={14} /></button>
-          <button type="button" aria-label="回答有帮助" title="有帮助" onClick={() => feedback('like')} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><ThumbsUp size={14} /></button>
-          <button type="button" aria-label="回答没帮助" title="没帮助" onClick={() => feedback('dislike')} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><ThumbsDown size={14} /></button>
-          {onBranch && <button type="button" aria-label="创建分支" title="创建分支" onClick={onBranch} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><GitBranch size={14} /></button>}
-        </div>}
+  return (
+    <div
+      className="group w-full py-4 sm:py-5"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
+      <div className="mx-auto w-full max-w-3xl px-4 sm:px-6">
+        <div className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}>
+          <div className={`min-w-0 ${isUser ? 'w-fit max-w-[min(82%,42rem)]' : 'w-full'}`}>
+            <div className={`mb-1 flex items-center gap-2 text-[11px] text-[var(--text-secondary)] ${isUser ? 'justify-end pr-1' : ''}`}>
+              {isUser ? <span className="sr-only">你</span> : <span className="font-medium tracking-tight">OpenTrace</span>}
+              {levelBadge(annotations?.[0]?.annotation?.level ?? epistemic.level)}
+              {isHovered && !isUser && onBranch && (
+                <button onClick={onBranch} className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent)]">分支</button>
+              )}
+            </div>
+            {!isUser && (progress.length > 0 || resolvedSteps.length > 0) && (
+              <ProgressSummary progress={progress} steps={resolvedSteps as any[]} complete={!resolvedStreaming} />
+            )}
+            <div
+              ref={contentRef}
+              className={`prose max-w-none text-[15px] leading-7 ${
+                isUser
+                  ? 'rounded-2xl rounded-tr-md bg-[var(--user-bubble)] px-4 py-2.5 text-[var(--text)] break-words whitespace-pre-wrap [&_.prose_p]:m-0'
+                  : 'text-[var(--text)]'
+              }`}
+            >
+              {visibleContent ? <MarkdownMessage content={visibleContent} /> : (resolvedStreaming && !isUser ? '正在生成…' : '')}
+              {resolvedStreaming && !isUser && <span className="ml-1 inline-block h-4 w-1.5 animate-pulse bg-[var(--accent)] align-middle" />}
+            </div>
+            {!isUser && toolCard && <ToolCardView toolCard={toolCard} />}
+            {!isUser && annotations?.[0]?.annotation?.confidence !== undefined && (
+              <div className="mt-2 text-xs text-[var(--text-secondary)]">
+                置信度：{Math.round(annotations?.[0]?.annotation?.confidence * 100)}%
+                {annotations?.[0]?.annotation?.caveats?.length ? ` · ${annotations?.[0]?.annotation?.caveats.join('；')}` : ''}
+              </div>
+            )}
+            {!isUser && (resolvedCitations.length > 0 || evidenceRefs.length > 0) && (
+              <div className="mt-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)]/45 px-3 py-2 text-xs text-[var(--text-secondary)]">
+                <div className="flex flex-wrap gap-x-3 gap-y-1">
+                  <span>DB 证据 {Math.round(sourceRatio.db * 100)}%</span>
+                  <span>Doc / Web {Math.round(sourceRatio.docWeb * 100)}%</span>
+                </div>
+                {topCitations.map((citation, index) => <div className="mt-1" key={`${citation.title}-${index}`}>[{index + 1}] {citation.title}</div>)}
+                <button onClick={() => setShowCitations(!showCitations)} className="mt-2 text-xs text-[var(--text-muted)] hover:text-[var(--text)]">
+                  {showCitations ? '收起证据明细' : '展开证据明细'}
+                </button>
+                {showCitations && <div className="mt-2 space-y-1 border-l-2 border-[var(--border)] pl-4">
+                  {resolvedCitations.map((citation, index) => <a key={`${citation.title}-${index}`} href={citation.url || '#'} target="_blank" rel="noopener noreferrer" className="block text-xs text-[var(--text-secondary)] hover:text-[var(--accent)]">[{index + 1}] {citation.title}{typeof citation.relevance === 'number' ? ` (${Math.round(citation.relevance * 100)}%)` : ''}</a>)}
+                </div>}
+              </div>
+            )}
+            {!isUser && !resolvedStreaming && <div className="mt-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100" data-testid="message-actions">
+              <button type="button" aria-label="复制回答" title="复制" onClick={() => void copyMessage()} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]">{copied ? <Check size={14} /> : <Copy size={14} />}</button>
+              <button type="button" aria-label="重新生成" title="重新生成" onClick={regenerate} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><RefreshCw size={14} /></button>
+              <button type="button" aria-label="回答有帮助" title="有帮助" onClick={() => feedback('like')} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><ThumbsUp size={14} /></button>
+              <button type="button" aria-label="回答没帮助" title="没帮助" onClick={() => feedback('dislike')} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><ThumbsDown size={14} /></button>
+              {onBranch && <button type="button" aria-label="创建分支" title="创建分支" onClick={onBranch} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><GitBranch size={14} /></button>}
+            </div>}
+          </div>
+        </div>
       </div>
-    </div></div>
-  </div>
+    </div>
+  )
 }
 
 function ProgressSummary({ progress, steps, complete }: { progress: string[]; steps: any[]; complete: boolean }) {

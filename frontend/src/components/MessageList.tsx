@@ -64,7 +64,7 @@ const MessageList = forwardRef<MessageListHandle, MessageListProps>(function Mes
 
   return (
     <div ref={parentRef} className="relative flex-1 overflow-y-auto bg-[var(--bg)]">
-      <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
+      <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
         {items.map((msg) => (
           <MessageBubble key={`${msg.id}-${msg.status}`} msg={msg} showAvatar={showAvatars} />
         ))}
@@ -86,7 +86,7 @@ export default MessageList
 function MessageBubble({ msg, showAvatar }: { msg: Message; showAvatar?: boolean }) {
   if (msg.role === 'user') {
     return (
-      <div className="flex items-start justify-end group animate-fade-in py-2 gap-3">
+      <div className="group flex w-full items-start justify-end gap-3 py-1.5 animate-fade-in">
         <ChatMessage message={msg} onBranch={() => window.dispatchEvent(new CustomEvent('opentrace:branch', { detail: { messageId: msg.id } }))} />
         {showAvatar && <QuestionerAvatar />}
       </div>
@@ -94,7 +94,7 @@ function MessageBubble({ msg, showAvatar }: { msg: Message; showAvatar?: boolean
   }
 
   return (
-    <div className="flex items-start animate-fade-in py-2 gap-3">
+    <div className="flex w-full items-start gap-3 py-1.5 animate-fade-in">
       {showAvatar && <ResponderAvatar />}
       <div className="flex-1 min-w-0">
         <ChatMessage message={msg} />

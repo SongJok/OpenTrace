@@ -742,8 +742,8 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   const canSend = text.trim().length > 0 && !streaming
 
   return (
-    <div className={isWelcome ? 'w-full pt-4' : 'pb-4 pt-2'}>
-      <div className={isWelcome ? 'mx-auto w-full max-w-[820px] px-4 sm:px-6' : 'mx-auto w-full max-w-4xl px-6'}>
+    <div className={isWelcome ? 'w-full pt-4' : 'bg-gradient-to-t from-[var(--bg)] via-[var(--bg)] to-transparent pb-5 pt-3'}>
+      <div className={isWelcome ? 'mx-auto w-full max-w-[820px] px-4 sm:px-6' : 'mx-auto w-full max-w-3xl px-4 sm:px-6'}>
         {/* Hidden file input */}
         <input
           ref={fileInputRef}
@@ -806,7 +806,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
             'relative border shadow transition-colors',
             isWelcome
               ? 'rounded-[30px] border-[var(--hero-shell-border)] bg-[var(--hero-shell)] shadow-[0_22px_52px_rgba(15,23,42,0.08)] backdrop-blur-xl focus-within:border-[color-mix(in_srgb,var(--accent)_22%,transparent)]'
-              : 'rounded-3xl border-[var(--border)] bg-[var(--surface)] focus-within:border-[var(--accent)]'
+              : 'rounded-[26px] border-[var(--border)] bg-[var(--surface)] shadow-[0_2px_12px_rgba(0,0,0,0.04)] focus-within:border-[var(--accent)] focus-within:shadow-[0_4px_20px_rgba(0,0,0,0.08)]'
           )}
         >
           <textarea
