@@ -124,22 +124,34 @@ def test_runtime_context_exports_intent_lock_metadata():
     assert metadata["cognitive_budget"]["memory_injection"] is False
 
 
-def test_cognitive_kernel_directly_answers_capability_help_without_runtime():
-    from kernel.cognitive_kernel import CognitiveKernel, KernelRequest
+def test_cognitive_kernel_sends_capability_help_to_model_runtime(monkeypatch):
+    from kernel.cognitive_kernel import CognitiveKernel, KernelRequest, KernelResponse
+
+    class _Gateway:
+        async def run(self, request):
+            assert request.metadata["model_required"] is True
+            return KernelResponse(
+                content="模型生成的能力说明",
+                session_id=request.session_id,
+                route="cognitive_runtime_v2",
+                intent_category="capability_help",
+                metadata={"model_call_count": 1},
+            )
+
+    monkeypatch.setattr("kernel.runtime_gateway.get_runtime_gateway", lambda: _Gateway())
 
     async def _run():
         kernel = CognitiveKernel()
         resp = await kernel.run(
             KernelRequest(query="你可以做什么", session_id="s1", user_id="u1")
         )
-        assert resp.route == "intent_lock_direct"
+        assert resp.route == "cognitive_runtime_v2"
         assert resp.intent_category == "capability_help"
-        assert "文档" in resp.content
-        assert "搜索" in resp.content
+        assert resp.content == "模型生成的能力说明"
         envelope = resp.metadata.get("turn_envelope") or {}
         assert envelope.get("version") == "turn_envelope_v1"
         assert envelope.get("tool_planning", {}).get("need_tool") is False
-        assert envelope.get("execution", {}).get("path") == "l0_direct"
-        assert envelope.get("finalize", {}).get("stop_reason") == "direct_answer"
+        assert envelope.get("execution", {}).get("path") == "runtime_gateway"
+        assert envelope.get("finalize", {}).get("stop_reason") == "runtime_completed"
 
     asyncio.run(_run())

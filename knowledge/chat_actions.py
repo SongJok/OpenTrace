@@ -22,6 +22,7 @@ from infra.storage.models import (
     KnowledgeRelation,
     KnowledgeSource,
     KnowledgeSourceVersion,
+    ConversationState,
     User,
 )
 from knowledge.compiler import content_hash
@@ -29,6 +30,8 @@ from knowledge.domain import KnowledgeStatus
 from knowledge.evolution import build_evolution_proposal
 from knowledge.jobs import enqueue_document_compile
 from knowledge.lint import run_knowledge_lint
+from knowledge.merge import resolve_merge_case
+from knowledge.trace import trace_knowledge_assets
 
 
 @dataclass(slots=True)
@@ -193,6 +196,7 @@ async def perform_knowledge_action(
     source_ids: list[str] | None = None,
     publish_policy: str = "review",
     resolution: dict[str, Any] | None = None,
+    session_id: str | None = None,
 ) -> KnowledgeActionResult:
     action = action or "query"
     if action == "ingest":
@@ -254,9 +258,48 @@ async def perform_knowledge_action(
         return KnowledgeActionResult(action, status, "知识页面关联已提交。", relations, {})
 
     if action == "trace":
-        return KnowledgeActionResult(action, "delegated", "请在回答引用卡片中展开来源、版本和证据片段。", [], {"source_ids": source_ids or []})
+        trace_ids = list(source_ids or [])
+        if not trace_ids and session_id:
+            state = await db.scalar(select(ConversationState).where(ConversationState.session_id == session_id))
+            for item in (getattr(state, "last_results", None) or []) if state is not None else []:
+                if isinstance(item, dict):
+                    candidates = [item]
+                    if isinstance(item.get("payload"), dict):
+                        candidates.append(item["payload"])
+                    if isinstance(item.get("citation"), dict):
+                        candidates.append(item["citation"])
+                    for candidate in candidates:
+                        trace_ids.extend(
+                            str(candidate[key]) for key in ("claim_id", "knowledge_claim_id", "page_id", "knowledge_page_id", "relation_id", "source_id", "source_version_id")
+                            if candidate.get(key)
+                        )
+        traced = await trace_knowledge_assets(
+            db, ids=trace_ids, tenant_id=tenant_id, workspace_id=workspace_id, owner_id=user.id,
+        )
+        return KnowledgeActionResult(
+            action, "completed" if traced else "needs_source",
+            f"已解析 {len(traced)} 条可追溯证据链。" if traced else "请提供引用、页面或结论 ID。",
+            traced, {"evidence_refs": traced, "source_ids": trace_ids},
+        )
 
     if action == "merge":
-        return KnowledgeActionResult(action, "delegated", "冲突合并需要在审核卡片中确认保留或合并策略。", [], {"resolution": resolution or {}})
+        resolution = resolution or {}
+        case_id = str(resolution.get("case_id") or "")
+        if case_id:
+            applied = await resolve_merge_case(
+                db, case_id=case_id, owner_id=user.id, tenant_id=tenant_id,
+                workspace_id=workspace_id, resolution=resolution,
+            )
+            await db.commit()
+            return KnowledgeActionResult(action, applied["status"], "冲突审核已应用。", [applied], applied)
+        from infra.storage.models import KnowledgeMergeCase
+        cases = list((await db.execute(select(KnowledgeMergeCase).where(
+            KnowledgeMergeCase.owner_id == user.id, KnowledgeMergeCase.tenant_id == tenant_id,
+            KnowledgeMergeCase.workspace_id == workspace_id, KnowledgeMergeCase.status == "open",
+        ).order_by(KnowledgeMergeCase.created_at.desc()).limit(50))).scalars().all())
+        data = [{"id": row.id, "entity_key": row.entity_key, "conflict_type": row.conflict_type,
+                 "candidate_ids": row.candidate_ids, "resolution": row.resolution} for row in cases]
+        return KnowledgeActionResult(action, "needs_review" if data else "completed",
+                                     f"发现 {len(data)} 个待审核冲突。" if data else "当前没有待审核冲突。", data, {"merge_cases": data})
 
     return KnowledgeActionResult(action, "delegated", "知识查询将由统一 RAG 路由执行。", [], {})

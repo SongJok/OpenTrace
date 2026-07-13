@@ -123,6 +123,29 @@ def _personalization_memory_enabled(request: Any) -> bool:
     return mode.strip().lower() == "enabled"
 
 
+def _model_answer_required(request: Any) -> bool:
+    """Whether this is a normal turn that must produce a model-authored answer.
+
+    The gateway may reject authentication, quota and explicit safety failures
+    before constructing a ``KernelRequest``.  Once a request enters the
+    kernel, deterministic routing may only provide hints or candidate context;
+    it must not become a user-visible answer.
+    """
+    metadata = getattr(request, "metadata", None) or {}
+    if "model_required" in metadata:
+        return bool(metadata["model_required"])
+    return bool(getattr(settings, "kernel_all_questions_require_model", True))
+
+
+def _mark_model_required(request: Any) -> bool:
+    required = _model_answer_required(request)
+    metadata = dict(getattr(request, "metadata", None) or {})
+    metadata["model_required"] = required
+    metadata.setdefault("answer_policy", "primary_model" if required else "legacy_fast_path")
+    request.metadata = metadata
+    return required
+
+
 def _record_identity_turn_seq(session_id: str) -> None:
     """Record the current WorkingMemory turn count when caching an identity answer."""
     try:
@@ -287,13 +310,14 @@ class CognitiveKernel:
             is_multi = _is_mq(request.query) or self._is_multi_question(request.query)
             force_mode_from_meta: str | None = request.metadata.get("force_mode")
             personalization_memory_enabled = _personalization_memory_enabled(request)
+            model_answer_required = _mark_model_required(request)
             from kernel.turn_bootstrap import bootstrap_turn_intent
 
             boot = await bootstrap_turn_intent(request)
             intent_lock = boot.intent_lock
 
             direct_answer = direct_answer_for_intent(intent_lock)
-            if direct_answer and not force_mode_from_meta:
+            if direct_answer and not force_mode_from_meta and not model_answer_required:
                 total_ms = int((time.monotonic() - t0) * 1000)
                 envelope = build_turn_envelope(
                     request=request,
@@ -326,7 +350,9 @@ class CognitiveKernel:
             from kernel.fast_tool_path import should_use_tool_fast_path
             from kernel.runtime_gateway import get_runtime_gateway
 
-            if should_use_tool_fast_path(intent_lock, force_mode=force_mode_from_meta):
+            if not model_answer_required and should_use_tool_fast_path(
+                intent_lock, force_mode=force_mode_from_meta
+            ):
                 tool_resp = await get_runtime_gateway().try_tool_fast_path(request)
                 if tool_resp is not None:
                     return tool_resp
@@ -336,7 +362,13 @@ class CognitiveKernel:
                 await load_or_create_session_memory(sid)
 
             # ── Working memory identity cache ──────────────────────
-            if sid and personalization_memory_enabled and is_identity_user_query(request.query) and not is_multi:
+            if (
+                not model_answer_required
+                and sid
+                and personalization_memory_enabled
+                and is_identity_user_query(request.query)
+                and not is_multi
+            ):
                 cached = get_cached_identity_answer(sid)
                 if cached:
                     identity_llm = bool(getattr(settings, "kernel_identity_llm_enabled", True))
@@ -426,7 +458,11 @@ class CognitiveKernel:
                 if has_attachments:
                     span.set_attribute("routing.has_attachments", True)
                 span.set_attribute("routing.skip_v5", True)
-            elif personalization_memory_enabled and settings.kernel_v5_routing_enabled:
+            elif (
+                not model_answer_required
+                and personalization_memory_enabled
+                and settings.kernel_v5_routing_enabled
+            ):
                 from kernel.routing.v5_facade import get_v5_routing_facade
 
                 fp = await get_v5_routing_facade(self).try_fast_path(
@@ -463,7 +499,9 @@ class CognitiveKernel:
                         )
                         force_req.metadata["intent_lock"] = lock_fp.to_dict()
                         force_req.metadata["task_type"] = lock_fp.task_type
-                        if should_use_tool_fast_path(lock_fp, force_mode=fp.force_mode):
+                        if not model_answer_required and should_use_tool_fast_path(
+                            lock_fp, force_mode=fp.force_mode
+                        ):
                             tool_fp = await get_runtime_gateway().try_tool_fast_path(force_req)
                             if tool_fp is not None:
                                 return tool_fp
@@ -552,7 +590,7 @@ class CognitiveKernel:
             span.set_attribute("cognition.intent_domain", intent.value)
             span.set_attribute("cognition.capability_level", assessment.level.value)
 
-            if assessment.level == CapabilityLevel.UNAVAILABLE:
+            if assessment.level == CapabilityLevel.UNAVAILABLE and not model_answer_required:
                 total_ms = int((time.monotonic() - t0) * 1000)
                 if is_identity_user_query(request.query):
                     if personalization_memory_enabled and sid:
@@ -657,6 +695,8 @@ class CognitiveKernel:
                     "turn_enrichment_applied": True,
                     "identity_prompt": identity_prompt,
                     "memory_context": memory_context,
+                    "model_required": model_answer_required,
+                    "capability_assessment": asdict(assessment),
                 },
                 trace_ctx=trace_ctx,
                 conversation_state=request.conversation_state,
@@ -841,13 +881,14 @@ class CognitiveKernel:
         is_multi = self._is_multi_question(request.query)
         force_mode_from_meta: str | None = request.metadata.get("force_mode")
         personalization_memory_enabled = _personalization_memory_enabled(request)
+        model_answer_required = _mark_model_required(request)
         from kernel.turn_bootstrap import bootstrap_turn_intent
 
         boot = await bootstrap_turn_intent(request)
         intent_lock = boot.intent_lock
 
         direct_answer = direct_answer_for_intent(intent_lock)
-        if direct_answer and not force_mode_from_meta:
+        if direct_answer and not force_mode_from_meta and not model_answer_required:
             envelope = build_turn_envelope(
                 request=request,
                 intent_lock=intent_lock,
@@ -882,7 +923,9 @@ class CognitiveKernel:
         from kernel.fast_tool_path import should_use_tool_fast_path
         from kernel.runtime_gateway import get_runtime_gateway
 
-        if should_use_tool_fast_path(intent_lock, force_mode=force_mode_from_meta):
+        if not model_answer_required and should_use_tool_fast_path(
+            intent_lock, force_mode=force_mode_from_meta
+        ):
             async for event in get_runtime_gateway().stream_tool_fast_path(request):
                 yield event
             return
@@ -891,7 +934,13 @@ class CognitiveKernel:
         if sid and personalization_memory_enabled:
             await load_or_create_session_memory(sid)
 
-        if sid and personalization_memory_enabled and is_identity_user_query(request.query) and not is_multi:
+        if (
+            not model_answer_required
+            and sid
+            and personalization_memory_enabled
+            and is_identity_user_query(request.query)
+            and not is_multi
+        ):
             cached = get_cached_identity_answer(sid)
             if cached:
                 identity_llm = bool(getattr(settings, "kernel_identity_llm_enabled", True))
@@ -951,7 +1000,11 @@ class CognitiveKernel:
             pass  # Skip V5 — explicit force_mode from slash command
         elif has_stream_attachments:
             pass  # Skip V5 — attachment contexts require full orchestrator
-        elif personalization_memory_enabled and settings.kernel_v5_routing_enabled:
+        elif (
+            not model_answer_required
+            and personalization_memory_enabled
+            and settings.kernel_v5_routing_enabled
+        ):
             from kernel.routing.v5_facade import (
                 get_v5_routing_facade,
                 stream_v5_fast_path_from_result,
@@ -996,6 +1049,7 @@ class CognitiveKernel:
                     "assembled_context": assembled_ctx_stream_dict,
                     "composed_context": assembled_ctx_stream_dict,
                     "turn_enrichment_applied": True,
+                    "model_required": model_answer_required,
                 },
                 trace_ctx=trace_ctx,
                 conversation_state=request.conversation_state,
@@ -1125,7 +1179,7 @@ class CognitiveKernel:
                     )
             # ── End Active Memory Detection ───────────────────────────
         except Exception as exc:  # noqa: BLE001
-            if is_identity_user_query(request.query):
+            if is_identity_user_query(request.query) and not model_answer_required:
                 envelope = build_turn_envelope(
                     request=request,
                     intent_lock=intent_lock,

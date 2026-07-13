@@ -16,7 +16,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gateway.api_gateway.routers.auth import get_current_user
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
-from infra.storage.models import Attachment, ChatSession, ConversationState, Feedback, ReasoningTrace, ToolStat, TraceLog, User
+from infra.storage.models import (
+    Attachment,
+    ChatSession,
+    ConversationState,
+    Feedback,
+    ReasoningTrace,
+    ResponseItem,
+    ResponseRecord,
+    ToolStat,
+    TraceLog,
+    User,
+)
 
 router = APIRouter()
 
@@ -174,11 +185,18 @@ async def list_conversations(
             .where(TraceLog.query.ilike(q) | TraceLog.response.ilike(q))
             .subquery()
         )
+        response_subq = (
+            select(ResponseRecord.conversation_id)
+            .join(ResponseItem, ResponseItem.response_id == ResponseRecord.id)
+            .where(ResponseItem.content.ilike(q))
+            .subquery()
+        )
         clauses.append(
             or_(
                 ChatSession.title.ilike(q),
                 ChatSession.display_title.ilike(q),
                 ChatSession.id.in_(select(trace_subq.c.session_id)),
+                ChatSession.id.in_(select(response_subq.c.conversation_id)),
             )
         )
 
@@ -464,6 +482,50 @@ async def get_messages(
     )
     if not sess_result.scalar_one_or_none():
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation not found")
+
+    # Responses/ResponseItem is the canonical source for new turns.  TraceLog
+    # remains a read-only compatibility archive for historical conversations.
+    response_rows = (
+        await db.execute(
+            select(ResponseRecord)
+            .where(ResponseRecord.conversation_id == conversation_id, ResponseRecord.user_id == current_user.id)
+            .order_by(ResponseRecord.created_at)
+            .limit(300)
+        )
+    ).scalars().all()
+    if response_rows:
+        response_ids = [row.id for row in response_rows]
+        response_items = (
+            await db.execute(
+                select(ResponseItem)
+                .where(ResponseItem.response_id.in_(response_ids))
+                .order_by(ResponseItem.response_id, ResponseItem.sequence_number)
+            )
+        ).scalars().all()
+        by_response: dict[str, list[ResponseItem]] = {}
+        for item in response_items:
+            by_response.setdefault(item.response_id, []).append(item)
+        canonical_messages: list[MessageOut] = []
+        for row in response_rows:
+            for item in by_response.get(row.id, []):
+                if item.item_type not in {"input_message", "message"}:
+                    continue
+                payload = dict(item.payload or {})
+                canonical_messages.append(
+                    MessageOut(
+                        id=item.id,
+                        role=item.role or ("user" if item.item_type == "input_message" else "assistant"),
+                        content=item.content or "",
+                        created_at=item.created_at.isoformat() if item.created_at else row.created_at.isoformat(),
+                        model=row.model,
+                        status=row.status,
+                        metadata=payload,
+                        citations=list(payload.get("citations") or []),
+                        annotations=list(payload.get("annotations") or []),
+                    )
+                )
+        if canonical_messages:
+            return canonical_messages
 
     logs_result = await db.execute(
         select(TraceLog)

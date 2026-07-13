@@ -308,11 +308,21 @@ async def compile_document_knowledge_in_session(
         job.started_at = job.started_at or datetime.now(timezone.utc)
 
     try:
-        publication_status = (
-            KnowledgeStatus.PUBLISHED.value
-            if getattr(settings, "knowledge_auto_publish", True)
-            else KnowledgeStatus.REVIEW.value
-        )
+        try:
+            document_metadata = json.loads(document.doc_metadata or "{}")
+        except (TypeError, json.JSONDecodeError):
+            document_metadata = {}
+        requested_publish_policy = str(document_metadata.get("publish_policy") or "").lower()
+        if requested_publish_policy == "review":
+            publication_status = KnowledgeStatus.REVIEW.value
+        elif requested_publish_policy == "auto":
+            publication_status = KnowledgeStatus.PUBLISHED.value
+        else:
+            publication_status = (
+                KnowledgeStatus.PUBLISHED.value
+                if getattr(settings, "knowledge_auto_publish", True)
+                else KnowledgeStatus.REVIEW.value
+            )
         rule_version = await active_rule_version(
             db,
             tenant_id=document.tenant_id,
@@ -472,7 +482,6 @@ async def compile_document_knowledge_in_session(
             "rule_version": rule_version,
         }
         try:
-            document_metadata = json.loads(document.doc_metadata or "{}")
             attachment_id = document_metadata.get("attachment_id")
             if attachment_id:
                 attachment = await db.get(Attachment, attachment_id)

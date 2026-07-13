@@ -41,6 +41,8 @@ class AlembicIdempotentContractTests(unittest.TestCase):
             "tenant_id",
             "org_id",
             "workspace_id",
+            "active_response_id",
+            "branch_root_response_id",
         ]:
             self.assertIn(f"ADD COLUMN IF NOT EXISTS {column}", code)
 

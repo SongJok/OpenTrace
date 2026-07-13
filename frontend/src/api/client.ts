@@ -6,7 +6,6 @@ const RESPONSES_BASE = '/api/v2'
 
 export type { TurnMetaEnvelope }
 const ENV_API = (import.meta as any)?.env?.VITE_API_URL as string | undefined
-const RESPONSES_API_V2_ENABLED = String((import.meta as any)?.env?.VITE_RESPONSES_API_V2_ENABLED ?? '').toLowerCase() === 'true'
 const BACKEND_DIRECT = `${(ENV_API && ENV_API.trim()) ? ENV_API.trim() : 'http://localhost:14100'}/api/v1`
 const RESPONSES_BACKEND_DIRECT = `${(ENV_API && ENV_API.trim()) ? ENV_API.trim() : 'http://localhost:14100'}/api/v2`
 
@@ -98,9 +97,14 @@ async function apiFetchResponses(path: string, init?: RequestInit): Promise<Resp
 
 function responseToLegacyChat(payload: any): any {
   const output = Array.isArray(payload?.output) ? payload.output : []
-  const message = output.find((item: any) => item?.type === 'message' && item?.role === 'assistant')
+  const message = output.find((item: any) =>
+    (item?.type === 'assistant_message' || item?.type === 'message') && item?.role === 'assistant'
+  )
   const metadata = payload?.metadata ?? message?.payload ?? {}
   return {
+    response_id: payload?.id,
+    status: payload?.status,
+    conversation_id: payload?.conversation_id,
     content: message?.content ?? '',
     metadata,
     citations: metadata.citations ?? [],
@@ -311,7 +315,7 @@ export async function apiBranchConversation(token: string, id: string, messageId
 }
 
 export async function apiGetMessageVersions(token: string, messageId: string): Promise<any> {
-  const res = await apiFetch(`/chat/messages/${messageId}/versions`, { headers: authHeaders(token) })
+  const res = await apiFetchResponses(`/messages/${messageId}/versions`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error('Failed to get message versions')
   return res.json()
 }
@@ -323,7 +327,7 @@ export async function apiSubmitFeedback(
   feedbackType: 'like' | 'dislike' | 'none',
   score?: number,
 ): Promise<any> {
-  const res = await apiFetch('/chat/feedback', {
+  const res = await apiFetchResponses(`/responses/${encodeURIComponent(messageId || sessionId)}/feedback`, {
     method: 'POST',
     headers: authHeaders(token),
     body: JSON.stringify({
@@ -343,22 +347,42 @@ export async function apiChatSync(
   query: string,
   options: Record<string, unknown> = {}
 ): Promise<any> {
-  if (RESPONSES_API_V2_ENABLED) {
-    const res = await apiFetchResponses('/responses', {
-      method: 'POST',
-      headers: authHeaders(token),
-      body: JSON.stringify({ input: query, conversation_id: sessionId, stream: false, ...options }),
-    })
-    if (!res.ok) throw new Error(await readApiError(res, 'Responses sync failed'))
-    return responseToLegacyChat(await res.json())
-  }
-  const payload = { session_id: sessionId, query, stream: false, ...options }
-  const res = await apiFetch('/chat', {
+  const res = await apiFetchResponses('/responses', {
     method: 'POST',
     headers: authHeaders(token),
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ input: query, conversation_id: sessionId, stream: false, ...options }),
   })
-  if (!res.ok) throw new Error(await readApiError(res, 'Chat sync failed'))
+  if (!res.ok) throw new Error(await readApiError(res, 'Responses sync failed'))
+  return responseToLegacyChat(await res.json())
+}
+
+export async function apiGetResponse(token: string, responseId: string): Promise<any> {
+  const res = await apiFetchResponses(`/responses/${encodeURIComponent(responseId)}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取响应失败'))
+  return res.json()
+}
+
+export async function apiResumeResponse(
+  token: string,
+  responseId: string,
+  startingAfter = -1,
+  callbacks: Parameters<typeof streamSseResponse>[1] = {},
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await apiFetchResponses(`/responses/${encodeURIComponent(responseId)}?stream=true&starting_after=${startingAfter}`, {
+    headers: authHeaders(token),
+    signal,
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '恢复响应失败'))
+  await streamSseResponse(res, callbacks, signal)
+}
+
+export async function apiCancelResponse(token: string, responseId: string): Promise<any> {
+  const res = await apiFetchResponses(`/responses/${encodeURIComponent(responseId)}/cancel`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '停止响应失败'))
   return res.json()
 }
 
@@ -378,6 +402,8 @@ function parseSseEventBlock(block: string): { type: string; data: any } | null {
 export async function streamSseResponse(
   res: Response,
   callbacks: {
+    onEvent?: (event: { sequence_number?: number; type?: string; data?: any }) => void
+    onResponseCreated?: (payload: any) => void
     onReasoningStep?: (step: ReasoningStep) => void
     onThinking?: (payload: any) => void
     onDelta?: (text: string) => void
@@ -400,8 +426,12 @@ export async function streamSseResponse(
     while (true) {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
+      if (done) {
+        if (!buffer.trim()) break
+        buffer += '\n\n'
+      } else {
+        buffer += decoder.decode(value, { stream: true })
+      }
       let splitIndex: number
       while ((splitIndex = buffer.indexOf('\n\n')) >= 0) {
         const chunk = buffer.slice(0, splitIndex).trim()
@@ -411,9 +441,14 @@ export async function streamSseResponse(
         if (!event) continue
         const type = String(event.type || '')
         const data = event.data ?? {}
+        callbacks.onEvent?.(event)
 
         if (type === 'delta' || type === 'answer.delta' || type === 'response.output_text.delta') {
           callbacks.onDelta?.(String(data.text ?? data.delta ?? ''))
+          continue
+        }
+        if (type === 'response.created') {
+          callbacks.onResponseCreated?.(data)
           continue
         }
         if (type === 'response.progress') {
@@ -464,6 +499,7 @@ export async function streamSseResponse(
           throw new Error(data?.message ? String(data.message) : 'Streaming error')
         }
       }
+      if (done) break
     }
   } finally {
     reader.releaseLock()
@@ -475,6 +511,8 @@ export async function apiChatStream(
   sessionId: string,
   query: string,
   callbacks: {
+    onEvent?: (event: { sequence_number?: number; type?: string; data?: any }) => void
+    onResponseCreated?: (payload: any) => void
     onReasoningStep?: (step: ReasoningStep) => void
     onThinking?: (payload: any) => void
     onDelta?: (text: string) => void
@@ -498,67 +536,37 @@ export async function apiChatStream(
   void callbacks.onDagNodeStart
   void callbacks.onDagNodeComplete
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-  const finalPayload = { session_id: sessionId, query, stream: true, ...payload, ...(graphControls ? { graph_controls: graphControls } : {}) }
   try {
-    const res = await (RESPONSES_API_V2_ENABLED
-      ? apiFetchResponses('/responses', {
-          method: 'POST',
-          headers: authHeaders(token),
-          body: JSON.stringify({ input: query, conversation_id: sessionId, stream: true, ...payload, ...(graphControls ? { graph_controls: graphControls } : {}) }),
-          signal,
-        })
-      : apiFetch('/chat', {
+    const res = await apiFetchResponses('/responses', {
       method: 'POST',
       headers: authHeaders(token),
-      body: JSON.stringify(finalPayload),
+      body: JSON.stringify({ input: query, conversation_id: sessionId, stream: true, ...payload, ...(graphControls ? { graph_controls: graphControls } : {}) }),
       signal,
-      }))
+    })
 
-    if (res.status === 404 || res.headers.get('content-type')?.includes('application/json') && !res.headers.get('content-type')?.includes('text/event-stream')) {
-      const sync = await apiChatSync(token, sessionId, query, { ...payload, stream: false, ...(graphControls ? { graph_controls: graphControls } : {}) })
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-      const fm = sync?.metadata?.force_mode ?? null
-      if (fm) callbacks.onForceMode?.(fm)
-      if (sync?.reasoning_steps && Array.isArray(sync.reasoning_steps)) {
-        for (const step of sync.reasoning_steps) callbacks.onReasoningStep?.(step)
+    if (res.headers.get('content-type')?.includes('application/json') && !res.headers.get('content-type')?.includes('text/event-stream')) {
+      const response = (await res.json().catch(() => null)) as any
+      if (!response) throw new Error('Invalid Responses response')
+      if (response.id && ['queued', 'in_progress'].includes(String(response.status || ''))) {
+        callbacks.onResponseCreated?.({ response_id: response.id, status: response.status })
+        await apiResumeResponse(token, String(response.id), -1, callbacks, signal)
+        return
       }
-      if (sync?.thinking) callbacks.onThinking?.(sync.thinking)
-      const streamedText = String(sync?.delta ?? sync?.content ?? sync?.answer ?? '')
-      if (sync?.delta) {
-        callbacks.onDelta?.(String(sync.delta))
-      } else if (streamedText) {
-        const segments = streamedText.match(/\n\n|\n|.{1,12}/g) || []
-        for (const seg of segments) {
-          if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-          callbacks.onDelta?.(seg)
-          await new Promise((resolve) => window.setTimeout(resolve, 16))
-        }
-      }
-      if (sync?.tool_calls && Array.isArray(sync.tool_calls)) {
-        for (const item of sync.tool_calls) callbacks.onToolCall?.(item)
-      }
-      if (sync?.tool_results && Array.isArray(sync.tool_results)) {
-        for (const item of sync.tool_results) callbacks.onToolResult?.(item)
-      }
-      await callbacks.onFinalAnswer?.(
-        normalizeFinalAnswerEnvelope({
-          content: sync?.content ?? sync?.answer ?? '',
-          execution_graph: sync?.execution_graph ?? null,
-          citations: sync?.citations ?? [],
-          annotations: sync?.annotations ?? [],
-          metadata: sync?.metadata ?? {},
-          prompt_tokens: sync?.prompt_tokens,
-          completion_tokens: sync?.completion_tokens,
-        }),
-      )
+      await callbacks.onFinalAnswer?.(normalizeFinalAnswerEnvelope({
+        content: response?.content ?? response?.output_text ?? '',
+        execution_graph: response?.execution_graph ?? null,
+        citations: response?.citations ?? [],
+        annotations: response?.annotations ?? [],
+        metadata: response?.metadata ?? {},
+      }))
       return
     }
 
-    if (!res.ok) throw new Error(await readApiError(res, 'Chat stream failed'))
+    if (!res.ok) throw new Error(await readApiError(res, 'Responses stream failed'))
     const contentType = res.headers.get('content-type') || ''
     if (!contentType.includes('text/event-stream')) {
       const sync = (await res.json().catch(() => null)) as any
-      if (!sync) throw new Error('Invalid chat response')
+      if (!sync) throw new Error('Invalid Responses response')
       await callbacks.onFinalAnswer?.(
         normalizeFinalAnswerEnvelope({
           content: sync?.content ?? '',
@@ -571,16 +579,30 @@ export async function apiChatStream(
       return
     }
 
-    await streamSseResponse(res, callbacks, signal)
-  } catch (err) {
-    if (err instanceof Error && err.message.includes('Not Found')) {
-      await callbacks.onFinalAnswer?.(
-        normalizeFinalAnswerEnvelope({
-          content: `我叫 OpenTrace，是这个工作台里的 AI 助手。\n\n你刚刚问的是：${query}\n\n当前后端聊天接口返回了 Not Found，所以我先用前端兜底回复你。`,
-        }),
-      )
-      return
+    let responseId: string | null = null
+    let cursor = -1
+    const streamCallbacks = {
+      ...callbacks,
+      onEvent: (event: { sequence_number?: number; type?: string; data?: any }) => {
+        if (typeof event.sequence_number === 'number') cursor = Math.max(cursor, event.sequence_number)
+        responseId = String(event.data?.response_id || event.data?.id || responseId || '') || responseId
+        callbacks.onEvent?.(event)
+      },
     }
+    try {
+      await streamSseResponse(res, streamCallbacks, signal)
+    } catch (streamError) {
+      if (!signal?.aborted && responseId) {
+        try {
+          await apiResumeResponse(token, responseId, cursor, streamCallbacks, signal)
+          return
+        } catch {
+          // Fall through to the regular error path after one deterministic resume.
+        }
+      }
+      throw streamError
+    }
+  } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw err
     }
@@ -602,7 +624,9 @@ export async function apiSetSessionSkills(..._args: any[]): Promise<any> {
 }
 
 export async function apiStopChatStream(..._args: any[]): Promise<any> {
-  return { ok: true }
+  const [token, responseId] = _args as [string, string]
+  if (!token || !responseId || responseId.startsWith('c_')) return { ok: true }
+  return apiCancelResponse(token, responseId)
 }
 
 export async function apiCreateMemory(token: string, payload: any): Promise<any> {
@@ -1105,7 +1129,7 @@ export async function apiUploadAttachment(
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', `${BASE}/chat/attachments`)
+    xhr.open('POST', `${RESPONSES_BASE}/files`)
 
     xhr.setRequestHeader('Authorization', `Bearer ${token}`)
 
@@ -1143,7 +1167,7 @@ export async function apiListAttachments(
   token: string,
   sessionId: string,
 ): Promise<AttachmentListResponse> {
-  const res = await fetch(`${BASE}/chat/attachments/${sessionId}`, {
+  const res = await fetch(`${RESPONSES_BASE}/files/${sessionId}`, {
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!res.ok) {
@@ -1157,7 +1181,7 @@ export async function apiDeleteAttachment(
   token: string,
   attachmentId: string,
 ): Promise<{ attachment_id: string; status: string }> {
-  const res = await fetch(`${BASE}/chat/attachments/${attachmentId}`, {
+  const res = await fetch(`${RESPONSES_BASE}/files/${attachmentId}`, {
     method: 'DELETE',
     headers: { Authorization: `Bearer ${token}` },
   })
@@ -1173,7 +1197,7 @@ export async function apiPromoteAttachment(
   attachmentId: string,
   publishPolicy: 'review' | 'auto' = 'review',
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${BASE}/chat/attachments/${attachmentId}/promote?publish_policy=${publishPolicy}`, {
+  const res = await fetch(`${RESPONSES_BASE}/files/${attachmentId}/promote?publish_policy=${publishPolicy}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
   })

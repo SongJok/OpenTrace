@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { BarChart3, ChevronDown, Database, FileWarning, FileText, Package, User, type LucideIcon } from 'lucide-react'
+import { BarChart3, ChevronDown, Database, FileWarning, FileText, Package, User, Share2, MoreHorizontal, Sparkles, type LucideIcon } from 'lucide-react'
 import Sidebar from '../components/Sidebar'
 import MessageList, { type MessageListHandle } from '../components/MessageList'
 import ChatInput from '../components/ChatInput'
@@ -10,11 +10,10 @@ import { useChatStore } from '../store/chat'
 import { getShowAvatars, setShowAvatars } from '../store/theme'
 
 const QUICK_TAGS: Array<{ label: string; prefix: string; icon: LucideIcon }> = [
-  { label: 'RAG', prefix: '/rag', icon: FileText },
-  { label: '数据查询', prefix: '/data_query', icon: Database },
-  { label: '数据分析', prefix: '/data_analysis', icon: BarChart3 },
-  { label: '异常追踪', prefix: '/skills', icon: FileWarning },
-  { label: '产品查询', prefix: '/product', icon: Package },
+  { label: '总结一段文字', prefix: '请总结以下内容：', icon: FileText },
+  { label: '分析数据', prefix: '/data_analysis ', icon: BarChart3 },
+  { label: '搜索知识库', prefix: '/rag ', icon: Database },
+  { label: '编写代码', prefix: '请帮我编写代码：', icon: Package },
 ]
 
 function QuickTags() {
@@ -88,14 +87,14 @@ export default function ChatPage() {
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[var(--bg)] text-[var(--text)]">
       <Sidebar />
-      <div className="relative flex min-w-0 flex-1 flex-col bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.04),transparent_32%),linear-gradient(180deg,var(--bg-secondary),var(--bg))]">
+      <div className="relative flex min-w-0 flex-1 flex-col bg-[var(--bg)]">
         {showWelcome ? (
           <div className="relative flex flex-1 flex-col justify-center overflow-hidden px-2 py-10 sm:px-6 animate-fade-in">
             <div className="pointer-events-none absolute inset-0">
               <div className="absolute left-1/2 top-[18%] h-72 w-[34rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,var(--hero-glow-secondary),transparent_72%)] blur-3xl opacity-80" />
               <div className="absolute left-1/2 top-[48%] h-96 w-[48rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.7),transparent_70%)] blur-3xl opacity-70" />
             </div>
-            <div className="relative mx-auto flex w-full max-w-[980px] -translate-y-4 flex-col items-center">
+            <div className="relative mx-auto flex w-full max-w-[960px] -translate-y-4 flex-col items-center">
               <WelcomeScreen />
               <ChatInput variant="welcome" />
             </div>
@@ -103,12 +102,16 @@ export default function ChatPage() {
           </div>
         ) : (
           <>
-            <div className="flex h-16 flex-shrink-0 items-center justify-between border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg)_92%,transparent)] px-6 backdrop-blur-xl">
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-secondary)]">OpenTrace</div>
-                <div className="mt-1 text-sm text-[var(--text)]">Chat · 证据驱动的对话工作台</div>
-              </div>
-              <div className="flex items-center gap-3">
+            <header className="flex h-14 flex-shrink-0 items-center justify-between border-b border-[var(--border-subtle)] px-4 sm:px-6">
+              <button type="button" className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--text)] hover:bg-[var(--surface)]" aria-label="选择模型">
+                <Sparkles size={16} className="text-[var(--accent)]" />
+                <span>OpenTrace</span>
+                <span className="text-[var(--text-secondary)]">· Auto</span>
+                <ChevronDown size={14} className="text-[var(--text-secondary)]" />
+              </button>
+              <div className="flex items-center gap-1.5">
+                <button type="button" aria-label="分享对话" title="分享对话" className="rounded-lg p-2 text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Share2 size={16} /></button>
+                <button type="button" aria-label="更多操作" title="更多操作" className="rounded-lg p-2 text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><MoreHorizontal size={18} /></button>
                 <button
                   onClick={toggleAvatars}
                   className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] transition-colors ${
@@ -120,11 +123,8 @@ export default function ChatPage() {
                   <User size={12} />
                   头像
                 </button>
-                <div className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-3 py-1 text-[11px] text-[var(--text-secondary)]">
-                  AI Workflow Console
-                </div>
               </div>
-            </div>
+            </header>
             <MessageList ref={messageListRef} onScrollStateChange={handleScrollStateChange} showAvatars={showAvatars} />
             <div className="relative flex-shrink-0">
               {!isAtBottom && (

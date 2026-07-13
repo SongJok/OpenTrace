@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.resource_scope import normalized_tenant_scope, scoped_documents_statement
@@ -32,6 +32,8 @@ from knowledge.jobs import enqueue_document_compile
 from knowledge.domain import KnowledgeStatus
 from knowledge.lint import run_knowledge_lint
 from knowledge.evolution import build_evolution_proposal
+from knowledge.merge import resolve_merge_case as apply_merge_case
+from knowledge.trace import trace_knowledge_assets
 
 router = APIRouter()
 
@@ -51,6 +53,10 @@ class KnowledgeRuleRequest(BaseModel):
     schema_json: dict = Field(default_factory=dict)
     instructions: str | None = None
     provenance: dict = Field(default_factory=dict)
+
+
+class KnowledgeTraceRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list, max_length=100)
 
 
 @router.get("/knowledge/sources")
@@ -84,6 +90,45 @@ async def list_knowledge_sources(
         }
         for row in rows
     ]
+
+
+@router.get("/knowledge/sources/{source_id}/versions")
+async def list_knowledge_source_versions(
+    http_request: Request,
+    source_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
+    source = await db.scalar(select(KnowledgeSource).where(
+        KnowledgeSource.id == source_id, KnowledgeSource.owner_id == current_user.id,
+        KnowledgeSource.tenant_id == tenant_id, KnowledgeSource.workspace_id == workspace_id,
+    ))
+    if source is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Knowledge source not found")
+    rows = (await db.execute(select(KnowledgeSourceVersion).where(
+        KnowledgeSourceVersion.source_id == source.id,
+    ).order_by(KnowledgeSourceVersion.version_number.desc()))).scalars().all()
+    return [{
+        "id": row.id, "version_number": row.version_number, "status": row.status,
+        "content_hash": row.content_hash, "compiler_version": row.compiler_version,
+        "raw_metadata": row.raw_metadata, "compiled_at": row.compiled_at.isoformat() if row.compiled_at else None,
+        "active": row.id == source.active_version_id,
+    } for row in rows]
+
+
+@router.post("/knowledge/trace")
+async def trace_knowledge(
+    http_request: Request,
+    req: KnowledgeTraceRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
+    refs = await trace_knowledge_assets(
+        db, ids=req.ids, tenant_id=tenant_id, workspace_id=workspace_id, owner_id=current_user.id,
+    )
+    return {"evidence_refs": refs, "count": len(refs)}
 
 
 @router.get("/knowledge/rules")
@@ -330,6 +375,27 @@ async def knowledge_evolution_proposal(
     return result
 
 
+@router.get("/knowledge/observations")
+async def list_knowledge_observations(
+    http_request: Request,
+    limit: int = 100,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    from infra.storage.models import KnowledgeObservation
+    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
+    rows = (await db.execute(select(KnowledgeObservation).where(
+        KnowledgeObservation.owner_id == current_user.id,
+        KnowledgeObservation.tenant_id == tenant_id,
+        KnowledgeObservation.workspace_id == workspace_id,
+    ).order_by(KnowledgeObservation.created_at.desc()).limit(max(1, min(limit, 500))))).scalars().all()
+    return [{
+        "id": row.id, "metric": row.metric, "value": row.value,
+        "dimensions": row.dimensions, "trigger": row.trigger,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    } for row in rows]
+
+
 @router.get("/knowledge/merge-cases")
 async def list_knowledge_merge_cases(
     http_request: Request,
@@ -365,12 +431,15 @@ async def resolve_knowledge_merge_case(
     ))
     if row is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Knowledge merge case not found")
-    row.status = "resolved"
-    row.resolution = {**resolution, "resolved_via": "knowledge_api"}
-    row.resolved_by = current_user.id
-    row.resolved_at = datetime.now(timezone.utc)
+    try:
+        result = await apply_merge_case(
+            db, case_id=case_id, owner_id=current_user.id, tenant_id=tenant_id,
+            workspace_id=workspace_id, resolution=resolution,
+        )
+    except ValueError as exc:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
     await db.commit()
-    return {"resolved": True, "case_id": row.id}
+    return {"resolved": True, **result}
 
 
 @router.post("/knowledge/pages/{page_id}/publish")
@@ -436,6 +505,12 @@ async def publish_knowledge_page(
         previous = await db.get(KnowledgeSourceVersion, previous_version_id)
         if previous is not None:
             previous.status = KnowledgeStatus.ARCHIVED.value
+            for model in (KnowledgePage, KnowledgeClaim, KnowledgeRelation):
+                await db.execute(
+                    update(model)
+                    .where(model.source_version_id == previous.id)
+                    .values(status=KnowledgeStatus.ARCHIVED.value)
+                )
     for item in (*pages, *claims, *relations):
         item.status = KnowledgeStatus.PUBLISHED.value
     version.status = KnowledgeStatus.PUBLISHED.value

@@ -19,6 +19,7 @@ export interface TurnMetaEnvelope {
   evidence_refs?: unknown[]
   knowledge_operations?: unknown[]
   confidence?: number
+  confidence_level?: string
   uncertainty?: string[]
   trace_id?: string
 }
@@ -107,6 +108,7 @@ export function normalizeFinalAnswerEnvelope(data: unknown): TurnMetaEnvelope {
     evidence_refs,
     knowledge_operations,
     confidence: typeof d.confidence === 'number' ? d.confidence : typeof meta.confidence === 'number' ? meta.confidence : undefined,
+    confidence_level: typeof d.confidence_level === 'string' ? d.confidence_level : typeof meta.confidence_level === 'string' ? meta.confidence_level : undefined,
     uncertainty: Array.isArray(d.uncertainty) ? d.uncertainty as string[] : Array.isArray(meta.uncertainty) ? meta.uncertainty as string[] : [],
     trace_id: typeof d.trace_id === 'string' ? d.trace_id : typeof meta.trace_id === 'string' ? meta.trace_id : undefined,
   }

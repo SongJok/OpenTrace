@@ -7,7 +7,17 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import ARRAY
 
 try:
@@ -84,6 +94,10 @@ class ChatSession(Base):
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     enabled_skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     disabled_skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    # Active response and branch root make conversation continuation explicit;
+    # the UI no longer needs to infer lineage from legacy TraceLog rows.
+    active_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    branch_root_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     user: Mapped[User] = relationship(back_populates="sessions")
     trace_logs: Mapped[list[TraceLog]] = relationship(
@@ -203,10 +217,41 @@ class ResponseRecord(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     response_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    request_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ResponseToolExecution(Base):
+    """Durable idempotency ledger for tool calls in a Response turn."""
+
+    __tablename__ = "response_tool_executions"
+    __table_args__ = (
+        UniqueConstraint("response_id", "call_id", name="uq_response_tool_execution_call"),
+        UniqueConstraint("idempotency_key", name="uq_response_tool_execution_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    response_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("responses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    call_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    arguments: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    side_effect: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -245,6 +290,27 @@ class ResponseEvent(Base):
     sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ResponseModelCall(Base):
+    """Auditable provider invocation belonging to a canonical Response."""
+
+    __tablename__ = "response_model_calls"
+    __table_args__ = (
+        UniqueConstraint("response_id", "call_id", name="uq_response_model_call"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    response_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("responses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    call_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="query")
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="completed")
+    call_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -82,6 +82,8 @@ export interface Message {
   model?: string
   tool_calls?: ToolCallBlock[]
   turn_meta?: TurnMetaEnvelope
+  /** Public-safe execution updates. Kept separate from answer text. */
+  progress?: string[]
 }
 
 export interface Conversation {
@@ -100,6 +102,7 @@ interface ChatState {
   activeId: string | null
   messages: Record<string, Message[]>
   streaming: boolean
+  activeResponseId: string | null
   reasoningSteps: Record<string, ReasoningStep[]>
   executionGraphs: Record<string, ExecutionGraphData | null>
   activeReasoningMessageId: Record<string, string | null>
@@ -119,6 +122,7 @@ interface ChatState {
   stopLastAssistantMessage: (id: string) => void
   failLastAssistantMessage: (id: string, text: string) => void
   setStreaming: (v: boolean) => void
+  setActiveResponseId: (id: string | null) => void
   updateTitle: (id: string, title: string) => void
   updateConversationMeta: (conversation: Partial<Conversation> & { id: string }) => void
   resetReasoning: (sessionId: string, messageId: string) => void
@@ -188,6 +192,7 @@ function asDoneMessage(raw: any): Message {
     citations: Array.isArray(raw?.citations) ? (raw.citations as CitationItem[]) : undefined,
     annotations: Array.isArray(raw?.annotations) ? (raw.annotations as MessageAnnotation[]) : undefined,
     turn_meta: turnMeta,
+    progress: Array.isArray(raw?.progress) ? raw.progress.map(String) : [],
   }
 }
 
@@ -207,6 +212,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   activeId: null,
   messages: {},
   streaming: false,
+  activeResponseId: null,
   reasoningSteps: {},
   executionGraphs: {},
   activeReasoningMessageId: {},
@@ -291,10 +297,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       const idx = list.length - 1
       const last = list[idx]
       if (last.role !== 'assistant' || last.status !== 'streaming') return {}
-      list[idx] = {
-        ...last,
-        streamText: last.streamText ? `${last.streamText}\n${text}` : text,
-      }
+      const progress = [...(last.progress ?? [])]
+      const normalized = String(text).trim()
+      if (normalized && progress[progress.length - 1] !== normalized) progress.push(normalized)
+      // Progress/reasoning is a separate UI channel. Never append it to the
+      // assistant answer stream; this keeps the final response copyable and
+      // compatible with Responses typed output items.
+      list[idx] = { ...last, progress }
       return { messages: { ...s.messages, [id]: list } }
     }),
 
@@ -385,6 +394,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     }),
 
   setStreaming: (v) => set({ streaming: v }),
+  setActiveResponseId: (id) => set({ activeResponseId: id }),
   updateTitle: (id, title) =>
     set((s) => ({
       conversations: s.conversations.map((c) => (c.id === id ? { ...c, title } : c)),

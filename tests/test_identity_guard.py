@@ -3,8 +3,8 @@ from __future__ import annotations
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import patch
 
-from infra.config.settings import settings
 from kernel.cognitive_kernel import CognitiveKernel, KernelRequest
+from kernel.cognitive_kernel import KernelResponse
 from kernel.identity.system_identity import (
     CANONICAL_IDENTITY_RESPONSE,
     enforce_identity_output,
@@ -26,33 +26,66 @@ class IdentityGuardTests(IsolatedAsyncioTestCase):
         clear_session_memory("session-cache-hit")
         clear_session_memory("session-store")
 
-    async def test_kernel_returns_cached_identity_answer_without_orchestrator(self):
+    @staticmethod
+    def _runtime_gateway(content: str):
+        class _Gateway:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def run(self, request):
+                self.calls += 1
+                assert request.metadata["model_required"] is True
+                return KernelResponse(
+                    content=content,
+                    session_id=request.session_id,
+                    route="cognitive_runtime_v2",
+                    intent_category="identity",
+                    metadata={"model_call_count": 1, "model_call_id": "mc_identity"},
+                )
+
+            async def stream(self, request):
+                self.calls += 1
+                assert request.metadata["model_required"] is True
+                yield {
+                    "type": "final_answer",
+                    "data": {
+                        "content": content,
+                        "route": "cognitive_runtime_v2",
+                        "metadata": {"model_call_count": 1, "model_call_id": "mc_identity"},
+                    },
+                }
+
+        return _Gateway()
+
+    async def test_kernel_identity_cache_is_context_not_a_direct_answer(self):
         cache_identity_answer(
             "session-cache-hit",
             "你是谁",
             CANONICAL_IDENTITY_RESPONSE,
         )
         set_identity_turn_sequence("session-cache-hit", 0)
+        gateway = self._runtime_gateway("模型生成的身份回答")
         kernel = CognitiveKernel()
 
-        with patch("kernel.orchestrator.CognitiveOrchestrator") as orchestrator_cls:
+        with patch("kernel.runtime_gateway.get_runtime_gateway", return_value=gateway):
             resp = await kernel.run(
                 KernelRequest(query="你是谁", session_id="session-cache-hit")
             )
 
-        self.assertEqual(resp.content, CANONICAL_IDENTITY_RESPONSE)
-        self.assertEqual(resp.route, "working_memory")
+        self.assertEqual(resp.content, "模型生成的身份回答")
+        self.assertEqual(resp.route, "cognitive_runtime_v2")
+        self.assertEqual(gateway.calls, 1)
         envelope = resp.metadata.get("turn_envelope") or {}
         self.assertEqual(envelope.get("version"), "turn_envelope_v1")
         self.assertFalse(envelope.get("tool_planning", {}).get("need_tool"))
         self.assertEqual(
             envelope.get("execution", {}).get("answer_source"),
-            "working_memory_identity_cache",
+            "cognitive_runtime",
         )
-        orchestrator_cls.assert_not_called()
 
     async def test_kernel_stores_identity_answer_after_first_response(self):
-        with patch.object(settings, "kernel_identity_llm_enabled", False):
+        gateway = self._runtime_gateway(CANONICAL_IDENTITY_RESPONSE)
+        with patch("kernel.runtime_gateway.get_runtime_gateway", return_value=gateway):
             kernel = CognitiveKernel()
             resp = await kernel.run(
                 KernelRequest(query="你是谁", session_id="session-store")
@@ -71,16 +104,19 @@ class IdentityGuardTests(IsolatedAsyncioTestCase):
             CANONICAL_IDENTITY_RESPONSE,
         )
         set_identity_turn_sequence("session-cache-hit", 0)
+        gateway = self._runtime_gateway("模型生成的流式身份回答")
         kernel = CognitiveKernel()
 
         events = []
-        async for event in kernel.stream(
-            KernelRequest(query="你是谁", session_id="session-cache-hit")
-        ):
-            events.append(event)
+        with patch("kernel.runtime_gateway.get_runtime_gateway", return_value=gateway):
+            async for event in kernel.stream(
+                KernelRequest(query="你是谁", session_id="session-cache-hit")
+            ):
+                events.append(event)
 
         self.assertEqual(events[-1]["type"], "final_answer")
-        self.assertEqual(events[-1]["data"]["content"], CANONICAL_IDENTITY_RESPONSE)
+        self.assertEqual(events[-1]["data"]["content"], "模型生成的流式身份回答")
+        self.assertEqual(gateway.calls, 1)
         envelope = events[-1]["data"].get("metadata", {}).get("turn_envelope") or {}
         self.assertEqual(envelope.get("streaming", {}).get("mode"), "sse")
         self.assertFalse(envelope.get("tool_planning", {}).get("need_tool"))

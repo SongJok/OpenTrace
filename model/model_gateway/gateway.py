@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from enum import Enum
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Iterator, Optional
 
 from infra.config.settings import settings
 from infra.observability.logger import get_logger
@@ -24,6 +27,34 @@ from model.llm_adapter.openai_adapter import OpenAICompatibleAdapter
 
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
+
+_model_call_capture: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "model_call_capture", default=None
+)
+
+
+@contextmanager
+def capture_model_calls() -> Iterator[list[dict[str, Any]]]:
+    """Capture successful provider calls made while executing one user turn."""
+    calls: list[dict[str, Any]] = []
+    token = _model_call_capture.set(calls)
+    try:
+        yield calls
+    finally:
+        _model_call_capture.reset(token)
+
+
+def _record_model_call(*, role: "LLMRole", model: str, latency_ms: int) -> None:
+    calls = _model_call_capture.get()
+    if calls is not None:
+        calls.append(
+            {
+                "id": f"mc_{uuid.uuid4().hex}",
+                "role": role.value,
+                "model": model,
+                "latency_ms": latency_ms,
+            }
+        )
 
 
 def _post_process_identity_response(messages: list[LLMMessage], content: str) -> str:
@@ -234,7 +265,7 @@ class ModelGateway:
         return self._adapters[key]
 
     def _classify_exception(self, exc: Exception) -> str:
-        from httpx import ConnectError, ProxyError, ReadTimeout, TimeoutException
+        from httpx import ConnectError, ProxyError, TimeoutException
 
         if isinstance(exc, TimeoutException):
             return "timeout"
@@ -242,7 +273,21 @@ class ModelGateway:
             return "connectivity"
 
         msg = str(exc).lower()
-        if any(k in msg for k in ["authentication", "api key", "unauthorized", "invalid api key"]):
+        if any(
+            k in msg
+            for k in [
+                "authentication",
+                "api key",
+                "unauthorized",
+                "invalid api key",
+                "allocationquota",
+                "free tier",
+                "quota has been exhausted",
+                "payment information",
+            ]
+        ):
+            return "auth"
+        if "403" in msg or "forbidden" in msg:
             return "auth"
         if any(k in msg for k in ["rate limit", "too many requests", "429"]):
             return "rate_limit"
@@ -297,7 +342,12 @@ class ModelGateway:
     ) -> LLMResponse:
         with tracer.start_as_current_span("model_gateway.complete") as span:
             span.set_attribute("llm.role", role.value)
-            candidates = [role] + (fallback_roles or [])
+            # Query is explicitly OpenAI-primary.  Knowledge/Qwen is the
+            # configured, observable provider degradation and is only added
+            # when the caller did not provide a stricter chain.
+            candidates = [role] + (
+                fallback_roles if fallback_roles is not None else ([LLMRole.KNOWLEDGE] if role == LLMRole.QUERY else [])
+            )
             last_exc: Optional[Exception] = None
 
             prepared_messages = merge_system_identity(messages)
@@ -324,6 +374,11 @@ class ModelGateway:
                         model=adapter.config.model,
                     )
                     cb.record_success()
+                    _record_model_call(
+                        role=candidate,
+                        model=str(adapter.config.model or ""),
+                        latency_ms=latency_ms,
+                    )
                     span.set_attribute("llm.resolved_role", candidate.value)
                     span.set_attribute("llm.latency_ms", latency_ms)
                     try:
@@ -350,10 +405,12 @@ class ModelGateway:
                     last_exc = exc
 
             logger.warning(
-                "All LLM candidates failed; using offline fallback",
+                "All LLM candidates failed; using offline fallback when policy allows",
                 candidates=[r.value for r in candidates],
                 error=str(last_exc) if last_exc else None,
             )
+            if bool(getattr(settings, "kernel_all_questions_require_model", True)) and role == LLMRole.QUERY:
+                raise RuntimeError("primary_model_unavailable") from last_exc
             if is_identity_user_query(user_text):
                 return LLMResponse(content=CANONICAL_IDENTITY_RESPONSE, model='identity-fallback', raw={'fallback': True, 'role': role.value, 'user_text': user_text})
             return _offline_fallback_response(prepared_messages, role)
@@ -368,7 +425,9 @@ class ModelGateway:
         user_text = last_user_text(prepared_messages)
         cb = self._get_cb(role)
         if not cb.allow_request():
-            logger.warning("Circuit breaker open; using offline fallback", role=role.value)
+            logger.warning("Circuit breaker open; using offline fallback when policy allows", role=role.value)
+            if bool(getattr(settings, "kernel_all_questions_require_model", True)) and role == LLMRole.QUERY:
+                raise RuntimeError("primary_model_circuit_open")
             fallback = _offline_fallback_response(prepared_messages, role).content
             if fallback:
                 step = 256
@@ -407,13 +466,20 @@ class ModelGateway:
                     pass
                 logger.info("LLM stream success", role=role.value, latency_ms=latency_ms)
                 cb.record_success()
+                _record_model_call(
+                    role=role,
+                    model=str(adapter.config.model or ""),
+                    latency_ms=latency_ms,
+                )
                 return
             except Exception as exc:  # noqa: BLE001
                 should_retry, base_delay = self._retry_policy(exc)
                 if attempt >= max_attempts - 1 or not should_retry:
                     latency_ms = int((time.monotonic() - t0) * 1000)
                     cb.record_failure()
-                    logger.warning("LLM stream failed; using offline fallback", role=role.value, error=str(exc), error_class=self._classify_exception(exc), latency_ms=latency_ms, cb_state=cb.state)
+                    logger.warning("LLM stream failed; using offline fallback when policy allows", role=role.value, error=str(exc), error_class=self._classify_exception(exc), latency_ms=latency_ms, cb_state=cb.state)
+                    if bool(getattr(settings, "kernel_all_questions_require_model", True)) and role == LLMRole.QUERY:
+                        raise RuntimeError("primary_model_unavailable") from exc
                     fallback = _offline_fallback_response(prepared_messages, role).content
                     if fallback:
                         step = 256

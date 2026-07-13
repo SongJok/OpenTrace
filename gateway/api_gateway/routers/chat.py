@@ -16,7 +16,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -174,6 +174,7 @@ class ChatResponse(BaseModel):
     state_version: int = 1
     knowledge_operations: list[dict[str, Any]] = Field(default_factory=list)
     confidence: float | None = None
+    confidence_level: str | None = None
     uncertainty: list[str] = Field(default_factory=list)
     trace_id: str | None = None
 
@@ -1208,6 +1209,16 @@ async def chat(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ChatResponse | StreamingResponse:
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "chat_endpoint_retired",
+            "message": "请迁移到 /api/v2/responses；旧 Chat 执行链已停用。",
+        },
+    )
+
+    # Retained below only for historical source compatibility.  The public
+    # route exits above and cannot execute this legacy pipeline.
     try:
         from safety.guardrails.guardrails import guardrails
 
@@ -1604,6 +1615,7 @@ async def chat(
                 source_ids=knowledge_control.source_ids,
                 publish_policy=knowledge_control.publish_policy,
                 resolution=knowledge_control.resolution,
+                session_id=session_id,
             )
         except ValueError as exc:
             raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
@@ -1650,21 +1662,26 @@ async def chat(
 
     from gateway.api_gateway.routers.data import DataQueryRequest, data_query
 
-    tier0_ctx = Tier0ChatContext(
-        db=db,
-        current_user=current_user,
-        data_query_fn=data_query,
-        data_query_request_factory=DataQueryRequest,
-    )
-    gateway = get_runtime_gateway()
-    tier0_outcome = await gateway.try_tier0_chat(
-        query=dispatch_query,
-        session_id=session_id,
-        request_id=request_id,
-        tier0_ctx=tier0_ctx,
-        force_database=bool(force_database and data_source_context.get("data_source_id")),
-        data_source_id=str(data_source_context.get("data_source_id") or "") or None,
-    )
+    # Tier-0 SQL/data shortcuts are retained for legacy deployments only.
+    # Normal chat must enter CognitiveKernel so a primary model decides how to
+    # use any data result and authors the final answer.
+    tier0_outcome = None
+    if not settings.kernel_all_questions_require_model:
+        tier0_ctx = Tier0ChatContext(
+            db=db,
+            current_user=current_user,
+            data_query_fn=data_query,
+            data_query_request_factory=DataQueryRequest,
+        )
+        gateway = get_runtime_gateway()
+        tier0_outcome = await gateway.try_tier0_chat(
+            query=dispatch_query,
+            session_id=session_id,
+            request_id=request_id,
+            tier0_ctx=tier0_ctx,
+            force_database=bool(force_database and data_source_context.get("data_source_id")),
+            data_source_id=str(data_source_context.get("data_source_id") or "") or None,
+        )
     sql_tier0 = tier0_outcome if tier0_outcome and tier0_outcome.decision_type == "sql_retrieval" else None
     if sql_tier0 and sql_tier0.handled:
         latency_ms = int((time.monotonic() - t0) * 1000)
@@ -2280,6 +2297,9 @@ async def chat(
             result.metadata.get("confidence", result.validation_score)
             if isinstance(result.metadata, dict)
             else result.validation_score
+        ),
+        confidence_level=(
+            result.metadata.get("confidence_level") if isinstance(result.metadata, dict) else None
         ),
         uncertainty=(
             result.metadata.get("uncertainty", []) if isinstance(result.metadata, dict) else []

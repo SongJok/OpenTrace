@@ -64,10 +64,7 @@ const MessageList = forwardRef<MessageListHandle, MessageListProps>(function Mes
 
   return (
     <div ref={parentRef} className="relative flex-1 overflow-y-auto bg-[var(--bg)]">
-      <div className="max-w-3xl mx-auto px-4 py-8">
-        <div className="mb-6 rounded-[28px] border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-xs text-[var(--text-secondary)] shadow-[0_10px_30px_rgba(0,0,0,0.12)]">
-          对话内容将按任务、证据和执行链路自动整理展示
-        </div>
+      <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
         {items.map((msg) => (
           <MessageBubble key={`${msg.id}-${msg.status}`} msg={msg} showAvatar={showAvatars} />
         ))}
@@ -90,7 +87,7 @@ function MessageBubble({ msg, showAvatar }: { msg: Message; showAvatar?: boolean
   if (msg.role === 'user') {
     return (
       <div className="flex items-start justify-end group animate-fade-in py-2 gap-3">
-        <ChatMessage message={msg} />
+        <ChatMessage message={msg} onBranch={() => window.dispatchEvent(new CustomEvent('opentrace:branch', { detail: { messageId: msg.id } }))} />
         {showAvatar && <QuestionerAvatar />}
       </div>
     )
@@ -99,7 +96,7 @@ function MessageBubble({ msg, showAvatar }: { msg: Message; showAvatar?: boolean
   return (
     <div className="flex items-start animate-fade-in py-2 gap-3">
       {showAvatar && <ResponderAvatar />}
-      <div className="flex-1 min-w-0 prose text-[15px] leading-relaxed">
+      <div className="flex-1 min-w-0">
         <ChatMessage message={msg} />
         {msg.status === 'streaming' && <span className="animate-blink text-[#10a37f] ml-0.5">▋</span>}
       </div>

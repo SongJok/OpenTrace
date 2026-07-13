@@ -169,8 +169,9 @@ class AgentWorker:
         await self._consume_pubsub(agent_type)
 
     async def _heartbeat(self) -> None:
-        from infra.cache.redis_client import get_pubsub_redis
         import time
+
+        from infra.cache.redis_client import get_pubsub_redis
 
         ns = str(getattr(settings, "kernel_agent_bus_namespace", "opentrace:agent"))
         key = f"{ns}:worker:heartbeat"
@@ -191,11 +192,13 @@ class AgentWorker:
 
     async def run_forever(self) -> None:
         consumers = self._bus_consumer_agent_types()
+        from infra.response_worker import response_job_loop
         from knowledge.jobs import knowledge_job_loop
 
         await asyncio.gather(
             self._heartbeat(),
             knowledge_job_loop(),
+            response_job_loop(),
             *(self._consume(k) for k in consumers),
         )
 

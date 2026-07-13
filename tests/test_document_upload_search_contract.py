@@ -19,7 +19,7 @@ class DocumentUploadSearchContractTests(unittest.TestCase):
 
     def test_rag_agent_uses_documents_source_by_default(self):
         txt = self._read("agents/rag_agent.py")
-        self.assertIn('sources = task.params.get("sources", ["documents", "semantic_memory"])', txt)
+        self.assertIn('sources = task.params.get("sources", ["knowledge", "documents", "semantic_memory"])', txt)
         self.assertIn('if "documents" in sources:', txt)
 
     def test_document_plugin_hybrid_scoring_is_document_title_aware(self):

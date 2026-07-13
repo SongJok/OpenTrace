@@ -62,7 +62,14 @@ class V5RoutingFacade:
         context_hash_fn: Any,
         t0: float,
     ) -> V5FastPathResult | None:
-        """Return V5FastPathResult on hit; None to continue to RuntimeGateway."""
+        """Return a legacy fast-path result only when direct answers are enabled.
+
+        In the default enterprise mode this facade is retained solely for
+        compatibility and offline diagnostics.  Rules, semantic caches and
+        tiny-model answers are not allowed to finish a user response.
+        """
+        if bool(getattr(settings, "kernel_all_questions_require_model", True)):
+            return None
         if not settings.kernel_v5_routing_enabled:
             return None
         k = self._kernel

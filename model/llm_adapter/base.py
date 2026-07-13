@@ -29,6 +29,12 @@ class LLMResponse:
     completion_tokens: int = 0
     total_tokens: int = 0
     finish_reason: str = "stop"
+    # Provider-neutral representation of Responses/function-call output.
+    # Each entry is intentionally JSON serialisable so it can be persisted in
+    # ResponseItem.payload and replayed over SSE.
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    output_items: list[dict[str, Any]] = field(default_factory=list)
+    response_id: str | None = None
     raw: dict = field(default_factory=dict)
 
 
@@ -42,6 +48,9 @@ class LLMConfig:
     max_tokens: int = 4096
     timeout: int = 120
     stream: bool = False
+    # ``responses`` is the canonical OpenAI path.  Compatible providers that
+    # only expose /chat/completions continue to use the legacy transport.
+    api_mode: str = "auto"  # auto | responses | chat_completions
 
 
 class BaseLLMAdapter(ABC):

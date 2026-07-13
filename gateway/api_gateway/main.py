@@ -31,6 +31,7 @@ from gateway.api_gateway.routers import (
     personalization,
     prometheus,
     responses,
+    response_aux,
     rules,
     sandbox,
     skills,
@@ -113,6 +114,9 @@ async def startup_event() -> None:
 
     register_builtin_agents()
     await ensure_runtime_schema()
+    from gateway.api_gateway.routers.responses import recover_queued_background_responses
+
+    await recover_queued_background_responses()
     if _subscriber_task is None or _subscriber_task.done():
         _subscriber_task = asyncio.create_task(memory_event_subscriber.start())
 
@@ -135,6 +139,7 @@ app.include_router(prometheus.router, prefix="/api/v1", tags=["observability"])
 app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
 app.include_router(responses.router, prefix="/api/v2", tags=["responses"])
+app.include_router(response_aux.router, prefix="/api/v2", tags=["response-resources"])
 app.include_router(personalization.router, prefix="/api/v1", tags=["personalization"])
 app.include_router(conversations.router, prefix="/api/v1", tags=["conversations"])
 app.include_router(cognitive.router, prefix="/api/v1", tags=["cognitive"])

@@ -1088,6 +1088,16 @@ class CognitiveExecutive:
         if not answer and agent_errors:
             answer = "无法完成请求：" + "; ".join(agent_errors[:3])
 
+        # Preserve retrieval answerability for the final evidence envelope;
+        # otherwise the critic score alone can hide a low-confidence or
+        # conflict-suppressed knowledge answer.
+        rag_quality: list[dict[str, Any]] = []
+        for execution_result in agent_results:
+            result_metadata = getattr(execution_result, "metadata", None) or {}
+            quality = result_metadata.get("quality") if isinstance(result_metadata, dict) else None
+            if isinstance(quality, dict):
+                rag_quality.append(dict(quality))
+
         return CognitiveExecutiveResult(
             answer=answer,
             evidence_objects=evidence_objects,
@@ -1099,6 +1109,7 @@ class CognitiveExecutive:
             understanding=understanding,
             risk_level=getattr(plan, "risk_level", "low"),
             execution_reasoning=execution_reasoning,
+            metadata={"rag_quality": rag_quality} if rag_quality else {},
         )
 
     def _sync_goal_graph_from_runtime_task(self, ctx: Any, plan: Any) -> None:

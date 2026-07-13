@@ -7,6 +7,8 @@ Does not build GoalGraph or run planning-phase governance (Supervisor owns that)
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -143,6 +145,7 @@ class RuntimeTurnDispatcher:
                     "evidence_refs",
                     "knowledge_operations",
                     "confidence",
+                    "confidence_level",
                     "uncertainty",
                     "trace_id",
                 ):
@@ -172,17 +175,31 @@ class RuntimeTurnDispatcher:
             },
         }
 
-        pending: list[dict[str, Any]] = []
+        # Runtime capabilities report progress through an async callback. Run
+        # the executive in a task and drain that callback queue immediately so
+        # clients see tool/plan progress while the runtime is still working.
+        pending: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
         async def _collect(event: dict[str, Any]) -> None:
-            pending.append(event)
+            await pending.put(event)
 
-        content, stream_meta = await self._stream_executive(
-            request, prepared, runtime_name, _collect
+        execution = asyncio.create_task(
+            self._stream_executive(request, prepared, runtime_name, _collect),
+            name=f"runtime-stream:{getattr(request, 'session_id', 'unknown')}",
         )
+        try:
+            while not execution.done() or not pending.empty():
+                if pending.empty():
+                    await asyncio.wait({execution}, timeout=0.05)
+                    continue
+                yield await pending.get()
+            content, stream_meta = await execution
+        finally:
+            if not execution.done():
+                execution.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await execution
         content = finalize_assistant_content(content or "", getattr(request, "query", "") or "")
-        for ev in pending:
-            yield ev
         if content:
             yield {"type": "delta", "data": {"text": content}}
         stream_meta.setdefault("cognitive_runtime_v2", True)
@@ -209,6 +226,7 @@ class RuntimeTurnDispatcher:
             "evidence_refs",
             "knowledge_operations",
             "confidence",
+            "confidence_level",
             "uncertainty",
             "trace_id",
         ):

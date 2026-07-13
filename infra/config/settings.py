@@ -53,9 +53,12 @@ class LLMSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # Query LLM
-    default_llm_query_provider: str = "阿里巴巴Qwen(DashScope)"
-    default_llm_query_model: str = "qwen3.7-max"
-    default_llm_query_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    # The primary answer path follows the public OpenAI Responses API.  The
+    # existing Qwen-compatible roles remain available as an observable
+    # degradation path when OpenAI is unavailable.
+    default_llm_query_provider: str = "OpenAI"
+    default_llm_query_model: str = "gpt-5.6"
+    default_llm_query_base_url: str = "https://api.openai.com/v1"
     default_llm_query_api_key: str = ""
 
     # Compress LLM
@@ -233,6 +236,11 @@ class AppSettings(BaseSettings):
     kernel_plan_memory_enabled: bool = True
     kernel_plan_memory_window: int = 50
     kernel_memory_context_enabled: bool = True
+    # Every normal user-facing question must reach the primary LLM.  Rules,
+    # caches and tool results may inform orchestration but may not become the
+    # final answer by themselves.  Authentication, quota and explicit safety
+    # rejections are intentionally handled before model execution.
+    kernel_all_questions_require_model: bool = True
     kernel_enriched_identity_enabled: bool = True
     kernel_identity_llm_enabled: bool = True  # True=LLM动态生成身份回答, False=回退固定答案
     kernel_agent_dag_scheduling_enabled: bool = True
@@ -368,6 +376,8 @@ class AppSettings(BaseSettings):
     kernel_agent_bus_reclaim_count: int = 20
     kernel_agent_bus_max_retry: int = 2
     kernel_agent_bus_dlq_stream: str = "opentrace:agent:stream:dlq"
+    response_worker_poll_seconds: float = 2.0
+    response_worker_batch_size: int = 20
     # When True, tenant daily turn/cost quotas use Redis counters (multi-replica safe)
     enterprise_quota_redis_enabled: bool = False
     enterprise_usage_redis_enabled: bool = False

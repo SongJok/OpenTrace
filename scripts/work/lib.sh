@@ -212,9 +212,10 @@ work_run_alembic_upgrade() {
 work_ensure_db_schema() {
   local root="$1"
   cd "$root"
-  if work_postgres_users_table_exists "$root"; then
-    return 0
-  fi
+  # Do not use the presence of `users` as a migration sentinel.  Existing
+  # databases can have all legacy tables while still missing newer columns
+  # (for example chat_sessions.active_response_id).  Always reconcile to
+  # Alembic head; revisions are expected to be idempotent for dev restarts.
   work_run_alembic_upgrade "$root" || return 1
   if ! work_postgres_users_table_exists "$root"; then
     echo "✗ 迁移后仍缺少 public.users"

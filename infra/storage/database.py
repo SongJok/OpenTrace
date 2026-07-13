@@ -88,6 +88,7 @@ async def init_db() -> None:
         await _ensure_chat_sessions_columns(conn)
         await _ensure_conversation_states_columns(conn)
         await _ensure_enterprise_tenant_tables(conn)
+        await _ensure_responses_columns(conn)
     logger.info("Database tables initialised")
 
 
@@ -108,6 +109,7 @@ async def ensure_runtime_schema() -> None:
             await _ensure_conversation_states_columns(conn)
             await _ensure_enterprise_tenant_tables(conn)
             await _ensure_documents_tenant_columns(conn)
+            await _ensure_responses_columns(conn)
     except Exception as exc:  # noqa: BLE001
         if settings.app_env in {"staging", "production"}:
             logger.error("Runtime schema readiness failed", error=str(exc))
@@ -128,6 +130,8 @@ async def _verify_runtime_schema(conn) -> None:
             "tenant_id",
             "org_id",
             "workspace_id",
+            "active_response_id",
+            "branch_root_response_id",
         },
         "conversation_states": {
             "active_mode",
@@ -139,6 +143,14 @@ async def _verify_runtime_schema(conn) -> None:
             "state_extension",
         },
         "documents": {"tenant_id", "workspace_id"},
+        "responses": {
+            "request_payload",
+            "lease_owner",
+            "lease_expires_at",
+            "heartbeat_at",
+            "attempt_count",
+            "max_attempts",
+        },
     }
     missing: list[str] = []
     for table, columns in required_columns.items():
@@ -174,6 +186,8 @@ async def _verify_runtime_schema(conn) -> None:
         "responses",
         "response_items",
         "response_events",
+        "response_model_calls",
+        "response_tool_executions",
         "user_custom_instructions",
     }
     table_rows = await conn.execute(
@@ -193,6 +207,22 @@ async def _verify_runtime_schema(conn) -> None:
         raise RuntimeError(
             "runtime schema is not migration-ready; missing: " + ", ".join(missing)
         )
+
+
+async def _ensure_responses_columns(conn) -> None:
+    """Keep local/dev databases usable while Alembic remains the prod source."""
+    statements = [
+        "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS request_payload JSONB NOT NULL DEFAULT '{}'::jsonb",
+        "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS lease_owner VARCHAR(128)",
+        "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 3",
+        "CREATE INDEX IF NOT EXISTS ix_responses_lease_owner ON public.responses (lease_owner)",
+        "CREATE INDEX IF NOT EXISTS ix_responses_lease_expires_at ON public.responses (lease_expires_at)",
+    ]
+    for stmt in statements:
+        await conn.execute(text(stmt))
 
 
 async def _ensure_chat_sessions_columns(conn) -> None:
@@ -220,6 +250,14 @@ async def _ensure_chat_sessions_columns(conn) -> None:
         "ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(128) NOT NULL DEFAULT 'default'",
         "CREATE INDEX IF NOT EXISTS ix_chat_sessions_tenant "
         "ON public.chat_sessions (tenant_id, org_id, workspace_id)",
+        "ALTER TABLE IF EXISTS public.chat_sessions "
+        "ADD COLUMN IF NOT EXISTS active_response_id VARCHAR(64)",
+        "ALTER TABLE IF EXISTS public.chat_sessions "
+        "ADD COLUMN IF NOT EXISTS branch_root_response_id VARCHAR(64)",
+        "CREATE INDEX IF NOT EXISTS ix_chat_sessions_active_response_id "
+        "ON public.chat_sessions (active_response_id)",
+        "CREATE INDEX IF NOT EXISTS ix_chat_sessions_branch_root_response_id "
+        "ON public.chat_sessions (branch_root_response_id)",
     ]
     for stmt in statements:
         await conn.execute(text(stmt))

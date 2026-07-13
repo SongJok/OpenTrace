@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useLayoutEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { t } from '../i18n'
 import {
   Plus,
@@ -21,6 +21,7 @@ import {
   Wrench,
   FileCode,
   ShieldCheck,
+  Network,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
@@ -36,44 +37,11 @@ import {
 } from '../api/client'
 
 export default function Sidebar() {
-  // 🎨 卡通图标动画样式注入
-  useLayoutEffect(() => {
-    const styleId = 'cartoon-icon-styles'
-    if (document.getElementById(styleId)) return
-    
-    const style = document.createElement('style')
-    style.id = styleId
-    style.textContent = `
-      .cartoon-icon {
-        transition: transform 0.2s ease, filter 0.2s ease;
-        will-change: transform;
-      }
-      .cartoon-icon:hover {
-        transform: scale(1.15) rotate(-3deg);
-        filter: drop-shadow(0 2px 4px rgba(0,0,0,0.12));
-      }
-      .cartoon-icon:active {
-        transform: scale(0.95) rotate(2deg);
-      }
-      .icon-documents:hover { transform: scale(1.15) rotate(3deg); }
-      .icon-database:hover { transform: scale(1.15) translateY(-2px); }
-      .icon-memory:hover { transform: scale(1.15) rotate(-2deg); }
-      .icon-task:hover { animation: icon-bounce 0.25s ease; }
-      .icon-audit:hover { transform: scale(1.12) rotate(-1deg); }
-      .icon-integrations:hover { transform: scale(1.15) rotate(2deg); }
-      .icon-skills:hover { transform: scale(1.15) rotate(-3deg); }
-      .icon-settings:hover { animation: icon-spin 0.3s ease; }
-      @keyframes icon-bounce { 0%,100%{transform:scale(1)} 50%{transform:scale(1.25) rotate(4deg)} }
-      @keyframes icon-spin { 0%{transform:rotate(0)} 100%{transform:rotate(15deg)} }
-    `
-    document.head.appendChild(style)
-    return () => { style.remove() }
-  }, [])
-
   const [collapsed, setCollapsed] = useState(false)
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [showArchived, setShowArchived] = useState(false)
+  const [showTools, setShowTools] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
 
@@ -227,6 +195,12 @@ export default function Sidebar() {
         >
           <Wrench size={16} className="cartoon-icon icon-skills" />
         </button>
+        <button
+          onClick={() => navigate('/knowledge')}
+          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+        >
+          <Network size={16} className="cartoon-icon" />
+        </button>
         {role === 'admin' && (
           <button
             onClick={() => navigate('/permissions')}
@@ -246,9 +220,9 @@ export default function Sidebar() {
   }
 
   return (
-    <div className="flex h-full w-72 flex-col border-r border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text)] shadow-[0_20px_50px_rgba(0,0,0,0.18)] animate-slide-in">
-      <div className="px-4 pt-4 pb-3">
-        <div className="rounded-[24px] border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
+    <aside aria-label="会话侧栏" className="flex h-full w-[260px] max-md:w-[220px] flex-col border-r border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text)] animate-slide-in">
+      <div className="px-3 pb-3 pt-3">
+        <div className="px-2 py-1">
           <div className="flex items-center justify-between">
             <button
               onClick={() => setCollapsed(true)}
@@ -264,9 +238,8 @@ export default function Sidebar() {
             </button>
           </div>
           <div className="mt-3">
-            <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-secondary)]">Workspace</div>
-            <div className="mt-1 text-sm text-[var(--text)]">OpenTrace</div>
-            <div className="mt-1 text-xs text-[var(--text-secondary)]">任务、证据与对话统一管理</div>
+            <div className="text-sm font-semibold text-[var(--text)]">OpenTrace</div>
+            <div className="mt-0.5 text-xs text-[var(--text-secondary)]">你的对话</div>
           </div>
         </div>
       </div>
@@ -362,7 +335,16 @@ export default function Sidebar() {
       </div>
 
       <div className="border-t border-[var(--border)] px-3 py-2">
-        <div className="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => setShowTools((value) => !value)}
+          aria-expanded={showTools}
+          className="mb-1 flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"
+        >
+          <span>工具与工作区</span>
+          <ChevronRight size={14} className={clsx('transition-transform', showTools && 'rotate-90')} />
+        </button>
+        {showTools && <div className="grid grid-cols-2 gap-2">
           <NavButton icon={<FileText size={15} className="cartoon-icon icon-documents" />} label={t('nav.documents')} onClick={() => navigate('/documents')} />
           <NavButton icon={<Database size={15} className="cartoon-icon icon-database" />} label="数据库" onClick={() => navigate('/databases')} />
           <NavButton icon={<Brain size={15} className="cartoon-icon icon-memory" />} label={t('nav.memories')} onClick={() => navigate('/memories')} />
@@ -370,12 +352,13 @@ export default function Sidebar() {
           <NavButton icon={<ShieldAlert size={15} className="cartoon-icon icon-audit" />} label={t('nav.audit')} onClick={() => navigate('/audit')} />
           <NavButton icon={<Plug size={15} className="cartoon-icon icon-integrations" />} label={t('nav.integrations')} onClick={() => navigate('/integrations')} />
           <NavButton icon={<Wrench size={15} className="cartoon-icon icon-skills" />} label="Skills" onClick={() => navigate('/skills')} />
+          <NavButton icon={<Network size={15} className="cartoon-icon" />} label="知识编排" onClick={() => navigate('/knowledge')} />
           <NavButton icon={<FileCode size={15} className="cartoon-icon icon-rules" />} label="规则" onClick={() => navigate('/rules')} />
           {role === 'admin' && (
             <NavButton icon={<ShieldCheck size={15} className="cartoon-icon icon-permissions" />} label="权限" onClick={() => navigate('/permissions')} />
           )}
           <NavButton icon={<Settings size={15} className="cartoon-icon icon-settings" />} label={t('nav.settings')} onClick={() => navigate('/settings')} />
-        </div>
+        </div>}
       </div>
 
       <div className="border-t border-[var(--border)] px-4 py-3">
@@ -390,7 +373,7 @@ export default function Sidebar() {
           <LogOut size={14} />
         </button>
       </div>
-    </div>
+    </aside>
   )
 }
 

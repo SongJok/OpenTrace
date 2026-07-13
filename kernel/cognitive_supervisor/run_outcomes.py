@@ -67,6 +67,42 @@ def _evidence_output_metadata(evidence: list[Any]) -> dict[str, Any]:
     return {"citations": citations, "evidence_refs": evidence_refs}
 
 
+def _confidence_envelope(result: Any) -> tuple[float, list[str], str]:
+    """Map retrieval/critic quality to the public confidence contract."""
+    metadata = getattr(result, "metadata", None) or {}
+    quality_items = metadata.get("rag_quality") if isinstance(metadata, dict) else []
+    quality = quality_items[-1] if isinstance(quality_items, list) and quality_items else {}
+    critic = getattr(result, "critic_result", None)
+    fusion = getattr(result, "fusion_result", None)
+    raw = quality.get("confidence") if isinstance(quality, dict) else None
+    if raw is None:
+        raw = getattr(critic, "factuality", None) if critic else None
+    if raw is None:
+        raw = getattr(fusion, "confidence", 0.0) if fusion else 0.0
+    try:
+        confidence = max(0.0, min(1.0, float(raw or 0.0)))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    state = str(quality.get("answerability_state") or "") if isinstance(quality, dict) else ""
+    answerable = quality.get("answerable") if isinstance(quality, dict) else None
+    uncertainty: list[str] = []
+    if state in {"conflict", "contradiction"}:
+        confidence = min(confidence, 0.35)
+        uncertainty.append("published_knowledge_conflict_requires_review")
+    elif answerable is False or state in {"unanswerable", "insufficient_evidence"}:
+        confidence = min(confidence, 0.2)
+        uncertainty.append("project_evidence_insufficient")
+    if confidence >= 0.75 and not uncertainty:
+        level = "high"
+    elif confidence >= 0.5:
+        level = "medium"
+    elif confidence > 0:
+        level = "low"
+    else:
+        level = "unanswerable"
+    return confidence, uncertainty, level
+
+
 def build_runtime_artifact(result: Any, request: Any, ctx: Any | None = None) -> RuntimeArtifact:
     artifact_meta_sink: dict[str, Any] = {}
     trace = ExecutionTrace(
@@ -353,6 +389,8 @@ def executive_result_to_kernel_response(
         **_evidence_output_metadata(list(getattr(result, "evidence_objects", None) or [])),
         "trace_id": str((request.metadata or {}).get("request_id", "")),
     }
+    confidence, uncertainty, confidence_level = _confidence_envelope(result)
+    meta_out.update({"confidence": confidence, "uncertainty": uncertainty, "confidence_level": confidence_level})
     exec_gov = (request.metadata or {}).get("governance")
     if exec_gov:
         meta_out["governance"]["executive"] = exec_gov
@@ -513,6 +551,8 @@ def build_stream_final_metadata(
         **_evidence_output_metadata(list(getattr(result, "evidence_objects", None) or [])),
         "trace_id": str((request.metadata or {}).get("request_id", "")),
     }
+    confidence, uncertainty, confidence_level = _confidence_envelope(result)
+    stream_meta.update({"confidence": confidence, "uncertainty": uncertainty, "confidence_level": confidence_level})
     exec_gov = (request.metadata or {}).get("governance")
     if exec_gov:
         stream_meta["governance"]["executive"] = exec_gov

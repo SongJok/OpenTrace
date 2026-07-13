@@ -14,6 +14,9 @@ import {
   apiListDatabases,
   apiUploadAttachment,
   apiPromoteAttachment,
+  apiSubmitFeedback,
+  apiBranchConversation,
+  apiListConversations,
   type ReasoningStep,
   type AttachmentItem,
   type AttachmentUploadResponse,
@@ -130,6 +133,8 @@ interface SlashSuggestion {
 export default function ChatInput({ variant = 'default' }: { variant?: ChatInputVariant }) {
   const [text, setText] = useState('')
   const [webEnabled, setWebEnabled] = useState(false)
+  const [thinkingEnabled, setThinkingEnabled] = useState(true)
+  const [agentEnabled, setAgentEnabled] = useState(false)
   const [selectedDataSourceId, setSelectedDataSourceId] = useState<string>('')
   const [graphControls, setGraphControls] = useState<{ pruned_nodes: string[]; expanded_nodes: string[] }>({
     pruned_nodes: [],
@@ -147,6 +152,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   const abortRef = useRef<AbortController | null>(null)
   const token = useAuthStore((s) => s.token)!
   const streaming = useChatStore((s) => s.streaming)
+  const activeResponseId = useChatStore((s) => s.activeResponseId)
   const activeId = useChatStore((s) => s.activeId)
   const store = useChatStore()
   const isWelcome = variant === 'welcome'
@@ -432,13 +438,19 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
               })
             }
           },
+          onResponseCreated: (payload) => {
+            const responseId = payload?.response_id || payload?.id
+            if (responseId) store.setActiveResponseId(String(responseId))
+          },
           onFinalAnswer: async (envelope) => {
             applyFinalAnswerEnvelope(store, currentSessionId, assistantMessageId, envelope)
+            store.setActiveResponseId(null)
             window.dispatchEvent(new Event(`opentrace:assistant-stream-done:${assistantMessageId}`))
           },
           onError: async (err) => {
             if (err instanceof Error && err.message === 'REQUEST_ABORTED') {
               store.stopLastAssistantMessage(currentSessionId)
+              store.setActiveResponseId(null)
               return
             }
             const errMsg = err instanceof Error ? err.message : String(err)
@@ -462,6 +474,8 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
                 force_mode: effectiveMode,
                 enabled_skills: enabledSkills,
                 disabled_skills: disabledSkills,
+                thinking_enabled: thinkingEnabled,
+                agent_enabled: agentEnabled,
                 tool_permission_token: toolPermissionToken,
                 confirmation_granted: Boolean(toolPermissionToken),
                 attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
@@ -494,6 +508,8 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
         {
           enabled_skills: enabledSkills,
           disabled_skills: disabledSkills,
+          thinking_enabled: thinkingEnabled,
+          agent_enabled: agentEnabled,
           tool_permission_token: toolPermissionToken,
           confirmation_granted: Boolean(toolPermissionToken),
           ...dataSourceContext,
@@ -512,22 +528,24 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
           store.stopLastAssistantMessage(currentSessionId)
         }
         store.setStreaming(false)
+        store.setActiveResponseId(null)
         return
       }
       const msg = e?.message || '发送失败'
       alert(msg)
       store.setStreaming(false)
+      store.setActiveResponseId(null)
     } finally {
       abortRef.current = null
     }
   }
 
   async function stop() {
-    if (activeId) {
+    if (activeResponseId) {
       try {
-        await apiStopChatStream(token, activeId)
+        await apiStopChatStream(token, activeResponseId)
       } catch {
-        // ignore and fallback to abort local stream
+        // local abort still guarantees immediate UI feedback
       }
     }
     abortRef.current?.abort()
@@ -572,6 +590,32 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
     window.addEventListener('opentrace:stop-stream', stopHandler)
     return () => window.removeEventListener('opentrace:stop-stream', stopHandler)
   }, [])
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ messageId?: string; value?: 'like' | 'dislike' }>).detail
+      if (!activeId || !detail?.value) return
+      void apiSubmitFeedback(token, activeId, detail.messageId ?? null, detail.value).catch(() => undefined)
+    }
+    window.addEventListener('opentrace:feedback', handler)
+    return () => window.removeEventListener('opentrace:feedback', handler)
+  }, [activeId, token])
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const messageId = (event as CustomEvent<{ messageId?: string }>).detail?.messageId
+      if (!activeId || !messageId) return
+      void apiBranchConversation(token, activeId, messageId).then(async (result) => {
+        const conversations = await apiListConversations(token)
+        store.setConversations(conversations)
+        if (result?.conversation_id) {
+          window.dispatchEvent(new CustomEvent('opentrace:switch-conversation', { detail: { conversationId: result.conversation_id } }))
+        }
+      }).catch(() => undefined)
+    }
+    window.addEventListener('opentrace:branch', handler)
+    return () => window.removeEventListener('opentrace:branch', handler)
+  }, [activeId, token, store])
 
   useEffect(() => {
     const handler = async (e: Event) => {
@@ -663,12 +707,17 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
         '',
         {
           onReasoningStep: (step: ReasoningStep) => store.addReasoningStep(activeId, step),
+          onResponseCreated: (payload) => {
+            const responseId = payload?.response_id || payload?.id
+            if (responseId) store.setActiveResponseId(String(responseId))
+          },
           onThinking: (payload) => payload.content && store.appendThinking(activeId, payload.content),
           onDelta: (text) => text && store.appendStreamingChunk(activeId, text),
           onToolCall: (payload) => store.updateToolStatus(activeId, payload),
           onToolResult: (payload) => store.updateToolResult(activeId, payload),
           onFinalAnswer: async (envelope) => {
             applyFinalAnswerEnvelope(store, activeId, assistantMessageId, envelope)
+            store.setActiveResponseId(null)
           },
           onError: (err) => {
             if (err instanceof Error && err.message === 'REQUEST_ABORTED') {
@@ -765,7 +814,8 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
             value={text}
             onChange={(e) => { setText(e.target.value); updateSlashSuggestion(e.target.value) }}
             onKeyDown={onKeyDown}
-            placeholder="和我聊聊天吧"
+            placeholder={isWelcome ? '向 OpenTrace 提问' : '发送消息'}
+            aria-label="消息输入框"
             rows={1}
             className={clsx(
               'w-full bg-transparent text-[var(--text)] placeholder:text-[var(--text-muted)] focus:outline-none leading-relaxed resize-none',
@@ -796,11 +846,13 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
               />
               <IconOnlyButton icon={<Settings2 size={16} />} label="Settings" variant={variant} />
               <button
+                onClick={() => setThinkingEnabled((v) => !v)}
+                aria-pressed={thinkingEnabled}
                 className={clsx(
                   'flex items-center gap-1 text-xs font-medium transition-colors',
                   isWelcome
                     ? 'rounded-xl border border-blue-200/60 bg-blue-50 px-3 py-1.5 text-blue-600'
-                    : 'rounded-lg bg-blue-500/15 px-2 py-1 text-blue-400'
+                    : 'rounded-lg px-2 py-1 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)]'
                 )}
                 title="思考"
               >
@@ -827,11 +879,15 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
             </div>
             <div className={clsx('flex items-center', isWelcome ? 'gap-2.5' : 'gap-2')}>
               <button
+                onClick={() => setAgentEnabled((v) => !v)}
+                aria-pressed={agentEnabled}
                 className={clsx(
                   'flex items-center gap-1.5 rounded-full border text-xs transition-colors',
-                  isWelcome
-                    ? 'border-[var(--hero-pill-border)] bg-[var(--hero-pill)] px-3.5 py-1.5 text-[var(--text)] shadow-[0_2px_10px_rgba(15,23,42,0.04)]'
-                    : 'border-[var(--border)] px-3 py-1 text-[var(--text-secondary)] hover:text-[var(--text)]'
+                  agentEnabled
+                    ? 'border-[var(--accent)]/40 bg-[var(--accent-dim)] px-3.5 py-1.5 text-[var(--accent)]'
+                    : isWelcome
+                      ? 'border-[var(--hero-pill-border)] bg-[var(--hero-pill)] px-3.5 py-1.5 text-[var(--text)] shadow-[0_2px_10px_rgba(15,23,42,0.04)]'
+                      : 'border-[var(--border)] px-3 py-1 text-[var(--text-secondary)] hover:text-[var(--text)]'
                 )}
                 title="Agent"
               >
@@ -840,6 +896,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
               </button>
               <button
                 onClick={streaming ? stop : () => void send()}
+                aria-label={streaming ? '停止生成' : '发送消息'}
                 className={clsx(
                   'flex items-center justify-center rounded-full transition-all',
                   isWelcome ? 'h-9 w-9' : 'h-8 w-8',
