@@ -46,6 +46,9 @@ export interface ConversationItem {
   created_at: string
   last_active: string
   archived_at?: string | null
+  pinned?: boolean
+  is_temporary?: boolean
+  expires_at?: string | null
 }
 
 export interface MessageItem {
@@ -54,6 +57,10 @@ export interface MessageItem {
   role: string
   content: string
   created_at?: string
+  response_id?: string
+  parent_response_id?: string | null
+  version_index?: number
+  sibling_count?: number
 }
 
 export interface MemorySettings {
@@ -259,11 +266,11 @@ export async function apiEnableUser(token: string, userId: string): Promise<any>
   return res.json()
 }
 
-export async function apiCreateConversation(token: string, title?: string): Promise<any> {
+export async function apiCreateConversation(token: string, title?: string, temporary = false): Promise<any> {
   const res = await apiFetch('/conversations', {
     method: 'POST',
     headers: authHeaders(token),
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, temporary }),
   })
   if (!res.ok) throw new Error('Failed to create conversation')
   return res.json()
@@ -300,6 +307,35 @@ export async function apiArchiveConversation(token: string, id: string, archived
   const res = await apiFetch(`/conversations/${id}/archive`, { method: archived ? 'POST' : 'DELETE', headers: authHeaders(token) })
   if (!res.ok) throw new Error('Failed to archive conversation')
   return res.json()
+}
+
+export async function apiUpdateConversation(token: string, id: string, payload: { title?: string; pinned?: boolean }): Promise<any> {
+  const res = await apiFetch(`/conversations/${id}`, { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, 'Failed to update conversation'))
+  return res.json()
+}
+
+export async function apiCreateConversationShare(token: string, id: string): Promise<{ url: string; public_id: string; token: string }> {
+  const res = await apiFetch(`/conversations/${id}/share`, { method: 'POST', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, 'Failed to share conversation'))
+  return res.json()
+}
+
+export async function apiSetActiveResponse(token: string, conversationId: string, responseId: string): Promise<void> {
+  const res = await apiFetch(`/conversations/${conversationId}/active-response`, { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ response_id: responseId }) })
+  if (!res.ok) throw new Error(await readApiError(res, 'Failed to switch response version'))
+}
+
+export async function apiListResponseSiblings(token: string, responseId: string): Promise<Array<{ id: string; active: boolean; status: string }>> {
+  const res = await apiFetchResponses(`/responses/${encodeURIComponent(responseId)}/siblings`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, 'Failed to load response versions'))
+  return ((await res.json()) as { items?: Array<{ id: string; active: boolean; status: string }> }).items ?? []
+}
+
+export async function apiRetryResponse(token: string, responseId: string, input?: string): Promise<any> {
+  const res = await apiFetchResponses(`/responses/${responseId}/retry`, { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ input, stream: true }) })
+  if (!res.ok) throw new Error(await readApiError(res, 'Failed to retry response'))
+  return res
 }
 
 export async function apiPatchMessage(token: string, id: string, payload: any): Promise<any> {
@@ -530,17 +566,29 @@ export async function apiChatStream(
   payload?: Record<string, unknown>,
   graphControls?: Record<string, unknown>
 ): Promise<void> {
-  void webEnabled
-  void mode
   // Stream protocol includes dag_node_start / dag_node_complete (see streamSseResponse).
   void callbacks.onDagNodeStart
   void callbacks.onDagNodeComplete
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   try {
-    const res = await apiFetchResponses('/responses', {
+    const retryResponseId = typeof payload?.retry_response_id === 'string' ? payload.retry_response_id : undefined
+    const retryInput = typeof payload?.new_content === 'string' ? payload.new_content : undefined
+    const res = await apiFetchResponses(retryResponseId ? `/responses/${encodeURIComponent(retryResponseId)}/retry` : '/responses', {
+      // Retry reuses the server-side canonical input and creates a sibling,
+      // avoiding the historic empty-query regeneration bug.
       method: 'POST',
       headers: authHeaders(token),
-      body: JSON.stringify({ input: query, conversation_id: sessionId, stream: true, ...payload, ...(graphControls ? { graph_controls: graphControls } : {}) }),
+      body: JSON.stringify({
+        ...(retryResponseId ? { input: retryInput, stream: true } : {
+          input: query,
+          conversation_id: sessionId,
+          stream: true,
+          web_enabled: Boolean(webEnabled),
+          execution_profile: mode === 'fast' || mode === 'deep' ? mode : 'auto',
+          ...payload,
+          ...(graphControls ? { graph_controls: graphControls } : {}),
+        }),
+      }),
       signal,
     })
 
@@ -611,16 +659,41 @@ export async function apiChatStream(
   }
 }
 
-export async function apiGraphControl(..._args: any[]): Promise<any> {
-  return { ok: true }
+export async function apiGraphControl(
+  token: string,
+  sessionId: string,
+  action: 'prune' | 'expand',
+  nodeId: string,
+  requestId?: string,
+): Promise<any> {
+  const res = await apiFetch('/chat/graph-control', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ session_id: sessionId, request_id: requestId, action, node_id: nodeId }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '更新执行图失败'))
+  return res.json()
 }
 
-export async function apiGetSessionSkills(..._args: any[]): Promise<any> {
-  return { enabled_skills: [], disabled_skills: [] }
+export async function apiGetSessionSkills(token: string, sessionId: string): Promise<{ enabled_skills: string[]; disabled_skills: string[] }> {
+  const res = await apiFetch(`/skills/session/${encodeURIComponent(sessionId)}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取会话技能失败'))
+  return res.json()
 }
 
-export async function apiSetSessionSkills(..._args: any[]): Promise<any> {
-  return { ok: true }
+export async function apiSetSessionSkills(
+  token: string,
+  sessionId: string,
+  enabledSkills: string[],
+  disabledSkills: string[],
+): Promise<{ enabled_skills: string[]; disabled_skills: string[] }> {
+  const res = await apiFetch('/skills/session/bind', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ session_id: sessionId, enabled_skills: enabledSkills, disabled_skills: disabledSkills }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '保存会话技能失败'))
+  return res.json()
 }
 
 export async function apiStopChatStream(..._args: any[]): Promise<any> {
@@ -639,7 +712,8 @@ export async function apiListMemories(token: string, memoryType?: string): Promi
   const qs = memoryType ? `?memory_type=${encodeURIComponent(memoryType)}` : ''
   const res = await apiFetch(`/memories${qs}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error('Failed to list memories')
-  return res.json()
+  const data = await res.json()
+  return Array.isArray(data) ? data : (data.items || [])
 }
 
 export async function apiDeleteMemory(token: string, id: string): Promise<void> {
@@ -828,6 +902,7 @@ export interface MemoryItem {
   memory_type: string
   kind?: string
   enabled?: boolean
+  pinned?: boolean
   access_count?: number
   tags?: string[]
 }

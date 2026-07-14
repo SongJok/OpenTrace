@@ -122,6 +122,8 @@ class ResponseCreateRequest(BaseModel):
     knowledge: dict[str, Any] = Field(default_factory=dict)
     memory_mode: str = Field(default="enabled", pattern="^(enabled|disabled|temporary)$")
     tool_choice: str = Field(default="auto", pattern="^(auto|none|required)$")
+    execution_profile: str = Field(default="auto", pattern="^(auto|fast|deep)$")
+    execution_mode: str = Field(default="auto", pattern="^(auto|agent)$")
 
 
 class ResponseEventOut(BaseModel):
@@ -727,12 +729,32 @@ async def create_response(
     tenant_id = str(tenant_metadata.get("tenant_id") or "default")
     workspace_id = str(tenant_metadata.get("workspace_id") or "default")
 
+    if req.conversation_id:
+        existing_session = await db.scalar(select(ChatSession).where(ChatSession.id == req.conversation_id, ChatSession.user_id == current_user.id))
+        if existing_session and existing_session.is_temporary:
+            req.memory_mode = "temporary"
+
     parent_response_id = req.previous_response_id or req.parent_response_id
     if parent_response_id:
         parent = await _load_response(db, parent_response_id, current_user, tenant_id)
         if req.conversation_id and req.conversation_id != parent.conversation_id:
             raise AppException(ErrorCodes.PARAM_INVALID.code, message="conversation_id 与 previous_response_id 不一致")
         req.conversation_id = parent.conversation_id
+    elif req.conversation_id:
+        # The browser client normally sends only a conversation id.  Continue
+        # from its active response automatically so multi-turn context survives
+        # a refresh and so future retries can form a proper response tree.
+        session = await db.scalar(
+            select(ChatSession).where(
+                ChatSession.id == req.conversation_id,
+                ChatSession.user_id == current_user.id,
+                ChatSession.tenant_id == tenant_id,
+                ChatSession.workspace_id == workspace_id,
+            )
+        )
+        if session is not None and session.active_response_id:
+            parent = await _load_response(db, str(session.active_response_id), current_user, tenant_id)
+            parent_response_id = parent.id
 
     if idempotency_key:
         existing = await db.execute(
@@ -789,6 +811,8 @@ async def create_response(
             "metadata": req.metadata,
             "text": req.text,
             "reasoning": req.reasoning,
+            "execution_profile": req.execution_profile,
+            "execution_mode": req.execution_mode,
             "request_payload": req.model_dump(mode="json"),
         },
         request_payload=req.model_dump(mode="json"),
@@ -1085,6 +1109,45 @@ async def get_response_events(
         )
         for event in events
     ]
+
+
+class ResponseRetryRequest(BaseModel):
+    input: str | list[ResponseInputItem] | None = None
+    stream: bool = True
+
+
+@router.get("/responses/{response_id}/siblings")
+async def list_response_siblings(
+    response_id: str,
+    http_request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    tenant_id = str(build_tenant_metadata(http_request, user_id=current_user.id).get("tenant_id") or "default")
+    record = await _load_response(db, response_id, current_user, tenant_id)
+    session = await db.get(ChatSession, record.conversation_id)
+    rows = (await db.execute(select(ResponseRecord).where(ResponseRecord.conversation_id == record.conversation_id, ResponseRecord.parent_response_id == record.parent_response_id, ResponseRecord.user_id == current_user.id).order_by(ResponseRecord.created_at))).scalars().all()
+    return {"items": [{"id": r.id, "status": r.status, "created_at": r.created_at.isoformat(), "active": bool(session and r.id == session.active_response_id)} for r in rows]}
+
+
+@router.post("/responses/{response_id}/retry")
+async def retry_response(
+    response_id: str,
+    http_request: Request,
+    req: ResponseRetryRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant_id = str(build_tenant_metadata(http_request, user_id=current_user.id).get("tenant_id") or "default")
+    source = await _load_response(db, response_id, current_user, tenant_id)
+    payload = dict(source.request_payload or {})
+    if req.input is not None:
+        payload["input"] = req.input
+    elif not payload.get("input"):
+        item = await db.scalar(select(ResponseItem).where(ResponseItem.response_id == source.id, ResponseItem.item_type == "input_message").order_by(ResponseItem.sequence_number))
+        payload["input"] = item.content if item else None
+    payload.update({"conversation_id": source.conversation_id, "parent_response_id": source.parent_response_id, "previous_response_id": None, "stream": req.stream, "background": False})
+    return await create_response(http_request, ResponseCreateRequest.model_validate(payload), None, current_user, db)
 
 
 @router.post("/responses/{response_id}/cancel")

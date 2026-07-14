@@ -84,6 +84,10 @@ export interface Message {
   turn_meta?: TurnMetaEnvelope
   /** Public-safe execution updates. Kept separate from answer text. */
   progress?: string[]
+  response_id?: string
+  parent_response_id?: string | null
+  version_index?: number
+  sibling_count?: number
 }
 
 export interface Conversation {
@@ -123,6 +127,7 @@ interface ChatState {
   failLastAssistantMessage: (id: string, text: string) => void
   setStreaming: (v: boolean) => void
   setActiveResponseId: (id: string | null) => void
+  setMessageResponseId: (conversationId: string, messageId: string, responseId: string) => void
   updateTitle: (id: string, title: string) => void
   updateConversationMeta: (conversation: Partial<Conversation> & { id: string }) => void
   resetReasoning: (sessionId: string, messageId: string) => void
@@ -193,6 +198,10 @@ function asDoneMessage(raw: any): Message {
     annotations: Array.isArray(raw?.annotations) ? (raw.annotations as MessageAnnotation[]) : undefined,
     turn_meta: turnMeta,
     progress: Array.isArray(raw?.progress) ? raw.progress.map(String) : [],
+    response_id: typeof raw?.response_id === 'string' ? raw.response_id : undefined,
+    parent_response_id: typeof raw?.parent_response_id === 'string' ? raw.parent_response_id : null,
+    version_index: typeof raw?.version_index === 'number' ? raw.version_index : undefined,
+    sibling_count: typeof raw?.sibling_count === 'number' ? raw.sibling_count : undefined,
   }
 }
 
@@ -395,6 +404,12 @@ export const useChatStore = create<ChatState>()((set, get) => ({
 
   setStreaming: (v) => set({ streaming: v }),
   setActiveResponseId: (id) => set({ activeResponseId: id }),
+  setMessageResponseId: (conversationId, messageId, responseId) => set((s) => ({
+    messages: {
+      ...s.messages,
+      [conversationId]: (s.messages[conversationId] ?? []).map((message) => message.id === messageId ? { ...message, response_id: responseId } : message),
+    },
+  })),
   updateTitle: (id, title) =>
     set((s) => ({
       conversations: s.conversations.map((c) => (c.id === id ? { ...c, title } : c)),

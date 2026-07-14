@@ -4,7 +4,6 @@ import { useChatStore, type MessageAttachment } from '../store/chat'
 import { useAuthStore } from '../store/auth'
 import {
   apiChatStream,
-  apiChatSync,
   apiCreateConversation,
   apiGraphControl,
   apiGetSessionSkills,
@@ -135,6 +134,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   const [webEnabled, setWebEnabled] = useState(false)
   const [thinkingEnabled, setThinkingEnabled] = useState(true)
   const [agentEnabled, setAgentEnabled] = useState(false)
+  const [executionProfile, setExecutionProfile] = useState<'auto' | 'fast' | 'deep'>('auto')
   const [selectedDataSourceId, setSelectedDataSourceId] = useState<string>('')
   const [graphControls, setGraphControls] = useState<{ pruned_nodes: string[]; expanded_nodes: string[] }>({
     pruned_nodes: [],
@@ -150,6 +150,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const loadedSkillsSessionRef = useRef<string | null>(null)
   const token = useAuthStore((s) => s.token)!
   const streaming = useChatStore((s) => s.streaming)
   const activeResponseId = useChatStore((s) => s.activeResponseId)
@@ -440,7 +441,10 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
           },
           onResponseCreated: (payload) => {
             const responseId = payload?.response_id || payload?.id
-            if (responseId) store.setActiveResponseId(String(responseId))
+            if (responseId) {
+              store.setActiveResponseId(String(responseId))
+              store.setMessageResponseId(currentSessionId, assistantMessageId, String(responseId))
+            }
           },
           onFinalAnswer: async (envelope) => {
             applyFinalAnswerEnvelope(store, currentSessionId, assistantMessageId, envelope)
@@ -467,49 +471,16 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
             } catch {
               // not json error
             }
-            try {
-              const sync: any = await apiChatSync(token, currentSessionId, query, {
-                ...dataSourceContext,
-                force_database: needDataSource,
-                force_mode: effectiveMode,
-                enabled_skills: enabledSkills,
-                disabled_skills: disabledSkills,
-                thinking_enabled: thinkingEnabled,
-                agent_enabled: agentEnabled,
-                tool_permission_token: toolPermissionToken,
-                confirmation_granted: Boolean(toolPermissionToken),
-                attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
-                knowledge: {
-                  action: 'auto', scope: 'session', attachment_ids: attachmentIds, publish_policy: 'review',
-                },
-              })
-              applyFinalAnswerEnvelope(
-                store,
-                currentSessionId,
-                assistantMessageId,
-                normalizeFinalAnswerEnvelope({
-                  content: sync.content,
-                  execution_graph: sync.execution_graph,
-                  citations: sync.citations,
-                  annotations: sync.annotations,
-                  metadata: sync.metadata ?? {},
-                  prompt_tokens: sync.prompt_tokens,
-                  completion_tokens: sync.completion_tokens,
-                }),
-              )
-            } catch {
-              store.failLastAssistantMessage(currentSessionId, `Error: ${errMsg}`)
-            }
+            store.failLastAssistantMessage(currentSessionId, `Error: ${errMsg}`)
           },
         },
         webEnabled,
         controller.signal,
-        'chat',
+        executionProfile,
         {
           enabled_skills: enabledSkills,
           disabled_skills: disabledSkills,
-          thinking_enabled: thinkingEnabled,
-          agent_enabled: agentEnabled,
+          execution_mode: agentEnabled ? 'agent' : 'auto',
           tool_permission_token: toolPermissionToken,
           confirmation_granted: Boolean(toolPermissionToken),
           ...dataSourceContext,
@@ -644,12 +615,18 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   useEffect(() => {
     const loadSkills = async () => {
       if (!activeId) return
+      loadedSkillsSessionRef.current = null
       try {
         const cfg = await apiGetSessionSkills(token, activeId)
+        if (useChatStore.getState().activeId !== activeId) return
+        loadedSkillsSessionRef.current = activeId
         setEnabledSkills(cfg.enabled_skills || [])
         setDisabledSkills(cfg.disabled_skills || [])
       } catch {
-        // ignore
+        // A new conversation may not have a server-side binding yet; enable
+        // persistence after the read attempt so its first explicit change can
+        // still be saved.
+        if (useChatStore.getState().activeId === activeId) loadedSkillsSessionRef.current = activeId
       }
     }
     void loadSkills()
@@ -657,7 +634,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
 
   useEffect(() => {
     const persistSkills = async () => {
-      if (!activeId) return
+      if (!activeId || loadedSkillsSessionRef.current !== activeId) return
       try {
         await apiSetSessionSkills(token, activeId, enabledSkills, disabledSkills)
       } catch {
@@ -692,8 +669,17 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   }, [streaming, activeId, token, webEnabled])
 
   useEffect(() => {
+    const handler = (e: Event) => {
+      const profile = (e as CustomEvent<{ profile?: 'auto' | 'fast' | 'deep' }>).detail?.profile
+      if (profile) setExecutionProfile(profile)
+    }
+    window.addEventListener('opentrace:execution-profile', handler)
+    return () => window.removeEventListener('opentrace:execution-profile', handler)
+  }, [])
+
+  useEffect(() => {
     const regenHandler = (e: Event) => {
-      const detail = (e as CustomEvent<{ mode: 'regenerate' | 'edit-regenerate'; messageId?: string; newContent?: string }>).detail
+      const detail = (e as CustomEvent<{ mode: 'regenerate' | 'edit-regenerate'; messageId?: string; responseId?: string; newContent?: string }>).detail
       if (!activeId || streaming) return
       const controller = new AbortController()
       abortRef.current = controller
@@ -709,7 +695,10 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
           onReasoningStep: (step: ReasoningStep) => store.addReasoningStep(activeId, step),
           onResponseCreated: (payload) => {
             const responseId = payload?.response_id || payload?.id
-            if (responseId) store.setActiveResponseId(String(responseId))
+            if (responseId) {
+              store.setActiveResponseId(String(responseId))
+              store.setMessageResponseId(activeId, assistantMessageId, String(responseId))
+            }
           },
           onThinking: (payload) => payload.content && store.appendThinking(activeId, payload.content),
           onDelta: (text) => text && store.appendStreamingChunk(activeId, text),
@@ -729,15 +718,15 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
         },
         webEnabled,
         controller.signal,
-        detail.mode,
-        detail.mode === 'edit-regenerate'
-          ? { message_id: detail.messageId, new_content: detail.newContent }
+        executionProfile,
+        detail.responseId
+          ? { retry_response_id: detail.responseId, new_content: detail.mode === 'edit-regenerate' ? detail.newContent : undefined }
           : undefined
       )
     }
     window.addEventListener('opentrace:regen', regenHandler)
     return () => window.removeEventListener('opentrace:regen', regenHandler)
-  }, [activeId, streaming, token, webEnabled])
+  }, [activeId, streaming, token, webEnabled, executionProfile])
 
   const canSend = text.trim().length > 0 && !streaming
 

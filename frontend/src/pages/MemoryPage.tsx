@@ -80,6 +80,11 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
     await loadAll()
   }
 
+  const togglePinned = async (m: MemoryItem) => {
+    await apiUpdateMemory(token, m.id, { pinned: !m.pinned })
+    await loadAll()
+  }
+
   const removeMemory = async (m: MemoryItem) => {
     if (!confirm('删除该记忆？')) return
     await apiDeleteMemory(token, m.id)
@@ -193,7 +198,7 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
                         <p className="text-sm whitespace-pre-wrap">{m.content}</p>
                       </>
                     )}
-                    <p className="text-[11px] text-[var(--text-secondary)]">kind={m.kind} · access={m.access_count}</p>
+                    <p className="text-[11px] text-[var(--text-secondary)]">kind={m.kind} · access={m.access_count}{m.pinned ? ' · 已置顶（每轮优先使用）' : ''}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     {editingId === m.id ? (
@@ -207,6 +212,9 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
                     )}
                     <button onClick={() => void toggleEnabled(m)} className="px-2 py-1 rounded text-xs border border-[var(--border)]">
                       {m.enabled ? '禁用' : '启用'}
+                    </button>
+                    <button onClick={() => void togglePinned(m)} className="px-2 py-1 rounded text-xs border border-[var(--border)]">
+                      {m.pinned ? '取消置顶' : '置顶'}
                     </button>
                     <button onClick={() => void removeMemory(m)} className="px-2 py-1 rounded text-xs border border-red-300 text-red-500 inline-flex items-center gap-1">
                       <Trash2 size={12} /> 删除

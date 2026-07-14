@@ -11,7 +11,7 @@ from gateway.api_gateway.routers.responses import (
     _json_safe,
 )
 from gateway.api_gateway.turn_coordinator import _request_instruction_text
-from gateway.api_gateway.turn_coordinator import extract_profile_facts
+from gateway.api_gateway.turn_coordinator import extract_explicit_memory_facts, extract_profile_facts
 from infra.storage.models import ResponseRecord, ResponseToolExecution
 
 
@@ -135,6 +135,15 @@ def test_explicit_profile_facts_are_extracted_for_durable_memory() -> None:
     assert extract_profile_facts("随便说吧") == []
 
 
+def test_explicit_memory_request_is_durable_and_pinned() -> None:
+    facts = extract_explicit_memory_facts("请记住：我希望你以后用中文并且回答简洁")
+    assert any(
+        kind == "preference" and content == "我希望你以后用中文并且回答简洁" and pinned
+        for _title, content, kind, pinned in facts
+    )
+    assert ("姓名", "用户的姓名是小王", "profile", True) in extract_explicit_memory_facts("我叫小王")
+
+
 def test_stream_disconnect_persists_cancelled_lifecycle_event() -> None:
     source = Path(__file__).resolve().parents[1] / "gateway/api_gateway/routers/responses.py"
     text = source.read_text(encoding="utf-8")
@@ -149,6 +158,8 @@ def test_responses_history_reads_typed_items_and_profile_memory() -> None:
     assert "select(ResponseItem, ResponseRecord.created_at)" in text
     assert "_persist_profile_facts" in text
     assert "_load_profile_memory_context" in text
+    assert "active_response_id" in text
+    assert "durable_memory_hits" in text
 
 
 def test_legacy_chat_route_is_explicitly_retired() -> None:

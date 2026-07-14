@@ -172,7 +172,12 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
 
   const regenerate = () => {
     if (!message?.id) return
-    window.dispatchEvent(new CustomEvent('opentrace:regen', { detail: { mode: 'regenerate', messageId: message.id } }))
+    window.dispatchEvent(new CustomEvent('opentrace:regen', { detail: { mode: 'regenerate', messageId: message.id, responseId: message.response_id } }))
+  }
+
+  const switchVersion = () => {
+    if (!message?.response_id) return
+    window.dispatchEvent(new CustomEvent('opentrace:switch-response-version', { detail: { responseId: message.response_id } }))
   }
 
   const feedback = (value: 'like' | 'dislike') => {
@@ -238,6 +243,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
             {!isUser && !resolvedStreaming && <div className="mt-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100" data-testid="message-actions">
               <button type="button" aria-label="复制回答" title="复制" onClick={() => void copyMessage()} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]">{copied ? <Check size={14} /> : <Copy size={14} />}</button>
               <button type="button" aria-label="重新生成" title="重新生成" onClick={regenerate} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><RefreshCw size={14} /></button>
+              {(message?.sibling_count ?? 1) > 1 && <button type="button" aria-label="切换回答版本" title={`回答版本 ${message?.version_index ?? 1}/${message?.sibling_count}`} onClick={switchVersion} className="rounded-md px-1.5 py-1 text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface-raised)]">{message?.version_index ?? 1}/{message?.sibling_count}</button>}
               <button type="button" aria-label="回答有帮助" title="有帮助" onClick={() => feedback('like')} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><ThumbsUp size={14} /></button>
               <button type="button" aria-label="回答没帮助" title="没帮助" onClick={() => feedback('dislike')} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><ThumbsDown size={14} /></button>
               {onBranch && <button type="button" aria-label="创建分支" title="创建分支" onClick={onBranch} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><GitBranch size={14} /></button>}

@@ -4,6 +4,7 @@ Alembic async environment — fixed version.
 from __future__ import annotations
 
 import asyncio
+import os
 from logging.config import fileConfig
 
 import sqlalchemy as sa
@@ -20,7 +21,13 @@ config = context.config
 if config.config_file_name:
     fileConfig(config.config_file_name)
 
-db_url = settings.database_url or config.get_main_option("sqlalchemy.url")
+# The application runs inside Docker where ``postgres`` is resolvable, while
+# developers commonly invoke Alembic on the host where the published port is
+# reachable as ``localhost``.  Keep application settings unchanged and allow
+# an explicit one-command override for host migrations.
+db_url = os.getenv("ALEMBIC_DATABASE_URL") or settings.database_url or config.get_main_option("sqlalchemy.url")
+if db_url.startswith("postgresql://"):
+    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 target_metadata = Base.metadata
 
 

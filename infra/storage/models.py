@@ -98,6 +98,8 @@ class ChatSession(Base):
     # the UI no longer needs to infer lineage from legacy TraceLog rows.
     active_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     branch_root_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    is_temporary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     user: Mapped[User] = relationship(back_populates="sessions")
     trace_logs: Mapped[list[TraceLog]] = relationship(
@@ -228,6 +230,25 @@ class ResponseRecord(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ConversationShare(Base):
+    """Revocable, immutable public snapshot of a conversation's active branch."""
+
+    __tablename__ = "conversation_shares"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    public_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ResponseToolExecution(Base):
@@ -807,6 +828,12 @@ class UserUiSettings(Base):
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False, unique=True)
     reasoning_default_expanded: Mapped[bool] = mapped_column(Boolean, default=True)
     graph_default_expanded: Mapped[bool] = mapped_column(Boolean, default=True)
+    dag_default_expanded: Mapped[bool] = mapped_column(Boolean, default=True)
+    execution_graph_default_expanded: Mapped[bool] = mapped_column(Boolean, default=True)
+    decision_trace_default_expanded: Mapped[bool] = mapped_column(Boolean, default=True)
+    flow_cards_default_expanded: Mapped[bool] = mapped_column(Boolean, default=True)
+    theme_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="system")
+    theme_accent: Mapped[str] = mapped_column(String(32), nullable=False, default="blue")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

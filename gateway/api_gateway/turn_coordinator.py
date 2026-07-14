@@ -8,11 +8,12 @@ Response records/items/events around this coordinator.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import json
-import re
 from typing import Any
 
 from sqlalchemy import select
@@ -85,6 +86,55 @@ async def _ensure_conversation(
 
 
 async def _load_history(db: AsyncSession, conversation_id: str, *, limit: int = 12) -> list[dict[str, Any]]:
+    # Responses is the canonical store for new conversations.  Follow the
+    # active response chain first so retries/branches never leak sibling turns
+    # into the prompt for the next answer.
+    session = await db.get(ChatSession, conversation_id)
+    active_response_id = getattr(session, "active_response_id", None) if session else None
+    if active_response_id:
+        chain: list[ResponseRecord] = []
+        seen: set[str] = set()
+        current_id = str(active_response_id)
+        while current_id and current_id not in seen and len(chain) < limit:
+            seen.add(current_id)
+            record = await db.get(ResponseRecord, current_id)
+            if record is None or record.conversation_id != conversation_id:
+                break
+            chain.append(record)
+            current_id = str(record.parent_response_id or "")
+        if chain:
+            response_ids = [record.id for record in reversed(chain)]
+            rows = (
+                await db.execute(
+                    select(ResponseItem)
+                    .where(ResponseItem.response_id.in_(response_ids))
+                    .order_by(ResponseItem.response_id, ResponseItem.sequence_number)
+                )
+            ).scalars().all()
+            by_response: dict[str, list[ResponseItem]] = {}
+            for item in rows:
+                by_response.setdefault(item.response_id, []).append(item)
+            out: list[dict[str, Any]] = []
+            for response_id in response_ids:
+                for item in by_response.get(response_id, []):
+                    if item.role not in {"user", "assistant", "system", "developer", "tool"}:
+                        continue
+                    content = str(item.content or "").strip()
+                    if not content:
+                        continue
+                    entry: dict[str, Any] = {"role": item.role, "content": content}
+                    payload = item.payload if isinstance(item.payload, dict) else {}
+                    if item.item_type == "function_call_output":
+                        entry["tool_call_id"] = payload.get("call_id") or item.id
+                    out.append(entry)
+            if out:
+                try:
+                    from kernel.token_counter import truncate_messages
+
+                    return truncate_messages(out, max_tokens=4096, strategy="keep_system_recent", keep_recent_turns=4)
+                except Exception:
+                    return out
+
     messages = (
         await db.execute(
             select(Message)
@@ -188,6 +238,51 @@ def extract_profile_facts(query: str) -> list[tuple[str, str]]:
     return facts
 
 
+def extract_explicit_memory_facts(query: str) -> list[tuple[str, str, str, bool]]:
+    """Extract durable facts that the user explicitly asked the assistant to retain.
+
+    Profile statements are intentionally narrow and can be remembered without a
+    cue.  Everything else requires an explicit "remember/save" instruction so
+    ordinary chat content is never silently promoted into long-term memory.
+    """
+    text = str(query or "").strip()
+    facts: list[tuple[str, str, str, bool]] = [
+        (title, content, "profile", True) for title, content in extract_profile_facts(text)
+    ]
+
+    patterns = (
+        ("姓名", r"(?:我叫|我的名字是)\s*([^，。！？,.!?:：\s]{1,32})"),
+        ("所在地", r"(?:我住在|我在)\s*([^，。！？,.!?:：]{2,48})(?:工作|生活|居住)?"),
+        ("职业", r"(?:我的职业是|我是一名)\s*([^，。！？,.!?:：]{2,48})"),
+    )
+    for title, pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            value = match.group(1).strip()
+            if value:
+                facts.append((title, f"用户的{title}是{value}", "profile", True))
+
+    cue = re.search(
+        r"(?:请|帮我)?(?:记住|记下|记录(?:一下|下来)?|保存(?:一下|下来)?|别忘了)\s*[，,:：]?\s*(.+)",
+        text,
+    )
+    if cue:
+        content = cue.group(1).strip().rstrip("。！？，,.!?")[:500]
+        if len(content) >= 2:
+            kind = "preference" if any(word in content for word in ("喜欢", "偏好", "希望", "习惯", "回答")) else "fact"
+            digest = hashlib.sha1(content.encode("utf-8")).hexdigest()[:10]
+            facts.append((f"明确记忆-{digest}", content, kind, True))
+
+    deduped: list[tuple[str, str, str, bool]] = []
+    seen: set[tuple[str, str]] = set()
+    for fact in facts:
+        key = (fact[0], fact[1])
+        if key not in seen:
+            deduped.append(fact)
+            seen.add(key)
+    return deduped
+
+
 async def _persist_profile_facts(
     db: AsyncSession,
     *,
@@ -200,15 +295,15 @@ async def _persist_profile_facts(
     )
     if settings_row is not None and not bool(settings_row.memory_learning_enabled):
         return []
-    facts = extract_profile_facts(query)
+    facts = extract_explicit_memory_facts(query)
     if not facts:
         return []
     changed = False
-    for title, content in facts:
+    for title, content, kind, pinned in facts:
         existing = await db.scalar(
             select(UserMemory).where(
                 UserMemory.user_id == user_id,
-                UserMemory.kind == "profile",
+                UserMemory.kind == kind,
                 UserMemory.title == title,
             )
         )
@@ -218,13 +313,13 @@ async def _persist_profile_facts(
                     id=str(uuid.uuid4()),
                     user_id=user_id,
                     memory_type="semantic",
-                    kind="profile",
+                    kind=kind,
                     title=title,
                     content=content,
-                    tags_json=json.dumps(["profile", "explicit"], ensure_ascii=False),
+                    tags_json=json.dumps([kind, "explicit"], ensure_ascii=False),
                     metadata_json=json.dumps({"source": "user_turn", "confidence": 1.0}, ensure_ascii=False),
                     enabled=True,
-                    pinned=True,
+                    pinned=pinned,
                     score=1.0,
                     access_count=1,
                     last_accessed_at=datetime.now(UTC),
@@ -233,30 +328,31 @@ async def _persist_profile_facts(
         else:
             existing.content = content
             existing.enabled = True
-            existing.pinned = True
+            existing.pinned = bool(existing.pinned or pinned)
             existing.score = max(float(existing.score or 0), 1.0)
             existing.access_count = int(existing.access_count or 0) + 1
             existing.last_accessed_at = datetime.now(UTC)
         changed = True
     if changed:
         await db.commit()
-    return facts
+    return [(title, content) for title, content, _kind, _pinned in facts]
 
 
 async def _load_profile_memory_context(
     db: AsyncSession,
     *,
     user_id: str,
+    query: str,
     memory_mode: str,
-) -> str:
-    """Build a compact, trusted system block from durable profile memory."""
+) -> tuple[str, list[dict[str, Any]]]:
+    """Build a compact, deterministic memory block for the current turn."""
     if str(memory_mode or "enabled").lower() != "enabled":
-        return ""
+        return "", []
     settings_row = await db.scalar(
         select(UserMemorySettings).where(UserMemorySettings.user_id == user_id)
     )
     if settings_row is not None and not bool(settings_row.memory_learning_enabled):
-        return ""
+        return "", []
     rows = (
         await db.execute(
             select(UserMemory)
@@ -266,16 +362,46 @@ async def _load_profile_memory_context(
                 UserMemory.kind.in_(["profile", "preference", "project_fact", "fact"]),
             )
             .order_by(UserMemory.pinned.desc(), UserMemory.score.desc(), UserMemory.updated_at.desc())
-            .limit(24)
+            .limit(80)
         )
     ).scalars().all()
     if not rows:
-        return ""
+        return "", []
+    # Profiles and pinned memories are always available for identity and
+    # preference questions.  Other explicit memories are ranked by lightweight
+    # lexical overlap to keep the prompt bounded and relevant.
+    query_chars = set(re.findall(r"[\w\u4e00-\u9fff]", str(query or "").lower()))
+
+    def relevance(row: UserMemory) -> int:
+        text = f"{row.title or ''} {row.content or ''}".lower()
+        return len(query_chars.intersection(set(re.findall(r"[\w\u4e00-\u9fff]", text))))
+
+    selected = sorted(
+        rows,
+        key=lambda row: (
+            2 if row.kind == "profile" else 0,
+            1 if row.pinned else 0,
+            relevance(row),
+            float(row.score or 0),
+            row.updated_at.timestamp() if row.updated_at else 0,
+        ),
+        reverse=True,
+    )[:24]
     lines = [
-        "以下是用户明确提供并允许用于后续对话的长期记忆。仅在相关时使用，不要臆造或泄露："
+        "以下是用户明确提供并允许用于后续对话的长期记忆。涉及身份、偏好、项目背景或相关事实时必须使用；不要臆造、覆盖或向无关对象泄露："
     ]
-    lines.extend(f"- {str(row.content).strip()[:500]}" for row in rows if str(row.content or "").strip())
-    return "\n".join(lines) if len(lines) > 1 else ""
+    hits: list[dict[str, Any]] = []
+    for row in selected:
+        content = str(row.content or "").strip()
+        if not content:
+            continue
+        lines.append(f"- {content[:500]}")
+        hits.append({"id": row.id, "title": row.title or "", "kind": row.kind, "pinned": bool(row.pinned)})
+        row.access_count = int(row.access_count or 0) + 1
+        row.last_accessed_at = datetime.now(UTC)
+    if hits:
+        await db.commit()
+    return ("\n".join(lines) if len(lines) > 1 else ""), hits
 
 
 async def _load_custom_instructions(
@@ -369,9 +495,10 @@ async def prepare_response_turn(
                     user_id=user.id,
                     query=str(history_item.get("content") or ""),
                 )
-    profile_memory_block = await _load_profile_memory_context(
+    profile_memory_block, durable_memory_hits = await _load_profile_memory_context(
         db,
         user_id=user.id,
+        query=query,
         memory_mode=memory_mode,
     )
     if profile_memory_block:
@@ -428,12 +555,15 @@ async def prepare_response_turn(
         "data_source_name": getattr(request, "data_source_name", None),
         "force_database": bool(getattr(request, "force_database", False)),
         "force_mode": getattr(request, "force_mode", None),
+        "execution_profile": getattr(request, "execution_profile", "auto"),
+        "execution_mode": getattr(request, "execution_mode", "auto"),
         "clarify_context": getattr(request, "clarify_context", None),
         "clarify_question_id": getattr(request, "clarify_question_id", None),
         "attachment_ids": list(getattr(request, "attachment_ids", None) or []),
         "knowledge_control": dict(getattr(request, "knowledge", None) or {}),
         "custom_instruction_block": custom_instruction_block,
         "profile_memory_context": profile_memory_block,
+        "durable_memory_hits": durable_memory_hits,
         "history": history,
         "input_items": input_items,
         "input_modalities": sorted(set(modalities)),

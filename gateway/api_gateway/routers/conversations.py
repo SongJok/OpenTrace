@@ -4,8 +4,10 @@ Conversations router — list, create, rename, archive, delete, history per user
 from __future__ import annotations
 
 import json
+import hashlib
+import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -20,6 +22,7 @@ from infra.storage.models import (
     Attachment,
     ChatSession,
     ConversationState,
+    ConversationShare,
     Feedback,
     ReasoningTrace,
     ResponseItem,
@@ -132,6 +135,8 @@ class ConversationOut(BaseModel):
     archived_at: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
     pinned: bool = False
+    is_temporary: bool = False
+    expires_at: Optional[str] = None
 
 
 class MessageOut(BaseModel):
@@ -153,6 +158,10 @@ class MessageOut(BaseModel):
     metadata: Optional[dict] = None
     citations: list[dict] = Field(default_factory=list)
     annotations: list[dict] = Field(default_factory=list)
+    response_id: Optional[str] = None
+    parent_response_id: Optional[str] = None
+    version_index: int = 1
+    sibling_count: int = 1
 
 
 class UpdateConversationRequest(BaseModel):
@@ -163,6 +172,32 @@ class UpdateConversationRequest(BaseModel):
 
 class ArchiveConversationRequest(BaseModel):
     archived: bool = True
+
+
+class CreateConversationRequest(BaseModel):
+    temporary: bool = False
+
+
+class ActiveResponseRequest(BaseModel):
+    response_id: str
+
+
+def _share_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def _active_chain(db: AsyncSession, session: ChatSession, user_id: str) -> list[ResponseRecord]:
+    if not session.active_response_id:
+        return []
+    by_id: dict[str, ResponseRecord] = {}
+    current_id: str | None = session.active_response_id
+    while current_id and current_id not in by_id:
+        row = await db.scalar(select(ResponseRecord).where(ResponseRecord.id == current_id, ResponseRecord.user_id == user_id, ResponseRecord.conversation_id == session.id))
+        if not row:
+            break
+        by_id[row.id] = row
+        current_id = row.parent_response_id
+    return list(reversed(list(by_id.values())))
 
 
 @router.get("/conversations")
@@ -177,6 +212,7 @@ async def list_conversations(
         clauses.append(ChatSession.archived_at.isnot(None))
     else:
         clauses.append(ChatSession.archived_at.is_(None))
+        clauses.append(ChatSession.is_temporary.is_(False))
 
     if query.strip():
         q = f"%{query.strip()}%"
@@ -203,7 +239,7 @@ async def list_conversations(
     result = await db.execute(
         select(ChatSession)
         .where(and_(*clauses))
-        .order_by(desc(ChatSession.last_active))
+        .order_by(desc(ChatSession.pinned), desc(ChatSession.last_active))
         .limit(200)
     )
     sessions = result.scalars().all()
@@ -217,6 +253,8 @@ async def list_conversations(
             archived_at=s.archived_at.isoformat() if s.archived_at else None,
             tags=list(getattr(s, "tags", []) or []),
             pinned=bool(getattr(s, "pinned", False)),
+            is_temporary=bool(getattr(s, "is_temporary", False)),
+            expires_at=s.expires_at.isoformat() if s.expires_at else None,
         )
         for s in sessions
     ]
@@ -224,14 +262,18 @@ async def list_conversations(
 
 @router.post("/conversations")
 async def create_conversation(
+    req: CreateConversationRequest | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConversationOut:
+    temporary = bool(req and req.temporary)
     session = ChatSession(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
         title="New conversation",
         display_title="New conversation",
+        is_temporary=temporary,
+        expires_at=(datetime.now(timezone.utc) + timedelta(days=30)) if temporary else None,
     )
     db.add(session)
     await db.commit()
@@ -245,6 +287,8 @@ async def create_conversation(
         archived_at=None,
         tags=[],
         pinned=False,
+        is_temporary=temporary,
+        expires_at=session.expires_at.isoformat() if session.expires_at else None,
     )
 
 
@@ -285,6 +329,8 @@ async def update_conversation(
         tags=list(getattr(session, "tags", []) or []),
         pinned=bool(getattr(session, "pinned", False)),
         archived_at=session.archived_at.isoformat() if session.archived_at else None,
+        is_temporary=bool(session.is_temporary),
+        expires_at=session.expires_at.isoformat() if session.expires_at else None,
     )
 
 
@@ -468,6 +514,74 @@ async def branch_conversation(
     return {"conversation_id": new_id, "branched_from": conversation_id, "up_to_message_id": up_to_message_id}
 
 
+@router.post("/conversations/{conversation_id}/active-response")
+async def set_active_response(
+    conversation_id: str,
+    req: ActiveResponseRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await db.scalar(select(ChatSession).where(ChatSession.id == conversation_id, ChatSession.user_id == current_user.id))
+    response = await db.scalar(select(ResponseRecord).where(ResponseRecord.id == req.response_id, ResponseRecord.conversation_id == conversation_id, ResponseRecord.user_id == current_user.id))
+    if not session or not response:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Response not found")
+    session.active_response_id = response.id
+    await db.commit()
+    return {"active_response_id": response.id}
+
+
+@router.post("/conversations/{conversation_id}/share")
+async def create_share(
+    conversation_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    session = await db.scalar(select(ChatSession).where(ChatSession.id == conversation_id, ChatSession.user_id == current_user.id))
+    if not session:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation not found")
+    if session.is_temporary:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="临时聊天不能分享")
+    chain = await _active_chain(db, session, current_user.id)
+    ids = [row.id for row in chain]
+    items = [] if not ids else (await db.execute(select(ResponseItem).where(ResponseItem.response_id.in_(ids)).order_by(ResponseItem.sequence_number))).scalars().all()
+    by_response: dict[str, list[ResponseItem]] = {}
+    for item in items:
+        by_response.setdefault(item.response_id, []).append(item)
+    allowed = []
+    for response in chain:
+        for item in by_response.get(response.id, []):
+            if item.item_type not in {"input_message", "message"} or item.role not in {"user", "assistant"}:
+                continue
+            payload = item.payload if isinstance(item.payload, dict) else {}
+            citations = [
+                {"title": str(c.get("title") or ""), "url": str(c.get("url") or "")}
+                for c in payload.get("citations", []) if isinstance(c, dict) and c.get("url")
+            ]
+            allowed.append({"role": item.role, "content": item.content or "", "created_at": item.created_at.isoformat() if item.created_at else None, "citations": citations})
+    await db.execute(
+        ConversationShare.__table__.update().where(ConversationShare.conversation_id == conversation_id, ConversationShare.revoked_at.is_(None)).values(revoked_at=datetime.now(timezone.utc))
+    )
+    token, public_id = secrets.token_urlsafe(24), f"shr_{uuid.uuid4().hex}"
+    db.add(ConversationShare(id=str(uuid.uuid4()), conversation_id=conversation_id, user_id=current_user.id, public_id=public_id, token_hash=_share_token_hash(token), snapshot={"title": session.display_title or session.title or "OpenTrace 对话", "messages": allowed},))
+    await db.commit()
+    return {"public_id": public_id, "token": token, "url": f"/share/{public_id}/{token}"}
+
+
+@router.delete("/conversations/{conversation_id}/share")
+async def revoke_share(conversation_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
+    result = await db.execute(ConversationShare.__table__.update().where(ConversationShare.conversation_id == conversation_id, ConversationShare.user_id == current_user.id, ConversationShare.revoked_at.is_(None)).values(revoked_at=datetime.now(timezone.utc)))
+    await db.commit()
+    return {"revoked": bool(result.rowcount)}
+
+
+@router.get("/shared/{public_id}/{token}")
+async def get_shared_conversation(public_id: str, token: str, db: AsyncSession = Depends(get_db)) -> dict:
+    share = await db.scalar(select(ConversationShare).where(ConversationShare.public_id == public_id, ConversationShare.revoked_at.is_(None)))
+    if not share or not secrets.compare_digest(share.token_hash, _share_token_hash(token)):
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="分享链接无效或已撤销")
+    return dict(share.snapshot or {})
+
+
 @router.get("/conversations/{conversation_id}/messages")
 async def get_messages(
     conversation_id: str,
@@ -480,19 +594,13 @@ async def get_messages(
             ChatSession.user_id == current_user.id,
         )
     )
-    if not sess_result.scalar_one_or_none():
+    session = sess_result.scalar_one_or_none()
+    if not session:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation not found")
 
     # Responses/ResponseItem is the canonical source for new turns.  TraceLog
     # remains a read-only compatibility archive for historical conversations.
-    response_rows = (
-        await db.execute(
-            select(ResponseRecord)
-            .where(ResponseRecord.conversation_id == conversation_id, ResponseRecord.user_id == current_user.id)
-            .order_by(ResponseRecord.created_at)
-            .limit(300)
-        )
-    ).scalars().all()
+    response_rows = await _active_chain(db, session, current_user.id)
     if response_rows:
         response_ids = [row.id for row in response_rows]
         response_items = (
@@ -506,6 +614,10 @@ async def get_messages(
         for item in response_items:
             by_response.setdefault(item.response_id, []).append(item)
         canonical_messages: list[MessageOut] = []
+        all_rows = (await db.execute(select(ResponseRecord).where(ResponseRecord.conversation_id == conversation_id, ResponseRecord.user_id == current_user.id).order_by(ResponseRecord.created_at))).scalars().all()
+        sibling_rows: dict[str | None, list[ResponseRecord]] = {}
+        for candidate in all_rows:
+            sibling_rows.setdefault(candidate.parent_response_id, []).append(candidate)
         for row in response_rows:
             for item in by_response.get(row.id, []):
                 if item.item_type not in {"input_message", "message"}:
@@ -522,6 +634,10 @@ async def get_messages(
                         metadata=payload,
                         citations=list(payload.get("citations") or []),
                         annotations=list(payload.get("annotations") or []),
+                        response_id=row.id,
+                        parent_response_id=row.parent_response_id,
+                        version_index=next((i + 1 for i, sibling in enumerate(sibling_rows.get(row.parent_response_id, [])) if sibling.id == row.id), 1),
+                        sibling_count=len(sibling_rows.get(row.parent_response_id, [])),
                     )
                 )
         if canonical_messages:

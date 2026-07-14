@@ -3,7 +3,7 @@ import { ChevronLeft, Check, LogOut, Moon, Monitor, Palette, Sun } from 'lucide-
 import clsx from 'clsx'
 import { useThemeStore, type AccentMode, type ThemeMode } from '../store/theme'
 import { useAuthStore } from '../store/auth'
-import { apiGetUiSettings, apiPatchUiSettings } from '../api/client'
+import { apiGetCustomInstructions, apiGetUiSettings, apiPatchUiSettings, apiSetCustomInstructions } from '../api/client'
 import { CardShell } from '../components/CardShell'
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; description: string; icon: ReactNode }[] = [
@@ -103,6 +103,10 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
   const [executionGraphDefaultExpanded, setExecutionGraphDefaultExpanded] = useState(false)
   const [decisionTraceDefaultExpanded, setDecisionTraceDefaultExpanded] = useState(false)
   const [flowCardsDefaultExpanded, setFlowCardsDefaultExpanded] = useState(false)
+  const [customInstructionsEnabled, setCustomInstructionsEnabled] = useState(true)
+  const [aboutUser, setAboutUser] = useState('')
+  const [responseStyle, setResponseStyle] = useState('')
+  const [savingCustomInstructions, setSavingCustomInstructions] = useState(false)
 
   const effectiveModeLabel = useMemo(() => (mode === 'system' ? 'System' : mode === 'light' ? 'Light' : 'Dark'), [mode])
 
@@ -134,6 +138,19 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
     })()
   }, [token, setMode, setAccent])
 
+  useEffect(() => {
+    void (async () => {
+      try {
+        const instructions = await apiGetCustomInstructions(token)
+        setAboutUser(instructions.about_user || '')
+        setResponseStyle(instructions.response_style || '')
+        setCustomInstructionsEnabled(instructions.enabled)
+      } catch {
+        // The rest of Settings remains usable if personalization is unavailable.
+      }
+    })()
+  }, [token])
+
   const persistUiSettings = async (next?: Partial<{ reasoning_default_expanded: boolean; dag_default_expanded: boolean; execution_graph_default_expanded: boolean; decision_trace_default_expanded: boolean; flow_cards_default_expanded: boolean; theme_mode: ThemeMode; theme_accent: AccentMode }>) => {
     try {
       await apiPatchUiSettings(token, {
@@ -148,6 +165,20 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
       })
     } catch {
       // keep local optimistic state
+    }
+  }
+
+  const saveCustomInstructions = async () => {
+    setSavingCustomInstructions(true)
+    try {
+      const saved = await apiSetCustomInstructions(token, {
+        about_user: aboutUser,
+        response_style: responseStyle,
+        enabled: customInstructionsEnabled,
+      })
+      setCustomInstructionsEnabled(saved.enabled)
+    } finally {
+      setSavingCustomInstructions(false)
     }
   }
 
@@ -335,6 +366,46 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
                   await persistUiSettings({ flow_cards_default_expanded: next })
                 }}
               />
+            </div>
+          </SectionCard>
+
+          <SectionCard eyebrow="Personalization" title="自定义指令" meta="明确告诉 OpenTrace 应该了解什么，以及如何回答；临时聊天也会遵守这些指令。">
+            <div className="space-y-3">
+              <SwitchRow
+                label="启用自定义指令"
+                checked={customInstructionsEnabled}
+                onToggle={() => setCustomInstructionsEnabled((value) => !value)}
+              />
+              <label className="block text-sm text-[var(--text)]">
+                关于你
+                <textarea
+                  value={aboutUser}
+                  onChange={(event) => setAboutUser(event.target.value)}
+                  maxLength={4000}
+                  rows={3}
+                  placeholder="例如：我是产品经理，常用中文沟通，正在做 OpenTrace。"
+                  className="mt-1.5 w-full rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+                />
+              </label>
+              <label className="block text-sm text-[var(--text)]">
+                回答风格
+                <textarea
+                  value={responseStyle}
+                  onChange={(event) => setResponseStyle(event.target.value)}
+                  maxLength={4000}
+                  rows={3}
+                  placeholder="例如：先给结论，使用中文，必要时给出可执行步骤。"
+                  className="mt-1.5 w-full rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={savingCustomInstructions}
+                onClick={() => void saveCustomInstructions()}
+                className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--accent-foreground)] disabled:opacity-60"
+              >
+                {savingCustomInstructions ? '保存中…' : '保存自定义指令'}
+              </button>
             </div>
           </SectionCard>
 

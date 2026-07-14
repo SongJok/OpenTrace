@@ -89,6 +89,7 @@ async def init_db() -> None:
         await _ensure_conversation_states_columns(conn)
         await _ensure_enterprise_tenant_tables(conn)
         await _ensure_responses_columns(conn)
+        await _ensure_ui_settings_columns(conn)
     logger.info("Database tables initialised")
 
 
@@ -110,6 +111,7 @@ async def ensure_runtime_schema() -> None:
             await _ensure_enterprise_tenant_tables(conn)
             await _ensure_documents_tenant_columns(conn)
             await _ensure_responses_columns(conn)
+            await _ensure_ui_settings_columns(conn)
     except Exception as exc:  # noqa: BLE001
         if settings.app_env in {"staging", "production"}:
             logger.error("Runtime schema readiness failed", error=str(exc))
@@ -132,6 +134,8 @@ async def _verify_runtime_schema(conn) -> None:
             "workspace_id",
             "active_response_id",
             "branch_root_response_id",
+            "is_temporary",
+            "expires_at",
         },
         "conversation_states": {
             "active_mode",
@@ -150,6 +154,14 @@ async def _verify_runtime_schema(conn) -> None:
             "heartbeat_at",
             "attempt_count",
             "max_attempts",
+        },
+        "user_ui_settings": {
+            "dag_default_expanded",
+            "execution_graph_default_expanded",
+            "decision_trace_default_expanded",
+            "flow_cards_default_expanded",
+            "theme_mode",
+            "theme_accent",
         },
     }
     missing: list[str] = []
@@ -178,6 +190,7 @@ async def _verify_runtime_schema(conn) -> None:
         "knowledge_claims",
         "knowledge_relations",
         "knowledge_compilation_jobs",
+        "conversation_shares",
         "knowledge_lint_issues",
         "knowledge_feedback",
         "knowledge_rules",
@@ -225,6 +238,20 @@ async def _ensure_responses_columns(conn) -> None:
         await conn.execute(text(stmt))
 
 
+async def _ensure_ui_settings_columns(conn) -> None:
+    """Keep expanded UI preferences backwards compatible for local databases."""
+    statements = [
+        "ALTER TABLE IF EXISTS public.user_ui_settings ADD COLUMN IF NOT EXISTS dag_default_expanded BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE IF EXISTS public.user_ui_settings ADD COLUMN IF NOT EXISTS execution_graph_default_expanded BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE IF EXISTS public.user_ui_settings ADD COLUMN IF NOT EXISTS decision_trace_default_expanded BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE IF EXISTS public.user_ui_settings ADD COLUMN IF NOT EXISTS flow_cards_default_expanded BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE IF EXISTS public.user_ui_settings ADD COLUMN IF NOT EXISTS theme_mode VARCHAR(20) NOT NULL DEFAULT 'system'",
+        "ALTER TABLE IF EXISTS public.user_ui_settings ADD COLUMN IF NOT EXISTS theme_accent VARCHAR(32) NOT NULL DEFAULT 'blue'",
+    ]
+    for stmt in statements:
+        await conn.execute(text(stmt))
+
+
 async def _ensure_chat_sessions_columns(conn) -> None:
     """Idempotently add ChatSession columns required by current ORM queries."""
     statements = [
@@ -258,6 +285,10 @@ async def _ensure_chat_sessions_columns(conn) -> None:
         "ON public.chat_sessions (active_response_id)",
         "CREATE INDEX IF NOT EXISTS ix_chat_sessions_branch_root_response_id "
         "ON public.chat_sessions (branch_root_response_id)",
+        "ALTER TABLE IF EXISTS public.chat_sessions ADD COLUMN IF NOT EXISTS is_temporary BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE IF EXISTS public.chat_sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE",
+        "CREATE INDEX IF NOT EXISTS ix_chat_sessions_is_temporary ON public.chat_sessions (is_temporary)",
+        "CREATE INDEX IF NOT EXISTS ix_chat_sessions_expires_at ON public.chat_sessions (expires_at)",
     ]
     for stmt in statements:
         await conn.execute(text(stmt))

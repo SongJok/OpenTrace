@@ -16,6 +16,7 @@ import DatabasesPage from './pages/DatabasesPage'
 import SkillsPage from './pages/SkillsPage'
 import RulesPage from './pages/RulesPage'
 import KnowledgeCenterPage from './pages/KnowledgeCenterPage'
+import SharedConversationPage from './pages/SharedConversationPage'
 
 function Protected({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -95,6 +96,7 @@ export default function App() {
 
       <Route path="/" element={<Navigate to="/chat" replace />} />
       <Route path="/chat" element={<Protected><ChatPage /></Protected>} />
+      <Route path="/share/:publicId/:token" element={<SharedConversationPage />} />
       <Route path="/documents" element={<Protected><DocumentsRoute /></Protected>} />
       <Route path="/settings" element={<Protected><SettingsRoute /></Protected>} />
       <Route path="/tasks" element={<Protected><TasksRoute /></Protected>} />

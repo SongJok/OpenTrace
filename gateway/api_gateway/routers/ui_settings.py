@@ -17,6 +17,12 @@ router = APIRouter()
 class UiSettingsPayload(BaseModel):
     reasoning_default_expanded: bool = True
     graph_default_expanded: bool = True
+    dag_default_expanded: bool = True
+    execution_graph_default_expanded: bool = True
+    decision_trace_default_expanded: bool = True
+    flow_cards_default_expanded: bool = True
+    theme_mode: str = "system"
+    theme_accent: str = "blue"
 
 
 @router.get('/users/ui-settings')
@@ -31,6 +37,12 @@ async def get_ui_settings(
     return UiSettingsPayload(
         reasoning_default_expanded=bool(row.reasoning_default_expanded),
         graph_default_expanded=bool(row.graph_default_expanded),
+        dag_default_expanded=bool(row.dag_default_expanded),
+        execution_graph_default_expanded=bool(row.execution_graph_default_expanded),
+        decision_trace_default_expanded=bool(row.decision_trace_default_expanded),
+        flow_cards_default_expanded=bool(row.flow_cards_default_expanded),
+        theme_mode=row.theme_mode,
+        theme_accent=row.theme_accent,
     )
 
 
@@ -48,13 +60,31 @@ async def patch_ui_settings(
             user_id=current_user.id,
             reasoning_default_expanded=req.reasoning_default_expanded,
             graph_default_expanded=req.graph_default_expanded,
+            dag_default_expanded=req.dag_default_expanded,
+            execution_graph_default_expanded=req.execution_graph_default_expanded,
+            decision_trace_default_expanded=req.decision_trace_default_expanded,
+            flow_cards_default_expanded=req.flow_cards_default_expanded,
+            theme_mode=req.theme_mode,
+            theme_accent=req.theme_accent,
         )
         db.add(row)
     else:
         row.reasoning_default_expanded = req.reasoning_default_expanded
         row.graph_default_expanded = req.graph_default_expanded
+        row.dag_default_expanded = req.dag_default_expanded
+        row.execution_graph_default_expanded = req.execution_graph_default_expanded
+        row.decision_trace_default_expanded = req.decision_trace_default_expanded
+        row.flow_cards_default_expanded = req.flow_cards_default_expanded
+        row.theme_mode = req.theme_mode
+        row.theme_accent = req.theme_accent
     await db.commit()
     return UiSettingsPayload(
         reasoning_default_expanded=bool(req.reasoning_default_expanded),
         graph_default_expanded=bool(req.graph_default_expanded),
+        dag_default_expanded=bool(req.dag_default_expanded),
+        execution_graph_default_expanded=bool(req.execution_graph_default_expanded),
+        decision_trace_default_expanded=bool(req.decision_trace_default_expanded),
+        flow_cards_default_expanded=bool(req.flow_cards_default_expanded),
+        theme_mode=req.theme_mode,
+        theme_accent=req.theme_accent,
     )

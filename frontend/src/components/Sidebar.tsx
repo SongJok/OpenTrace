@@ -101,6 +101,18 @@ export default function Sidebar() {
     }
   }
 
+  async function newTemporaryChat() {
+    try {
+      window.dispatchEvent(new Event('opentrace:stop-stream'))
+      const conv = await apiCreateConversation(token, undefined, true)
+      store.setActiveId(conv.id)
+      store.setMessages(conv.id, [])
+      navigate('/chat')
+    } catch (e: any) {
+      alert(e?.message || '创建临时聊天失败')
+    }
+  }
+
   async function deleteConv(e: React.MouseEvent, id: string) {
     e.stopPropagation()
     try {
@@ -240,6 +252,7 @@ export default function Sidebar() {
           <div className="mt-3">
             <div className="text-sm font-semibold text-[var(--text)]">OpenTrace</div>
             <div className="mt-0.5 text-xs text-[var(--text-secondary)]">你的对话</div>
+            <button onClick={() => void newTemporaryChat()} className="mt-2 text-xs text-[var(--accent)] hover:underline">开启临时聊天（30 天后删除）</button>
           </div>
         </div>
       </div>
