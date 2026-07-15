@@ -42,6 +42,16 @@ done
 
 RT="$(work_runtime_dir)"
 PID_FILE="$RT/frontend_dev.pid"
+SCREEN_NAME="opentrace-vite-${FE_PORT}"
+
+screen_sessions=""
+if command -v screen >/dev/null 2>&1; then
+  screen_sessions="$(screen -ls 2>&1 || true)"
+fi
+if [[ "$screen_sessions" == *"${SCREEN_NAME}"* ]]; then
+  echo "▸ 停止前端开发会话 (${SCREEN_NAME})"
+  screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
+fi
 
 if [[ "$FORCE_PORT" != "1" ]]; then
   work_stop_pidfile "$PID_FILE" "前端开发服务"

@@ -45,6 +45,7 @@ API_PORT="$(work_default_api_port)"
 RT="$(work_runtime_dir)"
 PID_FILE="$RT/frontend_dev.pid"
 LOG_FILE="$RT/frontend_dev.log"
+SCREEN_NAME="opentrace-vite-${FE_PORT}"
 
 if [[ ! -d "$FRONTEND_DIR" ]]; then
   echo "✗ 未找到 frontend 目录: $FRONTEND_DIR"
@@ -54,6 +55,15 @@ fi
 work_node_preflight
 
 if work_port_listening "$FE_PORT"; then
+  screen_sessions=""
+  if command -v screen >/dev/null 2>&1; then
+    screen_sessions="$(screen -ls 2>&1 || true)"
+  fi
+  if [[ "$screen_sessions" == *"${SCREEN_NAME}"* ]]; then
+    echo "✓ 前端已在运行 (${SCREEN_NAME}, port=${FE_PORT})"
+    echo "  UI: http://127.0.0.1:${FE_PORT}"
+    exit 0
+  fi
   if [[ -f "$PID_FILE" ]]; then
     old_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
     if [[ -n "${old_pid:-}" ]] && kill -0 "$old_pid" >/dev/null 2>&1; then
@@ -77,9 +87,21 @@ export VITE_API_URL="${VITE_API_URL:-http://127.0.0.1:${API_PORT}}"
 export VITE_WS_URL="${VITE_WS_URL:-ws://127.0.0.1:${API_PORT}}"
 
 echo "▸ 启动 Vite (port=${FE_PORT}, API=${VITE_API_URL})..."
-nohup npm run dev -- --port "$FE_PORT" --host \
-  >"$LOG_FILE" 2>&1 &
-echo $! >"$PID_FILE"
+# The Codex/macOS development runner reaps ordinary nohup descendants when
+# the launcher exits.  A detached screen session gives Vite an independent
+# session while retaining the nohup fallback for minimal Linux hosts.
+if command -v screen >/dev/null 2>&1; then
+  screen -S "$SCREEN_NAME" -X quit >/dev/null 2>&1 || true
+  screen -dmS "$SCREEN_NAME" bash -lc \
+    "cd '$FRONTEND_DIR' && exec npm run dev -- --port '$FE_PORT' --host >>'$LOG_FILE' 2>&1"
+  # The screen socket becomes visible asynchronously; store a stable marker
+  # instead of racing its OS pid.  frontend-stop resolves the named session.
+  echo "screen:${SCREEN_NAME}" >"$PID_FILE"
+else
+  nohup npm run dev -- --port "$FE_PORT" --host \
+    >"$LOG_FILE" 2>&1 < /dev/null &
+  echo $! >"$PID_FILE"
+fi
 
 if [[ "$WAIT_HTTP" == "1" ]]; then
   if ! work_wait_http "http://127.0.0.1:${FE_PORT}/" 30 2; then

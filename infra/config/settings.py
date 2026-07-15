@@ -52,16 +52,15 @@ class RedisSettings(BaseSettings):
 class LLMSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Query LLM
-    # The primary answer path follows the public OpenAI Responses API.  The
-    # existing Qwen-compatible roles remain available as an observable
-    # degradation path when OpenAI is unavailable.
-    default_llm_query_provider: str = "OpenAI"
-    default_llm_query_model: str = "gpt-5.6"
-    default_llm_query_base_url: str = "https://api.openai.com/v1"
+    # Query LLM — Qwen is the first-party default for this deployment.  Other
+    # providers/models remain configurable through the environment and the
+    # Responses ``model`` field without changing the product default.
+    default_llm_query_provider: str = "阿里巴巴Qwen(DashScope)"
+    default_llm_query_model: str = "qwen3.7-max"
+    default_llm_query_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     default_llm_query_api_key: str = ""
-    default_llm_fast_openai_model: str = "gpt-5.6"
-    default_llm_deep_openai_model: str = "gpt-5.6"
+    default_llm_fast_openai_model: str = "qwen3-8b"
+    default_llm_deep_openai_model: str = "qwen3.7-max"
 
     # Compress LLM
     default_llm_compress_provider: str = "阿里巴巴Qwen(DashScope)"
@@ -241,6 +240,8 @@ class AppSettings(BaseSettings):
     # caches and tool results may inform orchestration but may not become the
     # final answer by themselves.  Authentication, quota and explicit safety
     # rejections are intentionally handled before model execution.
+    # Keep the strict contract configurable; the gateway still converts
+    # definitive provider outages into a visible degradation response.
     kernel_all_questions_require_model: bool = True
     kernel_enriched_identity_enabled: bool = True
     kernel_identity_llm_enabled: bool = True  # True=LLM动态生成身份回答, False=回退固定答案

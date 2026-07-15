@@ -696,6 +696,7 @@ export async function apiChatStream(
             project_id: typeof payload?.project_id === 'string' ? payload.project_id : undefined,
             assistant_profile_id: typeof payload?.assistant_profile_id === 'string' ? payload.assistant_profile_id : undefined,
           },
+          ...(typeof payload?.model === 'string' && payload.model.trim() ? { model: payload.model.trim() } : {}),
         }),
       }),
       signal,

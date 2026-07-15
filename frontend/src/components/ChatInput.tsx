@@ -18,6 +18,8 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   const streaming = useChatStore((state) => state.streaming)
   const activeResponseId = useChatStore((state) => state.activeResponseId)
   const executionProfile = useChatPreferences((state) => state.executionProfile)
+  const model = useChatPreferences((state) => state.model)
+  const setModel = useChatPreferences((state) => state.setModel)
   const assistantProfileId = useChatPreferences((state) => state.assistantProfileId)
   const projectId = useChatPreferences((state) => state.projectId)
   const prefillText = useChatPreferences((state) => state.prefillText)
@@ -99,6 +101,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
         retry_response_id: retryResponseId,
         assistant_profile_id: assistantProfileId ?? undefined,
         project_id: projectId ?? undefined,
+        model,
       },
     )
   }
@@ -171,15 +174,28 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
           className="max-h-56 min-h-12 w-full resize-none bg-transparent px-2 py-1 text-[15px] leading-6 outline-none placeholder:text-[var(--text-secondary)]"
         />
         <div className="mt-2 flex items-center justify-between gap-3">
-          <div className="truncate px-2 text-xs text-[var(--text-secondary)]">
-            {executionProfile === 'deep' ? '深度思考' : executionProfile === 'fast' ? '快速' : '自动'}
-            {projectId ? ' · Project 上下文' : ''}
-            {assistantProfileId ? ' · 个性化角色' : ''}
+          <div className="flex min-w-0 items-center gap-2 px-2 text-xs text-[var(--text-secondary)]">
+            <select
+              aria-label="选择模型"
+              value={model}
+              onChange={(event) => setModel(event.target.value as typeof model)}
+              className="max-w-44 rounded-lg border border-[var(--border)] bg-transparent px-2 py-1 text-xs text-[var(--text-secondary)] outline-none focus:border-[var(--accent)]"
+            >
+              <option value="qwen3.7-max">Qwen 3.7 Max（默认）</option>
+              <option value="qwen3.6-plus">Qwen 3.6 Plus</option>
+              <option value="qwen3-14b">Qwen 3 14B</option>
+              <option value="qwen3-8b">Qwen 3 8B（快速）</option>
+            </select>
+            <span className="hidden truncate sm:inline">
+              {executionProfile === 'deep' ? '深度思考' : executionProfile === 'fast' ? '快速' : '自动'}
+              {projectId ? ' · Project 上下文' : ''}
+              {assistantProfileId ? ' · 个性化角色' : ''}
+            </span>
           </div>
           {streaming ? (
-            <button onClick={() => void stop()} aria-label="停止生成" className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--text)] text-[var(--bg)]"><Square size={14} fill="currentColor" /></button>
+            <button type="button" onClick={() => void stop()} aria-label="停止生成" title="停止生成" className="inline-flex h-9 min-w-16 items-center justify-center gap-1.5 rounded-full bg-[var(--text)] px-3 text-sm font-medium text-[var(--bg)]"><Square size={14} fill="currentColor" /><span>停止</span></button>
           ) : (
-            <button disabled={!text.trim()} onClick={() => void send()} aria-label="发送" className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--accent)] text-white disabled:opacity-30"><ArrowUp size={18} /></button>
+            <button type="button" disabled={!text.trim()} onClick={() => void send()} aria-label="确定发送" title="确定发送" className="inline-flex h-9 min-w-20 items-center justify-center gap-1.5 rounded-full bg-[var(--accent)] px-3 text-sm font-medium text-[var(--accent-foreground)] shadow-sm transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-35"><ArrowUp size={16} /><span>确定</span></button>
           )}
         </div>
       </div>

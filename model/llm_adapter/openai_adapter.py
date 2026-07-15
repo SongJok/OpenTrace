@@ -18,6 +18,21 @@ logger = get_logger(__name__)
 tracer = get_tracer(__name__)
 
 
+def _should_retry_without_proxy(exc: Exception) -> bool:
+    """Only bypass the proxy for transport failures.
+
+    Provider HTTP errors (invalid key, arrears, quota, bad model) are already
+    definitive responses. Retrying those through a second transport used to
+    add several seconds to every turn and made the UI look permanently stuck.
+    """
+    import httpx
+
+    if isinstance(exc, (httpx.ConnectError, httpx.ProxyError, httpx.TimeoutException)):
+        return True
+    message = str(exc).lower()
+    return any(token in message for token in ("connection error", "connect timeout", "proxy error", "name or service not known"))
+
+
 class OpenAICompatibleAdapter(BaseLLMAdapter):
     """
     Adapter for any OpenAI-compatible REST API:
@@ -305,6 +320,8 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                 try:
                     resp = await self._try_complete(True, messages, **kwargs)
                 except Exception as proxy_exc:
+                    if not _should_retry_without_proxy(proxy_exc):
+                        raise
                     logger.warning(
                         "LLM call via proxy failed, retrying direct",
                         error=str(proxy_exc),
@@ -384,6 +401,8 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             async for part in _stream_once(True):
                 yield part
         except Exception as proxy_exc:
+            if not _should_retry_without_proxy(proxy_exc):
+                raise
             logger.warning(
                 "LLM stream via proxy failed, retrying direct",
                 error=str(proxy_exc),

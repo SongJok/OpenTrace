@@ -285,6 +285,9 @@ class ModelGateway:
                 "free tier",
                 "quota has been exhausted",
                 "payment information",
+                "arrearage",
+                "overdue payment",
+                "account is in good standing",
             ]
         ):
             return "auth"
@@ -409,13 +412,17 @@ class ModelGateway:
                         latency_ms=latency_ms,
                     )
                     last_exc = exc
+                    # A payment/quota/auth/model error will not be repaired by
+                    # another Qwen role using the same provider account.
+                    if self._classify_exception(exc) in {"auth", "model_not_found"}:
+                        break
 
             logger.warning(
                 "All LLM candidates failed; using offline fallback when policy allows",
                 candidates=[r.value for r in candidates],
                 error=str(last_exc) if last_exc else None,
             )
-            if bool(getattr(settings, "kernel_all_questions_require_model", True)) and role == LLMRole.QUERY:
+            if bool(getattr(settings, "kernel_all_questions_require_model", True)) and role == LLMRole.QUERY and self._classify_exception(last_exc) not in {"auth", "model_not_found"}:
                 raise RuntimeError("primary_model_unavailable") from last_exc
             if is_identity_user_query(user_text):
                 return LLMResponse(content=CANONICAL_IDENTITY_RESPONSE, model='identity-fallback', raw={'fallback': True, 'role': role.value, 'user_text': user_text})
@@ -484,7 +491,7 @@ class ModelGateway:
                     latency_ms = int((time.monotonic() - t0) * 1000)
                     cb.record_failure()
                     logger.warning("LLM stream failed; using offline fallback when policy allows", role=role.value, error=str(exc), error_class=self._classify_exception(exc), latency_ms=latency_ms, cb_state=cb.state)
-                    if bool(getattr(settings, "kernel_all_questions_require_model", True)) and role == LLMRole.QUERY:
+                    if bool(getattr(settings, "kernel_all_questions_require_model", True)) and role == LLMRole.QUERY and self._classify_exception(exc) not in {"auth", "model_not_found"}:
                         raise RuntimeError("primary_model_unavailable") from exc
                     fallback = _offline_fallback_response(prepared_messages, role).content
                     if fallback:
