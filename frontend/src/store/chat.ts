@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ReasoningStep, ToolRunStatus } from '../api/client'
+import type { ApprovalRequest, ReasoningStep, ToolRunStatus } from '../api/client'
 import { normalizeFinalAnswerEnvelope, type TurnMetaEnvelope } from '../utils/streamEnvelope'
 
 export interface ExecutionGraphNode {
@@ -88,6 +88,7 @@ export interface Message {
   parent_response_id?: string | null
   version_index?: number
   sibling_count?: number
+  approvals?: ApprovalRequest[]
 }
 
 export interface Conversation {
@@ -128,6 +129,7 @@ interface ChatState {
   setStreaming: (v: boolean) => void
   setActiveResponseId: (id: string | null) => void
   setMessageResponseId: (conversationId: string, messageId: string, responseId: string) => void
+  setMessageApprovals: (conversationId: string, messageId: string, approvals: ApprovalRequest[]) => void
   updateTitle: (id: string, title: string) => void
   updateConversationMeta: (conversation: Partial<Conversation> & { id: string }) => void
   resetReasoning: (sessionId: string, messageId: string) => void
@@ -409,6 +411,15 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       ...s.messages,
       [conversationId]: (s.messages[conversationId] ?? []).map((message) => message.id === messageId ? { ...message, response_id: responseId } : message),
     },
+  })),
+  setMessageApprovals: (conversationId, messageId, approvals) => set((s) => ({
+    messages: {
+      ...s.messages,
+      [conversationId]: (s.messages[conversationId] ?? []).map((message) =>
+        message.id === messageId ? { ...message, approvals, status: approvals.length ? 'done' : message.status } : message
+      ),
+    },
+    streaming: approvals.length ? false : s.streaming,
   })),
   updateTitle: (id, title) =>
     set((s) => ({

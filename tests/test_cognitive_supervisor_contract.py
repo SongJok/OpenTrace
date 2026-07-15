@@ -49,9 +49,9 @@ class TestCognitiveSupervisor:
         assert len(flags) >= 1
 
     def test_strategy_projection_data_query(self):
+        from kernel.cognition.planner_facade import get_strategic_planner
         from kernel.cognitive_kernel import KernelRequest
         from kernel.cognitive_supervisor.prepare_dispatch import runtime_task_from_request
-        from kernel.cognition.planner_facade import get_strategic_planner
 
         req = KernelRequest(
             query="查询订单",
@@ -135,13 +135,6 @@ class TestMemoryFabric:
         assert len(rels) >= 1
 
 
-class TestLegacyV4:
-    def test_legacy_v4_reexport(self):
-        from legacy.v4 import CognitiveOrchestratorV4
-
-        assert CognitiveOrchestratorV4 is not None
-
-
 class TestGoalRuntimeHooks:
     def test_hooks_from_context(self):
         from kernel.goal.goal_runtime_hooks import GoalRuntimeHooks
@@ -165,7 +158,7 @@ class TestGoalRuntimeHooks:
 
 class TestCapabilityGovernance:
     def test_govern_denies_disallowed(self):
-        from kernel.protocol.runtime_contract import Constraints, RuntimeTask, Goal
+        from kernel.protocol.runtime_contract import Constraints, Goal, RuntimeTask
         from kernel.runtime.capability_governance import govern_capabilities_for_plan
 
         class Ctx:
@@ -187,11 +180,11 @@ class TestCapabilityGovernance:
         assert "data.query" in denied or "data.query" not in allowed
 
     def test_governance_fallback_node(self):
+        from kernel.protocol.runtime_contract import Constraints, Goal, RuntimeTask
         from kernel.runtime.capability_governance import (
             GOVERNANCE_FALLBACK_CAPABILITY,
             apply_governance_with_fallback,
         )
-        from kernel.protocol.runtime_contract import Constraints, Goal, RuntimeTask
 
         class Node:
             capability_name = "data.query"
@@ -297,6 +290,7 @@ class TestMultiGoalScheduler:
     def test_multi_planner_exports_governance_aggregation_pattern(self):
         """build_multi_execution_graph sets multi_capability_governance on request.metadata."""
         import inspect
+
         from kernel.cognition import multi_execution_planner as mep
 
         src = inspect.getsource(mep.build_multi_execution_graph)

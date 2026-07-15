@@ -11,12 +11,15 @@ class TasksApiContractTests(unittest.TestCase):
 
     def test_tasks_router_has_required_endpoints(self):
         txt = self._read("gateway/api_gateway/routers/tasks.py")
-        self.assertIn('@router.post("/tasks")', txt)
-        self.assertIn('@router.get("/tasks")', txt)
-        self.assertIn('@router.get("/tasks/{task_id}")', txt)
-        self.assertIn('@router.post("/tasks/pause")', txt)
-        self.assertIn('@router.post("/tasks/resume")', txt)
-        self.assertIn('@router.post("/tasks/cancel")', txt)
+        self.assertIn('@router.post("/tasks",', txt)
+        self.assertIn('@router.get("/tasks",', txt)
+        self.assertIn('status_code=410', txt)
+        self.assertIn('/api/v2/scheduled-tasks', txt)
+
+        v2 = self._read("gateway/api_gateway/routers/agent_resources.py")
+        self.assertIn('@router.post("/scheduled-tasks")', v2)
+        self.assertIn('@router.get("/scheduled-tasks")', v2)
+        self.assertIn('@router.post("/scheduled-tasks/{task_id}/actions/{action}")', v2)
 
     def test_main_includes_tasks_router(self):
         txt = self._read("gateway/api_gateway/main.py")

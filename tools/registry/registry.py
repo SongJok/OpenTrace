@@ -4,8 +4,9 @@ Uses BM25-style scoring for intent matching.
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, get_args, get_origin, get_type_hints
 
 from infra.observability.logger import get_logger
 
@@ -20,6 +21,12 @@ class ToolSpec:
     tags: list[str] = field(default_factory=list)
     score: float = 1.0
     param_names: list[str] = field(default_factory=list)  # accepted kwargs
+    parameters: dict[str, Any] = field(default_factory=dict)
+    side_effect: str = "read"
+    required_permissions: list[str] = field(default_factory=list)
+    timeout_seconds: float = 30.0
+    max_retries: int = 2
+    supports_parallel: bool = True
 
 
 class ToolRegistry:
@@ -38,23 +45,68 @@ class ToolRegistry:
         description: str,
         tags: list[str] | None = None,
         param_names: list[str] | None = None,
+        parameters: dict[str, Any] | None = None,
+        side_effect: str = "read",
+        required_permissions: list[str] | None = None,
+        timeout_seconds: float = 30.0,
+        max_retries: int = 2,
+        supports_parallel: bool = True,
     ):
         """Decorator to register an async function as a tool."""
         def decorator(fn: Callable):
             import inspect
-            # Auto-detect accepted param names from function signature
-            sig_params = list(inspect.signature(fn).parameters.keys())
+            signature = inspect.signature(fn)
+            try:
+                hints = get_type_hints(fn)
+            except (NameError, TypeError):
+                hints = {}
+            sig_params = [name for name in signature.parameters if name not in {"self", "cls", "_"}]
+            properties: dict[str, Any] = {}
+            required: list[str] = []
+            for param_name, param in signature.parameters.items():
+                if param_name in {"self", "cls", "_"} or param.kind in {inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL}:
+                    continue
+                annotation = hints.get(param_name, param.annotation)
+                origin = get_origin(annotation)
+                args = get_args(annotation)
+                concrete = next((item for item in args if item is not type(None)), annotation)
+                concrete_origin = get_origin(concrete)
+                json_type = "string"
+                if concrete is int:
+                    json_type = "integer"
+                elif concrete is float:
+                    json_type = "number"
+                elif concrete is bool:
+                    json_type = "boolean"
+                elif concrete is list or concrete_origin is list or origin is list:
+                    json_type = "array"
+                elif concrete is dict or concrete_origin is dict or origin is dict:
+                    json_type = "object"
+                properties[param_name] = {"type": json_type}
+                if param.default is inspect.Parameter.empty:
+                    required.append(param_name)
             self.register(ToolSpec(
                 name=name,
                 description=description,
                 fn=fn,
                 tags=tags or [],
                 param_names=param_names or sig_params,
+                parameters=parameters or {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                    "additionalProperties": False,
+                },
+                side_effect=side_effect,
+                required_permissions=required_permissions or [],
+                timeout_seconds=timeout_seconds,
+                max_retries=max_retries,
+                supports_parallel=supports_parallel,
             ))
             return fn
         return decorator
 
-    def get(self, name: str) -> Optional[ToolSpec]:
+    def get(self, name: str) -> ToolSpec | None:
         return self._tools.get(name)
 
     def match(self, query: str, top_k: int = 5) -> list[ToolSpec]:
@@ -63,7 +115,6 @@ class ToolRegistry:
         Scores each tool by term overlap against name + description + tags.
         Returns up to top_k results sorted by score descending.
         """
-        import math
         tokens = set(_tokenize(query))
         if not tokens:
             return []
@@ -94,6 +145,12 @@ class ToolRegistry:
                     tags=spec.tags,
                     score=raw_score,
                     param_names=spec.param_names,
+                    parameters=spec.parameters,
+                    side_effect=spec.side_effect,
+                    required_permissions=spec.required_permissions,
+                    timeout_seconds=spec.timeout_seconds,
+                    max_retries=spec.max_retries,
+                    supports_parallel=spec.supports_parallel,
                 ))
 
         results.sort(key=lambda x: x.score, reverse=True)

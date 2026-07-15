@@ -90,6 +90,7 @@ async def init_db() -> None:
         await _ensure_enterprise_tenant_tables(conn)
         await _ensure_responses_columns(conn)
         await _ensure_ui_settings_columns(conn)
+        await _ensure_unified_runtime_columns(conn)
     logger.info("Database tables initialised")
 
 
@@ -106,12 +107,14 @@ async def ensure_runtime_schema() -> None:
             if settings.app_env in {"staging", "production"}:
                 await _verify_runtime_schema(conn)
                 return
+            await conn.run_sync(Base.metadata.create_all)
             await _ensure_chat_sessions_columns(conn)
             await _ensure_conversation_states_columns(conn)
             await _ensure_enterprise_tenant_tables(conn)
             await _ensure_documents_tenant_columns(conn)
             await _ensure_responses_columns(conn)
             await _ensure_ui_settings_columns(conn)
+            await _ensure_unified_runtime_columns(conn)
     except Exception as exc:  # noqa: BLE001
         if settings.app_env in {"staging", "production"}:
             logger.error("Runtime schema readiness failed", error=str(exc))
@@ -154,6 +157,8 @@ async def _verify_runtime_schema(conn) -> None:
             "heartbeat_at",
             "attempt_count",
             "max_attempts",
+            "version",
+            "goal_id",
         },
         "user_ui_settings": {
             "dag_default_expanded",
@@ -202,6 +207,14 @@ async def _verify_runtime_schema(conn) -> None:
         "response_model_calls",
         "response_tool_executions",
         "user_custom_instructions",
+        "projects",
+        "assistant_profiles",
+        "response_approvals",
+        "response_outbox",
+        "goal_runs",
+        "goal_checkpoints",
+        "memory_candidates",
+        "memory_evidence",
     }
     table_rows = await conn.execute(
         text(
@@ -233,6 +246,43 @@ async def _ensure_responses_columns(conn) -> None:
         "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS max_attempts INTEGER NOT NULL DEFAULT 3",
         "CREATE INDEX IF NOT EXISTS ix_responses_lease_owner ON public.responses (lease_owner)",
         "CREATE INDEX IF NOT EXISTS ix_responses_lease_expires_at ON public.responses (lease_expires_at)",
+    ]
+    for stmt in statements:
+        await conn.execute(text(stmt))
+
+
+async def _ensure_unified_runtime_columns(conn) -> None:
+    """Additive local-dev guard; Alembic remains authoritative in production."""
+    statements = [
+        "ALTER TABLE IF EXISTS public.chat_sessions ADD COLUMN IF NOT EXISTS project_id VARCHAR(36)",
+        "ALTER TABLE IF EXISTS public.chat_sessions ADD COLUMN IF NOT EXISTS assistant_profile_id VARCHAR(36)",
+        "ALTER TABLE IF EXISTS public.chat_sessions ADD COLUMN IF NOT EXISTS conversation_instructions TEXT",
+        "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS goal_id VARCHAR(36)",
+        "ALTER TABLE IF EXISTS public.response_tool_executions ADD COLUMN IF NOT EXISTS side_effect_level VARCHAR(20) NOT NULL DEFAULT 'read'",
+        "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS scope_type VARCHAR(20) NOT NULL DEFAULT 'user'",
+        "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS memory_key VARCHAR(128)",
+        "ALTER TABLE IF EXISTS public.memory_candidates ADD COLUMN IF NOT EXISTS memory_key VARCHAR(128)",
+        "ALTER TABLE IF EXISTS public.memory_candidates ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE IF EXISTS public.memory_candidates ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS scope_id VARCHAR(64)",
+        "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active'",
+        "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION NOT NULL DEFAULT 1.0",
+        "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS salience DOUBLE PRECISION NOT NULL DEFAULT 0.5",
+        "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS source_response_id VARCHAR(64)",
+        "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS supersedes_id VARCHAR(36)",
+        "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS project_id VARCHAR(36)",
+        "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS conversation_id VARCHAR(36)",
+        "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS rrule VARCHAR(512)",
+        "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'UTC'",
+        "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS requires_confirmation BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE IF EXISTS public.task_runs ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE IF EXISTS public.task_runs ADD COLUMN IF NOT EXISTS response_id VARCHAR(64)",
     ]
     for stmt in statements:
         await conn.execute(text(stmt))

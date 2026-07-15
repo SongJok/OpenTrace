@@ -79,16 +79,17 @@ class TestFlagRegistry:
     def test_no_duplicate_settings_fields(self):
         assert duplicate_settings_field_names(Settings) == []
 
-    def test_strict_phase_requires_v5_when_both_on(self):
+    def test_retired_v5_flag_is_forced_off_and_not_a_dependency(self):
         s = Settings(
             app_env="development",
-            kernel_v5_routing_enabled=False,
+            kernel_v5_routing_enabled=True,
             kernel_runtime_phase_transition_strict=True,
             gateway_port=14100,
             app_port=14100,
         )
         violations = validate_flag_dependencies(s)
-        assert "kernel_runtime_phase_transition_strict_requires_kernel_v5_routing_enabled" in violations
+        assert s.kernel_v5_routing_enabled is False
+        assert not any("kernel_v5_routing_enabled" in item for item in violations)
 
 
 class TestWorldModelGoalSlice:

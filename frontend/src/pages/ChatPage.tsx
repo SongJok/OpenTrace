@@ -4,10 +4,11 @@ import Sidebar from '../components/Sidebar'
 import MessageList, { type MessageListHandle } from '../components/MessageList'
 import ChatInput from '../components/ChatInput'
 import WelcomeScreen from '../components/WelcomeScreen'
-import { apiCreateConversationShare, apiDeleteConversation, apiGetMessages, apiListConversations, apiListResponseSiblings, apiSetActiveResponse, apiUpdateConversation } from '../api/client'
+import { apiCreateConversationShare, apiDeleteConversation, apiListAssistantProfiles, apiListConversations, apiListProjects, apiUpdateConversation, type AssistantProfileItem, type ProjectItem } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import { useChatStore } from '../store/chat'
 import { getShowAvatars, setShowAvatars } from '../store/theme'
+import { useChatPreferences } from '../store/chatPreferences'
 
 const QUICK_TAGS: Array<{ label: string; prefix: string; icon: LucideIcon }> = [
   { label: '总结一段文字', prefix: '请总结以下内容：', icon: FileText },
@@ -18,7 +19,7 @@ const QUICK_TAGS: Array<{ label: string; prefix: string; icon: LucideIcon }> = [
 
 function QuickTags() {
   function handleTagClick(prefix: string) {
-    window.dispatchEvent(new CustomEvent('opentrace:prefill', { detail: { text: prefix + ' ', autoSend: false } }))
+    useChatPreferences.getState().requestPrefill(prefix + ' ')
   }
 
   return (
@@ -44,7 +45,6 @@ export default function ChatPage() {
   const token = useAuthStore((s) => s.token)!
   const activeId = useChatStore((s) => s.activeId)
   const setActiveId = useChatStore((s) => s.setActiveId)
-  const setMessages = useChatStore((s) => s.setMessages)
   const setConversations = useChatStore((s) => s.setConversations)
   const messages = useChatStore((s) => (activeId ? s.messages[activeId] ?? [] : []))
   const showWelcome = !activeId || messages.length === 0
@@ -52,15 +52,32 @@ export default function ChatPage() {
   const messageListRef = useRef<MessageListHandle>(null)
   const [isAtBottom, setIsAtBottom] = useState(true)
   const [showAvatars, setShowAvatarsLocal] = useState(() => getShowAvatars())
-  const [profile, setProfile] = useState<'auto' | 'fast' | 'deep'>('auto')
+  const profile = useChatPreferences((state) => state.executionProfile)
+  const setProfile = useChatPreferences((state) => state.setExecutionProfile)
+  const assistantProfileId = useChatPreferences((state) => state.assistantProfileId)
+  const setAssistantProfileId = useChatPreferences((state) => state.setAssistantProfileId)
+  const [assistantProfiles, setAssistantProfiles] = useState<AssistantProfileItem[]>([])
+  const projectId = useChatPreferences((state) => state.projectId)
+  const setProjectId = useChatPreferences((state) => state.setProjectId)
+  const [projects, setProjects] = useState<ProjectItem[]>([])
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [showMoreMenu, setShowMoreMenu] = useState(false)
 
   const selectProfile = (next: 'auto' | 'fast' | 'deep') => {
     setProfile(next)
     setShowProfileMenu(false)
-    window.dispatchEvent(new CustomEvent('opentrace:execution-profile', { detail: { profile: next } }))
   }
+
+  useEffect(() => {
+    void apiListAssistantProfiles(token).then((items) => {
+      setAssistantProfiles(items)
+      if (!assistantProfileId) setAssistantProfileId(items.find((item) => item.is_default)?.id ?? items[0]?.id ?? null)
+    })
+  }, [token])
+
+  useEffect(() => {
+    void apiListProjects(token).then(setProjects)
+  }, [token])
 
   const refreshConversations = async () => setConversations(await apiListConversations(token))
 
@@ -101,39 +118,6 @@ export default function ChatPage() {
     messageListRef.current?.scrollToBottom()
   }
 
-  useEffect(() => {
-    const onSwitch = async (ev: Event) => {
-      const ce = ev as CustomEvent<{ conversationId?: string }>
-      const conversationId = ce.detail?.conversationId
-      if (!conversationId) return
-      setActiveId(conversationId)
-      const [msgs, convs] = await Promise.all([
-        apiGetMessages(token, conversationId),
-        apiListConversations(token),
-      ])
-      setMessages(conversationId, msgs)
-      setConversations(convs)
-    }
-    window.addEventListener('opentrace:switch-conversation', onSwitch as EventListener)
-    return () => window.removeEventListener('opentrace:switch-conversation', onSwitch as EventListener)
-  }, [setActiveId, setMessages, token, setConversations])
-
-  useEffect(() => {
-    const switchVersion = async (event: Event) => {
-      if (!activeId) return
-      const responseId = (event as CustomEvent<{ responseId?: string }>).detail?.responseId
-      if (!responseId) return
-      const siblings = await apiListResponseSiblings(token, responseId)
-      if (siblings.length < 2) return
-      const current = siblings.findIndex((item) => item.active)
-      const next = siblings[(current + 1) % siblings.length]
-      await apiSetActiveResponse(token, activeId, next.id)
-      setMessages(activeId, await apiGetMessages(token, activeId))
-    }
-    window.addEventListener('opentrace:switch-response-version', switchVersion as EventListener)
-    return () => window.removeEventListener('opentrace:switch-response-version', switchVersion as EventListener)
-  }, [activeId, setMessages, token])
-
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[var(--bg)] text-[var(--text)]">
       <Sidebar />
@@ -163,6 +147,10 @@ export default function ChatPage() {
               {showProfileMenu && <div className="absolute left-0 top-10 z-30 w-36 rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] p-1 shadow-lg">{([['auto','自动'], ['fast','快速'], ['deep','深度思考']] as const).map(([value, label]) => <button key={value} onClick={() => selectProfile(value)} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)]">{label}</button>)}</div>}
               </div>
               <div className="flex items-center gap-1.5">
+                <select aria-label="Project" value={projectId ?? ''} onChange={(event) => setProjectId(event.target.value || null)} className="max-w-36 rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text-secondary)]"><option value="">无 Project</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+                <select aria-label="助手角色" value={assistantProfileId ?? ''} onChange={(event) => setAssistantProfileId(event.target.value || null)} className="rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text-secondary)]">
+                  {assistantProfiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
                 <button type="button" onClick={() => void shareConversation()} aria-label="分享对话" title="分享对话" className="rounded-lg p-2 text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Share2 size={16} /></button>
                 <div className="relative"><button type="button" onClick={() => setShowMoreMenu((v) => !v)} aria-label="更多操作" title="更多操作" className="rounded-lg p-2 text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><MoreHorizontal size={18} /></button>{showMoreMenu && <div className="absolute right-0 top-10 z-30 w-32 rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] p-1 shadow-lg"><button onClick={() => void moreAction('rename')} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)]">重命名</button><button onClick={() => void moreAction('pin')} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)]">置顶/取消置顶</button><button onClick={() => void moreAction('delete')} className="w-full rounded-lg px-3 py-2 text-left text-sm text-red-500 hover:bg-[var(--surface)]">删除</button></div>}</div>
                 <button

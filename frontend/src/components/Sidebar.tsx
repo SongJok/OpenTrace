@@ -22,6 +22,7 @@ import {
   FileCode,
   ShieldCheck,
   Network,
+  FolderKanban,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
@@ -75,7 +76,6 @@ export default function Sidebar() {
 
   async function selectConversation(conv: Conversation) {
     try {
-      window.dispatchEvent(new Event('opentrace:stop-stream'))
       store.setActiveId(conv.id)
       store.setStreaming(false)
       if (!store.messages[conv.id]) {
@@ -90,7 +90,6 @@ export default function Sidebar() {
 
   async function newChat() {
     try {
-      window.dispatchEvent(new Event('opentrace:stop-stream'))
       const conv = await apiCreateConversation(token)
       store.addConversation(conv)
       store.setActiveId(conv.id)
@@ -103,7 +102,6 @@ export default function Sidebar() {
 
   async function newTemporaryChat() {
     try {
-      window.dispatchEvent(new Event('opentrace:stop-stream'))
       const conv = await apiCreateConversation(token, undefined, true)
       store.setActiveId(conv.id)
       store.setMessages(conv.id, [])
@@ -165,6 +163,13 @@ export default function Sidebar() {
           <Plus size={16} />
         </button>
         <div className="my-1 h-px w-8 bg-[var(--border)]" />
+        <button
+          onClick={() => navigate('/work')}
+          title="Projects 与 Goals"
+          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+        >
+          <FolderKanban size={16} />
+        </button>
         <button
           onClick={() => navigate('/documents')}
           className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
@@ -258,6 +263,8 @@ export default function Sidebar() {
       </div>
 
       <div className="px-4 pb-3 space-y-2">
+        <button onClick={() => navigate('/work')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><FolderKanban size={15} /><span>Projects 与 Goals</span></button>
+        <button onClick={() => navigate('/tasks')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Bell size={15} /><span>定时任务</span></button>
         <div className="relative rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
           <Search size={14} className="absolute left-3 top-3 text-[var(--text-secondary)]" />
           <input

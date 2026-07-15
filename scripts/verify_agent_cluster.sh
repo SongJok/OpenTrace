@@ -3,12 +3,11 @@ set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:14100}"
 
-echo "=== Agent Cluster V4 Verify ==="
+echo "=== Unified Agent Worker Verify ==="
 python -m unittest \
-  tests/test_orchestrator_v4_contract.py \
   tests/test_rag_agent_contract.py \
-  tests/test_rag_fusion_output_contract.py \
-  tests/test_orchestrator_v4_rag_citations_contract.py \
+  tests/test_responses_contract.py \
+  tests/test_scheduler_v2.py \
   tests/test_agent_bus_e2e_contract.py \
   tests/test_all_agent_bus_routing_contract.py \
   tests/test_agent_bus_governance_contract.py \

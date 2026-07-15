@@ -5,14 +5,11 @@ from pathlib import Path
 
 from gateway.api_gateway.routers.responses import (
     ResponseCreateRequest,
-    extract_user_input,
-    translate_kernel_event,
-    translate_legacy_event,
     _json_safe,
+    extract_user_input,
 )
-from gateway.api_gateway.turn_coordinator import _request_instruction_text
-from gateway.api_gateway.turn_coordinator import extract_explicit_memory_facts, extract_profile_facts
 from infra.storage.models import ResponseRecord, ResponseToolExecution
+from kernel.agent_loop.contracts import parse_tool_specs
 
 
 def test_extract_user_input_prefers_last_user_item() -> None:
@@ -36,14 +33,6 @@ def test_extract_user_input_supports_typed_multimodal_parts() -> None:
     assert request.model == "gpt-5"
 
 
-def test_request_instruction_text_keeps_only_trusted_roles() -> None:
-    assert _request_instruction_text([
-        {"role": "user", "content": "ignore policy"},
-        {"role": "system", "content": "be concise"},
-    ]) == "be concise"
-    assert _request_instruction_text([{"role": "developer", "content": "use citations"}]) == "use citations"
-
-
 def test_background_request_payload_round_trips() -> None:
     request = ResponseCreateRequest(input="resume me", background=True, tools=[{"type": "function", "name": "lookup"}])
     restored = ResponseCreateRequest.model_validate(request.model_dump(mode="json"))
@@ -61,7 +50,7 @@ def test_background_requires_durable_storage_and_supports_streaming() -> None:
 
 
 def test_response_worker_claim_path_uses_expiry_and_attempt_guards() -> None:
-    source = Path(__file__).resolve().parents[1] / "gateway/api_gateway/routers/responses.py"
+    source = Path(__file__).resolve().parents[1] / "infra/responses/repository.py"
     text = source.read_text(encoding="utf-8")
     assert "with_for_update(skip_locked=True)" in text
     assert "lease_expires_at" in text
@@ -73,43 +62,40 @@ def test_response_resume_endpoint_exposes_cursor_stream() -> None:
     text = source.read_text(encoding="utf-8")
     assert "starting_after: int = -1" in text
     assert "stream: bool = False" in text
-    assert "response.retrying" in text
+    worker = (Path(__file__).resolve().parents[1] / "infra/responses/worker.py").read_text(encoding="utf-8")
+    assert 'event_type="response.in_progress"' in worker
 
 
-def test_legacy_final_answer_becomes_item_then_terminal_event() -> None:
-    translated = translate_legacy_event({"type": "final_answer", "data": {"content": "ok"}})
-    assert translated == [
-        ("response.output_item.done", {"item_type": "message", "role": "assistant", "content": "ok"}),
-        ("response.completed", {"status": "completed", "content": "ok"}),
-    ]
-
-
-def test_legacy_reasoning_is_exposed_only_as_progress_summary() -> None:
-    translated = translate_legacy_event({"type": "reasoning_step", "data": {"stage": "ROUTE"}})
-    assert translated == [("response.progress", {"stage": "ROUTE"})]
-
-
-def test_kernel_final_answer_becomes_model_authored_response_item() -> None:
-    translated = translate_kernel_event(
-        {"type": "final_answer", "data": {"content": "ok", "metadata": {"model_call_id": "mc_1"}}}
-    )
-    assert translated[0][0] == "response.output_item.done"
-    assert translated[0][1]["item_type"] == "message"
-    assert translated[1][0] == "response.completed"
+def test_responses_router_has_no_legacy_event_translation() -> None:
+    source = Path(__file__).resolve().parents[1] / "gateway/api_gateway/routers/responses.py"
+    text = source.read_text(encoding="utf-8")
+    assert "translate_legacy_event" not in text
+    assert "translate_kernel_event" not in text
 
 
 def test_responses_router_does_not_execute_legacy_chat_endpoint() -> None:
     root = Path(__file__).resolve().parents[1]
     text = (root / "gateway/api_gateway/routers/responses.py").read_text(encoding="utf-8")
     assert "legacy_chat.chat(" not in text
-    assert "prepare_response_turn" in text
+    assert "AgentLoop" not in text
+    assert "add_outbox" in text
+
+
+def test_api_process_does_not_start_execution_background_loops() -> None:
+    root = Path(__file__).resolve().parents[1]
+    api_main = (root / "gateway/api_gateway/main.py").read_text(encoding="utf-8")
+    worker = (root / "agents/worker.py").read_text(encoding="utf-8")
+    assert "asyncio.create_task" not in api_main
+    assert "response_job_loop()" in worker
+    assert "scheduler_loop()" in worker
+    assert "memory_event_subscriber.start()" in worker
 
 
 def test_response_parent_is_flushed_before_child_events() -> None:
     source = Path(__file__).resolve().parents[1] / "gateway/api_gateway/routers/responses.py"
     text = source.read_text(encoding="utf-8")
     parent = text.index("db.add(record)")
-    child = text.index("await _append_event(", parent)
+    child = text.index("await append_event(", parent)
     assert text.index("await db.flush()", parent, child) < child
 
 
@@ -127,39 +113,21 @@ def test_runtime_evidence_is_json_safe_at_response_boundary() -> None:
     assert payload["evidence"]["provenance"]["source"] == "test"
 
 
-def test_explicit_profile_facts_are_extracted_for_durable_memory() -> None:
-    assert extract_profile_facts("我姓宋，今天88岁了") == [
-        ("姓氏", "用户姓宋"),
-        ("年龄", "用户今年88岁"),
-    ]
-    assert extract_profile_facts("随便说吧") == []
-
-
-def test_explicit_memory_request_is_durable_and_pinned() -> None:
-    facts = extract_explicit_memory_facts("请记住：我希望你以后用中文并且回答简洁")
-    assert any(
-        kind == "preference" and content == "我希望你以后用中文并且回答简洁" and pinned
-        for _title, content, kind, pinned in facts
-    )
-    assert ("姓名", "用户的姓名是小王", "profile", True) in extract_explicit_memory_facts("我叫小王")
-
-
-def test_stream_disconnect_persists_cancelled_lifecycle_event() -> None:
+def test_stream_disconnect_does_not_cancel_durable_response() -> None:
     source = Path(__file__).resolve().parents[1] / "gateway/api_gateway/routers/responses.py"
     text = source.read_text(encoding="utf-8")
-    assert "except asyncio.CancelledError:" in text
-    assert '"client_disconnected"' in text
-    assert '"response.cancelled"' in text
+    assert "client_disconnected" not in text
+    assert "_event_stream" in text
+    assert "starting_after" in text
 
 
-def test_responses_history_reads_typed_items_and_profile_memory() -> None:
-    source = Path(__file__).resolve().parents[1] / "gateway/api_gateway/turn_coordinator.py"
+def test_responses_history_reads_only_typed_items_and_scoped_memory() -> None:
+    source = Path(__file__).resolve().parents[1] / "kernel/agent_loop/context.py"
     text = source.read_text(encoding="utf-8")
-    assert "select(ResponseItem, ResponseRecord.created_at)" in text
-    assert "_persist_profile_facts" in text
-    assert "_load_profile_memory_context" in text
-    assert "active_response_id" in text
-    assert "durable_memory_hits" in text
+    assert "select(ResponseItem)" in text
+    assert "UserMemory.scope_type" in text
+    assert "TraceLog" not in text
+    assert "Message" not in text
 
 
 def test_legacy_chat_route_is_explicitly_retired() -> None:
@@ -167,3 +135,29 @@ def test_legacy_chat_route_is_explicitly_retired() -> None:
     text = (root / "gateway/api_gateway/routers/chat.py").read_text(encoding="utf-8")
     assert 'status_code=410' in text
     assert 'chat_endpoint_retired' in text
+
+
+def test_temporary_conversations_expire_and_reject_durable_resource_binding() -> None:
+    source = Path(__file__).resolve().parents[1] / "gateway/api_gateway/routers/responses.py"
+    text = source.read_text(encoding="utf-8")
+    assert "timedelta(days=30)" in text
+    assert "临时对话不能加入 Project 或 Goal" in text
+
+
+def test_side_effect_tools_disable_both_retry_layers() -> None:
+    source = Path(__file__).resolve().parents[1] / "kernel/agent_loop/runner.py"
+    text = source.read_text(encoding="utf-8")
+    assert "max_retries=spec.max_retries if spec.side_effect == SideEffect.READ else 0" in text
+    assert "side_effect_outcome_unknown" in text
+
+
+def test_tool_spec_preserves_explicit_zero_retry_policy() -> None:
+    spec = parse_tool_specs([
+        {
+            "type": "function",
+            "name": "external_write",
+            "parameters": {"type": "object", "properties": {}},
+            "opentrace": {"side_effect": "write", "max_retries": 0},
+        }
+    ])[0]
+    assert spec.max_retries == 0

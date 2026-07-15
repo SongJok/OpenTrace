@@ -10,11 +10,11 @@
 
 import asyncio
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Callable, Union
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
-import json
+from typing import Any
 
 from infra.observability.logger import get_logger
 from infra.observability.tracer import get_tracer
@@ -36,14 +36,14 @@ class ToolStatus(Enum):
 class ToolResult:
     """工具执行结果"""
     tool_name: str
-    parameters: Dict[str, Any]
+    parameters: dict[str, Any]
     result: Any = None
     execution_time_ms: int = 0
     status: ToolStatus = ToolStatus.PENDING
-    error: Optional[str] = None
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    error: str | None = None
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "tool_name": self.tool_name,
             "parameters": self.parameters,
@@ -60,11 +60,11 @@ class ToolSchema:
     """工具 Schema 定义"""
     name: str
     description: str
-    parameters: Dict[str, Any]  # JSON Schema
-    required: List[str] = field(default_factory=list)
-    examples: List[Dict] = field(default_factory=list)
+    parameters: dict[str, Any]  # JSON Schema
+    required: list[str] = field(default_factory=list)
+    examples: list[dict] = field(default_factory=list)
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "description": self.description,
@@ -90,16 +90,16 @@ class ToolExecutor:
     
     def __init__(self, timeout_seconds: float = DEFAULT_TIMEOUT):
         self.timeout = timeout_seconds
-        self._tools: Dict[str, Callable] = {}
-        self._schemas: Dict[str, ToolSchema] = {}
-        self._execution_history: List[ToolResult] = []
+        self._tools: dict[str, Callable] = {}
+        self._schemas: dict[str, ToolSchema] = {}
+        self._execution_history: list[ToolResult] = []
         logger.info(f"ToolExecutor initialized with timeout={timeout_seconds}s")
     
     def register(
         self,
         name: str,
         handler: Callable,
-        schema: Optional[ToolSchema] = None,
+        schema: ToolSchema | None = None,
         description: str = ""
     ):
         """
@@ -125,8 +125,8 @@ class ToolExecutor:
         name: str,
         handler: Callable,
         description: str = "",
-        parameters: Optional[Dict[str, Any]] = None,
-        required: Optional[List[str]] = None
+        parameters: dict[str, Any] | None = None,
+        required: list[str] | None = None
     ):
         """便捷方法：注册工具"""
         schema = ToolSchema(
@@ -156,11 +156,11 @@ class ToolExecutor:
             if param.annotation != inspect.Parameter.empty:
                 if param.annotation in [int, float]:
                     param_type = "number"
-                elif param.annotation == bool:
+                elif param.annotation is bool:
                     param_type = "boolean"
-                elif param.annotation == list:
+                elif param.annotation is list:
                     param_type = "array"
-                elif param.annotation == dict:
+                elif param.annotation is dict:
                     param_type = "object"
             
             properties[param_name] = {"type": param_type}
@@ -179,15 +179,15 @@ class ToolExecutor:
             required=required
         )
     
-    def get_schema(self, name: str) -> Optional[ToolSchema]:
+    def get_schema(self, name: str) -> ToolSchema | None:
         """获取工具的 Schema"""
         return self._schemas.get(name)
     
-    def get_all_schemas(self) -> List[Dict[str, Any]]:
+    def get_all_schemas(self) -> list[dict[str, Any]]:
         """获取所有工具的 Schema"""
         return [schema.to_dict() for schema in self._schemas.values()]
     
-    def get_tools_for_llm(self) -> List[Dict[str, Any]]:
+    def get_tools_for_llm(self) -> list[dict[str, Any]]:
         """
         获取 LLM 可用的工具定义
         
@@ -207,8 +207,10 @@ class ToolExecutor:
     
     async def execute(
         self,
-        tool_calls: List[Dict[str, Any]]
-    ) -> List[ToolResult]:
+        tool_calls: list[dict[str, Any]],
+        *,
+        max_retries: int | None = None,
+    ) -> list[ToolResult]:
         """
         并行执行工具调用
         
@@ -228,9 +230,11 @@ class ToolExecutor:
             # 创建执行任务
             tasks = []
             for tc in tool_calls:
+                tool_name = str(tc.get("name") or tc.get("tool_name") or "")
                 task = self._execute_single_with_retry(
-                    tc.get("name") or tc.get("tool_name"),
-                    tc.get("parameters") or tc.get("arguments") or {}
+                    tool_name,
+                    tc.get("parameters") or tc.get("arguments") or {},
+                    max_retries=max_retries,
                 )
                 tasks.append(task)
             
@@ -238,9 +242,9 @@ class ToolExecutor:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
             # 处理结果
-            processed = []
+            processed: list[ToolResult] = []
             for i, result in enumerate(results):
-                tool_name = tool_calls[i].get("name") or tool_calls[i].get("tool_name")
+                tool_name = str(tool_calls[i].get("name") or tool_calls[i].get("tool_name") or "")
                 
                 if isinstance(result, Exception):
                     processed.append(ToolResult(
@@ -249,7 +253,7 @@ class ToolExecutor:
                         status=ToolStatus.FAILED,
                         error=str(result)
                     ))
-                else:
+                elif isinstance(result, ToolResult):
                     processed.append(result)
             
             # 记录执行历史
@@ -263,24 +267,27 @@ class ToolExecutor:
     async def _execute_single_with_retry(
         self,
         name: str,
-        parameters: Dict[str, Any]
+        parameters: dict[str, Any],
+        *,
+        max_retries: int | None = None,
     ) -> ToolResult:
         """带重试的工具执行"""
         last_error = None
+        retry_limit = self.MAX_RETRIES if max_retries is None else max(0, max_retries)
         
-        for attempt in range(self.MAX_RETRIES + 1):
+        for attempt in range(retry_limit + 1):
             try:
                 result = await self._execute_single(name, parameters)
                 if result.status == ToolStatus.COMPLETED:
                     return result
-                if result.status == ToolStatus.FAILED and attempt < self.MAX_RETRIES:
+                if result.status == ToolStatus.FAILED and attempt < retry_limit:
                     last_error = result.error
                     await asyncio.sleep(0.5 * (attempt + 1))  # 指数退避
                     continue
                 return result
             except Exception as e:
                 last_error = str(e)
-                if attempt < self.MAX_RETRIES:
+                if attempt < retry_limit:
                     await asyncio.sleep(0.5 * (attempt + 1))
                 else:
                     return ToolResult(
@@ -300,10 +307,10 @@ class ToolExecutor:
     async def _execute_single(
         self,
         name: str,
-        parameters: Dict[str, Any]
+        parameters: dict[str, Any]
     ) -> ToolResult:
         """执行单个工具"""
-        t0 = datetime.utcnow()
+        t0 = datetime.now(UTC)
         
         handler = self._tools.get(name)
         if not handler:
@@ -341,7 +348,7 @@ class ToolExecutor:
                     timeout=self.timeout
                 )
             
-            latency = int((datetime.utcnow() - t0).total_seconds() * 1000)
+            latency = int((datetime.now(UTC) - t0).total_seconds() * 1000)
             
             return ToolResult(
                 tool_name=name,
@@ -351,7 +358,7 @@ class ToolExecutor:
                 status=ToolStatus.COMPLETED
             )
             
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ToolResult(
                 tool_name=name,
                 parameters=parameters,
@@ -370,8 +377,8 @@ class ToolExecutor:
     def _validate_parameters(
         self,
         schema: ToolSchema,
-        parameters: Dict[str, Any]
-    ) -> Optional[str]:
+        parameters: dict[str, Any]
+    ) -> str | None:
         """验证参数"""
         # 检查必需参数
         for required in schema.required:
@@ -380,6 +387,10 @@ class ToolExecutor:
         
         # 检查参数类型（简化版）
         properties = schema.parameters.get("properties", {})
+        if schema.parameters.get("additionalProperties") is False:
+            unexpected = sorted(set(parameters) - set(properties))
+            if unexpected:
+                return f"Unexpected parameter(s): {', '.join(unexpected)}"
         for key, value in parameters.items():
             if key in properties:
                 expected_type = properties[key].get("type")
@@ -390,9 +401,13 @@ class ToolExecutor:
         
         return None
     
-    def _check_type(self, value: Any, expected_type: str) -> bool:
+    def _check_type(self, value: Any, expected_type: str | list[str]) -> bool:
         """检查类型"""
-        type_map = {
+        if isinstance(expected_type, list):
+            return any(self._check_type(value, item) for item in expected_type)
+        if expected_type == "null":
+            return value is None
+        type_map: dict[str, type | tuple[type, ...]] = {
             "string": str,
             "number": (int, float),
             "boolean": bool,
@@ -409,7 +424,7 @@ class ToolExecutor:
             return isinstance(value, expected)
         return isinstance(value, expected)
     
-    def get_execution_history(self) -> List[ToolResult]:
+    def get_execution_history(self) -> list[ToolResult]:
         """获取执行历史"""
         return self._execution_history.copy()
     
@@ -419,7 +434,7 @@ class ToolExecutor:
 
 
 # 全局工具执行器实例
-_tool_executor: Optional[ToolExecutor] = None
+_tool_executor: ToolExecutor | None = None
 
 
 def get_tool_executor() -> ToolExecutor:
@@ -431,7 +446,7 @@ def get_tool_executor() -> ToolExecutor:
 
 
 # 便捷装饰器
-def tool(name: Optional[str] = None, description: str = ""):
+def tool(name: str | None = None, description: str = ""):
     """
     工具装饰器
     

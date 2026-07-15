@@ -1,142 +1,40 @@
-"""
-Conversations router — list, create, rename, archive, delete, history per user.
-"""
+"""Canonical conversation and branch resources backed only by Responses/Items."""
+
 from __future__ import annotations
 
-import json
 import hashlib
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.routers.auth import get_current_user
+from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.errors import AppException, ErrorCodes
+from infra.responses.repository import add_outbox, append_event
 from infra.storage.database import db_session_dependency as get_db
-from infra.storage.models import (
-    Attachment,
-    ChatSession,
-    ConversationState,
-    ConversationShare,
-    Feedback,
-    ReasoningTrace,
-    ResponseItem,
-    ResponseRecord,
-    ToolStat,
-    TraceLog,
-    User,
-)
+from infra.storage.models import ChatSession, ConversationShare, ResponseItem, ResponseRecord, User
 
 router = APIRouter()
 
 
-def _normalize_reasoning_steps(raw: object) -> list[dict]:
-    if not isinstance(raw, list):
-        return []
-
-    normalized: list[dict] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        if "stage" in item and "id" in item:
-            normalized.append(item)
-            continue
-
-        step_type = item.get("step_type")
-        step_id = item.get("step_id")
-        if not step_type or not step_id:
-            continue
-
-        output = item.get("output") if isinstance(item.get("output"), dict) else {}
-        content = ""
-        tool = None
-        if step_type == "REASON":
-            content = str(item.get("reasoning_chain") or output)
-        elif step_type == "DECIDE":
-            tool_calls = output.get("tool_calls", []) if isinstance(output, dict) else []
-            if isinstance(tool_calls, list) and tool_calls:
-                names = ", ".join(
-                    str(call.get("tool"))
-                    for call in tool_calls
-                    if isinstance(call, dict) and call.get("tool")
-                )
-                content = f"选择执行路径并准备调用工具：{names}" if names else "选择执行路径"
-                first_call = next(
-                    (
-                        call
-                        for call in tool_calls
-                        if isinstance(call, dict) and call.get("tool")
-                    ),
-                    None,
-                )
-                if first_call:
-                    tool = {
-                        "name": str(first_call.get("tool")),
-                        "status": "running" if item.get("status") in {"running", "pending"} else "success",
-                        "preview": names[:160],
-                    }
-            else:
-                content = "选择直接生成答案路径"
-        elif step_type == "EXECUTE":
-            tool_results = output.get("tool_results", []) if isinstance(output, dict) else []
-            if isinstance(tool_results, list):
-                content = "; ".join(
-                    f"{result.get('tool')}: {str(result.get('output', ''))[:120]}"
-                    for result in tool_results
-                    if isinstance(result, dict)
-                )
-                first_result = next(
-                    (
-                        result
-                        for result in tool_results
-                        if isinstance(result, dict) and result.get("tool")
-                    ),
-                    None,
-                )
-                if first_result:
-                    tool = {
-                        "name": str(first_result.get("tool")),
-                        "status": "success",
-                        "preview": str(first_result.get("output", ""))[:160],
-                    }
-        elif step_type == "OBSERVE":
-            content = str(item.get("observation") or output)
-        elif step_type == "REFLECT":
-            content = str(
-                output.get("issues")
-                if isinstance(output, dict) and output.get("issues")
-                else output
-            )
-
-        normalized.append(
-            {
-                "id": str(step_id),
-                "stage": str(step_type),
-                "content": content[:400],
-                "status": "running" if item.get("status") in {"running", "pending"} else "done",
-                "node_id": item.get("execution_node_id"),
-                **({"tool": tool} if tool else {}),
-            }
-        )
-    return normalized
-
-
 class ConversationOut(BaseModel):
     id: str
-    title: Optional[str]
+    title: str | None
     turn_count: int
     created_at: str
     last_active: str
-    archived_at: Optional[str] = None
+    archived_at: str | None = None
     tags: list[str] = Field(default_factory=list)
     pinned: bool = False
     is_temporary: bool = False
-    expires_at: Optional[str] = None
+    expires_at: str | None = None
+    project_id: str | None = None
+    assistant_profile_id: str | None = None
 
 
 class MessageOut(BaseModel):
@@ -144,30 +42,31 @@ class MessageOut(BaseModel):
     role: str
     content: str
     created_at: str
-    decision_type: Optional[str] = None
-    validation_score: Optional[float] = None
-    reasoning_steps: list[dict] = Field(default_factory=list)
-    execution_graph: Optional[dict] = None
-    attachments: list[dict] = Field(default_factory=list)
-    tool_calls: Optional[list[dict]] = None
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    model: Optional[str] = None
-    version: int = 1
+    model: str | None = None
     status: str = "done"
-    metadata: Optional[dict] = None
+    metadata: dict | None = None
     citations: list[dict] = Field(default_factory=list)
     annotations: list[dict] = Field(default_factory=list)
-    response_id: Optional[str] = None
-    parent_response_id: Optional[str] = None
+    response_id: str | None = None
+    parent_response_id: str | None = None
     version_index: int = 1
     sibling_count: int = 1
+    reasoning_steps: list[dict] = Field(default_factory=list)
+    execution_graph: dict | None = None
+    attachments: list[dict] = Field(default_factory=list)
+    tool_calls: list[dict] | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    version: int = 1
 
 
 class UpdateConversationRequest(BaseModel):
-    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    tags: Optional[list[str]] = None
-    pinned: Optional[bool] = None
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    tags: list[str] | None = None
+    pinned: bool | None = None
+    project_id: str | None = None
+    assistant_profile_id: str | None = None
+    instructions: str | None = Field(default=None, max_length=8000)
 
 
 class ArchiveConversationRequest(BaseModel):
@@ -176,182 +75,216 @@ class ArchiveConversationRequest(BaseModel):
 
 class CreateConversationRequest(BaseModel):
     temporary: bool = False
+    project_id: str | None = None
+    assistant_profile_id: str | None = None
+    instructions: str | None = Field(default=None, max_length=8000)
 
 
 class ActiveResponseRequest(BaseModel):
     response_id: str
 
 
-def _share_token_hash(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+def _conversation_out(session: ChatSession) -> ConversationOut:
+    return ConversationOut(
+        id=session.id,
+        title=session.display_title or session.title or "New conversation",
+        turn_count=int(session.turn_count or 0),
+        created_at=session.created_at.isoformat(),
+        last_active=session.last_active.isoformat(),
+        archived_at=session.archived_at.isoformat() if session.archived_at else None,
+        tags=list(session.tags or []),
+        pinned=bool(session.pinned),
+        is_temporary=bool(session.is_temporary),
+        expires_at=session.expires_at.isoformat() if session.expires_at else None,
+        project_id=session.project_id,
+        assistant_profile_id=session.assistant_profile_id,
+    )
+
+
+def _scope(request: Request, user_id: str) -> tuple[str, str, str]:
+    metadata = build_tenant_metadata(request, user_id=user_id)
+    return (
+        str(metadata.get("tenant_id") or "default"),
+        str(metadata.get("org_id") or "default"),
+        str(metadata.get("workspace_id") or "default"),
+    )
+
+
+async def _owned_session(
+    db: AsyncSession,
+    conversation_id: str,
+    user_id: str,
+    tenant_id: str,
+    workspace_id: str,
+) -> ChatSession:
+    session = await db.scalar(
+        select(ChatSession).where(
+            ChatSession.id == conversation_id,
+            ChatSession.user_id == user_id,
+            ChatSession.tenant_id == tenant_id,
+            ChatSession.workspace_id == workspace_id,
+        )
+    )
+    if session is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation not found")
+    return session
 
 
 async def _active_chain(db: AsyncSession, session: ChatSession, user_id: str) -> list[ResponseRecord]:
-    if not session.active_response_id:
-        return []
+    current_id = session.active_response_id
+    if not current_id:
+        latest = await db.scalar(
+            select(ResponseRecord)
+            .where(ResponseRecord.conversation_id == session.id, ResponseRecord.user_id == user_id)
+            .order_by(ResponseRecord.created_at.desc())
+            .limit(1)
+        )
+        current_id = latest.id if latest else None
     by_id: dict[str, ResponseRecord] = {}
-    current_id: str | None = session.active_response_id
     while current_id and current_id not in by_id:
-        row = await db.scalar(select(ResponseRecord).where(ResponseRecord.id == current_id, ResponseRecord.user_id == user_id, ResponseRecord.conversation_id == session.id))
-        if not row:
+        row = await db.scalar(
+            select(ResponseRecord).where(
+                ResponseRecord.id == current_id,
+                ResponseRecord.user_id == user_id,
+                ResponseRecord.conversation_id == session.id,
+            )
+        )
+        if row is None:
             break
         by_id[row.id] = row
         current_id = row.parent_response_id
     return list(reversed(list(by_id.values())))
 
 
+async def _items_for(db: AsyncSession, response_ids: list[str]) -> dict[str, list[ResponseItem]]:
+    if not response_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(ResponseItem)
+            .where(ResponseItem.response_id.in_(response_ids))
+            .order_by(ResponseItem.created_at, ResponseItem.sequence_number)
+        )
+    ).scalars().all()
+    result: dict[str, list[ResponseItem]] = {}
+    for item in rows:
+        result.setdefault(item.response_id, []).append(item)
+    return result
+
+
+def _share_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 @router.get("/conversations")
 async def list_conversations(
+    request: Request,
     query: str = Query(default="", max_length=200),
     archived: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[ConversationOut]:
-    clauses = [ChatSession.user_id == current_user.id]
-    if archived:
-        clauses.append(ChatSession.archived_at.isnot(None))
-    else:
-        clauses.append(ChatSession.archived_at.is_(None))
+    tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
+    clauses = [
+        ChatSession.user_id == current_user.id,
+        ChatSession.tenant_id == tenant_id,
+        ChatSession.workspace_id == workspace_id,
+    ]
+    clauses.append(ChatSession.archived_at.isnot(None) if archived else ChatSession.archived_at.is_(None))
+    if not archived:
         clauses.append(ChatSession.is_temporary.is_(False))
-
     if query.strip():
-        q = f"%{query.strip()}%"
-        trace_subq = (
-            select(TraceLog.session_id)
-            .where(TraceLog.query.ilike(q) | TraceLog.response.ilike(q))
-            .subquery()
-        )
-        response_subq = (
+        pattern = f"%{query.strip()}%"
+        response_sessions = (
             select(ResponseRecord.conversation_id)
             .join(ResponseItem, ResponseItem.response_id == ResponseRecord.id)
-            .where(ResponseItem.content.ilike(q))
-            .subquery()
+            .where(ResponseItem.content.ilike(pattern))
         )
         clauses.append(
             or_(
-                ChatSession.title.ilike(q),
-                ChatSession.display_title.ilike(q),
-                ChatSession.id.in_(select(trace_subq.c.session_id)),
-                ChatSession.id.in_(select(response_subq.c.conversation_id)),
+                ChatSession.title.ilike(pattern),
+                ChatSession.display_title.ilike(pattern),
+                ChatSession.id.in_(response_sessions),
             )
         )
-
-    result = await db.execute(
-        select(ChatSession)
-        .where(and_(*clauses))
-        .order_by(desc(ChatSession.pinned), desc(ChatSession.last_active))
-        .limit(200)
-    )
-    sessions = result.scalars().all()
-    return [
-        ConversationOut(
-            id=s.id,
-            title=s.display_title or s.title or "New conversation",
-            turn_count=s.turn_count,
-            created_at=s.created_at.isoformat(),
-            last_active=s.last_active.isoformat(),
-            archived_at=s.archived_at.isoformat() if s.archived_at else None,
-            tags=list(getattr(s, "tags", []) or []),
-            pinned=bool(getattr(s, "pinned", False)),
-            is_temporary=bool(getattr(s, "is_temporary", False)),
-            expires_at=s.expires_at.isoformat() if s.expires_at else None,
+    sessions = (
+        await db.execute(
+            select(ChatSession)
+            .where(and_(*clauses))
+            .order_by(desc(ChatSession.pinned), desc(ChatSession.last_active))
+            .limit(200)
         )
-        for s in sessions
-    ]
+    ).scalars().all()
+    return [_conversation_out(session) for session in sessions]
 
 
 @router.post("/conversations")
 async def create_conversation(
+    request: Request,
     req: CreateConversationRequest | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConversationOut:
-    temporary = bool(req and req.temporary)
+    payload = req or CreateConversationRequest()
+    tenant_id, org_id, workspace_id = _scope(request, current_user.id)
     session = ChatSession(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
+        tenant_id=tenant_id,
+        org_id=org_id,
+        workspace_id=workspace_id,
         title="New conversation",
         display_title="New conversation",
-        is_temporary=temporary,
-        expires_at=(datetime.now(timezone.utc) + timedelta(days=30)) if temporary else None,
+        is_temporary=payload.temporary,
+        expires_at=datetime.now(UTC) + timedelta(days=30) if payload.temporary else None,
+        project_id=None if payload.temporary else payload.project_id,
+        assistant_profile_id=payload.assistant_profile_id,
+        conversation_instructions=payload.instructions,
     )
     db.add(session)
     await db.commit()
     await db.refresh(session)
-    return ConversationOut(
-        id=session.id,
-        title=session.display_title or session.title,
-        turn_count=0,
-        created_at=session.created_at.isoformat(),
-        last_active=session.last_active.isoformat(),
-        archived_at=None,
-        tags=[],
-        pinned=False,
-        is_temporary=temporary,
-        expires_at=session.expires_at.isoformat() if session.expires_at else None,
-    )
+    return _conversation_out(session)
 
 
 @router.patch("/conversations/{conversation_id}")
 async def update_conversation(
     conversation_id: str,
+    request: Request,
     req: UpdateConversationRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConversationOut:
-    result = await db.execute(
-        select(ChatSession).where(
-            ChatSession.id == conversation_id,
-            ChatSession.user_id == current_user.id,
-        )
-    )
-    session = result.scalar_one_or_none()
-    if not session:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation not found")
-
+    tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
+    session = await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
     if req.title is not None:
-        title = req.title.strip()
-        session.display_title = title
-        session.title = title
+        session.title = session.display_title = req.title.strip()
     if req.tags is not None:
-        session.tags = list(req.tags)
+        session.tags = req.tags
     if req.pinned is not None:
         session.pinned = req.pinned
+    if req.project_id is not None and not session.is_temporary:
+        session.project_id = req.project_id or None
+    if req.assistant_profile_id is not None:
+        session.assistant_profile_id = req.assistant_profile_id or None
+    if req.instructions is not None:
+        session.conversation_instructions = req.instructions.strip() or None
     await db.commit()
     await db.refresh(session)
-
-    return ConversationOut(
-        id=session.id,
-        title=session.display_title or session.title,
-        turn_count=session.turn_count,
-        created_at=session.created_at.isoformat(),
-        last_active=session.last_active.isoformat(),
-        tags=list(getattr(session, "tags", []) or []),
-        pinned=bool(getattr(session, "pinned", False)),
-        archived_at=session.archived_at.isoformat() if session.archived_at else None,
-        is_temporary=bool(session.is_temporary),
-        expires_at=session.expires_at.isoformat() if session.expires_at else None,
-    )
+    return _conversation_out(session)
 
 
 @router.post("/conversations/{conversation_id}/archive")
 async def archive_conversation(
     conversation_id: str,
+    request: Request,
     req: ArchiveConversationRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    result = await db.execute(
-        select(ChatSession).where(
-            ChatSession.id == conversation_id,
-            ChatSession.user_id == current_user.id,
-        )
-    )
-    session = result.scalar_one_or_none()
-    if not session:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation not found")
-
-    session.archived_at = datetime.now(timezone.utc) if req.archived else None
+    tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
+    session = await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
+    session.archived_at = datetime.now(UTC) if req.archived else None
     await db.commit()
     return {"archived": bool(session.archived_at)}
 
@@ -359,171 +292,181 @@ async def archive_conversation(
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(
     conversation_id: str,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    result = await db.execute(
-        select(ChatSession).where(
-            ChatSession.id == conversation_id,
-            ChatSession.user_id == current_user.id,
-        )
-    )
-    session = result.scalar_one_or_none()
-    if not session:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation not found")
-
-    # Explicitly delete ConversationState first to avoid FK constraint issues
-    # with passive_deletes=True on the ChatSession.conversation_state relationship.
-    cs_result = await db.execute(
-        select(ConversationState).where(ConversationState.session_id == conversation_id)
-    )
-    cs = cs_result.scalar_one_or_none()
-    if cs:
-        await db.delete(cs)
-        await db.flush()
-
-    # Delete attachments explicitly to avoid FK issues if CASCADE wasn't applied in migration
-    att_result = await db.execute(
-        select(Attachment).where(Attachment.session_id == conversation_id)
-    )
-    attachments = att_result.scalars().all()
-    for att in attachments:
-        await db.delete(att)
-    if attachments:
-        await db.flush()
-
-    # Delete TraceLog entries explicitly to avoid FK constraint issues
-    # if CASCADE wasn't applied in migration
-    trace_result = await db.execute(
-        select(TraceLog).where(TraceLog.session_id == conversation_id)
-    )
-    traces = trace_result.scalars().all()
-    for trace in traces:
-        await db.delete(trace)
-    if traces:
-        await db.flush()
-
-    # Clean up rows that reference session_id without FK constraints
-    for model in (ReasoningTrace, ToolStat, Feedback):
-        orphan_result = await db.execute(
-            select(model).where(model.session_id == conversation_id)
-        )
-        for row in orphan_result.scalars().all():
-            await db.delete(row)
-    # Flush after deleting orphan rows if any were found
-    # (we already flushed after TraceLog/Attachment, so this is defensive)
-    await db.flush()
-
+    tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
+    session = await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
     await db.delete(session)
     await db.commit()
     return {"deleted": True}
 
 
 @router.patch("/messages/{message_id}")
-async def patch_message(
+async def edit_message_and_branch(
     message_id: str,
+    request: Request,
     payload: dict,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    if not message_id.endswith("_a"):
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Only assistant message can be edited")
-    trace_id = message_id[:-2]
-    result = await db.execute(
-        select(TraceLog)
-        .join(ChatSession, ChatSession.id == TraceLog.session_id)
-        .where(TraceLog.id == trace_id, ChatSession.user_id == current_user.id)
-    )
-    log = result.scalar_one_or_none()
-    if not log:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Message not found")
-
-    new_content = str(payload.get("content") or "").strip()
-    if not new_content:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="content required")
-
-    old = log.response or ""
-    log.response = new_content
-    await db.commit()
-
-    db.add(
-        Feedback(
-            id=str(uuid.uuid4()),
-            session_id=log.session_id,
-            query=log.query,
-            response=old,
-            feedback_type="correction",
-            score=1.0,
-            correction=new_content,
-            feedback_metadata=json.dumps({"source": "message_patch", "message_id": message_id}, ensure_ascii=False),
+    tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
+    item = await db.scalar(
+        select(ResponseItem)
+        .join(ResponseRecord, ResponseRecord.id == ResponseItem.response_id)
+        .where(
+            ResponseItem.id == message_id,
+            ResponseRecord.user_id == current_user.id,
+            ResponseRecord.tenant_id == tenant_id,
+            ResponseRecord.workspace_id == workspace_id,
         )
     )
+    if item is None or item.item_type != "input_message":
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Only user input can create an edited branch")
+    source = await db.get(ResponseRecord, item.response_id)
+    content = str(payload.get("content") or "").strip()
+    if source is None or not content:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="content required")
+    new_id = f"resp_{uuid.uuid4().hex}"
+    request_payload = dict(source.request_payload or {})
+    request_payload["input"] = content
+    branch = ResponseRecord(
+        id=new_id,
+        conversation_id=source.conversation_id,
+        user_id=source.user_id,
+        tenant_id=source.tenant_id,
+        workspace_id=source.workspace_id,
+        parent_response_id=source.parent_response_id,
+        request_id=str(uuid.uuid4()),
+        status="queued",
+        mode="stream",
+        model=source.model,
+        request_payload=request_payload,
+        response_metadata=dict(source.response_metadata or {}),
+        goal_id=source.goal_id,
+    )
+    db.add(branch)
+    await db.flush()
+    db.add(
+        ResponseItem(
+            id=f"item_{uuid.uuid4().hex}",
+            response_id=new_id,
+            sequence_number=0,
+            item_type="input_message",
+            role="user",
+            content=content,
+            payload={"edited_from": item.id},
+        )
+    )
+    await append_event(db, response_id=new_id, event_type="response.created", payload={"response_id": new_id, "status": "queued"})
+    add_outbox(db, response_id=new_id, suffix="edit")
+    session = await db.get(ChatSession, source.conversation_id)
+    if session:
+        session.active_response_id = new_id
     await db.commit()
-    return {"updated": True, "message_id": message_id, "content": new_content}
+    return {"updated": True, "response_id": new_id, "content": content}
 
 
 @router.post("/conversations/{conversation_id}/branch")
 async def branch_conversation(
     conversation_id: str,
+    request: Request,
     payload: dict,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    up_to_message_id = str(payload.get("message_id") or "")
-    if not up_to_message_id:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="message_id required")
-
-    sess_result = await db.execute(
-        select(ChatSession).where(ChatSession.id == conversation_id, ChatSession.user_id == current_user.id)
-    )
-    sess = sess_result.scalar_one_or_none()
-    if not sess:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation not found")
-
-    logs_result = await db.execute(
-        select(TraceLog).where(TraceLog.session_id == conversation_id).order_by(TraceLog.created_at)
-    )
-    logs = logs_result.scalars().all()
-
-    new_id = str(uuid.uuid4())
-    new_session = ChatSession(id=new_id, user_id=current_user.id, title=f"{sess.display_title or sess.title} (branch)", display_title=f"{sess.display_title or sess.title} (branch)")
-    db.add(new_session)
-    await db.commit()
-
-    for log in logs:
-        qid = log.id + "_q"
-        aid = log.id + "_a"
-        new_log = TraceLog(
-            id=str(uuid.uuid4()),
-            session_id=new_id,
-            query=log.query,
-            response=log.response,
-            decision_type=log.decision_type,
-            validation_score=log.validation_score,
-            latency_ms=log.latency_ms,
-            model=log.model,
-            prompt_tokens=log.prompt_tokens,
-            completion_tokens=log.completion_tokens,
-            reasoning_steps_json=log.reasoning_steps_json,
-            execution_graph_json=log.execution_graph_json,
+    tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
+    source_session = await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
+    message_id = str(payload.get("message_id") or "")
+    item = await db.scalar(
+        select(ResponseItem)
+        .join(ResponseRecord, ResponseRecord.id == ResponseItem.response_id)
+        .where(
+            or_(ResponseItem.id == message_id, ResponseRecord.id == message_id),
+            ResponseRecord.conversation_id == conversation_id,
+            ResponseRecord.user_id == current_user.id,
         )
-        db.add(new_log)
-        if up_to_message_id in {qid, aid}:
-            break
+    )
+    if item is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Message not found")
+    source_session.active_response_id = item.response_id
+    chain = await _active_chain(db, source_session, current_user.id)
+    by_response = await _items_for(db, [row.id for row in chain])
+    new_session = ChatSession(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id,
+        title=f"{source_session.display_title or source_session.title or 'Conversation'} (branch)",
+        display_title=f"{source_session.display_title or source_session.title or 'Conversation'} (branch)",
+        tenant_id=source_session.tenant_id,
+        org_id=source_session.org_id,
+        workspace_id=source_session.workspace_id,
+        project_id=source_session.project_id,
+        assistant_profile_id=source_session.assistant_profile_id,
+        conversation_instructions=source_session.conversation_instructions,
+    )
+    db.add(new_session)
+    await db.flush()
+    id_map: dict[str, str] = {}
+    for source in chain:
+        copied_id = f"resp_{uuid.uuid4().hex}"
+        id_map[source.id] = copied_id
+        db.add(
+            ResponseRecord(
+                id=copied_id,
+                conversation_id=new_session.id,
+                user_id=source.user_id,
+                tenant_id=source.tenant_id,
+                workspace_id=source.workspace_id,
+                parent_response_id=id_map.get(source.parent_response_id or ""),
+                request_id=str(uuid.uuid4()),
+                status=source.status,
+                mode=source.mode,
+                model=source.model,
+                error_code=source.error_code,
+                error_message=source.error_message,
+                request_payload=dict(source.request_payload or {}),
+                response_metadata={**dict(source.response_metadata or {}), "branched_from": source.id},
+                version=source.version,
+                completed_at=source.completed_at,
+            )
+        )
+        for copied_sequence, source_item in enumerate(by_response.get(source.id, [])):
+            db.add(
+                ResponseItem(
+                    id=f"item_{uuid.uuid4().hex}",
+                    response_id=copied_id,
+                    sequence_number=copied_sequence,
+                    item_type=source_item.item_type,
+                    role=source_item.role,
+                    content=source_item.content,
+                    payload=dict(source_item.payload or {}),
+                )
+            )
+    new_session.active_response_id = id_map.get(item.response_id)
+    new_session.branch_root_response_id = id_map.get(chain[0].id) if chain else None
     await db.commit()
-    return {"conversation_id": new_id, "branched_from": conversation_id, "up_to_message_id": up_to_message_id}
+    return {"conversation_id": new_session.id, "branched_from": conversation_id, "up_to_message_id": message_id}
 
 
 @router.post("/conversations/{conversation_id}/active-response")
 async def set_active_response(
     conversation_id: str,
+    request: Request,
     req: ActiveResponseRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    session = await db.scalar(select(ChatSession).where(ChatSession.id == conversation_id, ChatSession.user_id == current_user.id))
-    response = await db.scalar(select(ResponseRecord).where(ResponseRecord.id == req.response_id, ResponseRecord.conversation_id == conversation_id, ResponseRecord.user_id == current_user.id))
-    if not session or not response:
+    tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
+    session = await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
+    response = await db.scalar(
+        select(ResponseRecord).where(
+            ResponseRecord.id == req.response_id,
+            ResponseRecord.conversation_id == conversation_id,
+            ResponseRecord.user_id == current_user.id,
+        )
+    )
+    if response is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Response not found")
     session.active_response_id = response.id
     await db.commit()
@@ -533,51 +476,90 @@ async def set_active_response(
 @router.post("/conversations/{conversation_id}/share")
 async def create_share(
     conversation_id: str,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    session = await db.scalar(select(ChatSession).where(ChatSession.id == conversation_id, ChatSession.user_id == current_user.id))
-    if not session:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation not found")
+    tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
+    session = await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
     if session.is_temporary:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="临时聊天不能分享")
     chain = await _active_chain(db, session, current_user.id)
-    ids = [row.id for row in chain]
-    items = [] if not ids else (await db.execute(select(ResponseItem).where(ResponseItem.response_id.in_(ids)).order_by(ResponseItem.sequence_number))).scalars().all()
-    by_response: dict[str, list[ResponseItem]] = {}
-    for item in items:
-        by_response.setdefault(item.response_id, []).append(item)
-    allowed = []
+    by_response = await _items_for(db, [row.id for row in chain])
+    messages: list[dict] = []
     for response in chain:
         for item in by_response.get(response.id, []):
             if item.item_type not in {"input_message", "message"} or item.role not in {"user", "assistant"}:
                 continue
-            payload = item.payload if isinstance(item.payload, dict) else {}
-            citations = [
-                {"title": str(c.get("title") or ""), "url": str(c.get("url") or "")}
-                for c in payload.get("citations", []) if isinstance(c, dict) and c.get("url")
-            ]
-            allowed.append({"role": item.role, "content": item.content or "", "created_at": item.created_at.isoformat() if item.created_at else None, "citations": citations})
+            item_payload = dict(item.payload or {})
+            messages.append(
+                {
+                    "role": item.role,
+                    "content": item.content or "",
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
+                    "citations": [
+                        {"title": str(cite.get("title") or ""), "url": str(cite.get("url") or "")}
+                        for cite in item_payload.get("citations", [])
+                        if isinstance(cite, dict) and cite.get("url")
+                    ],
+                }
+            )
     await db.execute(
-        ConversationShare.__table__.update().where(ConversationShare.conversation_id == conversation_id, ConversationShare.revoked_at.is_(None)).values(revoked_at=datetime.now(timezone.utc))
+        ConversationShare.__table__.update()
+        .where(ConversationShare.conversation_id == conversation_id, ConversationShare.revoked_at.is_(None))
+        .values(revoked_at=datetime.now(UTC))
     )
-    token, public_id = secrets.token_urlsafe(24), f"shr_{uuid.uuid4().hex}"
-    db.add(ConversationShare(id=str(uuid.uuid4()), conversation_id=conversation_id, user_id=current_user.id, public_id=public_id, token_hash=_share_token_hash(token), snapshot={"title": session.display_title or session.title or "OpenTrace 对话", "messages": allowed},))
+    token = secrets.token_urlsafe(24)
+    public_id = f"shr_{uuid.uuid4().hex}"
+    db.add(
+        ConversationShare(
+            id=str(uuid.uuid4()),
+            conversation_id=conversation_id,
+            user_id=current_user.id,
+            public_id=public_id,
+            token_hash=_share_token_hash(token),
+            snapshot={"title": session.display_title or session.title or "OpenTrace 对话", "messages": messages},
+        )
+    )
     await db.commit()
     return {"public_id": public_id, "token": token, "url": f"/share/{public_id}/{token}"}
 
 
 @router.delete("/conversations/{conversation_id}/share")
-async def revoke_share(conversation_id: str, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> dict:
-    result = await db.execute(ConversationShare.__table__.update().where(ConversationShare.conversation_id == conversation_id, ConversationShare.user_id == current_user.id, ConversationShare.revoked_at.is_(None)).values(revoked_at=datetime.now(timezone.utc)))
+async def revoke_share(
+    conversation_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
+    await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
+    result = await db.execute(
+        ConversationShare.__table__.update()
+        .where(
+            ConversationShare.conversation_id == conversation_id,
+            ConversationShare.user_id == current_user.id,
+            ConversationShare.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(UTC))
+    )
     await db.commit()
     return {"revoked": bool(result.rowcount)}
 
 
 @router.get("/shared/{public_id}/{token}")
-async def get_shared_conversation(public_id: str, token: str, db: AsyncSession = Depends(get_db)) -> dict:
-    share = await db.scalar(select(ConversationShare).where(ConversationShare.public_id == public_id, ConversationShare.revoked_at.is_(None)))
-    if not share or not secrets.compare_digest(share.token_hash, _share_token_hash(token)):
+async def get_shared_conversation(
+    public_id: str,
+    token: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    share = await db.scalar(
+        select(ConversationShare).where(
+            ConversationShare.public_id == public_id,
+            ConversationShare.revoked_at.is_(None),
+        )
+    )
+    if share is None or not secrets.compare_digest(share.token_hash, _share_token_hash(token)):
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="分享链接无效或已撤销")
     return dict(share.snapshot or {})
 
@@ -585,154 +567,48 @@ async def get_shared_conversation(public_id: str, token: str, db: AsyncSession =
 @router.get("/conversations/{conversation_id}/messages")
 async def get_messages(
     conversation_id: str,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[MessageOut]:
-    sess_result = await db.execute(
-        select(ChatSession).where(
-            ChatSession.id == conversation_id,
-            ChatSession.user_id == current_user.id,
+    tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
+    session = await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
+    chain = await _active_chain(db, session, current_user.id)
+    by_response = await _items_for(db, [row.id for row in chain])
+    all_rows = (
+        await db.execute(
+            select(ResponseRecord)
+            .where(ResponseRecord.conversation_id == conversation_id, ResponseRecord.user_id == current_user.id)
+            .order_by(ResponseRecord.created_at)
         )
-    )
-    session = sess_result.scalar_one_or_none()
-    if not session:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation not found")
-
-    # Responses/ResponseItem is the canonical source for new turns.  TraceLog
-    # remains a read-only compatibility archive for historical conversations.
-    response_rows = await _active_chain(db, session, current_user.id)
-    if response_rows:
-        response_ids = [row.id for row in response_rows]
-        response_items = (
-            await db.execute(
-                select(ResponseItem)
-                .where(ResponseItem.response_id.in_(response_ids))
-                .order_by(ResponseItem.response_id, ResponseItem.sequence_number)
-            )
-        ).scalars().all()
-        by_response: dict[str, list[ResponseItem]] = {}
-        for item in response_items:
-            by_response.setdefault(item.response_id, []).append(item)
-        canonical_messages: list[MessageOut] = []
-        all_rows = (await db.execute(select(ResponseRecord).where(ResponseRecord.conversation_id == conversation_id, ResponseRecord.user_id == current_user.id).order_by(ResponseRecord.created_at))).scalars().all()
-        sibling_rows: dict[str | None, list[ResponseRecord]] = {}
-        for candidate in all_rows:
-            sibling_rows.setdefault(candidate.parent_response_id, []).append(candidate)
-        for row in response_rows:
-            for item in by_response.get(row.id, []):
-                if item.item_type not in {"input_message", "message"}:
-                    continue
-                payload = dict(item.payload or {})
-                canonical_messages.append(
-                    MessageOut(
-                        id=item.id,
-                        role=item.role or ("user" if item.item_type == "input_message" else "assistant"),
-                        content=item.content or "",
-                        created_at=item.created_at.isoformat() if item.created_at else row.created_at.isoformat(),
-                        model=row.model,
-                        status=row.status,
-                        metadata=payload,
-                        citations=list(payload.get("citations") or []),
-                        annotations=list(payload.get("annotations") or []),
-                        response_id=row.id,
-                        parent_response_id=row.parent_response_id,
-                        version_index=next((i + 1 for i, sibling in enumerate(sibling_rows.get(row.parent_response_id, [])) if sibling.id == row.id), 1),
-                        sibling_count=len(sibling_rows.get(row.parent_response_id, [])),
-                    )
-                )
-        if canonical_messages:
-            return canonical_messages
-
-    logs_result = await db.execute(
-        select(TraceLog)
-        .where(TraceLog.session_id == conversation_id)
-        .order_by(TraceLog.created_at)
-        .limit(300)
-    )
-    logs = logs_result.scalars().all()
-
-    # Query all attachments for this session that are linked to messages
-    attachments_result = await db.execute(
-        select(Attachment)
-        .where(
-            Attachment.session_id == conversation_id,
-            Attachment.message_id.isnot(None),
-            Attachment.status == "active",
-        )
-    )
-    attachments_by_msg: dict[str, list[dict]] = {}
-    for att in attachments_result.scalars().all():
-        mid = att.message_id or ""
-        if mid not in attachments_by_msg:
-            attachments_by_msg[mid] = []
-        attachments_by_msg[mid].append({
-            "id": att.id,
-            "filename": att.filename,
-            "file_size": att.file_size,
-            "file_extension": att.file_extension,
-            "mime_type": att.mime_type,
-            "content_summary": att.content_summary,
-        })
-
+    ).scalars().all()
+    siblings: dict[str | None, list[ResponseRecord]] = {}
+    for row in all_rows:
+        siblings.setdefault(row.parent_response_id, []).append(row)
     messages: list[MessageOut] = []
-    for log in logs:
-        reasoning_steps = []
-        execution_graph = None
-        if log.reasoning_steps_json:
-            try:
-                parsed_steps = json.loads(log.reasoning_steps_json)
-                reasoning_steps = _normalize_reasoning_steps(parsed_steps)
-            except Exception:
-                reasoning_steps = []
-        if log.execution_graph_json:
-            try:
-                parsed_graph = json.loads(log.execution_graph_json)
-                if isinstance(parsed_graph, dict):
-                    execution_graph = parsed_graph
-            except Exception:
-                execution_graph = None
-        user_msg_id = log.id + "_q"
-        messages.append(
-            MessageOut(
-                id=user_msg_id,
-                role="user",
-                content=log.query,
-                created_at=log.created_at.isoformat(),
-                attachments=attachments_by_msg.get(user_msg_id, []),
-            )
-        )
-        if log.response:
-            meta: dict = {}
-            citations: list[dict] = []
-            annotations: list[dict] = []
-            if isinstance(execution_graph, dict):
-                gov = execution_graph.get("governance")
-                if isinstance(gov, dict):
-                    meta.update(gov)
-                meta.setdefault("route", execution_graph.get("route"))
-                meta.setdefault("capability_type", execution_graph.get("capability_type"))
-                meta.setdefault("agent_type", execution_graph.get("agent_type"))
-                if execution_graph.get("needs_clarification"):
-                    meta["needs_clarification"] = True
-                    meta["turn_outcome"] = meta.get("turn_outcome") or "clarification"
-                if isinstance(execution_graph.get("clarification"), dict):
-                    meta["clarification"] = execution_graph["clarification"]
+    for response in chain:
+        versions = siblings.get(response.parent_response_id, [])
+        version_index = next((index + 1 for index, row in enumerate(versions) if row.id == response.id), 1)
+        for item in by_response.get(response.id, []):
+            if item.item_type not in {"input_message", "message"}:
+                continue
+            item_payload = dict(item.payload or {})
             messages.append(
                 MessageOut(
-                    id=log.id + "_a",
-                    role="assistant",
-                    content=log.response,
-                    created_at=log.created_at.isoformat(),
-                    decision_type=log.decision_type,
-                    validation_score=log.validation_score,
-                    reasoning_steps=reasoning_steps,
-                    execution_graph=execution_graph,
-                    metadata=meta or None,
-                    citations=citations,
-                    annotations=annotations,
-                    prompt_tokens=int(log.prompt_tokens or 0),
-                    completion_tokens=int(log.completion_tokens or 0),
-                    model=log.model,
+                    id=item.id,
+                    role=item.role or ("user" if item.item_type == "input_message" else "assistant"),
+                    content=item.content or "",
+                    created_at=item.created_at.isoformat() if item.created_at else response.created_at.isoformat(),
+                    model=response.model,
+                    status=response.status,
+                    metadata=item_payload,
+                    citations=list(item_payload.get("citations") or []),
+                    annotations=list(item_payload.get("annotations") or []),
+                    response_id=response.id,
+                    parent_response_id=response.parent_response_id,
+                    version=response.version,
+                    version_index=version_index,
+                    sibling_count=len(versions),
                 )
             )
     return messages

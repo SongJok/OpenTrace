@@ -265,7 +265,7 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             "model": self.config.model,
             "input": self._response_input(messages),
             "max_output_tokens": kwargs.get("max_output_tokens", kwargs.get("max_tokens", self.config.max_tokens)),
-            "store": bool(kwargs.get("store", True)),
+            "store": bool(kwargs.get("store", False)),
         }
         if kwargs.get("tools"):
             params["tools"] = kwargs["tools"]
@@ -275,6 +275,8 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             params["parallel_tool_calls"] = bool(kwargs["parallel_tool_calls"])
         if kwargs.get("instructions"):
             params["instructions"] = kwargs["instructions"]
+        if isinstance(kwargs.get("reasoning"), dict) and kwargs["reasoning"]:
+            params["reasoning"] = kwargs["reasoning"]
         try:
             response = await client.responses.create(**params)
             content, tool_calls, output_items = self._parse_response_output(response)
@@ -413,7 +415,7 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             "model": self.config.model,
             "input": self._response_input(messages),
             "max_output_tokens": kwargs.get("max_output_tokens", kwargs.get("max_tokens", self.config.max_tokens)),
-            "store": bool(kwargs.get("store", True)),
+            "store": bool(kwargs.get("store", False)),
             "stream": True,
         }
         if kwargs.get("tools"):

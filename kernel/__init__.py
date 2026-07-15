@@ -46,15 +46,6 @@ __all__ = [
     "ReasoningResult",
     "MetaCognition",
     "ValidationResult",
-    # V5 Routing Tier
-    "L0RuleRouter",
-    "L0Result",
-    "TinyRouter",
-    "L1RouteResult",
-    "ComplexityEngine",
-    "ComplexityAssessment",
-    "SemanticCache",
-    "CacheEntry",
     # Protocol Layer
     "CognitiveEventV2",
     "CognitiveEventTypeV2",
@@ -86,15 +77,6 @@ _EXPORTS = {
     "ReasoningResult": ("kernel.reasoning.engine", "ReasoningResult"),
     "MetaCognition": ("kernel.meta_cognition.meta_cognition", "MetaCognition"),
     "ValidationResult": ("kernel.meta_cognition.meta_cognition", "ValidationResult"),
-    # V5 Routing Tier
-    "L0RuleRouter": ("kernel.query_router_v2", "L0RuleRouter"),
-    "L0Result": ("kernel.query_router_v2", "L0Result"),
-    "TinyRouter": ("kernel.tiny_router", "TinyRouter"),
-    "L1RouteResult": ("kernel.tiny_router", "L1RouteResult"),
-    "ComplexityEngine": ("kernel.complexity_engine", "ComplexityEngine"),
-    "ComplexityAssessment": ("kernel.complexity_engine", "ComplexityAssessment"),
-    "SemanticCache": ("kernel.semantic_cache", "SemanticCache"),
-    "CacheEntry": ("kernel.semantic_cache", "CacheEntry"),
 }
 
 
@@ -116,16 +98,7 @@ def __getattr__(name: str) -> Any:
 
 
 if TYPE_CHECKING:
-    from kernel.complexity_engine import ComplexityAssessment, ComplexityEngine
     from kernel.intent_engine.engine import Intent, IntentEngine
     from kernel.meta_cognition.meta_cognition import MetaCognition, ValidationResult
-    from kernel.orchestrator import (
-        CognitiveOrchestrator,
-        OrchestratorRequest,
-        OrchestratorResponse,
-    )
     from kernel.policy.engine import Decision, PolicyEngine, Route, Strategy
-    from kernel.query_router_v2 import L0Result, L0RuleRouter
     from kernel.reasoning.engine import ReasoningEngine, ReasoningResult
-    from kernel.semantic_cache import CacheEntry, SemanticCache
-    from kernel.tiny_router import L1RouteResult, TinyRouter

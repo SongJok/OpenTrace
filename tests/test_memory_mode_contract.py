@@ -3,13 +3,11 @@
 import asyncio
 from types import SimpleNamespace
 
-from gateway.api_gateway.routers.chat import ChatRequest
 from gateway.api_gateway.routers.responses import ResponseCreateRequest
 from kernel.turn_enrichment import apply_preference_and_memory, personalization_memory_enabled
 
 
-def test_memory_mode_defaults_to_enabled_for_legacy_clients() -> None:
-    assert ChatRequest(query="hello").memory_mode == "enabled"
+def test_memory_mode_defaults_to_enabled_for_responses_clients() -> None:
     assert ResponseCreateRequest(input="hello").memory_mode == "enabled"
 
 

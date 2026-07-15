@@ -223,6 +223,12 @@ class CapabilityRegistry:
             grouped.setdefault(cap.cap_type, []).append(cap.name)
         return grouped
 
+    def list_capabilities(self, cap_type: CapabilityType | None = None) -> list[Capability]:
+        values = list(self._capabilities.values())
+        if cap_type is None:
+            return values
+        return [capability for capability in values if capability.cap_type == cap_type]
+
     # ── 意图匹配 ─────────────────────────────────────────────────────────
 
     def match(

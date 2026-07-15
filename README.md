@@ -1,31 +1,30 @@
 # OpenTrace
 
-OpenTrace 是一个以 Cognitive Kernel 为核心的智能体运行系统，当前项目定位是把对话、RAG、工具调用、数据分析、记忆、任务、审计和运行时观测组织成一套可部署的 AgentOS 后端。
+OpenTrace 是一个以 Responses API 和可恢复 Agent Loop 为核心的智能工作平台，把对话、RAG、工具调用、数据分析、记忆、Goal、定时任务、审批和运行时观测组织成统一产品。
 
 本 README 依据当前仓库代码、`docker-compose.yml`、启动脚本和 `.env` 重新整理。`.env` 中包含真实密钥、数据库密码、SMTP 授权码和第三方 API Key，本文档只记录配置项与脱敏示例，不写入真实敏感值。
 
 ## 当前能力
 
-- FastAPI API Gateway，统一暴露 `/api/v1/*` 接口。
-- Cognitive Kernel + **vNext 主路径**（`CognitiveKernel` → `RuntimeGateway` → `CognitiveSupervisor` → `RuntimeTurnDispatcher` → `cognitive_executive` / `data_intelligence` / `multi_goal`），V4 编排仅经 `legacy/v4` shim 保留兼容。
-- V5 快路径（L0 / 语义缓存 / L1）与 Agent Cluster，支持计划、分发、执行、融合、批判与修正。)
+- FastAPI API Gateway；聊天统一使用 `/api/v2/responses`，旧 `/api/v1/chat` 返回 `410 Gone`。
+- **统一主路径**：PostgreSQL Response/Items/Events → Outbox → Redis Streams → 无状态 Worker → Context Assembler → Manager Agent Loop。
+- GPT-5.6 优先的模型路由、严格类型化工具、专家 Agent 内部编排、写操作审批和断线续传。
 - Redis Agent Bus，当前 `.env` 启用 `KERNEL_AGENT_BUS_ENABLED=true`，模式为 `stream`。
-- 多模型 LLM 路由，当前 `.env` 使用 DashScope/Qwen 系列模型。
+- 多模型 LLM 路由，OpenAI GPT-5.6 优先，Qwen 作为配置化兼容与降级模型。
 - RAG 增强链路，包含 Query Rewrite、HyDE、混合检索、Rerank、证据质量门禁和 Web fallback。
 - DataAgent V2，用于 Text2SQL、指标语义、表关系、分析技能、结果解释和高级分析。
-- 多轮会话、记忆、任务、审计、技能、连接器、文档、附件上传、沙箱下载等 API。
+- 多轮分支会话、Projects、Assistant Profiles、自动记忆、Goal、Scheduled Tasks、审计、技能、连接器和文档 API。
 - OpenTelemetry、Prometheus、Jaeger 可选观测栈。
 - React + Vite 前端，默认独立运行在 `14108`。
 
-### vNext 架构（契约回归）
+### Responses Agent Loop 架构
 
-主路径与需求矩阵见 `docs/ARCHITECTURE_REQUIREMENTS_MATRIX.md`、`docs/ARCHITECTURE_COMPLETION_ROADMAP.md`。
+切换、回填与回滚流程见 `docs/runbooks/chatgpt_cutover.md`。
 
 ```text
-CognitiveKernel → RuntimeGateway
-  → CognitiveSupervisor.prepare_run
-  → RuntimeTurnDispatcher
-  → runtime.registry (registry_governance)
+Responses API → PostgreSQL + Outbox → Redis Streams → Agent Worker
+  → ContextAssembler → IntentPlan → Manager Agent Loop
+  → typed tools / expert agents → durable events → resumable SSE
   → run_outcomes (Artifact, GoalEvidenceBinding, semantic_alerts)
 ```
 
@@ -193,7 +192,7 @@ OpenTrace 通过 `infra/config/settings.py` 使用 `pydantic-settings` 读取 `.
 | App | `APP_NAME=opentrace`，`APP_ENV=development`，`APP_PORT=14100`，`DEBUG=true` |
 | Database | PostgreSQL，数据库名 `opentrace_v2`，容器内主机名 `postgres` |
 | Redis | 容器内 `redis:6379/10`，DB `10-15` 分别用于 session/cache/memory/queue/rate-limit/pubsub |
-| LLM | DashScope/Qwen，Query/Strongest 使用 `qwen3.7-max`，Planning/Compress 使用 `qwen3.6-plus` |
+| LLM | OpenAI GPT-5.6 为 auto/deep/fast 首选；Qwen 为配置化降级 |
 | Short Models | SeniorShort `qwen3-14b`，MiddleShort/JuniorShort/MinShort 当前配置为 `qwen3-8b` |
 | Embedding | DashScope `qwen3-vl-embedding`，维度 `1024` |
 | Rerank | DashScope `qwen3-vl-rerank` |
@@ -202,7 +201,7 @@ OpenTrace 通过 `infra/config/settings.py` 使用 `pydantic-settings` 读取 `.
 | Registration | 注册开启，允许邮箱域名和管理员邮箱由 `.env` 控制 |
 | SMTP | 使用 `.env` 中的 SMTP 服务发送邮件 |
 | Trace | `TRACE_ENABLED=true`，OTLP 默认指向 `http://localhost:4317` |
-| Kernel | vNext 主路径；`KERNEL_ORCHESTRATOR_V4_ENABLED=false`（V4 仅 legacy）；Agent Bus `stream` |
+| Runtime | Responses Agent Loop；PostgreSQL 为事实来源，Redis Streams 仅投递 |
 | Agent Bus | 启用 Redis Agent Bus，当前模式为 `stream` |
 | RAG | Query Rewrite、HyDE、Hybrid Search、Rerank、Fallback to Web 均开启 |
 | Text2SQL | Join inference、结果解释和最多 2 次重试开启 |
@@ -371,7 +370,7 @@ bash scripts/verify_all.sh
 
 ```bash
 python -m pytest -q
-python -m unittest tests/test_orchestrator_v4_contract.py
+python -m pytest -q tests/test_responses_contract.py tests/test_scheduler_v2.py
 ```
 
 发布前检查：
@@ -384,13 +383,12 @@ bash scripts/preflight_release.sh
 
 ```text
 opentrace/
-├── gateway/                 # FastAPI API Gateway 与 cognitive gateway
+├── gateway/                 # FastAPI API Gateway
 │   └── api_gateway/
 │       ├── main.py          # FastAPI app、middleware、router 注册
 │       └── routers/         # auth/chat/data/databases/documents 等 API
-├── kernel/                  # Cognitive Kernel、路由、运行时、RAG、Data Cognition
-│   ├── orchestrator_v4.py
-│   ├── query_router_v2.py
+├── kernel/                  # 统一 Agent Loop、上下文、工具与专业能力
+│   ├── agent_loop/
 │   ├── runtime/
 │   ├── data_cognition/
 │   └── capability_intelligence/
@@ -515,29 +513,25 @@ SMTP_FROM=<sender>
 
 | 文档 | 内容 |
 | --- | --- |
-| `docs/ARCHITECTURE_REQUIREMENTS_MATRIX.md` | vNext 需求与实现对照矩阵 |
-| `docs/ARCHITECTURE_COMPLETION_ROADMAP.md` | 分阶段完成规划与每周检查清单 |
-| `docs/RELEASE_GATE.md` | PR/发布合并门禁 |
+| `docs/runbooks/chatgpt_cutover.md` | Responses Agent Loop 的迁移、灰度与回滚手册 |
 | `docs/CONFIG_TRUTH.md` | 端口、URL、RAG 阈值配置真相表 |
 | `docs/ENV_PROFILES.md` | dev / staging / production 推荐开关 |
 | `docs/FEATURE_FLAG_REGISTRY.md` | 内核 Feature Flag 注册表 |
 | `docs/CAPABILITY_MATURITY.md` | 模块成熟度（生产 vs stub） |
 | `docs/OBSERVABILITY_COGNITIVE_HEALTH.md` | 认知健康指标与观测 |
 | `docs/adr/` | 架构决策记录（vNext / Governance / Memory） |
-| `docs/runbooks/` | 排障 runbook（回合追踪、证据门禁等） |
-| `docs/catalog/cognitive_kernel.md` | Cognitive Kernel 模块说明 |
+| `docs/runbooks/` | 排障与发布 runbook |
 | `docs/catalog/agent_runtime.md` | Agent Runtime 说明 |
 | `docs/catalog/data_agent.md` | DataAgent 说明 |
 | `docs/catalog/data_cognition.md` | Data Cognition / Text2SQL 说明 |
 | `docs/catalog/rag_retrieval.md` | RAG 与检索说明 |
 | `docs/catalog/memory_system.md` | Memory System 说明 |
-| `docs/service/service_claude.md` | Claude 服务文档 |
 | `scripts/work/README.md` | 启停与开发工作流脚本 |
 
 ## 贡献约定
 
 1. 新功能优先补充或更新合约测试。
-2. 合并前运行 `bash scripts/run_vnext_final_tests.sh` 与 `bash scripts/check_import_boundaries.sh`（见 `docs/RELEASE_GATE.md`）。
+2. 合并前运行 `pytest -q`、前端 build/test 与 `bash scripts/check_import_boundaries.sh`。
 3. 提交前至少运行与改动范围匹配的验证脚本。
 4. 配置新增项需要同步更新 `.env.example`、`docs/FEATURE_FLAG_REGISTRY.md` 和本 README。
 5. 不提交 `.env`、日志、数据库 dump、密钥或本地缓存。

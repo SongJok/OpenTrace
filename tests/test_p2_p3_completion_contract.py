@@ -24,6 +24,7 @@ def test_runtime_params_include_tenant_workspace():
     assert '"workspace_id"' in text
 
 
-def test_vnext_roadmap_documents_turn_bootstrap():
-    text = (ROOT / "docs/architecture/vnext_priority_roadmap.md").read_text(encoding="utf-8")
-    assert "turn_bootstrap" in text or "Turn bootstrap" in text
+def test_cutover_runbook_documents_durable_worker_switch():
+    text = (ROOT / "docs/runbooks/chatgpt_cutover.md").read_text(encoding="utf-8")
+    assert "Worker" in text
+    assert "Expand" in text and "Contract" in text

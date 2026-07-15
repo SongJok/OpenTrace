@@ -58,12 +58,7 @@
 
 ## 健康检查 `orchestrator` 字段
 
-| `KERNEL_ORCHESTRATOR_V4_ENABLED` | `/health/deps` 与 `/health/runtime` 的 `orchestrator` |
-|----------------------------------|------------------------------------------------------|
-| `false`（默认） | `vnext` |
-| `true` | `KERNEL_ORCHESTRATOR_VERSION`（默认 `v4`） |
-
-实现：`infra/config/orchestrator_label.py`。
+`/health/deps` 与 `/health/runtime` 固定报告 `responses-agent-loop`。V4 开关与回退实现已删除。
 
 ## Docker 代码生效
 

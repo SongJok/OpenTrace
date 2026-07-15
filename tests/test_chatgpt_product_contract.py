@@ -7,7 +7,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_response_versions_and_execution_profiles_are_exposed():
     text = (ROOT / "gateway/api_gateway/routers/responses.py").read_text()
     assert 'execution_profile: str = Field(default="auto"' in text
-    assert 'execution_mode: str = Field(default="auto"' in text
+    assert 'class OpenTraceOptions' in text
+    assert 'opentrace: OpenTraceOptions' in text
     assert '@router.post("/responses/{response_id}/retry")' in text
     assert '@router.get("/responses/{response_id}/siblings")' in text
 
@@ -23,7 +24,9 @@ def test_conversations_cover_temporary_and_safe_sharing():
 
 def test_frontend_has_profile_picker_and_public_share_route():
     chat = (ROOT / "frontend/src/pages/ChatPage.tsx").read_text()
+    preferences = (ROOT / "frontend/src/store/chatPreferences.ts").read_text()
     app = (ROOT / "frontend/src/App.tsx").read_text()
-    assert "opentrace:execution-profile" in chat
+    assert "setExecutionProfile" in chat
+    assert "executionProfile: 'auto'" in preferences
     assert "apiCreateConversationShare" in chat
     assert '/share/:publicId/:token' in app

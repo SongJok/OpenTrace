@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from gateway.api_gateway.routers.chat import _load_custom_instruction_block
 from gateway.api_gateway.routers.personalization import CustomInstructionPayload
 from infra.storage.models import UserCustomInstruction
 from kernel.preference_injection import apply_preference_injection_for_turn
@@ -61,20 +60,14 @@ def test_runtime_context_exposes_custom_instruction_metadata() -> None:
     assert ctx.to_metadata_dict()["custom_instruction_block"] == "回答简洁"
 
 
-def test_custom_instruction_loader_is_tenant_scoped_and_formatted() -> None:
-    row = SimpleNamespace(
-        about_user="  我是数据分析师  ",
-        response_style="  先给结论  ",
-        enabled=True,
-    )
-    block = asyncio.run(
-        _load_custom_instruction_block(
-            _Db(row), "user-1", {"tenant_id": "tenant-a", "workspace_id": "workspace-a"}
-        )
-    )
-    assert "用户明确提供的背景信息" in block
-    assert "用户明确要求的回答风格" in block
-    assert "我是数据分析师" in block
+def test_context_assembler_loads_custom_instructions_in_tenant_scope() -> None:
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "kernel/agent_loop/context.py").read_text()
+    assert "UserCustomInstruction.tenant_id == response.tenant_id" in text
+    assert "UserCustomInstruction.workspace_id == response.workspace_id" in text
+    assert "用户提供的背景" in text
+    assert "用户偏好的回答方式" in text
 
 
 def test_custom_instructions_survive_temporary_memory_mode() -> None:

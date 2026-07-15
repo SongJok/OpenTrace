@@ -6,7 +6,7 @@ plugins/tool — 与「工具型能力」相关的注册入口说明。
   - `tools.builtin_tools.analytics_tools` — code_interpreter / chart_generator / data_analysis / file_sandbox
 
 结构化元数据（JSON Schema 风格）见 `plugins.structured_tool`。
-内核通过 `ToolRouter` + `kernel/orchestrator.py` 的 EXECUTE 步骤按名或意图调用。
+工具由统一 Agent Loop 通过类型化 `ToolSpec` 按意图选择并执行。
 """
 
 from plugins.structured_tool import (

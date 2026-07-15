@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Weekly / pre-merge checklist from docs/ARCHITECTURE_COMPLETION_ROADMAP.md
+# Weekly / pre-merge checklist for the unified Responses runtime.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

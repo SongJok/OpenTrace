@@ -4,14 +4,11 @@ from unittest.mock import AsyncMock, Mock, patch
 
 
 class StreamFallbackSyncBehaviorTests(unittest.TestCase):
-    def test_database_intent_detects_common_phrasings(self):
-        from gateway.api_gateway.routers.chat import _database_intent
+    def test_responses_path_has_no_keyword_database_router(self):
+        from pathlib import Path
 
-        self.assertTrue(_database_intent("帮我查最近7天订单金额"))
-        self.assertTrue(_database_intent("请分析这个数据库里的销售数据"))
-        self.assertTrue(_database_intent("show tables and count rows"))
-        self.assertTrue(_database_intent("test_db库下有几张表"))
-        self.assertFalse(_database_intent("帮我写一段 Python 代码"))
+        text = (Path(__file__).resolve().parents[1] / "gateway/api_gateway/routers/responses.py").read_text()
+        self.assertNotIn("_database_intent", text)
 
     def test_plan_agent_attaches_data_source_id_for_data_intent(self):
         from kernel.plan_agent import PlanAgent

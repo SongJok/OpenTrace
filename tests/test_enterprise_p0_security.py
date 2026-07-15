@@ -195,13 +195,11 @@ def test_cors_rejects_wildcard_origin_with_credentials():
 
 
 def test_stream_errors_are_redacted_outside_development_debug(monkeypatch):
-    from gateway.api_gateway.routers import chat
+    from pathlib import Path
 
-    monkeypatch.setattr(chat.settings, "app_env", "production")
-    monkeypatch.setattr(chat.settings, "debug", False)
-    message = chat._public_stream_error(RuntimeError("database password leaked"))
-    assert "password" not in message
-    assert message == "请求处理失败，请稍后重试。"
+    worker = (Path(__file__).resolve().parents[1] / "infra/responses/worker.py").read_text()
+    assert 'response.error_message = "响应执行失败，请稍后重试。"' in worker
+    assert 'payload={"status": "failed", "code": response.error_code, "message": response.error_message}' in worker
 
 
 @pytest.mark.parametrize(

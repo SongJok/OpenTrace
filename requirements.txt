@@ -24,6 +24,7 @@ aioredis>=2.0.1
 
 # LLM / AI
 openai>=1.30.0
+python-dateutil>=2.9.0
 dashscope>=1.22.1
 tiktoken>=0.7.0
 tenacity>=8.3.0

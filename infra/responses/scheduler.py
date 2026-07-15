@@ -1,0 +1,211 @@
+from __future__ import annotations
+
+import asyncio
+import re
+import uuid
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import select, update
+
+from infra.observability.logger import get_logger
+from infra.responses.repository import add_outbox, append_event
+from infra.storage.database import AsyncSessionLocal
+from infra.storage.models import (
+    ChatSession,
+    ResponseItem,
+    ResponseRecord,
+    TaskDefinition,
+    TaskRun,
+    UserMemory,
+)
+
+logger = get_logger(__name__)
+
+
+def parse_schedule_expression(expression: str) -> str:
+    """Parse supported recurring natural-language forms without guessing."""
+    value = expression.strip().lower()
+    time_match = re.search(r"(?:at\s*)?(\d{1,2})(?::|点)(\d{1,2})?", value)
+    hour = int(time_match.group(1)) if time_match else 9
+    minute = int(time_match.group(2) or 0) if time_match else 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError("invalid schedule time")
+    if value in {"hourly", "每小时"}:
+        return "FREQ=HOURLY"
+    suffix = f"BYHOUR={hour};BYMINUTE={minute};BYSECOND=0"
+    if any(token in value for token in ("工作日", "weekday", "weekdays")):
+        return f"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;{suffix}"
+    weekdays = {
+        "周一": "MO", "星期一": "MO", "monday": "MO",
+        "周二": "TU", "星期二": "TU", "tuesday": "TU",
+        "周三": "WE", "星期三": "WE", "wednesday": "WE",
+        "周四": "TH", "星期四": "TH", "thursday": "TH",
+        "周五": "FR", "星期五": "FR", "friday": "FR",
+        "周六": "SA", "星期六": "SA", "saturday": "SA",
+        "周日": "SU", "星期日": "SU", "星期天": "SU", "sunday": "SU",
+    }
+    for token, day in weekdays.items():
+        if token in value:
+            return f"FREQ=WEEKLY;BYDAY={day};{suffix}"
+    if any(token in value for token in ("每天", "每日", "daily", "every day")):
+        return f"FREQ=DAILY;{suffix}"
+    raise ValueError("unsupported schedule expression")
+
+
+def next_occurrence(rrule_value: str, timezone_name: str, *, after: datetime | None = None) -> datetime | None:
+    from dateutil.rrule import rrulestr  # type: ignore[import-untyped]
+
+    zone = ZoneInfo(timezone_name)
+    base = after or datetime.now(UTC)
+    local_base = base.astimezone(zone)
+    rule = rrulestr(rrule_value, dtstart=local_base)
+    result = rule.after(local_base, inc=False)
+    if result is None:
+        return None
+    if result.tzinfo is None:
+        result = result.replace(tzinfo=zone)
+    return result.astimezone(UTC)
+
+
+async def enqueue_due_tasks(*, limit: int = 20) -> int:
+    now = datetime.now(UTC)
+    async with AsyncSessionLocal() as db:
+        tasks = (
+            await db.execute(
+                select(TaskDefinition)
+                .where(
+                    TaskDefinition.status == "active",
+                    TaskDefinition.next_run_at.is_not(None),
+                    TaskDefinition.next_run_at <= now,
+                )
+                .order_by(TaskDefinition.next_run_at)
+                .with_for_update(skip_locked=True)
+                .limit(limit)
+            )
+        ).scalars().all()
+        count = 0
+        for task in tasks:
+            scheduled_for = task.next_run_at
+            if scheduled_for is None:
+                continue
+            existing = await db.scalar(
+                select(TaskRun.id).where(
+                    TaskRun.task_id == task.id,
+                    TaskRun.scheduled_for == scheduled_for,
+                )
+            )
+            if existing:
+                task.next_run_at = next_occurrence(task.rrule or "", task.timezone, after=scheduled_for) if task.rrule else None
+                continue
+            run = TaskRun(
+                id=str(uuid.uuid4()), task_id=task.id, user_id=task.user_id,
+                status="queued", scheduled_for=scheduled_for,
+            )
+            db.add(run)
+            await db.flush()
+            session = None
+            if task.conversation_id:
+                session = await db.scalar(
+                    select(ChatSession).where(
+                        ChatSession.id == task.conversation_id,
+                        ChatSession.user_id == task.user_id,
+                        ChatSession.tenant_id == task.tenant_id,
+                        ChatSession.workspace_id == task.workspace_id,
+                    )
+                )
+            if session is None:
+                session = ChatSession(
+                    id=str(uuid.uuid4()), user_id=task.user_id,
+                    title=task.title, display_title=task.title,
+                    tenant_id=task.tenant_id, workspace_id=task.workspace_id, org_id="default",
+                    project_id=task.project_id,
+                )
+                db.add(session)
+                await db.flush()
+                task.conversation_id = session.id
+            response_id = f"resp_{uuid.uuid4().hex}"
+            response = ResponseRecord(
+                id=response_id, conversation_id=session.id, user_id=task.user_id,
+                tenant_id=task.tenant_id, workspace_id=task.workspace_id,
+                parent_response_id=session.active_response_id,
+                request_id=f"task:{task.id}:{scheduled_for.isoformat()}",
+                idempotency_key=f"task:{task.id}:{scheduled_for.isoformat()}",
+                status="queued", mode="background",
+                request_payload={
+                    "input": task.description,
+                    "background": True,
+                    "stream": False,
+                    "store": False,
+                    "tools": [],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "opentrace": {
+                        "project_id": task.project_id,
+                        "execution_profile": "auto",
+                        "memory_mode": "enabled",
+                        "enabled_skills": [],
+                        "data_source_ids": [],
+                    },
+                },
+                response_metadata={"scheduled_task_id": task.id, "task_run_id": run.id},
+            )
+            db.add(response)
+            await db.flush()
+            db.add(ResponseItem(
+                id=f"item_{uuid.uuid4().hex}", response_id=response_id, sequence_number=0,
+                item_type="input_message", role="user", content=task.description,
+                payload={"scheduled_task_id": task.id},
+            ))
+            await append_event(db, response_id=response_id, event_type="response.created", payload={"response_id": response_id, "status": "queued", "scheduled_task_id": task.id})
+            add_outbox(db, response_id=response_id, suffix=f"task-{run.id}")
+            run.response_id = response_id
+            session.active_response_id = response_id
+            task.last_run_at = now
+            task.next_run_at = next_occurrence(task.rrule or "", task.timezone, after=scheduled_for) if task.rrule else None
+            count += 1
+        await db.commit()
+        return count
+
+
+async def expire_transient_state(*, limit: int = 200) -> tuple[int, int]:
+    """Expire temporary conversations and learned memories in bounded batches."""
+    now = datetime.now(UTC)
+    async with AsyncSessionLocal() as db:
+        sessions = (
+            await db.execute(
+                select(ChatSession)
+                .where(
+                    ChatSession.is_temporary.is_(True),
+                    ChatSession.expires_at.is_not(None),
+                    ChatSession.expires_at <= now,
+                )
+                .with_for_update(skip_locked=True)
+                .limit(limit)
+            )
+        ).scalars().all()
+        for session in sessions:
+            await db.delete(session)
+        memory_result = await db.execute(
+            update(UserMemory)
+            .where(
+                UserMemory.status == "active",
+                UserMemory.expires_at.is_not(None),
+                UserMemory.expires_at <= now,
+            )
+            .values(status="expired", enabled=False)
+        )
+        await db.commit()
+        return len(sessions), int(memory_result.rowcount or 0)
+
+
+async def scheduler_loop() -> None:
+    while True:
+        try:
+            await enqueue_due_tasks()
+            await expire_transient_state()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("scheduled_task_poll_failed", error=str(exc))
+        await asyncio.sleep(5)

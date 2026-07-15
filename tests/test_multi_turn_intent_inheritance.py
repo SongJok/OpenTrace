@@ -1,22 +1,17 @@
-"""多轮对话 intent 继承 + TinyRouter 工具感知 契约测试。
+"""多轮对话 intent 继承契约测试。
 
 覆盖 Bug 2 / Bug 3 / Bug 4 的场景：
   - 追问继承上一轮 sticky domain (data_query/document_qa/web_search)
   - 显式关键词优先于继承
   - 无 prior 回退到 general_qa
-  - weather/time 走 TinyRouter intent_lock 快捷路径
 """
 
-import pytest
 
 from kernel.cognitive_controls import (
-    IntentLock,
     _STICKY_DOMAINS,
     _detect_follow_up,
     classify_intent,
 )
-from kernel.tiny_router import L1RouteResult, TinyRouter
-
 
 # ── classify_intent 多轮继承 ───────────────────────────────────────────────
 
@@ -193,51 +188,6 @@ class TestDetectFollowUp:
 
     def test_unrelated_query(self):
         assert _detect_follow_up("我想看一部最新的科幻冒险电影推荐", None) is False
-
-
-# ── TinyRouter intent_lock 快速路径 ────────────────────────────────────────
-
-class TestTinyRouterIntentLock:
-    """Bug 4: TinyRouter 收到 weather/time intent_lock → 强制 route="complex"。"""
-
-    @pytest.mark.asyncio
-    async def test_weather_intent_lock_routes_complex(self):
-        """weather intent_lock → route=complex（不调用 ROUTER LLM）"""
-        router = TinyRouter()
-        result = await router.route(
-            "今天天气怎么样？",
-            intent_lock={"task_type": "weather", "allowed_capabilities": ["tool.weather"]},
-        )
-        assert result.route == "complex"
-        assert result.answer is None
-        assert result.metadata.get("method") == "intent_lock"
-        assert result.metadata.get("reason") == "tool:weather"
-
-    @pytest.mark.asyncio
-    async def test_time_intent_lock_routes_complex(self):
-        """time intent_lock → route=complex"""
-        router = TinyRouter()
-        result = await router.route(
-            "现在几点了？",
-            intent_lock={"task_type": "time", "allowed_capabilities": ["tool.datetime"]},
-        )
-        assert result.route == "complex"
-        assert result.metadata.get("method") == "intent_lock"
-
-    @pytest.mark.asyncio
-    async def test_normal_query_no_intent_lock_still_works(self):
-        """无 intent_lock → 正常走 LLM 路由（greeting 快捷路径）"""
-        router = TinyRouter()
-        result = await router.route("你好")
-        assert result.route == "simple"
-
-    @pytest.mark.asyncio
-    async def test_identity_still_correct(self):
-        """identity 查询不受 intent_lock 影响"""
-        router = TinyRouter()
-        result = await router.route("你是谁")
-        assert result.route == "complex"
-        assert result.metadata.get("reason") == "identity_query"
 
 
 # ── _STICKY_DOMAINS 定义 ──────────────────────────────────────────────────

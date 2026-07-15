@@ -2,7 +2,7 @@
 上下文组装器 — V5 路由层的结构化上下文组装。
 
 V5 架构链路：
-  L0RuleRouter → ComplexityEngine → TinyRouter → SemanticCache → ContextAssembler
+  Legacy cognitive context adapter; canonical chat uses kernel.agent_loop.context.
 
 将对话历史、记忆、附件与 conversation_state 组织为块；超 token 预算时标记待压缩
 （委托 ContextComposer 或编排器压缩器）。

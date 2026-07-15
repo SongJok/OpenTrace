@@ -17,6 +17,7 @@ import SkillsPage from './pages/SkillsPage'
 import RulesPage from './pages/RulesPage'
 import KnowledgeCenterPage from './pages/KnowledgeCenterPage'
 import SharedConversationPage from './pages/SharedConversationPage'
+import WorkPage from './pages/WorkPage'
 
 function Protected({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -37,6 +38,11 @@ function SettingsRoute() {
 function TasksRoute() {
   const navigate = useNavigate()
   return <TasksPage onBack={() => navigate('/chat')} />
+}
+
+function WorkRoute() {
+  const navigate = useNavigate()
+  return <WorkPage onBack={() => navigate('/chat')} />
 }
 
 function AuditRoute() {
@@ -100,6 +106,7 @@ export default function App() {
       <Route path="/documents" element={<Protected><DocumentsRoute /></Protected>} />
       <Route path="/settings" element={<Protected><SettingsRoute /></Protected>} />
       <Route path="/tasks" element={<Protected><TasksRoute /></Protected>} />
+      <Route path="/work" element={<Protected><WorkRoute /></Protected>} />
       <Route path="/audit" element={<Protected><AuditRoute /></Protected>} />
       <Route path="/memories" element={<Protected><MemoryRoute /></Protected>} />
       <Route path="/integrations" element={<Protected><IntegrationsRoute /></Protected>} />

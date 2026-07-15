@@ -17,12 +17,11 @@ class ZeroTrustContractTests(unittest.TestCase):
         self.assertIn("def validate_permission_token", txt)
         self.assertIn("class ToolAnomalyDetector", txt)
 
-    def test_chat_uses_confirmation_and_permission(self):
-        txt = self._read("gateway/api_gateway/routers/chat.py")
-        self.assertIn("tool_permission_token", txt)
-        self.assertIn("confirmation_granted", txt)
-        self.assertIn("assess_query_risk", txt)
-        self.assertIn("validate_permission_token", txt)
+    def test_agent_loop_requires_durable_approval_for_side_effects(self):
+        txt = self._read("kernel/agent_loop/runner.py")
+        self.assertIn("SideEffect.READ", txt)
+        self.assertIn("ResponseApproval", txt)
+        self.assertIn('status="requires_action"', txt)
 
 
 if __name__ == "__main__":

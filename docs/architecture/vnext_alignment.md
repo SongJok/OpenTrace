@@ -20,8 +20,7 @@
 | Context 动态图 | `kernel/context_fabric_graph.py` → `FabricContext.metadata.fabric_graph` |
 | Capability 治理回退 | `apply_governance_with_fallback` + `failure_memory` |
 | Multi-Goal 调度 | `multi_goal_scheduler` + `kernel_multi_goal_sequential_enabled` |
-| V4 默认禁用 | `kernel_orchestrator_v4_enabled=False`，构造期 `RuntimeError` |
-| V4 shim | `kernel/orchestrator_v4_shim.py`（测试/迁移引用） |
+| V4 清理 | V4 实现、shim 与运行时开关均已删除 |
 | Runtime Contract | `kernel/protocol/runtime_contract.py` |
 | Goal Graph 第一实体 | `GoalPlanner` + `runtime_task_from_request` |
 | Protocol Layer | `cognition_protocol`, `runtime_protocol`, `agent_protocol` |
@@ -41,14 +40,12 @@
 | 蓝图项 | 缺口 |
 |--------|------|
 | 六域物理目录 | `cognition/`、`strategy/` 门面已有；`runtime/` 仍为主实现体 |
-| plan_agent 单问 | 仅 V4/遗留；主路径已不用 `PlanAgent.generate_plan` |
+| plan_agent 单问 | 主路径已不用 `PlanAgent.generate_plan` |
 | Refine 重执行 | 检测+局部 plan 元数据；未自动二次 `ExecutionRuntime` |
-| orchestrator_v4 | 实现已迁至 `legacy/v4/orchestrator.py`；`kernel/orchestrator_v4.py` 仅 re-export |
 
 ## 未做 / 后续 Phase ⏳
 
 - Phase 2–5：分布式 Runtime、Memory Graph、Capability Market
-- 删除 `orchestrator_v4.py` 物理文件（v6.0）；生产 import 优先 `legacy.v4`
 - Evidence / Reasoning / Artifact 三引擎命名完全统一
 - Multi-Goal **资源竞争**（优先级 + 顺序依赖已接入；预算竞争未建模）
 - Context Fabric **全动态演化**（`context_fabric_graph` 节点图已接入 assemble 元数据）

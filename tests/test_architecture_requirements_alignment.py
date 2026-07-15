@@ -131,19 +131,14 @@ class TestAgentRuntimeV3Alignment:
         assert s.kernel_unified_evidence_strict is True
 
 
-class TestV4Isolation:
-    def test_kernel_orchestrator_v4_is_reexport_only(self):
+class TestLegacyOrchestratorRemoved:
+    def test_v4_implementation_and_shims_are_absent(self):
         from pathlib import Path
 
-        p = Path(__file__).resolve().parents[1] / "kernel" / "orchestrator_v4.py"
-        text = p.read_text(encoding="utf-8")
-        assert "legacy.v4" in text
-        assert len(text) < 800
-
-    def test_v4_disabled_by_default(self):
-        from infra.config.settings import settings
-
-        assert settings.kernel_orchestrator_v4_enabled is False
+        root = Path(__file__).resolve().parents[1]
+        assert not (root / "legacy" / "v4" / "orchestrator.py").exists()
+        assert not (root / "kernel" / "orchestrator_v4.py").exists()
+        assert not (root / "kernel" / "orchestrator.py").exists()
 
 
 class TestRuntimeRegistry:
@@ -224,11 +219,9 @@ class TestMemoryGraphRedis:
     @pytest.mark.asyncio
     async def test_persist_and_hydrate_in_process(self):
         from memory.fabric.memory_graph import (
-            get_memory_graph,
-            persist_memory_graph,
+            MemoryGraphStore,
             _apply_snapshot,
         )
-        from memory.fabric.memory_graph import MemoryGraphStore
 
         store = MemoryGraphStore()
         store.upsert_node("m1", "memory", {"x": 1})
@@ -242,8 +235,8 @@ class TestMemoryGraphRedis:
 
 class TestMemoryFabricRetrieval:
     def test_goal_scoped_retrieve_after_bind(self):
-        from memory.fabric.router_singleton import bind_turn_memory
         from memory.fabric.retrieval import retrieve_goal_scoped_memory
+        from memory.fabric.router_singleton import bind_turn_memory
 
         bind_turn_memory(
             session_id="s-mem",

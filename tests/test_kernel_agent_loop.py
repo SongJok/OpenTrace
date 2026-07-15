@@ -1,8 +1,5 @@
-import re
-from tests.orchestrator_v4_source import read_orchestrator_v4_implementation
 import unittest
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -11,23 +8,11 @@ class KernelFlowContractTests(unittest.TestCase):
     def _read(self, rel: str) -> str:
         return (ROOT / rel).read_text(encoding="utf-8")
 
-    def test_orchestrator_v4_has_step_loop_and_resume(self):
-        """V4 orchestrator implements the step-based loop; StepType is defined in kernel/types.py."""
-        txt = self._read("kernel/types.py")
-        self.assertIn("class StepType", txt)
-        self.assertIn("REASON", txt)
-        self.assertIn("DECIDE", txt)
-        self.assertIn("EXECUTE", txt)
-        self.assertIn("OBSERVE", txt)
-        self.assertIn("REFLECT", txt)
-
-    def test_orchestrator_wrapper_delegates_to_v4(self):
-        """Legacy wrapper delegates to v4."""
-        txt = self._read("kernel/orchestrator.py")
-        self.assertIn("CognitiveOrchestratorV4", txt)
-        self.assertIn("OrchestratorV4Request", txt)
-        self.assertIn("await self._orchestrator.process(", txt)
-        # OrchestratorV4Response is used implicitly through .process() return type
+    def test_unified_agent_loop_has_bounded_rounds_and_approvals(self):
+        txt = self._read("kernel/agent_loop/runner.py")
+        self.assertIn("max_rounds: int = 8", txt)
+        self.assertIn('response.status = "requires_action"', txt)
+        self.assertIn("_restore_tool_history", txt)
 
     def test_meta_cognition_has_should_retry(self):
         txt = self._read("kernel/meta_cognition/meta_cognition.py")
@@ -43,15 +28,13 @@ class KernelFlowContractTests(unittest.TestCase):
         self.assertIn("max(doc_scores) < 0.7", txt)
         self.assertIn("tool_calls", txt)
 
-    def test_chat_resume_endpoint_and_session_guard(self):
-        txt = self._read("gateway/api_gateway/routers/chat.py")
-        self.assertIn('@router.post("/chat/resume"', txt)
-        self.assertIn("Session not found or no permission", txt)
-        self.assertIn("resume_turn_via_gateway", txt)
-        self.assertRegex(
-            txt,
-            r"resume_turn_via_gateway\(\s*\n?\s*db,\s*\n?\s*session_id=session_id",
-        )
+    def test_response_resume_uses_persisted_cursor_and_worker_checkpoint(self):
+        txt = self._read("gateway/api_gateway/routers/responses.py")
+        self.assertIn('starting_after: int = -1', txt)
+        self.assertIn('ResponseEvent.sequence_number > cursor', txt)
+        worker = self._read("infra/responses/worker.py")
+        self.assertIn("claim_response", worker)
+        self.assertIn("lease_owner", worker)
 
     def test_reasoning_yaml_has_numeric_constraints(self):
         txt = self._read("kernel/prompt_engine/reasoning.yaml")
@@ -68,15 +51,10 @@ class KernelFlowContractTests(unittest.TestCase):
         self.assertIn('name="chart_generator"', txt)
         self.assertIn("data_analysis", txt)
 
-    def test_orchestrator_has_non_empty_final_response_fallback(self):
-        txt = read_orchestrator_v4_implementation()
-        self.assertIn("_llm_fallback_answer", txt)
-        self.assertIn("无法执行", txt)
-
-    def test_reflect_stage_allows_observation_based_answer(self):
-        txt = read_orchestrator_v4_implementation()
-        self.assertIn("evidence_text", txt)
-        self.assertIn("_llm_grounded_answer", txt)
+    def test_manager_owns_final_response(self):
+        txt = self._read("kernel/agent_loop/runner.py")
+        self.assertIn("AgentLoopResult", txt)
+        self.assertIn("model_response.content", txt)
 
     def test_analytics_tools_registered_module_importable(self):
         txt = self._read("tools/builtin_tools/analytics_tools.py")

@@ -9,11 +9,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_gateway_chat_calls_bootstrap():
-    text = (ROOT / "gateway/api_gateway/routers/chat.py").read_text(encoding="utf-8")
-    assert "bootstrap_turn_intent" in text
-    assert "dispatch_query" in text
-    assert "try_tier0_chat" in text and "query=dispatch_query" in text
+def test_agent_loop_plans_a_structured_intent():
+    text = (ROOT / "kernel/agent_loop/runner.py").read_text(encoding="utf-8")
+    assert "IntentPlan" in text
+    assert "_plan_intent" in text
 
 
 def test_kernel_run_uses_bootstrap():

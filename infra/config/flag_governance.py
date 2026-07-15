@@ -49,13 +49,7 @@ FLAG_REQUIRES: dict[str, tuple[str, ...]] = {
 }
 
 # Mutually exclusive or deprecated combinations.
-FLAG_CONFLICTS: list[tuple[str, str, str]] = [
-    (
-        "kernel_orchestrator_v4_enabled",
-        "kernel_cognitive_planner_v2_enabled",
-        "v4_orchestrator_must_stay_disabled_when_v2_planner_on",
-    ),
-]
+FLAG_CONFLICTS: list[tuple[str, str, str]] = []
 
 
 @dataclass

@@ -5,22 +5,19 @@
   - F2: 约束拒绝降级路径
   - F3: V4 PlanAgent 过滤 disallowed subtask
   - F4: 能力名称规范化
-  - F5: TinyRouter 扩展 fast-path / SemanticCache 跳过
   - F6: cognitive_executive 复用已有 intent_lock
 """
 
 import pytest
 
 from kernel.cognitive_controls import (
+    _CAPABILITY_NORMALIZE_MAP,
     CognitiveBudget,
     IntentLock,
-    _CAPABILITY_NORMALIZE_MAP,
-    _simple_lock,
     _light_lock,
+    _simple_lock,
     normalize_capability_name,
 )
-from kernel.tiny_router import L1RouteResult, TinyRouter
-
 
 # ── F4: 能力名称规范化 ────────────────────────────────────────────────────
 
@@ -118,52 +115,6 @@ class TestCognitivePlannerIntentBlock:
     def test_empty_block_when_no_constraints(self, planner, ctx_without_constraints):
         block = planner._build_intent_constraint_block(ctx_without_constraints)
         assert block == ""
-
-
-# ── F5: TinyRouter 扩展 fast-path ────────────────────────────────────────
-
-class TestTinyRouterExtendedFastPath:
-    """TinyRouter 将更多确定性的 task_type 快速路由。"""
-
-    @pytest.mark.asyncio
-    async def test_data_query_routes_complex(self):
-        router = TinyRouter()
-        result = await router.route(
-            "查询一下销售数据",
-            intent_lock={"task_type": "data_query", "allowed_capabilities": ["data.query"]},
-        )
-        assert result.route == "complex"
-        assert result.metadata.get("method") == "intent_lock"
-
-    @pytest.mark.asyncio
-    async def test_web_search_routes_complex(self):
-        router = TinyRouter()
-        result = await router.route(
-            "最新新闻",
-            intent_lock={"task_type": "web_search", "allowed_capabilities": ["web.search"]},
-        )
-        assert result.route == "complex"
-        assert result.metadata.get("method") == "intent_lock"
-
-    @pytest.mark.asyncio
-    async def test_document_qa_routes_complex(self):
-        router = TinyRouter()
-        result = await router.route(
-            "文档里说了什么",
-            intent_lock={"task_type": "document_qa", "allowed_capabilities": ["rag.retrieve"]},
-        )
-        assert result.route == "complex"
-        assert result.metadata.get("method") == "intent_lock"
-
-    @pytest.mark.asyncio
-    async def test_general_qa_routes_simple(self):
-        router = TinyRouter()
-        result = await router.route(
-            "什么是机器学习",
-            intent_lock={"task_type": "general_qa", "allowed_capabilities": ["model.answer"]},
-        )
-        assert result.route == "simple"
-        assert result.metadata.get("method") == "intent_lock"
 
 
 # ── F3: PlanAgent 过滤 disallowed subtask ─────────────────────────────────

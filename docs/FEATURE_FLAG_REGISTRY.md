@@ -4,8 +4,6 @@
 
 | Flag | 默认 | 影响面 | Owner 域 |
 |------|------|--------|----------|
-| `kernel_orchestrator_v4_enabled` | false | V4 回退 | runtime |
-| `kernel_v5_routing_enabled` | true | L0/L1/语义缓存 | routing |
 | `kernel_goal_driven_dag_enabled` | true | Goal→DAG 1:1 | goal |
 | `kernel_runtime_phase_transition_strict` | true | 非法 phase 阻断 | runtime |
 | `kernel_registry_dispatch_strict` | true | registry 违规阻断 | runtime |
@@ -42,8 +40,7 @@
 <!-- KERNEL_REGISTRY_AUTO_START -->
 | Flag | 默认 | Phase | 依赖 | 影响面 |
 |------|------|-------|------|--------|
-| `kernel_v5_routing_enabled` | false | experimental | — | routing |
-| `kernel_runtime_phase_transition_strict` | false | stable | kernel_v5_routing_enabled | runtime |
+| `kernel_runtime_phase_transition_strict` | false | stable | — | runtime |
 | `kernel_cognitive_state_persist_enabled` | false | stable | — | runtime |
 | `kernel_staging_phase_transition_strict` | false | stable | kernel_runtime_phase_transition_strict | runtime |
 | `kernel_refine_replan_enabled` | true | stable | — | planning |

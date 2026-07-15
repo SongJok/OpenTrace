@@ -19,7 +19,7 @@ roots = [
     "control_plane",
     "world",
 ]
-skip_fragments = ("legacy/", "orchestrator_v4", "tests/")
+skip_fragments = ("tests/",)
 bad: list[str] = []
 for root in roots:
     p = Path(root)

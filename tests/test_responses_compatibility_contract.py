@@ -1,9 +1,9 @@
-"""The v2 request keeps every legacy chat execution control during migration."""
+"""The v2 request publishes one namespaced OpenTrace extension."""
 
 from gateway.api_gateway.routers.responses import ResponseCreateRequest
 
 
-def test_response_request_accepts_legacy_execution_controls() -> None:
+def test_response_request_migrates_transition_fields_into_extension() -> None:
     request = ResponseCreateRequest(
         input="查询附件数据",
         conversation_id="session-1",
@@ -16,4 +16,5 @@ def test_response_request_accepts_legacy_execution_controls() -> None:
     )
     assert request.enabled_skills == ["rag"]
     assert request.data_source_id == "source-1"
-    assert request.attachment_ids == ["attachment-1"]
+    assert request.opentrace.enabled_skills == ["rag"]
+    assert request.model_dump(mode="json").get("attachment_ids") is None

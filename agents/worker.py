@@ -14,6 +14,9 @@ from infra.message_bus.agent_bus import AgentMessageBus
 
 class AgentWorker:
     def __init__(self) -> None:
+        import tools  # noqa: F401  # register function tools in this worker process
+        from tools.builtin_tools import analytics_tools as _analytics_tools  # noqa: F401
+
         self.bus = AgentMessageBus(namespace=str(settings.kernel_agent_bus_namespace))
 
         register_builtin_agents(force=True)
@@ -192,13 +195,17 @@ class AgentWorker:
 
     async def run_forever(self) -> None:
         consumers = self._bus_consumer_agent_types()
+        from infra.message_bus.subscribers import memory_event_subscriber
         from infra.response_worker import response_job_loop
+        from infra.responses.scheduler import scheduler_loop
         from knowledge.jobs import knowledge_job_loop
 
         await asyncio.gather(
             self._heartbeat(),
             knowledge_job_loop(),
             response_job_loop(),
+            scheduler_loop(),
+            memory_event_subscriber.start(),
             *(self._consume(k) for k in consumers),
         )
 

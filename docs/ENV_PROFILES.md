@@ -8,7 +8,6 @@
 |------|------|
 | `APP_ENV` | `development` |
 | `DEBUG` | `true`（可选） |
-| `kernel_orchestrator_v4_enabled` | **false** |
 | `kernel_runtime_phase_transition_strict` | true |
 | `kernel_registry_dispatch_strict` | true |
 | `kernel_evidence_contract_strict` | true |
@@ -63,7 +62,6 @@ Worker 与 in-process dispatch 在 `kernel_agent_runtime_v3_enabled=true` 时走
 | `kernel_policy_mutation_fail_closed` | **强制 true** |
 | `kernel_agent_runtime_v3_strict` | **强制 true** |
 | `kernel_unified_evidence_strict` | **强制 true** |
-| `kernel_orchestrator_v4_enabled` | **false**（勿开） |
 | `kernel_semantic_alerts_enabled` | true |
 | `TRACE_ENABLED` | true（配合 OTLP） |
 
@@ -78,4 +76,4 @@ Worker 与 in-process dispatch 在 `kernel_agent_runtime_v3_enabled=true` 时走
 - `kernel_runtime_replay_enabled`
 - `data_agent_v2_advanced_analytics_mode=off`
 
-主路径仍应走 vNext；勿在生产打开 `kernel_orchestrator_v4_enabled`。
+聊天主路径固定走 Responses Agent Loop；已不存在 V4 回退开关。

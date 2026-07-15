@@ -1,29 +1,27 @@
-"""Chat API main path — kernel entry + tier0 SSOT (static contract)."""
+"""Canonical chat entry is the durable Responses worker path."""
 
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CHAT_PY = ROOT / "gateway/api_gateway/routers/chat.py"
 
 
-def test_chat_main_uses_cognitive_kernel_not_orchestrator_v4_for_stream():
+def test_legacy_chat_is_only_a_migration_tombstone():
     text = CHAT_PY.read_text(encoding="utf-8")
-    assert "_get_kernel()" in text
-    assert "CognitiveKernel" in text or "kernel.cognitive_kernel" in text
-    assert "kernel.stream(kernel_request)" in text or "kernel.stream(" in text
+    assert "status_code=410" in text
+    assert "chat_endpoint_retired" in text
+    assert "CognitiveKernel" not in text
 
 
-def test_chat_resume_uses_runtime_gateway_path():
-    text = CHAT_PY.read_text(encoding="utf-8")
-    assert "resume_turn_via_gateway" in text
-    assert "CognitiveOrchestrator" not in text
+def test_responses_api_only_persists_and_enqueues():
+    text = (ROOT / "gateway/api_gateway/routers/responses.py").read_text(encoding="utf-8")
+    assert "add_outbox" in text
+    assert "AgentLoop" not in text
 
 
-def test_chat_tier0_imports_single_ssot():
-    text = CHAT_PY.read_text(encoding="utf-8")
-    assert "try_tier0_chat" in text
-    assert "stream_tier0_events" in text
-    assert "gateway.api_gateway.tier0_paths" in text or "kernel.runtime_gateway" in text
+def test_worker_owns_the_single_agent_loop():
+    text = (ROOT / "infra/responses/worker.py").read_text(encoding="utf-8")
+    assert "AgentLoop" in text
+    assert "claim_response" in text

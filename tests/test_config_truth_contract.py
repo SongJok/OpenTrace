@@ -27,8 +27,8 @@ class TestConfigTruthDefaults:
         assert AppSettings.model_fields["app_port"].default == 14100
         assert AppSettings.model_fields["gateway_port"].default == 14100
 
-    def test_v4_orchestrator_disabled_model_default(self):
-        assert AppSettings.model_fields["kernel_orchestrator_v4_enabled"].default is False
+    def test_removed_v4_flag_is_not_part_of_runtime_settings(self):
+        assert "kernel_orchestrator_v4_enabled" not in AppSettings.model_fields
 
     def test_agent_learning_auto_apply_default_false(self):
         assert AppSettings.model_fields["kernel_agent_learning_auto_apply"].default is False
@@ -147,20 +147,6 @@ class TestFlagGovernance:
         s = Settings(app_env="development", gateway_port=14100, app_port=14100)
         result = validate_feature_flags(s)
         assert result.ok, result.violations
-
-    def test_v4_conflict_when_both_enabled(self):
-        from infra.config.flag_governance import validate_feature_flags
-
-        s = Settings(
-            app_env="development",
-            gateway_port=14100,
-            app_port=14100,
-            kernel_orchestrator_v4_enabled=True,
-            kernel_cognitive_planner_v2_enabled=True,
-        )
-        result = validate_feature_flags(s)
-        assert not result.ok
-        assert any("v4_orchestrator" in v for v in result.violations)
 
     def test_agent_runtime_v3_strict_requires_v3_enabled(self):
         from infra.config.flag_registry import validate_flag_dependencies

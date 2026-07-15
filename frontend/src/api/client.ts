@@ -102,23 +102,36 @@ async function apiFetchResponses(path: string, init?: RequestInit): Promise<Resp
   }
 }
 
-function responseToLegacyChat(payload: any): any {
-  const output = Array.isArray(payload?.output) ? payload.output : []
-  const message = output.find((item: any) =>
-    (item?.type === 'assistant_message' || item?.type === 'message') && item?.role === 'assistant'
-  )
-  const metadata = payload?.metadata ?? message?.payload ?? {}
-  return {
-    response_id: payload?.id,
-    status: payload?.status,
-    conversation_id: payload?.conversation_id,
-    content: message?.content ?? '',
-    metadata,
-    citations: metadata.citations ?? [],
-    evidence_refs: metadata.evidence_refs ?? [],
-    trace_id: metadata.trace_id,
-    model: payload?.model,
-  }
+export type ResponseStatus = 'queued' | 'in_progress' | 'requires_action' | 'completed' | 'failed' | 'incomplete' | 'cancelled'
+
+export interface ResponseOutputItem {
+  id: string
+  type: 'input_message' | 'message' | 'reasoning' | 'function_call' | 'function_call_output' | 'approval_request' | 'citation' | 'error'
+  role?: string | null
+  content?: string | null
+  payload?: Record<string, unknown>
+  sequence_number: number
+}
+
+export interface OpenTraceResponse {
+  id: string
+  object: 'response'
+  status: ResponseStatus
+  conversation: { id: string }
+  conversation_id: string
+  previous_response_id?: string | null
+  model?: string | null
+  output?: ResponseOutputItem[]
+  metadata?: Record<string, unknown>
+  error?: { code?: string; message?: string } | null
+}
+
+export interface ApprovalRequest {
+  id: string
+  call_id: string
+  tool_name: string
+  side_effect: 'write' | 'destructive'
+  arguments: Record<string, unknown>
 }
 
 // ... keep existing content unchanged until Documents section ...
@@ -267,7 +280,7 @@ export async function apiEnableUser(token: string, userId: string): Promise<any>
 }
 
 export async function apiCreateConversation(token: string, title?: string, temporary = false): Promise<any> {
-  const res = await apiFetch('/conversations', {
+  const res = await apiFetchResponses('/conversations', {
     method: 'POST',
     headers: authHeaders(token),
     body: JSON.stringify({ title, temporary }),
@@ -281,48 +294,48 @@ export async function apiListConversations(token: string, filters?: { query?: st
   if (filters?.query) qs.set('query', filters.query)
   if (filters?.archived !== undefined) qs.set('archived', String(filters.archived))
   const suffix = qs.toString() ? `?${qs.toString()}` : ''
-  const res = await apiFetch(`/conversations${suffix}`, { headers: authHeaders(token) })
+  const res = await apiFetchResponses(`/conversations${suffix}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error('Failed to list conversations')
   return res.json()
 }
 
 export async function apiGetMessages(token: string, conversationId: string): Promise<MessageItem[]> {
-  const res = await apiFetch(`/conversations/${conversationId}/messages`, { headers: authHeaders(token) })
+  const res = await apiFetchResponses(`/conversations/${conversationId}/messages`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error('Failed to get messages')
   return res.json()
 }
 
 export async function apiRenameConversation(token: string, id: string, title: string): Promise<any> {
-  const res = await apiFetch(`/conversations/${id}`, { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify({ title }) })
+  const res = await apiFetchResponses(`/conversations/${id}`, { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify({ title }) })
   if (!res.ok) throw new Error('Failed to rename conversation')
   return res.json()
 }
 
 export async function apiDeleteConversation(token: string, id: string): Promise<void> {
-  const res = await apiFetch(`/conversations/${id}`, { method: 'DELETE', headers: authHeaders(token) })
+  const res = await apiFetchResponses(`/conversations/${id}`, { method: 'DELETE', headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, 'Failed to delete conversation'))
 }
 
 export async function apiArchiveConversation(token: string, id: string, archived = true): Promise<any> {
-  const res = await apiFetch(`/conversations/${id}/archive`, { method: archived ? 'POST' : 'DELETE', headers: authHeaders(token) })
+  const res = await apiFetchResponses(`/conversations/${id}/archive`, { method: archived ? 'POST' : 'DELETE', headers: authHeaders(token) })
   if (!res.ok) throw new Error('Failed to archive conversation')
   return res.json()
 }
 
 export async function apiUpdateConversation(token: string, id: string, payload: { title?: string; pinned?: boolean }): Promise<any> {
-  const res = await apiFetch(`/conversations/${id}`, { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload) })
+  const res = await apiFetchResponses(`/conversations/${id}`, { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload) })
   if (!res.ok) throw new Error(await readApiError(res, 'Failed to update conversation'))
   return res.json()
 }
 
 export async function apiCreateConversationShare(token: string, id: string): Promise<{ url: string; public_id: string; token: string }> {
-  const res = await apiFetch(`/conversations/${id}/share`, { method: 'POST', headers: authHeaders(token) })
+  const res = await apiFetchResponses(`/conversations/${id}/share`, { method: 'POST', headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, 'Failed to share conversation'))
   return res.json()
 }
 
 export async function apiSetActiveResponse(token: string, conversationId: string, responseId: string): Promise<void> {
-  const res = await apiFetch(`/conversations/${conversationId}/active-response`, { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ response_id: responseId }) })
+  const res = await apiFetchResponses(`/conversations/${conversationId}/active-response`, { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ response_id: responseId }) })
   if (!res.ok) throw new Error(await readApiError(res, 'Failed to switch response version'))
 }
 
@@ -377,21 +390,6 @@ export async function apiSubmitFeedback(
   return res.json()
 }
 
-export async function apiChatSync(
-  token: string,
-  sessionId: string,
-  query: string,
-  options: Record<string, unknown> = {}
-): Promise<any> {
-  const res = await apiFetchResponses('/responses', {
-    method: 'POST',
-    headers: authHeaders(token),
-    body: JSON.stringify({ input: query, conversation_id: sessionId, stream: false, ...options }),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, 'Responses sync failed'))
-  return responseToLegacyChat(await res.json())
-}
-
 export async function apiGetResponse(token: string, responseId: string): Promise<any> {
   const res = await apiFetchResponses(`/responses/${encodeURIComponent(responseId)}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取响应失败'))
@@ -422,7 +420,137 @@ export async function apiCancelResponse(token: string, responseId: string): Prom
   return res.json()
 }
 
-function parseSseEventBlock(block: string): { type: string; data: any } | null {
+export async function apiResolveResponseApproval(
+  token: string,
+  responseId: string,
+  approvalId: string,
+  approved: boolean,
+  reason?: string,
+): Promise<any> {
+  const res = await apiFetchResponses(`/responses/${encodeURIComponent(responseId)}/approvals/${encodeURIComponent(approvalId)}/resolve`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ approved, reason }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '审批失败'))
+  return res.json()
+}
+
+export interface ProjectItem {
+  id: string
+  name: string
+  description: string
+  instructions: string
+  assistant_profile_id?: string | null
+  data_source_ids: string[]
+}
+
+export async function apiListProjects(token: string): Promise<ProjectItem[]> {
+  const res = await apiFetchResponses('/projects', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取 Projects 失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiCreateProject(token: string, payload: Omit<ProjectItem, 'id'>): Promise<ProjectItem> {
+  const res = await apiFetchResponses('/projects', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '创建 Project 失败'))
+  return res.json()
+}
+
+export interface AssistantProfileItem {
+  id: string
+  name: string
+  personality: 'none' | 'friendly' | 'pragmatic'
+  instructions: string
+  default_model_profile: 'auto' | 'fast' | 'deep'
+  built_in: boolean
+  is_default: boolean
+}
+
+export async function apiListAssistantProfiles(token: string): Promise<AssistantProfileItem[]> {
+  const res = await apiFetchResponses('/assistant-profiles', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取助手角色失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiCreateAssistantProfile(token: string, payload: Record<string, unknown>): Promise<AssistantProfileItem> {
+  const res = await apiFetchResponses('/assistant-profiles', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '创建助手角色失败'))
+  return res.json()
+}
+
+export interface GoalItem {
+  id: string
+  objective: string
+  success_criteria: string
+  status: string
+  project_id?: string | null
+  conversation_id?: string | null
+  response_id?: string | null
+  current_step: number
+}
+
+export async function apiListGoals(token: string): Promise<GoalItem[]> {
+  const res = await apiFetchResponses('/goals', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取 Goals 失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiCreateGoal(token: string, payload: Record<string, unknown>): Promise<GoalItem> {
+  const res = await apiFetchResponses('/goals', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '创建 Goal 失败'))
+  return res.json()
+}
+
+export async function apiGoalAction(token: string, goalId: string, action: 'pause' | 'resume' | 'cancel'): Promise<GoalItem> {
+  const res = await apiFetchResponses(`/goals/${encodeURIComponent(goalId)}/${action}`, {
+    method: 'POST', headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '更新 Goal 失败'))
+  return res.json()
+}
+
+export interface ScheduledTaskItem {
+  id: string
+  title: string
+  prompt: string
+  rrule: string
+  timezone: string
+  status: string
+  next_run_at?: string | null
+  last_run_at?: string | null
+  requires_confirmation: boolean
+}
+
+export async function apiListScheduledTasks(token: string): Promise<ScheduledTaskItem[]> {
+  const res = await apiFetchResponses('/scheduled-tasks', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取定时任务失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiCreateScheduledTask(token: string, payload: Record<string, unknown>): Promise<ScheduledTaskItem> {
+  const res = await apiFetchResponses('/scheduled-tasks', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '创建定时任务失败'))
+  return res.json()
+}
+
+export async function apiPreviewScheduledTask(token: string, expression: string, timezone: string): Promise<{ rrule: string; timezone: string; next_run_at?: string | null }> {
+  const res = await apiFetchResponses('/scheduled-tasks/preview', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify({ expression, timezone }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '无法解析运行时间'))
+  return res.json()
+}
+
+export async function apiScheduledTaskAction(token: string, taskId: string, action: 'enable' | 'pause' | 'cancel'): Promise<ScheduledTaskItem> {
+  const res = await apiFetchResponses(`/scheduled-tasks/${encodeURIComponent(taskId)}/actions/${action}`, { method: 'POST', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '更新定时任务失败'))
+  return res.json()
+}
+
+function parseSseEventBlock(block: string): { sequence_number?: number; type: string; data: any } | null {
   const lines = block.split(/\r?\n/).filter(Boolean)
   const dataLines = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart())
   if (!dataLines.length) return null
@@ -445,9 +573,7 @@ export async function streamSseResponse(
     onDelta?: (text: string) => void
     onToolCall?: (payload: any) => void
     onToolResult?: (payload: any) => void
-    onDagNodeStart?: (payload: any) => void
-    onDagNodeComplete?: (payload: any) => void
-    onForceMode?: (mode: string | null) => void
+    onApprovalRequired?: (approvals: ApprovalRequest[]) => void
     onFinalAnswer?: (envelope: TurnMetaEnvelope) => void | Promise<void>
     onError?: (err: any) => void | Promise<void>
   },
@@ -479,56 +605,40 @@ export async function streamSseResponse(
         const data = event.data ?? {}
         callbacks.onEvent?.(event)
 
-        if (type === 'delta' || type === 'answer.delta' || type === 'response.output_text.delta') {
-          callbacks.onDelta?.(String(data.text ?? data.delta ?? ''))
+        if (type === 'response.output_text.delta') {
+          callbacks.onDelta?.(String(data.delta ?? ''))
           continue
         }
         if (type === 'response.created') {
           callbacks.onResponseCreated?.(data)
           continue
         }
-        if (type === 'response.progress') {
+        if (type.startsWith('opentrace.intent.') || type.startsWith('opentrace.context.') || type.startsWith('opentrace.model.')) {
           callbacks.onThinking?.(data)
           continue
         }
-        if (type === 'thinking') {
-          callbacks.onThinking?.(data)
+        if (type === 'response.reasoning_summary_text.done') {
+          callbacks.onReasoningStep?.({ id: `summary-${event.sequence_number ?? Date.now()}`, stage: 'FINAL', content: String(data.text ?? ''), status: 'done' })
           continue
         }
-        if (type === 'reasoning_step') {
-          callbacks.onReasoningStep?.(data)
-          continue
-        }
-        if (type === 'tool_call') {
+        if (type === 'opentrace.tool.started') {
           callbacks.onToolCall?.(data)
           continue
         }
-        if (type === 'tool_result') {
+        if (type === 'opentrace.tool.completed' || type === 'opentrace.tool.failed') {
           callbacks.onToolResult?.(data)
           continue
         }
-        if (type === 'dag_node_start') {
-          callbacks.onDagNodeStart?.(data)
+        if (type === 'response.requires_action') {
+          callbacks.onApprovalRequired?.(Array.isArray(data.approvals) ? data.approvals : [])
           continue
         }
-        if (type === 'dag_node_complete') {
-          callbacks.onDagNodeComplete?.(data)
-          continue
-        }
-        if (type === 'force_mode') {
-          callbacks.onForceMode?.(data?.mode ?? null)
-          continue
-        }
-        if (type === 'final_answer' || type === 'answer.final' || type === 'response.completed') {
+        if (type === 'response.completed') {
           const envelope = normalizeFinalAnswerEnvelope(data)
           await callbacks.onFinalAnswer?.(envelope)
           continue
         }
-        if (type === 'knowledge.ingest.status' || type === 'knowledge.operation.status' || type === 'route.selected' || type === 'turn.accepted') {
-          callbacks.onThinking?.(data)
-          continue
-        }
-        if (type === 'aborted' || type === 'response.cancelled') {
+        if (type === 'response.cancelled') {
           throw new DOMException('Aborted', 'AbortError')
         }
         if (type === 'error' || type === 'response.failed') {
@@ -554,9 +664,7 @@ export async function apiChatStream(
     onDelta?: (text: string) => void
     onToolCall?: (payload: any) => void
     onToolResult?: (payload: any) => void
-    onDagNodeStart?: (payload: any) => void
-    onDagNodeComplete?: (payload: any) => void
-    onForceMode?: (mode: string | null) => void
+    onApprovalRequired?: (approvals: ApprovalRequest[]) => void
     onFinalAnswer?: (...args: any[]) => void | Promise<void>
     onError?: (err: any) => void | Promise<void>
   } = {},
@@ -566,9 +674,6 @@ export async function apiChatStream(
   payload?: Record<string, unknown>,
   graphControls?: Record<string, unknown>
 ): Promise<void> {
-  // Stream protocol includes dag_node_start / dag_node_complete (see streamSseResponse).
-  void callbacks.onDagNodeStart
-  void callbacks.onDagNodeComplete
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   try {
     const retryResponseId = typeof payload?.retry_response_id === 'string' ? payload.retry_response_id : undefined
@@ -581,12 +686,16 @@ export async function apiChatStream(
       body: JSON.stringify({
         ...(retryResponseId ? { input: retryInput, stream: true } : {
           input: query,
-          conversation_id: sessionId,
+          conversation: sessionId,
           stream: true,
-          web_enabled: Boolean(webEnabled),
-          execution_profile: mode === 'fast' || mode === 'deep' ? mode : 'auto',
-          ...payload,
-          ...(graphControls ? { graph_controls: graphControls } : {}),
+          store: false,
+          opentrace: {
+            execution_profile: mode === 'fast' || mode === 'deep' ? mode : 'auto',
+            memory_mode: payload?.memory_mode === 'temporary' ? 'temporary' : 'enabled',
+            enabled_skills: Array.isArray(payload?.enabled_skills) ? payload.enabled_skills : [],
+            project_id: typeof payload?.project_id === 'string' ? payload.project_id : undefined,
+            assistant_profile_id: typeof payload?.assistant_profile_id === 'string' ? payload.assistant_profile_id : undefined,
+          },
         }),
       }),
       signal,
@@ -703,39 +812,63 @@ export async function apiStopChatStream(..._args: any[]): Promise<any> {
 }
 
 export async function apiCreateMemory(token: string, payload: any): Promise<any> {
-  const res = await apiFetch('/memories', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
+  const res = await apiFetchResponses('/memories', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
   if (!res.ok) throw new Error('Failed to create memory')
   return res.json()
 }
 
 export async function apiListMemories(token: string, memoryType?: string): Promise<MemoryItem[]> {
   const qs = memoryType ? `?memory_type=${encodeURIComponent(memoryType)}` : ''
-  const res = await apiFetch(`/memories${qs}`, { headers: authHeaders(token) })
+  const res = await apiFetchResponses(`/memories${qs}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error('Failed to list memories')
   const data = await res.json()
   return Array.isArray(data) ? data : (data.items || [])
 }
 
 export async function apiDeleteMemory(token: string, id: string): Promise<void> {
-  const res = await apiFetch(`/memories/${id}`, { method: 'DELETE', headers: authHeaders(token) })
+  const res = await apiFetchResponses(`/memories/${id}`, { method: 'DELETE', headers: authHeaders(token) })
   if (!res.ok) throw new Error('Failed to delete memory')
 }
 
 export async function apiUpdateMemory(token: string, id: string, payload: any): Promise<any> {
-  const res = await apiFetch(`/memories/${id}`, { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload) })
+  const res = await apiFetchResponses(`/memories/${id}`, { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload) })
   if (!res.ok) throw new Error('Failed to update memory')
   return res.json()
 }
 
 export async function apiGetMemorySettings(token: string): Promise<MemorySettings> {
-  const res = await apiFetch('/memories/settings', { headers: authHeaders(token) })
+  const res = await apiFetchResponses('/memories/settings', { headers: authHeaders(token) })
   if (!res.ok) throw new Error('Failed to get memory settings')
   return res.json()
 }
 
 export async function apiSetMemorySettings(token: string, payload: Partial<MemorySettings>): Promise<MemorySettings> {
-  const res = await apiFetch('/memories/settings', { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload) })
+  const res = await apiFetchResponses('/memories/settings', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
   if (!res.ok) throw new Error('Failed to set memory settings')
+  return res.json()
+}
+
+export interface MemoryCandidateItem {
+  id: string
+  content: string
+  kind: string
+  scope_type: 'user' | 'project' | 'conversation'
+  scope_id?: string | null
+  confidence: number
+  salience: number
+  response_id: string
+  evidence?: { item_id?: string | null; excerpt: string } | null
+}
+
+export async function apiListMemoryInbox(token: string): Promise<MemoryCandidateItem[]> {
+  const res = await apiFetchResponses('/memories/inbox', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取记忆收件箱失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiResolveMemoryCandidate(token: string, candidateId: string, approved: boolean, content?: string): Promise<any> {
+  const res = await apiFetchResponses(`/memories/inbox/${encodeURIComponent(candidateId)}/resolve`, { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ approved, content }) })
+  if (!res.ok) throw new Error(await readApiError(res, '处理记忆候选失败'))
   return res.json()
 }
 
@@ -785,80 +918,6 @@ export async function apiSearchDocuments(
     body: JSON.stringify({ query, top_k: topK }),
   })
   if (!res.ok) throw new Error('Search failed')
-  return res.json()
-}
-
-export interface TaskItem {
-  id: string
-  title: string
-  description?: string
-  trigger_type?: string
-  status: string
-}
-
-export interface TaskRunItem {
-  id: string
-  status: string
-  output?: string
-  error?: string
-}
-
-export interface TaskNotificationItem {
-  id: string
-  title: string
-  body?: string
-  read: boolean
-}
-
-export async function apiListTasks(token: string): Promise<TaskItem[]> {
-  const res = await apiFetch('/tasks', { headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to list tasks')
-  return res.json()
-}
-
-export async function apiGetTask(token: string, id: string): Promise<{ runs: TaskRunItem[] }> {
-  const res = await apiFetch(`/tasks/${id}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to get task')
-  return res.json()
-}
-
-export async function apiCreateTask(token: string, description: string): Promise<any> {
-  const res = await apiFetch('/tasks', {
-    method: 'POST',
-    headers: authHeaders(token),
-    body: JSON.stringify({ description }),
-  })
-  if (!res.ok) throw new Error('Failed to create task')
-  return res.json()
-}
-
-export async function apiPauseTask(token: string, id: string): Promise<any> {
-  const res = await apiFetch(`/tasks/${id}/pause`, { method: 'POST', headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to pause task')
-  return res.json()
-}
-
-export async function apiResumeTask(token: string, id: string): Promise<any> {
-  const res = await apiFetch(`/tasks/${id}/resume`, { method: 'POST', headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to resume task')
-  return res.json()
-}
-
-export async function apiCancelTask(token: string, id: string): Promise<any> {
-  const res = await apiFetch(`/tasks/${id}/cancel`, { method: 'POST', headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to cancel task')
-  return res.json()
-}
-
-export async function apiListTaskNotifications(token: string): Promise<TaskNotificationItem[]> {
-  const res = await apiFetch('/tasks/notifications', { headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to list task notifications')
-  return res.json()
-}
-
-export async function apiMarkTaskNotificationRead(token: string, id: string): Promise<any> {
-  const res = await apiFetch(`/tasks/notifications/${id}/read`, { method: 'POST', headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to mark task notification read')
   return res.json()
 }
 

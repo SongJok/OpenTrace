@@ -3,6 +3,7 @@ import { ChevronLeft, Database, Plus, Trash2, RefreshCw, PlayCircle, BarChart3, 
 import DatabaseTypeSelect, { DATABASE_HOST_MODE_OPTIONS, type DatabaseHostMode, type DatabaseType } from '../components/DatabaseTypeSelect'
 import MarkdownMessage from '../components/MarkdownMessage'
 import { useAuthStore } from '../store/auth'
+import { useChatPreferences } from '../store/chatPreferences'
 import {
   buildJdbc,
   getDefaultHostForMode,
@@ -32,6 +33,7 @@ type TabKey = 'tables' | 'query' | 'analysis' | 'settings' | 'metrics' | 'relati
 
 export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((s) => s.token)!
+  const requestPrefill = useChatPreferences((state) => state.requestPrefill)
   const [items, setItems] = useState<DataSourceItem[]>([])
   const [selected, setSelected] = useState<DataSourceItem | null>(null)
   const [activeTab, setActiveTab] = useState<TabKey>('query')
@@ -711,7 +713,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                           ) : null}
                           <button
                             className="px-3 py-1 rounded border text-xs mt-1"
-                            onClick={() => window.dispatchEvent(new CustomEvent('opentrace:prefill', { detail: `请基于以下数据绘制图表并分析：\n${JSON.stringify(queryOutput.rows.slice(0, 20), null, 2)}` }))}
+                            onClick={() => requestPrefill(`请基于以下数据绘制图表并分析：\n${JSON.stringify(queryOutput.rows.slice(0, 20), null, 2)}`)}
                           >
                             在对话中生成图表
                           </button>
@@ -719,7 +721,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                       ) : (
                         <button
                           className="px-3 py-1 rounded border text-xs"
-                          onClick={() => window.dispatchEvent(new CustomEvent('opentrace:prefill', { detail: `请基于以下数据绘制图表并分析：\n${JSON.stringify(queryOutput.rows.slice(0, 20), null, 2)}` }))}
+                          onClick={() => requestPrefill(`请基于以下数据绘制图表并分析：\n${JSON.stringify(queryOutput.rows.slice(0, 20), null, 2)}`)}
                         >
                           生成图表
                         </button>

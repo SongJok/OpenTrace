@@ -8,7 +8,10 @@ import {
   apiListMemories,
   apiSetMemorySettings,
   apiUpdateMemory,
+  apiListMemoryInbox,
+  apiResolveMemoryCandidate,
   type MemoryItem,
+  type MemoryCandidateItem,
 } from '../api/client'
 
 type MemoryType = 'semantic' | 'episodic' | 'procedural'
@@ -25,21 +28,24 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
   const [editingContent, setEditingContent] = useState('')
+  const [inbox, setInbox] = useState<MemoryCandidateItem[]>([])
 
   const filtered = useMemo(() => items.filter((i) => i.memory_type === tab), [items, tab])
 
   const loadAll = async () => {
     setLoading(true)
     try {
-      const [semantic, episodic, procedural, settings] = await Promise.all([
+      const [semantic, episodic, procedural, settings, candidates] = await Promise.all([
         apiListMemories(token, 'semantic'),
         apiListMemories(token, 'episodic'),
         apiListMemories(token, 'procedural'),
         apiGetMemorySettings(token),
+        apiListMemoryInbox(token),
       ])
       setItems([...semantic, ...episodic, ...procedural])
       setMemoryLearningEnabled(settings.memory_learning_enabled)
       setPreferenceLearningEnabled(settings.preference_learning_enabled)
+      setInbox(candidates)
     } finally {
       setLoading(false)
     }
@@ -118,6 +124,17 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
       </div>
 
       <div className="max-w-4xl mx-auto w-full px-6 py-6 space-y-4 overflow-y-auto">
+        <div className="rounded-xl border border-[var(--border)] p-4 bg-[var(--surface)] space-y-3">
+          <div><h2 className="text-sm font-semibold">记忆收件箱</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">中等置信度的自动学习结果会在这里等待确认，并显示来源证据。</p></div>
+          {inbox.length === 0 ? <p className="text-sm text-[var(--text-secondary)]">没有待确认记忆</p> : inbox.map((candidate) => (
+            <div key={candidate.id} className="rounded-xl border border-[var(--border)] p-3">
+              <p className="text-sm">{candidate.content}</p>
+              <p className="mt-1 text-xs text-[var(--text-secondary)]">{candidate.kind} · {candidate.scope_type} · 置信度 {Math.round(candidate.confidence * 100)}%</p>
+              {candidate.evidence?.excerpt && <blockquote className="mt-2 border-l-2 border-[var(--border)] pl-3 text-xs text-[var(--text-secondary)]">{candidate.evidence.excerpt}</blockquote>}
+              <div className="mt-3 flex gap-2"><button onClick={() => void apiResolveMemoryCandidate(token, candidate.id, true).then(loadAll)} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs text-white">保留</button><button onClick={() => void apiResolveMemoryCandidate(token, candidate.id, false).then(loadAll)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">忽略</button></div>
+            </div>
+          ))}
+        </div>
         <div className="rounded-xl border border-[var(--border)] p-4 bg-[var(--surface)] space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold">记忆学习设置</h2>

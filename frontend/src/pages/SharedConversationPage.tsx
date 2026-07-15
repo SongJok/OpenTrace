@@ -8,7 +8,7 @@ export default function SharedConversationPage() {
 
   useEffect(() => {
     if (!publicId || !token) return
-    fetch(`/api/v1/shared/${encodeURIComponent(publicId)}/${encodeURIComponent(token)}`)
+    fetch(`/api/v2/shared/${encodeURIComponent(publicId)}/${encodeURIComponent(token)}`)
       .then(async (res) => res.ok ? res.json() : Promise.reject(new Error('分享链接无效或已撤销')))
       .then(setSnapshot)
       .catch((err) => setError(err.message || '无法加载分享内容'))

@@ -23,15 +23,6 @@ class ToolFastPathContractTests(unittest.TestCase):
         lock = classify_intent("北京天气", force_mode="tool")
         self.assertTrue(should_use_tool_fast_path(lock, force_mode="tool"))
 
-    def test_l0_weather_still_force_tool(self):
-        from kernel.query_router_v2 import L0RuleRouter
-
-        async def _run():
-            r = await L0RuleRouter().route("今天天气怎么样？")
-            assert r.force_mode == "tool"
-
-        asyncio.run(_run())
-
     @patch("agents.tool_agent.ToolAgent.execute", new_callable=AsyncMock)
     def test_run_tool_fast_path_returns_kernel_response(self, mock_exec):
         from agents.base import AgentResult

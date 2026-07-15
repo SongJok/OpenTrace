@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronDown, Copy, GitBranch, RefreshCw, ThumbsDown, ThumbsUp } from 'lucide-react'
 import type { Message } from '../store/chat'
+import { useChatStore } from '../store/chat'
+import { useAuthStore } from '../store/auth'
+import { apiBranchConversation, apiGetMessages, apiListConversations, apiListResponseSiblings, apiResolveResponseApproval, apiResumeResponse, apiSetActiveResponse, apiSubmitFeedback } from '../api/client'
+import { useChatCommands } from '../store/chatCommands'
 import MarkdownMessage from './MarkdownMessage'
 
 interface Citation {
@@ -140,6 +144,11 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
   const [isHovered, setIsHovered] = useState(false)
   const [showCitations, setShowCitations] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [resolvingApproval, setResolvingApproval] = useState<string | null>(null)
+  const token = useAuthStore((state) => state.token)
+  const activeConversationId = useChatStore((state) => state.activeId)
+  const store = useChatStore()
+  const requestRegenerate = useChatCommands((state) => state.requestRegenerate)
   const resolvedRole = message?.role === 'user' ? 'user' : role === 'user' ? 'user' : 'assistant'
   const resolvedContent = message?.status === 'streaming' ? message.streamText : message?.finalText ?? content ?? ''
   const resolvedStreaming = message?.status === 'streaming' || isStreaming
@@ -159,6 +168,34 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
   const topCitations = resolvedCitations.slice(0, 3)
   const isUser = resolvedRole === 'user'
 
+  const resolveApproval = async (approvalId: string, approved: boolean) => {
+    if (!token || !message?.response_id || !message?.id || !activeConversationId) return
+    setResolvingApproval(approvalId)
+    try {
+      await apiResolveResponseApproval(token, message.response_id, approvalId, approved)
+      store.setMessageApprovals(activeConversationId, message.id, [])
+      if (!approved) {
+        store.finishLastAssistantMessage(activeConversationId, '已取消该工具操作。')
+        return
+      }
+      store.setStreaming(true)
+      await apiResumeResponse(token, message.response_id, -1, {
+        onDelta: (text) => store.appendStreamingChunk(activeConversationId, text),
+        onReasoningStep: (step) => store.addReasoningStep(activeConversationId, step),
+        onToolCall: (payload) => store.updateToolStatus(activeConversationId, payload),
+        onToolResult: (payload) => store.updateToolResult(activeConversationId, payload),
+        onApprovalRequired: (approvals) => store.setMessageApprovals(activeConversationId, message.id, approvals),
+        onFinalAnswer: (envelope) => {
+          store.finishLastAssistantMessage(activeConversationId, envelope.content || '（空响应）')
+          store.setStreaming(false)
+        },
+        onError: (error) => store.failLastAssistantMessage(activeConversationId, error instanceof Error ? error.message : String(error)),
+      })
+    } finally {
+      setResolvingApproval(null)
+    }
+  }
+
   const copyMessage = async () => {
     if (!visibleContent) return
     try {
@@ -171,17 +208,33 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
   }
 
   const regenerate = () => {
-    if (!message?.id) return
-    window.dispatchEvent(new CustomEvent('opentrace:regen', { detail: { mode: 'regenerate', messageId: message.id, responseId: message.response_id } }))
-  }
-
-  const switchVersion = () => {
     if (!message?.response_id) return
-    window.dispatchEvent(new CustomEvent('opentrace:switch-response-version', { detail: { responseId: message.response_id } }))
+    requestRegenerate({ responseId: message.response_id })
   }
 
-  const feedback = (value: 'like' | 'dislike') => {
-    window.dispatchEvent(new CustomEvent('opentrace:feedback', { detail: { messageId: message?.id, value } }))
+  const switchVersion = async () => {
+    if (!token || !activeConversationId || !message?.response_id) return
+    const siblings = await apiListResponseSiblings(token, message.response_id)
+    if (siblings.length < 2) return
+    const current = siblings.findIndex((item) => item.active)
+    const next = siblings[(current + 1) % siblings.length]
+    await apiSetActiveResponse(token, activeConversationId, next.id)
+    store.setMessages(activeConversationId, await apiGetMessages(token, activeConversationId))
+  }
+
+  const feedback = async (value: 'like' | 'dislike') => {
+    if (!token || !activeConversationId) return
+    await apiSubmitFeedback(token, activeConversationId, message?.id ?? null, value)
+  }
+
+  const branch = async () => {
+    if (!token || !activeConversationId || !message?.id) return
+    const result = await apiBranchConversation(token, activeConversationId, message.id)
+    const conversationId = String(result.conversation_id || result.id || '')
+    if (!conversationId) return
+    store.setActiveId(conversationId)
+    store.setMessages(conversationId, await apiGetMessages(token, conversationId))
+    store.setConversations(await apiListConversations(token))
   }
 
   useEffect(() => {
@@ -200,8 +253,8 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
             <div className={`mb-1 flex items-center gap-2 text-[11px] text-[var(--text-secondary)] ${isUser ? 'justify-end pr-1' : ''}`}>
               {isUser ? <span className="sr-only">你</span> : <span className="font-medium tracking-tight">OpenTrace</span>}
               {levelBadge(annotations?.[0]?.annotation?.level ?? epistemic.level)}
-              {isHovered && !isUser && onBranch && (
-                <button onClick={onBranch} className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent)]">分支</button>
+              {isHovered && !isUser && (onBranch || message?.id) && (
+                <button onClick={() => void branch()} className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent)]">分支</button>
               )}
             </div>
             {!isUser && (progress.length > 0 || resolvedSteps.length > 0) && (
@@ -219,6 +272,23 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
               {resolvedStreaming && !isUser && <span className="ml-1 inline-block h-4 w-1.5 animate-pulse bg-[var(--accent)] align-middle" />}
             </div>
             {!isUser && toolCard && <ToolCardView toolCard={toolCard} />}
+            {!isUser && Boolean(message?.approvals?.length) && (
+              <div className="mt-3 space-y-3">
+                {message!.approvals!.map((approval) => (
+                  <div key={approval.id} className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4">
+                    <div className="text-sm font-medium">需要授权：{approval.tool_name}</div>
+                    <div className="mt-1 text-xs text-[var(--text-secondary)]">
+                      {approval.side_effect === 'destructive' ? '此操作可能删除或覆盖数据。' : '此操作会写入或修改外部状态。'}
+                    </div>
+                    <pre className="mt-3 max-h-40 overflow-auto rounded-xl bg-[var(--surface)] p-3 text-xs">{JSON.stringify(approval.arguments, null, 2)}</pre>
+                    <div className="mt-3 flex gap-2">
+                      <button disabled={Boolean(resolvingApproval)} onClick={() => void resolveApproval(approval.id, true)} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-50">允许</button>
+                      <button disabled={Boolean(resolvingApproval)} onClick={() => void resolveApproval(approval.id, false)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm disabled:opacity-50">拒绝</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
             {!isUser && annotations?.[0]?.annotation?.confidence !== undefined && (
               <div className="mt-2 text-xs text-[var(--text-secondary)]">
                 置信度：{Math.round(annotations?.[0]?.annotation?.confidence * 100)}%
@@ -246,7 +316,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
               {(message?.sibling_count ?? 1) > 1 && <button type="button" aria-label="切换回答版本" title={`回答版本 ${message?.version_index ?? 1}/${message?.sibling_count}`} onClick={switchVersion} className="rounded-md px-1.5 py-1 text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface-raised)]">{message?.version_index ?? 1}/{message?.sibling_count}</button>}
               <button type="button" aria-label="回答有帮助" title="有帮助" onClick={() => feedback('like')} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><ThumbsUp size={14} /></button>
               <button type="button" aria-label="回答没帮助" title="没帮助" onClick={() => feedback('dislike')} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><ThumbsDown size={14} /></button>
-              {onBranch && <button type="button" aria-label="创建分支" title="创建分支" onClick={onBranch} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><GitBranch size={14} /></button>}
+              {(onBranch || message?.id) && <button type="button" aria-label="创建分支" title="创建分支" onClick={() => void branch()} className="rounded-md p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"><GitBranch size={14} /></button>}
             </div>}
           </div>
         </div>

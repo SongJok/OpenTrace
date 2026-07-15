@@ -6,9 +6,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Literal, Self
+
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 
 # ---------------------------------------------------------------------------
 # Sub-setting blocks
@@ -60,6 +60,8 @@ class LLMSettings(BaseSettings):
     default_llm_query_model: str = "gpt-5.6"
     default_llm_query_base_url: str = "https://api.openai.com/v1"
     default_llm_query_api_key: str = ""
+    default_llm_fast_openai_model: str = "gpt-5.6"
+    default_llm_deep_openai_model: str = "gpt-5.6"
 
     # Compress LLM
     default_llm_compress_provider: str = "阿里巴巴Qwen(DashScope)"
@@ -216,7 +218,6 @@ class AppSettings(BaseSettings):
     weather_stack_api_key: str = ""
 
     # Legacy 标签：/health 在 V4 启用时展示；V4 关闭时由 resolve_orchestrator_label 报告 vnext
-    kernel_orchestrator_version: str = "v4"
     kernel_agent_enabled: bool = True
     kernel_agent_data_enabled: bool = True
     kernel_agent_tool_enabled: bool = True
@@ -265,8 +266,6 @@ class AppSettings(BaseSettings):
     kernel_runtime_workspace_enabled: bool = True
     # Cognitive Runtime — V2 Pipeline (CognitivePlannerV2 → StrategyBuilder → ExecutionProjection)
     kernel_cognitive_planner_v2_enabled: bool = True
-    # Legacy V4 orchestrator — must stay False; use RuntimeGateway + CognitiveExecutive only
-    kernel_orchestrator_v4_enabled: bool = False
     kernel_governance_evidence_gate_enabled: bool = True
     kernel_governance_risk_gate_enabled: bool = True
     kernel_multi_question_runtime_v2_enabled: bool = True
@@ -430,10 +429,11 @@ class AppSettings(BaseSettings):
     # V5 Routing Tier
     # Skip full CognitiveSupervisor + executive graph for weather/time/tool intents
     kernel_tool_fast_path_enabled: bool = True
-    kernel_v5_routing_enabled: bool = True
-    kernel_l0_rule_router_enabled: bool = True
-    kernel_l1_tiny_router_enabled: bool = True
-    kernel_semantic_cache_enabled: bool = True
+    # Retired V5 keyword routing tombstones; kept false for rolling config compatibility.
+    kernel_v5_routing_enabled: bool = False
+    kernel_l0_rule_router_enabled: bool = False
+    kernel_l1_tiny_router_enabled: bool = False
+    kernel_semantic_cache_enabled: bool = False
     kernel_semantic_cache_threshold: float = 0.92
     kernel_semantic_cache_ttl_seconds: int = 3600
     kernel_semantic_cache_max_entries: int = 10000
@@ -590,6 +590,14 @@ class Settings(
         extra="ignore",
         case_sensitive=False,
     )
+
+    @model_validator(mode="after")
+    def _retire_v5_keyword_routing(self) -> Self:
+        self.kernel_v5_routing_enabled = False
+        self.kernel_l0_rule_router_enabled = False
+        self.kernel_l1_tiny_router_enabled = False
+        self.kernel_semantic_cache_enabled = False
+        return self
 
     @field_validator("gateway_port", mode="after")
     @classmethod

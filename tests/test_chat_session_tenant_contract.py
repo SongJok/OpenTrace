@@ -12,11 +12,11 @@ def test_chat_session_has_tenant_columns():
     assert "workspace_id" in cols
 
 
-def test_chat_kernel_metadata_merges_tenant():
+def test_responses_record_persists_tenant_boundary():
     from pathlib import Path
 
-    text = (Path(__file__).resolve().parents[1] / "gateway/api_gateway/routers/chat.py").read_text(
+    text = (Path(__file__).resolve().parents[1] / "gateway/api_gateway/routers/responses.py").read_text(
         encoding="utf-8"
     )
-    assert 'kernel_metadata.setdefault("tenant_id"' in text
-    assert 'kernel_metadata.setdefault("workspace_id"' in text
+    assert "tenant_id=tenant_id" in text
+    assert "workspace_id=workspace_id" in text

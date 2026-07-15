@@ -5,6 +5,7 @@ Upgraded with per-role circuit breaker to prevent cascading failures.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 import uuid
 from contextlib import contextmanager
@@ -340,6 +341,7 @@ class ModelGateway:
         fallback_roles: Optional[list[LLMRole]] = None,
         **kwargs,
     ) -> LLMResponse:
+        model_override = str(kwargs.pop("model_override", "") or "").strip()
         with tracer.start_as_current_span("model_gateway.complete") as span:
             span.set_attribute("llm.role", role.value)
             # Query is explicitly OpenAI-primary.  Knowledge/Qwen is the
@@ -363,6 +365,10 @@ class ModelGateway:
                     continue
                 try:
                     adapter = self._get_adapter(candidate)
+                    if model_override and candidate == role:
+                        adapter = OpenAICompatibleAdapter(
+                            dataclasses.replace(adapter.config, model=model_override)
+                        )
                     t0 = time.monotonic()
                     result = await self._complete_with_retry(adapter, prepared_messages, **kwargs)
                     result.content = enforce_identity_output(result.content, user_text)

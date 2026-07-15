@@ -100,6 +100,9 @@ class ChatSession(Base):
     branch_root_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     is_temporary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    assistant_profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    conversation_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     user: Mapped[User] = relationship(back_populates="sessions")
     trace_logs: Mapped[list[TraceLog]] = relationship(
@@ -225,6 +228,8 @@ class ResponseRecord(Base):
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    goal_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -272,6 +277,7 @@ class ResponseToolExecution(Base):
     result: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     side_effect: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    side_effect_level: Mapped[str] = mapped_column(String(20), nullable=False, default="read")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -767,8 +773,11 @@ class UserMemory(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
     memory_type: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
     kind: Mapped[str] = mapped_column(String(30), nullable=False, default="fact")
+    memory_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     tags_json: Mapped[str] = mapped_column(Text, nullable=True)
@@ -778,6 +787,14 @@ class UserMemory(Base):
     access_count: Mapped[int] = mapped_column(Integer, default=0)
     last_accessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     score: Mapped[float] = mapped_column(Float, default=0.5)
+    scope_type: Mapped[str] = mapped_column(String(20), nullable=False, default="user", index=True)
+    scope_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active", index=True)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    salience: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    source_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    supersedes_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -821,6 +838,159 @@ class UserCustomInstruction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AssistantProfile(Base):
+    """User-facing assistant personality and execution defaults."""
+
+    __tablename__ = "assistant_profiles"
+    __table_args__ = (
+        UniqueConstraint("user_id", "tenant_id", "name", name="uq_assistant_profile_name"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    personality: Mapped[str] = mapped_column(String(20), nullable=False, default="none")
+    instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    default_model_profile: Mapped[str] = mapped_column(String(20), nullable=False, default="auto")
+    tool_policy: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    memory_policy: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    built_in: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class Project(Base):
+    """Conversation workspace with isolated instructions and memory scope."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    assistant_profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    data_source_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ResponseApproval(Base):
+    """Durable pause point for a side-effecting tool call."""
+
+    __tablename__ = "response_approvals"
+    __table_args__ = (
+        UniqueConstraint("response_id", "call_id", name="uq_response_approval_call"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    response_id: Mapped[str] = mapped_column(String(64), ForeignKey("responses.id", ondelete="CASCADE"), nullable=False, index=True)
+    call_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    side_effect_level: Mapped[str] = mapped_column(String(20), nullable=False, default="write")
+    arguments: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ResponseOutbox(Base):
+    """Transactional hand-off from PostgreSQL to Redis Streams."""
+
+    __tablename__ = "response_outbox"
+    __table_args__ = (
+        UniqueConstraint("event_key", name="uq_response_outbox_event_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    event_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    aggregate_type: Mapped[str] = mapped_column(String(32), nullable=False, default="response")
+    aggregate_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GoalRun(Base):
+    __tablename__ = "goal_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    success_criteria: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued", index=True)
+    plan: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    current_step: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class GoalCheckpoint(Base):
+    __tablename__ = "goal_checkpoints"
+    __table_args__ = (
+        UniqueConstraint("goal_id", "step_number", name="uq_goal_checkpoint_step"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    goal_id: Mapped[str] = mapped_column(String(36), ForeignKey("goal_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    step_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed")
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    state: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MemoryCandidate(Base):
+    __tablename__ = "memory_candidates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    response_id: Mapped[str] = mapped_column(String(64), ForeignKey("responses.id", ondelete="CASCADE"), nullable=False, index=True)
+    scope_type: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
+    scope_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    kind: Mapped[str] = mapped_column(String(30), nullable=False, default="fact")
+    memory_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    salience: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MemoryEvidence(Base):
+    __tablename__ = "memory_evidence"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    memory_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    candidate_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("memory_candidates.id", ondelete="CASCADE"), nullable=True, index=True)
+    response_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    item_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    excerpt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class UserUiSettings(Base):
     __tablename__ = "user_ui_settings"
 
@@ -852,6 +1022,13 @@ class TaskDefinition(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     last_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    rrule: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    requires_confirmation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -860,6 +1037,9 @@ class TaskDefinition(Base):
 
 class TaskRun(Base):
     __tablename__ = "task_runs"
+    __table_args__ = (
+        UniqueConstraint("task_id", "scheduled_for", name="uq_task_run_schedule"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     task_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
@@ -869,6 +1049,8 @@ class TaskRun(Base):
     error: Mapped[str] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 
 class TaskNotification(Base):

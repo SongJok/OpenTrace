@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import time
 import uuid
 from typing import Any
@@ -12,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from gateway.api_gateway.routers import (
     admin,
-    enterprise_admin,
+    agent_resources,
     analytical_skills,
     audit,
     auth,
@@ -23,6 +21,7 @@ from gateway.api_gateway.routers import (
     data,
     databases,
     documents,
+    enterprise_admin,
     feedback,
     health,
     knowledge,
@@ -30,8 +29,8 @@ from gateway.api_gateway.routers import (
     metrics,
     personalization,
     prometheus,
-    responses,
     response_aux,
+    responses,
     rules,
     sandbox,
     skills,
@@ -39,7 +38,6 @@ from gateway.api_gateway.routers import (
     tasks,
     ui_settings,
 )
-from infra.message_bus.subscribers import memory_event_subscriber
 from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
 from infra.observability.logger import get_logger
@@ -48,7 +46,6 @@ from infra.storage.database import ensure_runtime_schema
 logger = get_logger(__name__)
 
 app = FastAPI(title="OpenTrace API", version="0.1.0")
-_subscriber_task: asyncio.Task | None = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -109,29 +106,10 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    global _subscriber_task
     from agents.bootstrap import register_builtin_agents
 
     register_builtin_agents()
     await ensure_runtime_schema()
-    from gateway.api_gateway.routers.responses import recover_queued_background_responses
-
-    await recover_queued_background_responses()
-    if _subscriber_task is None or _subscriber_task.done():
-        _subscriber_task = asyncio.create_task(memory_event_subscriber.start())
-
-
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    global _subscriber_task
-    try:
-        await memory_event_subscriber.stop()
-    finally:
-        if _subscriber_task and not _subscriber_task.done():
-            _subscriber_task.cancel()
-            with contextlib.suppress(Exception):
-                await _subscriber_task
-        _subscriber_task = None
 
 
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
@@ -140,6 +118,10 @@ app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
 app.include_router(responses.router, prefix="/api/v2", tags=["responses"])
 app.include_router(response_aux.router, prefix="/api/v2", tags=["response-resources"])
+app.include_router(agent_resources.router, prefix="/api/v2", tags=["agent-resources"])
+app.include_router(conversations.router, prefix="/api/v2", tags=["conversations-v2"])
+app.include_router(memories.router, prefix="/api/v2", tags=["memories-v2"])
+app.include_router(personalization.router, prefix="/api/v2", tags=["personalization-v2"])
 app.include_router(personalization.router, prefix="/api/v1", tags=["personalization"])
 app.include_router(conversations.router, prefix="/api/v1", tags=["conversations"])
 app.include_router(cognitive.router, prefix="/api/v1", tags=["cognitive"])

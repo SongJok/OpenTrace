@@ -9,8 +9,8 @@ class FrontendStructuredEpistemicRenderContractTests(unittest.TestCase):
     def test_chat_input_passes_annotations_to_store(self):
         txt = (ROOT / "frontend/src/components/ChatInput.tsx").read_text(encoding="utf-8")
         self.assertIn("setLastAssistantAnnotations", txt)
-        self.assertIn("onFinalAnswer: async (envelope)", txt)
-        self.assertIn("applyFinalAnswerEnvelope", txt)
+        self.assertIn("onFinalAnswer: (envelope)", txt)
+        self.assertIn("setLastAssistantTurnMeta", txt)
 
     def test_chat_message_reads_structured_annotations(self):
         txt = (ROOT / "frontend/src/components/ChatMessage.tsx").read_text(encoding="utf-8")

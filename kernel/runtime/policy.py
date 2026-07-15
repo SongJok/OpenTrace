@@ -4,7 +4,7 @@ permission checks into a single policy evaluation pipeline.
 
 Currently, these checks are scattered across:
   - chat.py (L1000-1180): risk assessment, tool_permission_token
-  - orchestrator_v4.py: input guardrails
+  - Responses Agent Loop: input guardrails
   - Various ad-hoc guards
 
 The UnifiedPolicyEngine provides a single `.evaluate(ctx) → PolicyDecision`

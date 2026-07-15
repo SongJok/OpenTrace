@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react'
+import { useChatPreferences } from '../store/chatPreferences'
 
 type Row = Record<string, any>
 
@@ -34,6 +35,7 @@ function inferChartSuggestion(rows: Row[], columns: string[]) {
 }
 
 export default function DataQueryResult({ result }: Props) {
+  const requestPrefill = useChatPreferences((state) => state.requestPrefill)
   const rows = result?.rows || []
   const columns = result?.columns || Object.keys(rows[0] || {})
   const [showSql, setShowSql] = useState(false)
@@ -105,16 +107,7 @@ export default function DataQueryResult({ result }: Props) {
           <button
             type="button"
             className="rounded-lg bg-[var(--accent)] px-3 py-2 text-sm text-[var(--bg)] hover:bg-[var(--accent-hover)]"
-            onClick={() => {
-              window.dispatchEvent(
-                new CustomEvent('opentrace:prefill', {
-                  detail: {
-                    text: `请根据以下查询结果推荐一个${chart.type}图并解释原因：\n${JSON.stringify(rows.slice(0, 20), null, 2)}`,
-                    autoSend: false,
-                  },
-                })
-              )
-            }}
+            onClick={() => requestPrefill(`请根据以下查询结果推荐一个${chart.type}图并解释原因：\n${JSON.stringify(rows.slice(0, 20), null, 2)}`)}
           >
             生成图表建议
           </button>

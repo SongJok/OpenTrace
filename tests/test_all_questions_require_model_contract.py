@@ -32,22 +32,6 @@ class _Gateway:
         }
 
 
-def test_v5_facade_never_returns_direct_answer_when_model_is_required(monkeypatch) -> None:
-    from kernel.routing.v5_facade import get_v5_routing_facade
-
-    monkeypatch.setattr(settings, "kernel_all_questions_require_model", True)
-    result = asyncio.run(
-        get_v5_routing_facade(CognitiveKernel()).try_fast_path(
-            KernelRequest(query="你是谁"),
-            session_id="s1",
-            is_multi=False,
-            context_hash_fn=lambda _history: "",
-            t0=0.0,
-        )
-    )
-    assert result is None
-
-
 def test_capability_help_uses_runtime_when_model_is_required(monkeypatch) -> None:
     gateway = _Gateway()
     monkeypatch.setattr(settings, "kernel_all_questions_require_model", True)

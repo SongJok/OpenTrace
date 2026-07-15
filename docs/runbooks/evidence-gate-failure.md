@@ -33,4 +33,4 @@
 ## 相关文档
 
 - `docs/adr/002-governance-layers.md`
-- `docs/runbooks/turn-trace.md`
+- `docs/runbooks/chatgpt_cutover.md`

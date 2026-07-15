@@ -1,7 +1,5 @@
-from tests.orchestrator_v4_source import read_orchestrator_v4_implementation
 import unittest
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,10 +14,10 @@ class RagAgentContractTests(unittest.TestCase):
         self.assertIn("DocumentPlugin", txt)
         self.assertIn("UserMemory", txt)
 
-    def test_orchestrator_v4_registers_rag_agent(self):
-        txt = read_orchestrator_v4_implementation()
-        self.assertIn("from agents.rag_agent import RagAgent", txt)
-        self.assertIn("self.registry.register(RagAgent())", txt)
+    def test_worker_registers_rag_agent_as_internal_capability(self):
+        txt = self._read("agents/worker.py")
+        self.assertIn("register_builtin_agents", txt)
+        self.assertIn("capability_registry.register_agent", txt)
 
     def test_plan_agent_supports_rag_subtask_type(self):
         txt = self._read("kernel/plan_agent.py")

@@ -19,12 +19,10 @@ class FlagSpec:
 
 # Subset of high-impact kernel flags (extend in CI contract tests).
 KERNEL_FLAG_REGISTRY: tuple[FlagSpec, ...] = (
-    FlagSpec("kernel_v5_routing_enabled", False, "experimental", affects="routing"),
     FlagSpec(
         "kernel_runtime_phase_transition_strict",
         False,
         "stable",
-        ("kernel_v5_routing_enabled",),
         affects="runtime",
     ),
     FlagSpec(

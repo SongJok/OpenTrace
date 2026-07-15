@@ -36,8 +36,8 @@ class TestRuntimeContract:
         assert task.goal_graph.intent_category == "data_query"
 
     def test_goal_planner_subgoals_on_request(self):
-        from kernel.cognitive_kernel import KernelRequest
         from kernel.cognition.planner_facade import get_goal_planner
+        from kernel.cognitive_kernel import KernelRequest
         from kernel.runtime_gateway import runtime_task_from_request
 
         req = KernelRequest(
@@ -117,19 +117,6 @@ class TestProtocolLayer:
         assert u.capability_type == "data_query"
 
 
-class TestV4Deprecated:
-    def test_orchestrator_v4_module_documents_deprecation(self):
-        import kernel.orchestrator_v4 as m
-
-        doc = m.__doc__ or ""
-        assert "DEPRECATED" in doc or "已弃用" in doc
-
-    def test_v4_disabled_by_default(self):
-        from infra.config.settings import settings
-
-        assert settings.kernel_orchestrator_v4_enabled is False
-
-
 class TestAlignmentDoc:
     def test_vnext_alignment_doc_exists(self):
         from pathlib import Path
@@ -139,16 +126,6 @@ class TestAlignmentDoc:
         text = p.read_text(encoding="utf-8")
         assert "Runtime V2" in text
         assert "force_mode" in text
-
-    def test_orchestrator_v4_disabled_by_default(self):
-        from infra.config.settings import settings
-
-        assert settings.kernel_orchestrator_v4_enabled is False
-        from kernel.orchestrator_v4 import CognitiveOrchestratorV4
-
-        with pytest.raises(RuntimeError, match="disabled"):
-            CognitiveOrchestratorV4()
-
 
 class TestRefinementPlanner:
     @pytest.mark.asyncio

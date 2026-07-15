@@ -1,16 +1,16 @@
-"""Programmatic checklist against docs/ARCHITECTURE_REQUIREMENTS_MATRIX.md."""
+"""Programmatic checklist against the unified runtime cutover runbook."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 
-def test_matrix_doc_exists():
-    p = Path(__file__).resolve().parents[1] / "docs" / "ARCHITECTURE_REQUIREMENTS_MATRIX.md"
+def test_cutover_runbook_exists():
+    p = Path(__file__).resolve().parents[1] / "docs" / "runbooks" / "chatgpt_cutover.md"
     assert p.is_file()
     text = p.read_text(encoding="utf-8")
-    assert "CognitiveSupervisor" in text
-    assert "RuntimeGateway" in text
+    assert "Expand" in text
+    assert "Contract" in text
 
 
 def test_kernel_entry_uses_runtime_gateway():

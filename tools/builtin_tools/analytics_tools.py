@@ -28,6 +28,7 @@ from tools.registry.registry import registry
         "数据分析",
         "计算",
     ],
+    side_effect="write",
 )
 async def tool_code_interpreter(query: str = "", session_id: str = "", **_) -> str:
     return await run_code_interpreter(query, session_id)
@@ -65,6 +66,7 @@ async def tool_data_analysis(query: str = "", **_) -> str:
         'Input JSON: {"operation":"read|write|list|delete","path":"rel/path","content":"..."}'
     ),
     tags=["file", "read", "write", "sandbox", "workspace", "文件", "目录"],
+    side_effect="write",
 )
 async def tool_file_sandbox(query: str = "", session_id: str = "", **_) -> str:
     return run_file_sandbox(query, session_id)

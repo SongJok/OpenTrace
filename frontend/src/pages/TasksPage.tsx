@@ -1,157 +1,87 @@
 import { useEffect, useState } from 'react'
-import { ChevronLeft, Play, Pause, Ban, Bell, Plus } from 'lucide-react'
-import { t } from '../i18n'
+import { Ban, ChevronLeft, Pause, Play, Plus } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 import {
-  apiCancelTask,
-  apiCreateTask,
-  apiGetTask,
-  apiListTaskNotifications,
-  apiListTasks,
-  apiMarkTaskNotificationRead,
-  apiPauseTask,
-  apiResumeTask,
-  type TaskItem,
-  type TaskNotificationItem,
-  type TaskRunItem,
+  apiCreateScheduledTask,
+  apiListScheduledTasks,
+  apiPreviewScheduledTask,
+  apiScheduledTaskAction,
+  type ScheduledTaskItem,
 } from '../api/client'
 
 export default function TasksPage({ onBack }: { onBack: () => void }) {
-  const token = useAuthStore((s) => s.token)!
-  const [tasks, setTasks] = useState<TaskItem[]>([])
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [runs, setRuns] = useState<TaskRunItem[]>([])
-  const [notifications, setNotifications] = useState<TaskNotificationItem[]>([])
-  const [description, setDescription] = useState('')
-  const [loading, setLoading] = useState(true)
+  const token = useAuthStore((state) => state.token)!
+  const [tasks, setTasks] = useState<ScheduledTaskItem[]>([])
+  const [title, setTitle] = useState('')
+  const [prompt, setPrompt] = useState('')
+  const [scheduleText, setScheduleText] = useState('每天 09:00')
+  const [rrule, setRrule] = useState('')
+  const [nextRunAt, setNextRunAt] = useState<string | null>(null)
+  const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
+  const [saving, setSaving] = useState(false)
 
-  const load = async () => {
-    setLoading(true)
+  const load = async () => setTasks(await apiListScheduledTasks(token))
+  useEffect(() => { void load() }, [])
+
+  const create = async () => {
+    if (!title.trim() || !prompt.trim() || !rrule) return
+    setSaving(true)
     try {
-      const [ts, ns] = await Promise.all([apiListTasks(token), apiListTaskNotifications(token)])
-      setTasks(ts)
-      setNotifications(ns)
-      if (!selectedId && ts.length > 0) setSelectedId(ts[0].id)
+      await apiCreateScheduledTask(token, {
+        title: title.trim(), prompt: prompt.trim(), rrule: rrule.trim(), timezone,
+        enabled: false, requires_confirmation: true,
+      })
+      setTitle('')
+      setPrompt('')
+      setRrule('')
+      setNextRunAt(null)
+      await load()
     } finally {
-      setLoading(false)
+      setSaving(false)
     }
   }
 
-  useEffect(() => {
-    void load()
-  }, [])
-
-  useEffect(() => {
-    const loadRuns = async () => {
-      if (!selectedId) {
-        setRuns([])
-        return
-      }
-      const detail = await apiGetTask(token, selectedId)
-      setRuns(detail.runs)
-    }
-    void loadRuns()
-  }, [selectedId, token])
-
-  const createTask = async () => {
-    if (!description.trim()) return
-    await apiCreateTask(token, description.trim())
-    setDescription('')
-    await load()
+  const preview = async () => {
+    const result = await apiPreviewScheduledTask(token, scheduleText, timezone)
+    setRrule(result.rrule)
+    setNextRunAt(result.next_run_at ?? null)
   }
 
-  const pause = async (taskId: string) => {
-    await apiPauseTask(token, taskId)
-    await load()
-  }
-
-  const resume = async (taskId: string) => {
-    await apiResumeTask(token, taskId)
-    await load()
-  }
-
-  const cancel = async (taskId: string) => {
-    await apiCancelTask(token, taskId)
-    await load()
-  }
-
-  const markRead = async (id: string) => {
-    await apiMarkTaskNotificationRead(token, id)
+  const action = async (taskId: string, next: 'enable' | 'pause' | 'cancel') => {
+    await apiScheduledTaskAction(token, taskId, next)
     await load()
   }
 
   return (
-    <div className="flex flex-col h-screen bg-[var(--bg)] text-[var(--text)]">
-      <div className="flex items-center gap-3 px-6 h-14 border-b border-[var(--border)]">
-        <button onClick={onBack} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--surface)]">
-          <ChevronLeft size={18} />
-        </button>
-        <h1 className="text-sm font-semibold">{t('nav.tasks')}</h1>
-      </div>
-
-      <div className="grid grid-cols-12 gap-4 p-4 flex-1 overflow-hidden">
-        <div className="col-span-4 space-y-3 overflow-y-auto">
-          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 space-y-2">
-            <p className="text-sm font-semibold">委托新任务</p>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={3}
-              placeholder="例如：每小时检查 HackerNews 的 AI 文章并给我摘要"
-              className="w-full rounded border border-[var(--border)] bg-transparent px-2 py-1 text-sm"
-            />
-            <button onClick={() => void createTask()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs inline-flex items-center gap-1">
-              <Plus size={12} /> 创建
-            </button>
-          </div>
-
-          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 space-y-2">
-            <p className="text-sm font-semibold">任务列表</p>
-            {loading ? <p className="text-xs text-[var(--text-secondary)]">加载中...</p> : tasks.length === 0 ? <p className="text-xs text-[var(--text-secondary)]">暂无任务</p> : tasks.map((t) => (
-              <div key={t.id} className={`rounded border p-2 ${selectedId === t.id ? 'border-[var(--accent)]' : 'border-[var(--border)]'}`}>
-                <button onClick={() => setSelectedId(t.id)} className="w-full text-left">
-                  <p className="text-sm font-medium truncate">{t.title}</p>
-                  <p className="text-[11px] text-[var(--text-secondary)]">{t.trigger_type} · {t.status}</p>
-                </button>
-                <div className="mt-2 flex gap-1">
-                  {t.status === 'active' ? (
-                    <button onClick={() => void pause(t.id)} className="px-2 py-1 rounded text-xs border inline-flex items-center gap-1"><Pause size={11} /> 暂停</button>
-                  ) : t.status === 'paused' ? (
-                    <button onClick={() => void resume(t.id)} className="px-2 py-1 rounded text-xs border inline-flex items-center gap-1"><Play size={11} /> 恢复</button>
-                  ) : null}
-                  {t.status !== 'cancelled' && (
-                    <button onClick={() => void cancel(t.id)} className="px-2 py-1 rounded text-xs border border-red-300 text-red-500 inline-flex items-center gap-1"><Ban size={11} /> 取消</button>
-                  )}
-                </div>
+    <div className="flex h-screen flex-col bg-[var(--bg)] text-[var(--text)]">
+      <header className="flex h-14 items-center gap-3 border-b border-[var(--border)] px-6">
+        <button onClick={onBack} className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-[var(--surface)]"><ChevronLeft size={18} /></button>
+        <div><h1 className="text-sm font-semibold">定时任务</h1><p className="text-xs text-[var(--text-secondary)]">每次运行都使用完整 Agent Loop，草稿确认后才启用。</p></div>
+      </header>
+      <main className="mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 gap-6 overflow-auto p-6 lg:grid-cols-[360px_1fr]">
+        <section className="h-fit space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
+          <h2 className="font-medium">新建任务</h2>
+          <label className="block text-xs text-[var(--text-secondary)]">名称<input value={title} onChange={(event) => setTitle(event.target.value)} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /></label>
+          <label className="block text-xs text-[var(--text-secondary)]">运行提示词<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={5} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /></label>
+          <label className="block text-xs text-[var(--text-secondary)]">运行时间<input value={scheduleText} onChange={(event) => { setScheduleText(event.target.value); setRrule(''); setNextRunAt(null) }} placeholder="例如：每周一 09:30" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /></label>
+          <label className="block text-xs text-[var(--text-secondary)]">时区<input value={timezone} onChange={(event) => { setTimezone(event.target.value); setRrule(''); setNextRunAt(null) }} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /></label>
+          {!rrule ? <button onClick={() => void preview()} className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm">预览日程</button> : <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3 text-xs"><div className="font-mono">{rrule}</div><div className="mt-1 text-[var(--text-secondary)]">下次运行：{nextRunAt ? new Date(nextRunAt).toLocaleString() : '—'}</div></div>}
+          <button disabled={saving || !rrule} onClick={() => void create()} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm text-white disabled:opacity-50"><Plus size={15} />确认并保存草稿</button>
+        </section>
+        <section className="space-y-3">
+          {tasks.length === 0 ? <div className="rounded-2xl border border-dashed border-[var(--border)] p-10 text-center text-sm text-[var(--text-secondary)]">暂无定时任务</div> : tasks.map((task) => (
+            <article key={task.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
+              <div className="flex items-start justify-between gap-4"><div><h3 className="font-medium">{task.title}</h3><p className="mt-1 text-sm text-[var(--text-secondary)]">{task.prompt}</p></div><span className="rounded-full border border-[var(--border)] px-2 py-1 text-xs">{task.status}</span></div>
+              <div className="mt-4 grid gap-1 text-xs text-[var(--text-secondary)]"><span>{task.rrule}</span><span>{task.timezone} · 下次运行 {task.next_run_at ? new Date(task.next_run_at).toLocaleString() : '—'}</span><span>外部写操作：运行时逐项请求授权</span></div>
+              <div className="mt-4 flex gap-2">
+                {task.status !== 'active' && task.status !== 'cancelled' && <button onClick={() => void action(task.id, 'enable')} className="inline-flex items-center gap-1 rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm"><Play size={13} />启用</button>}
+                {task.status === 'active' && <button onClick={() => void action(task.id, 'pause')} className="inline-flex items-center gap-1 rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm"><Pause size={13} />暂停</button>}
+                {task.status !== 'cancelled' && <button onClick={() => void action(task.id, 'cancel')} className="inline-flex items-center gap-1 rounded-lg border border-red-500/30 px-3 py-1.5 text-sm text-red-500"><Ban size={13} />取消</button>}
               </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="col-span-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 overflow-y-auto">
-          <p className="text-sm font-semibold mb-2">运行历史</p>
-          {runs.length === 0 ? <p className="text-xs text-[var(--text-secondary)]">暂无运行记录</p> : runs.map((r) => (
-            <div key={r.id} className="rounded border border-[var(--border)] p-2 mb-2">
-              <p className="text-xs">{r.status}</p>
-              {r.output && <p className="text-xs whitespace-pre-wrap">{r.output}</p>}
-              {r.error && <p className="text-xs text-red-500 whitespace-pre-wrap">{r.error}</p>}
-            </div>
+            </article>
           ))}
-        </div>
-
-        <div className="col-span-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 overflow-y-auto">
-          <p className="text-sm font-semibold mb-2 inline-flex items-center gap-1"><Bell size={14} /> 通知</p>
-          {notifications.length === 0 ? <p className="text-xs text-[var(--text-secondary)]">暂无通知</p> : notifications.map((n) => (
-            <div key={n.id} className={`rounded border p-2 mb-2 ${n.read ? 'border-[var(--border)]' : 'border-[var(--accent)]'}`}>
-              <p className="text-xs font-medium">{n.title}</p>
-              {n.body && <p className="text-xs whitespace-pre-wrap">{n.body}</p>}
-              <div className="mt-1 flex justify-end">
-                {!n.read && <button onClick={() => void markRead(n.id)} className="text-[11px] px-2 py-1 border rounded">标记已读</button>}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+        </section>
+      </main>
     </div>
   )
 }

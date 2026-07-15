@@ -87,7 +87,7 @@ function MessageBubble({ msg, showAvatar }: { msg: Message; showAvatar?: boolean
   if (msg.role === 'user') {
     return (
       <div className="group flex w-full items-start justify-end gap-3 py-1.5 animate-fade-in">
-        <ChatMessage message={msg} onBranch={() => window.dispatchEvent(new CustomEvent('opentrace:branch', { detail: { messageId: msg.id } }))} />
+        <ChatMessage message={msg} />
         {showAvatar && <QuestionerAvatar />}
       </div>
     )

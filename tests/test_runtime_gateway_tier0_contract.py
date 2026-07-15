@@ -14,11 +14,10 @@ def test_runtime_gateway_exposes_try_tier0_chat():
     assert "kernel.runtime.tier0_paths" in text
 
 
-def test_chat_routes_tier0_via_runtime_gateway():
-    text = (ROOT / "gateway/api_gateway/routers/chat.py").read_text(encoding="utf-8")
-    assert "get_runtime_gateway" in text
-    assert "try_tier0_chat" in text
-    assert "Tier0ChatContext" in text
+def test_responses_does_not_route_via_runtime_gateway():
+    text = (ROOT / "gateway/api_gateway/routers/responses.py").read_text(encoding="utf-8")
+    assert "runtime_gateway" not in text
+    assert "add_outbox" in text
 
 
 def test_kernel_tier0_ssot_not_gateway_logic():

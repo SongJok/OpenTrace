@@ -189,8 +189,6 @@ class LearningEngine:
         """Inject current strategy into the module-level PolicyEngine singleton."""
         try:
             from kernel.policy.engine import PolicyEngine
-            # Access the orchestrator's policy engine if available
-            from kernel.orchestrator import CognitiveOrchestrator
             # Walk known singletons — best-effort, non-critical
             import gc
             for obj in gc.get_referrers(PolicyEngine):
