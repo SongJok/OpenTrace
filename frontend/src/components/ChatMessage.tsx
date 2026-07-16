@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronDown, Copy, GitBranch, RefreshCw, ThumbsDown, ThumbsUp } from 'lucide-react'
+import { Check, ChevronDown, Copy, FileText, GitBranch, RefreshCw, ThumbsDown, ThumbsUp } from 'lucide-react'
 import type { Message } from '../store/chat'
 import { useChatStore } from '../store/chat'
 import { useAuthStore } from '../store/auth'
@@ -157,6 +157,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
   const annotations = message?.annotations
   const evidenceRefs = message?.turn_meta?.evidence_refs ?? []
   const progress = message?.progress ?? []
+  const messageAttachments = message?.attachments ?? []
   const toolCard = useMemo(() => resolvedRole === 'assistant' ? tryParseToolCard(resolvedContent) : null, [resolvedContent, resolvedRole])
   const visibleContent = useMemo(() => toolCard ? stripJsonBlocks(resolvedContent) : resolvedContent, [resolvedContent, toolCard])
   const epistemic = useMemo(() => parseEpistemicMeta(visibleContent), [visibleContent])
@@ -172,24 +173,19 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
     if (!token || !message?.response_id || !message?.id || !activeConversationId) return
     setResolvingApproval(approvalId)
     try {
-      await apiResolveResponseApproval(token, message.response_id, approvalId, approved)
-      store.setMessageApprovals(activeConversationId, message.id, [])
-      if (!approved) {
-        store.finishLastAssistantMessage(activeConversationId, '已取消该工具操作。')
-        return
-      }
-      store.setStreaming(true)
-      await apiResumeResponse(token, message.response_id, -1, {
-        onDelta: (text) => store.appendStreamingChunk(activeConversationId, text),
+      const resolution = await apiResolveResponseApproval(token, message.response_id, approvalId, approved)
+      store.resumeAssistantMessage(activeConversationId, message.id)
+      await apiResumeResponse(token, message.response_id, Number(resolution?.starting_after ?? -1), {
+        onDelta: (text) => store.appendMessageStreamingChunk(activeConversationId, message.id, text),
         onReasoningStep: (step) => store.addReasoningStep(activeConversationId, step),
         onToolCall: (payload) => store.updateToolStatus(activeConversationId, payload),
         onToolResult: (payload) => store.updateToolResult(activeConversationId, payload),
         onApprovalRequired: (approvals) => store.setMessageApprovals(activeConversationId, message.id, approvals),
         onFinalAnswer: (envelope) => {
-          store.finishLastAssistantMessage(activeConversationId, envelope.content || '（空响应）')
+          store.finishAssistantMessage(activeConversationId, message.id, envelope.content || '（空响应）')
           store.setStreaming(false)
         },
-        onError: (error) => store.failLastAssistantMessage(activeConversationId, error instanceof Error ? error.message : String(error)),
+        onError: (error) => store.failAssistantMessage(activeConversationId, message.id, error instanceof Error ? error.message : String(error)),
       })
     } finally {
       setResolvingApproval(null)
@@ -260,6 +256,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
             {!isUser && (progress.length > 0 || resolvedSteps.length > 0) && (
               <ProgressSummary progress={progress} steps={resolvedSteps as any[]} complete={!resolvedStreaming} />
             )}
+            {isUser && messageAttachments.length > 0 && <div className="mb-2 flex flex-wrap justify-end gap-2">{messageAttachments.map((attachment) => <div key={attachment.id} className="flex max-w-64 items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><FileText size={14} className="shrink-0" /><span className="truncate">{attachment.filename}</span></div>)}</div>}
             <div
               ref={contentRef}
               className={`prose max-w-none text-[15px] leading-7 ${

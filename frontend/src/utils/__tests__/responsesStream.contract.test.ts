@@ -21,4 +21,18 @@ describe('Responses API stream compatibility', () => {
     expect(deltas).toEqual(['你好'])
     expect(finals).toEqual(['你好'])
   })
+
+  it('treats response.incomplete as a terminal answer with resumable details', async () => {
+    const finals: string[] = []
+    const response = new Response(
+      'data: {"sequence_number":9,"type":"response.incomplete","data":{"content":"已达到步骤上限","metadata":{"incomplete_details":{"reason":"max_tool_rounds"}}}}\n\n',
+      { headers: { 'content-type': 'text/event-stream' } },
+    )
+
+    await streamSseResponse(response, {
+      onFinalAnswer: (envelope) => { finals.push(envelope.content) },
+    })
+
+    expect(finals).toEqual(['已达到步骤上限'])
+  })
 })

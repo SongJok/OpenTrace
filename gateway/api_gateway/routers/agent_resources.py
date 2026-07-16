@@ -36,6 +36,7 @@ class ProjectPayload(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str = Field(default="", max_length=8000)
     instructions: str = Field(default="", max_length=16_000)
+    memory_mode: str = Field(default="default", pattern="^(default|project_only)$")
     assistant_profile_id: str | None = None
     data_source_ids: list[str] = Field(default_factory=list)
 
@@ -88,6 +89,7 @@ def _project(row: Project) -> dict[str, Any]:
     return {
         "id": row.id, "name": row.name, "description": row.description,
         "instructions": row.instructions, "assistant_profile_id": row.assistant_profile_id,
+        "memory_mode": row.memory_mode,
         "data_source_ids": list(row.data_source_ids or []),
         "archived_at": row.archived_at.isoformat() if row.archived_at else None,
         "created_at": row.created_at.isoformat() if row.created_at else None,

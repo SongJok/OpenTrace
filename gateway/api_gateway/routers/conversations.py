@@ -17,7 +17,15 @@ from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.errors import AppException, ErrorCodes
 from infra.responses.repository import add_outbox, append_event
 from infra.storage.database import db_session_dependency as get_db
-from infra.storage.models import ChatSession, ConversationShare, ResponseItem, ResponseRecord, User
+from infra.storage.models import (
+    Attachment,
+    ChatSession,
+    ConversationShare,
+    ResponseApproval,
+    ResponseItem,
+    ResponseRecord,
+    User,
+)
 
 router = APIRouter()
 
@@ -58,6 +66,7 @@ class MessageOut(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     version: int = 1
+    approvals: list[dict] = Field(default_factory=list)
 
 
 class UpdateConversationRequest(BaseModel):
@@ -585,18 +594,62 @@ async def get_messages(
     siblings: dict[str | None, list[ResponseRecord]] = {}
     for row in all_rows:
         siblings.setdefault(row.parent_response_id, []).append(row)
+    requested_attachment_ids = {
+        str(attachment_id)
+        for response in chain
+        for attachment_id in (
+            (response.request_payload or {}).get("opentrace", {}).get("attachment_ids")
+            or []
+        )
+    }
+    attachment_rows = (
+        (
+            await db.execute(
+                select(Attachment).where(
+                    Attachment.id.in_(requested_attachment_ids),
+                    Attachment.user_id == current_user.id,
+                    Attachment.session_id == conversation_id,
+                    Attachment.status == "active",
+                )
+            )
+        )
+        .scalars()
+        .all()
+        if requested_attachment_ids
+        else []
+    )
+    attachments_by_id = {row.id: row for row in attachment_rows}
     messages: list[MessageOut] = []
     for response in chain:
         versions = siblings.get(response.parent_response_id, [])
         version_index = next((index + 1 for index, row in enumerate(versions) if row.id == response.id), 1)
+        has_assistant_message = False
+        response_attachment_ids = list(
+            (response.request_payload or {}).get("opentrace", {}).get("attachment_ids")
+            or []
+        )
+        response_attachments = [
+            {
+                "id": row.id,
+                "filename": row.filename,
+                "file_size": int(row.file_size or 0),
+                "file_extension": row.file_extension,
+                "mime_type": row.mime_type,
+                "content_summary": row.content_summary,
+            }
+            for attachment_id in response_attachment_ids
+            if (row := attachments_by_id.get(str(attachment_id))) is not None
+        ]
         for item in by_response.get(response.id, []):
             if item.item_type not in {"input_message", "message"}:
                 continue
             item_payload = dict(item.payload or {})
+            role = item.role or ("user" if item.item_type == "input_message" else "assistant")
+            has_assistant_message = has_assistant_message or role == "assistant"
             messages.append(
                 MessageOut(
                     id=item.id,
-                    role=item.role or ("user" if item.item_type == "input_message" else "assistant"),
+                    role=role,
                     content=item.content or "",
                     created_at=item.created_at.isoformat() if item.created_at else response.created_at.isoformat(),
                     model=response.model,
@@ -609,6 +662,51 @@ async def get_messages(
                     version=response.version,
                     version_index=version_index,
                     sibling_count=len(versions),
+                    attachments=response_attachments if role == "user" else [],
+                )
+            )
+        if not has_assistant_message and response.status in {
+            "queued",
+            "in_progress",
+            "requires_action",
+        }:
+            approvals = (
+                (
+                    await db.execute(
+                        select(ResponseApproval).where(
+                            ResponseApproval.response_id == response.id,
+                            ResponseApproval.status == "pending",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+                if response.status == "requires_action"
+                else []
+            )
+            messages.append(
+                MessageOut(
+                    id=f"pending_{response.id}",
+                    role="assistant",
+                    content="",
+                    created_at=response.created_at.isoformat(),
+                    model=response.model,
+                    status=response.status,
+                    response_id=response.id,
+                    parent_response_id=response.parent_response_id,
+                    version=response.version,
+                    version_index=version_index,
+                    sibling_count=len(versions),
+                    approvals=[
+                        {
+                            "id": item.id,
+                            "call_id": item.call_id,
+                            "tool_name": item.tool_name,
+                            "side_effect": item.side_effect_level,
+                            "arguments": dict(item.arguments or {}),
+                        }
+                        for item in approvals
+                    ],
                 )
             )
     return messages

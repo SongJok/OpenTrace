@@ -45,6 +45,7 @@ alembic/versions/*.py
 !alembic/versions/20260711_chat_session_skills.py
 !alembic/versions/20260712_connector_credentials.py
 !alembic/versions/20260723_unified_agent_runtime.py
+!alembic/versions/20260724_chatgpt_runtime_completion.py
 !alembic/versions/20260713_knowledge_orchestration.py
 !alembic/versions/20260714_knowledge_search_indexes.py
 !alembic/versions/20260715_knowledge_metadata_metacognition.py

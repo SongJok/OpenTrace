@@ -128,6 +128,10 @@ async def execute_response(response_id: str | None = None) -> bool:
                 await release_lease(db, response)
                 await db.commit()
                 return True
+            if result.status == "cancelled":
+                await release_lease(db, response)
+                await db.commit()
+                return False
 
             await db.refresh(response)
             if response.status == "cancelled":
@@ -142,23 +146,36 @@ async def execute_response(response_id: str | None = None) -> bool:
                 content=result.content, payload=result.metadata,
             )
             db.add(message)
-            response.status = "completed"
+            response.status = "incomplete" if result.status == "incomplete" else "completed"
             response.model = result.model
             response.completed_at = datetime.now(UTC)
             response.response_metadata = {**dict(response.response_metadata or {}), **result.metadata, "intent": result.intent.to_dict() if result.intent else None}
             await release_lease(db, response)
             await append_event(db, response_id=response_id, event_type="response.output_item.done", payload={"item_id": message.id, "item_type": "message", "role": "assistant", "content": result.content})
-            await append_event(db, response_id=response_id, event_type="response.completed", payload={"status": "completed", "content": result.content, "model": result.model, "metadata": result.metadata})
+            final_event = "response.incomplete" if response.status == "incomplete" else "response.completed"
+            await append_event(
+                db,
+                response_id=response_id,
+                event_type=final_event,
+                payload={
+                    "status": response.status,
+                    "content": result.content,
+                    "model": result.model,
+                    "metadata": result.metadata,
+                },
+            )
             await _persist_model_calls(db, response_id, result.metadata)
             session = await db.get(ChatSession, response.conversation_id)
             if session:
-                session.active_response_id = response.id
+                # Creation/retry already chooses the active branch. A slower
+                # older/background response must never rewind a conversation
+                # that has since advanced to another response.
                 session.turn_count = int(session.turn_count or 0) + 1
                 session.last_active = datetime.now(UTC)
             if response.goal_id:
                 goal = await db.get(GoalRun, response.goal_id)
                 if goal:
-                    goal.status = "completed"
+                    goal.status = "completed" if response.status == "completed" else "requires_action"
                     goal.response_id = response.id
                     goal.current_step = int(goal.current_step or 0) + 1
                     goal.completed_at = datetime.now(UTC)

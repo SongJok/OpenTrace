@@ -33,6 +33,7 @@ import {
   apiCreateConversation,
   apiDeleteConversation,
   apiGetMessages,
+  apiResumeResponse,
   apiRenameConversation,
   apiArchiveConversation,
 } from '../api/client'
@@ -81,6 +82,32 @@ export default function Sidebar() {
       if (!store.messages[conv.id]) {
         const msgs = await apiGetMessages(token, conv.id)
         store.setMessages(conv.id, msgs)
+        const pending = [...msgs].reverse().find((message: any) =>
+          ['queued', 'in_progress'].includes(String(message?.status || ''))
+          && typeof message?.response_id === 'string'
+          && message?.role === 'assistant'
+        ) as any
+        if (pending?.response_id) {
+          store.setStreaming(true)
+          store.setActiveResponseId(pending.response_id)
+          store.resetReasoning(conv.id, String(pending.id))
+          void apiResumeResponse(token, pending.response_id, -1, {
+            onDelta: (text) => store.appendStreamingChunk(conv.id, text),
+            onReasoningStep: (step) => store.addReasoningStep(conv.id, step),
+            onThinking: (payload) => {
+              const stage = String(payload?.stage || payload?.intent?.task_type || '')
+              if (stage) store.appendThinking(conv.id, stage)
+            },
+            onToolCall: (payload) => store.updateToolStatus(conv.id, { tool_name: String(payload?.name || payload?.tool_name || 'tool'), status: 'running', node_id: payload?.call_id }),
+            onToolResult: (payload) => store.updateToolResult(conv.id, { tool_name: String(payload?.name || payload?.tool_name || 'tool'), node_id: payload?.call_id, preview: JSON.stringify(payload?.result ?? payload) }),
+            onApprovalRequired: (approvals) => store.setMessageApprovals(conv.id, String(pending.id), approvals),
+            onFinalAnswer: (envelope) => {
+              store.finishLastAssistantMessage(conv.id, envelope.content || '（空响应）')
+              store.setActiveResponseId(null)
+            },
+            onError: (error) => store.failLastAssistantMessage(conv.id, error instanceof Error ? error.message : String(error)),
+          }).catch(() => undefined)
+        }
       }
       navigate('/chat')
     } catch (e: any) {

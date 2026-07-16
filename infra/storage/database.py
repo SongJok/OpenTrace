@@ -168,6 +168,7 @@ async def _verify_runtime_schema(conn) -> None:
             "theme_mode",
             "theme_accent",
         },
+        "projects": {"memory_mode"},
     }
     missing: list[str] = []
     for table, columns in required_columns.items():
@@ -257,6 +258,7 @@ async def _ensure_unified_runtime_columns(conn) -> None:
         "ALTER TABLE IF EXISTS public.chat_sessions ADD COLUMN IF NOT EXISTS project_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.chat_sessions ADD COLUMN IF NOT EXISTS assistant_profile_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.chat_sessions ADD COLUMN IF NOT EXISTS conversation_instructions TEXT",
+        "ALTER TABLE IF EXISTS public.projects ADD COLUMN IF NOT EXISTS memory_mode VARCHAR(20) NOT NULL DEFAULT 'default'",
         "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS goal_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.response_tool_executions ADD COLUMN IF NOT EXISTS side_effect_level VARCHAR(20) NOT NULL DEFAULT 'read'",

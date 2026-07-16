@@ -441,6 +441,7 @@ export interface ProjectItem {
   name: string
   description: string
   instructions: string
+  memory_mode: 'default' | 'project_only'
   assistant_profile_id?: string | null
   data_source_ids: string[]
 }
@@ -633,7 +634,7 @@ export async function streamSseResponse(
           callbacks.onApprovalRequired?.(Array.isArray(data.approvals) ? data.approvals : [])
           continue
         }
-        if (type === 'response.completed') {
+        if (type === 'response.completed' || type === 'response.incomplete') {
           const envelope = normalizeFinalAnswerEnvelope(data)
           await callbacks.onFinalAnswer?.(envelope)
           continue
@@ -695,6 +696,7 @@ export async function apiChatStream(
             enabled_skills: Array.isArray(payload?.enabled_skills) ? payload.enabled_skills : [],
             project_id: typeof payload?.project_id === 'string' ? payload.project_id : undefined,
             assistant_profile_id: typeof payload?.assistant_profile_id === 'string' ? payload.assistant_profile_id : undefined,
+            attachment_ids: Array.isArray(payload?.attachment_ids) ? payload.attachment_ids : [],
           },
           ...(typeof payload?.model === 'string' && payload.model.trim() ? { model: payload.model.trim() } : {}),
         }),
@@ -1327,21 +1329,6 @@ export async function apiDeleteAttachment(
   return res.json()
 }
 
-export async function apiPromoteAttachment(
-  token: string,
-  attachmentId: string,
-  publishPolicy: 'review' | 'auto' = 'review',
-): Promise<Record<string, unknown>> {
-  const res = await fetch(`${RESPONSES_BASE}/files/${attachmentId}/promote?publish_policy=${publishPolicy}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ message: 'Promote failed' }))
-    throw new Error(err.message || err.detail || 'Promote failed')
-  }
-  return res.json()
-}
 
 // ── Personalization API ──────────────────────────────────────────────────
 

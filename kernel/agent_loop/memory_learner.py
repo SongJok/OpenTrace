@@ -9,9 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.storage.models import (
+    AssistantProfile,
     ChatSession,
     MemoryCandidate,
     MemoryEvidence,
+    Project,
     ResponseItem,
     ResponseRecord,
     UserMemory,
@@ -38,6 +40,21 @@ class MemoryLearner:
         mode = str(extension.get("memory_mode") or (response.request_payload or {}).get("memory_mode") or "enabled")
         if mode != "enabled":
             return []
+        project = await db.get(Project, session.project_id) if session.project_id else None
+        profile_id = session.assistant_profile_id or (
+            project.assistant_profile_id if project else None
+        )
+        profile = await db.get(AssistantProfile, profile_id) if profile_id else None
+        memory_policy = dict(profile.memory_policy or {}) if profile else {}
+        if memory_policy.get("enabled") is False or memory_policy.get("learn") is False:
+            return []
+        project_only = bool(
+            project
+            and (
+                project.memory_mode == "project_only"
+                or memory_policy.get("project_only") is True
+            )
+        )
         settings_row = await db.scalar(
             select(UserMemorySettings).where(UserMemorySettings.user_id == response.user_id)
         )
@@ -63,6 +80,8 @@ class MemoryLearner:
             scope_type = str(candidate.get("scope_type") or ("project" if session.project_id else "user"))
             if scope_type not in {"user", "project", "conversation"}:
                 scope_type = "user"
+            if project_only:
+                scope_type = "project"
             scope_id = session.project_id if scope_type == "project" else session.id if scope_type == "conversation" else None
             memory_key = re.sub(r"[^a-z0-9_.:-]+", "_", str(candidate.get("key") or "").lower()).strip("_")[:128] or None
             conflict = await self._find_conflict(
@@ -183,3 +202,4 @@ class MemoryLearner:
             )
             .order_by(UserMemory.updated_at.desc())
         )
+    Project,

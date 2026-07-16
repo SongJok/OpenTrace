@@ -8,10 +8,11 @@ import asyncio
 import dataclasses
 import time
 import uuid
+from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from enum import Enum
-from typing import Any, AsyncIterator, Iterator, Optional
+from typing import Any
 
 from infra.config.settings import settings
 from infra.observability.logger import get_logger
@@ -45,7 +46,14 @@ def capture_model_calls() -> Iterator[list[dict[str, Any]]]:
         _model_call_capture.reset(token)
 
 
-def _record_model_call(*, role: "LLMRole", model: str, latency_ms: int) -> None:
+def _record_model_call(
+    *,
+    role: LLMRole,
+    model: str,
+    latency_ms: int,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+) -> None:
     calls = _model_call_capture.get()
     if calls is not None:
         calls.append(
@@ -54,6 +62,8 @@ def _record_model_call(*, role: "LLMRole", model: str, latency_ms: int) -> None:
                 "role": role.value,
                 "model": model,
                 "latency_ms": latency_ms,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
             }
         )
 
@@ -270,7 +280,7 @@ class ModelGateway:
 
         if isinstance(exc, TimeoutException):
             return "timeout"
-        if isinstance(exc, (ConnectError, ProxyError)):
+        if isinstance(exc, ConnectError | ProxyError):
             return "connectivity"
 
         msg = str(exc).lower()
@@ -341,19 +351,18 @@ class ModelGateway:
         self,
         messages: list[LLMMessage],
         role: LLMRole = LLMRole.QUERY,
-        fallback_roles: Optional[list[LLMRole]] = None,
+        fallback_roles: list[LLMRole] | None = None,
         **kwargs,
     ) -> LLMResponse:
         model_override = str(kwargs.pop("model_override", "") or "").strip()
         with tracer.start_as_current_span("model_gateway.complete") as span:
             span.set_attribute("llm.role", role.value)
-            # Query is explicitly OpenAI-primary.  Knowledge/Qwen is the
-            # configured, observable provider degradation and is only added
-            # when the caller did not provide a stricter chain.
+            # Qwen is the deployment's primary model family. Role fallbacks
+            # provide observable model-tier degradation within that family.
             candidates = [role] + (
                 fallback_roles if fallback_roles is not None else ([LLMRole.KNOWLEDGE] if role == LLMRole.QUERY else [])
             )
-            last_exc: Optional[Exception] = None
+            last_exc: Exception | None = None
 
             prepared_messages = merge_system_identity(messages)
             user_text = last_user_text(prepared_messages)
@@ -387,6 +396,8 @@ class ModelGateway:
                         role=candidate,
                         model=str(adapter.config.model or ""),
                         latency_ms=latency_ms,
+                        prompt_tokens=int(result.prompt_tokens or 0),
+                        completion_tokens=int(result.completion_tokens or 0),
                     )
                     span.set_attribute("llm.resolved_role", candidate.value)
                     span.set_attribute("llm.latency_ms", latency_ms)
@@ -434,6 +445,7 @@ class ModelGateway:
         role: LLMRole = LLMRole.QUERY,
         **kwargs,
     ) -> AsyncIterator[str]:
+        model_override = str(kwargs.pop("model_override", "") or "").strip()
         prepared_messages = merge_system_identity(messages)
         user_text = last_user_text(prepared_messages)
         cb = self._get_cb(role)
@@ -448,6 +460,10 @@ class ModelGateway:
                     yield fallback[i : i + step]
             return
         adapter = self._get_adapter(role)
+        if model_override:
+            adapter = OpenAICompatibleAdapter(
+                dataclasses.replace(adapter.config, model=model_override)
+            )
         t0 = time.monotonic()
         buf: list[str] = []
         max_attempts = int(kwargs.pop("max_attempts", 3))
@@ -459,6 +475,8 @@ class ModelGateway:
                 latency_ms = int((time.monotonic() - t0) * 1000)
                 full_text = "".join(buf)
                 enforce_identity_output(full_text, user_text)  # post-hoc validation only
+                est_prompt = 0
+                est_completion = 0
                 try:
                     from infra.observability.turn_metering import add_llm_usage
                     from kernel.token_counter import TokenCounter
@@ -483,6 +501,8 @@ class ModelGateway:
                     role=role,
                     model=str(adapter.config.model or ""),
                     latency_ms=latency_ms,
+                    prompt_tokens=est_prompt,
+                    completion_tokens=est_completion,
                 )
                 return
             except Exception as exc:  # noqa: BLE001
@@ -503,7 +523,7 @@ class ModelGateway:
                 buf = []
 
 
-_gateway: Optional[ModelGateway] = None
+_gateway: ModelGateway | None = None
 
 
 def get_model_gateway() -> ModelGateway:

@@ -2,9 +2,10 @@
 
 ## Expand
 
-1. 部署 `20260723_unified_agent_runtime`，此迁移只增加表、列和索引。
+1. 依次部署 `20260723_unified_agent_runtime` 与 `20260724_chatgpt_runtime_completion`；迁移只增加表、列和索引。
 2. 先部署兼容读取的新 API，再滚动部署 Agent Worker；API 实例不得运行模型任务。
 3. 确认 `response_outbox`、Responses Stream consumer group 和 Worker heartbeat 正常。
+4. 验证附件上传、Qwen 原生流式输出、审批允许/拒绝后的续跑，以及 Project-only 记忆隔离。
 
 ## Backfill 与校验
 
@@ -23,4 +24,4 @@ python scripts/backfill_responses_v2.py --batch-size 500
 
 ## Rollback 与 Contract
 
-Contract 前保留旧表只读和 7 天数据库恢复点；回滚只切换客户端版本，不回写旧表。连续 7 天校验无漂移后，删除 v1 conversations 兼容路由及旧 Message/TraceLog 表。原始思维链、秘密和未脱敏工具参数不得进入日志或迁移审计文件。
+Contract 前保留旧表只读和 7 天数据库恢复点；回滚只切换客户端版本，不回写旧表。连续 7 天校验无漂移后，删除 v1 conversations 兼容路由及旧 Message/TraceLog 表。原始思维链、秘密、附件原文和未脱敏工具参数不得进入日志或迁移审计文件。

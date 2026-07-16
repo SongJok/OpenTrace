@@ -122,14 +122,18 @@ interface ChatState {
   setLastAssistantAnnotations: (id: string, annotations: MessageAnnotation[]) => void
   setLastAssistantTurnMeta: (id: string, turnMeta: TurnMetaEnvelope) => void
   appendStreamingChunk: (id: string, chunk: string) => void
+  appendMessageStreamingChunk: (conversationId: string, messageId: string, chunk: string) => void
   appendThinking: (id: string, text: string) => void
   finishLastAssistantMessage: (id: string, finalText: string) => void
+  finishAssistantMessage: (conversationId: string, messageId: string, finalText: string) => void
   stopLastAssistantMessage: (id: string) => void
   failLastAssistantMessage: (id: string, text: string) => void
+  failAssistantMessage: (conversationId: string, messageId: string, text: string) => void
   setStreaming: (v: boolean) => void
   setActiveResponseId: (id: string | null) => void
   setMessageResponseId: (conversationId: string, messageId: string, responseId: string) => void
   setMessageApprovals: (conversationId: string, messageId: string, approvals: ApprovalRequest[]) => void
+  resumeAssistantMessage: (conversationId: string, messageId: string) => void
   updateTitle: (id: string, title: string) => void
   updateConversationMeta: (conversation: Partial<Conversation> & { id: string }) => void
   resetReasoning: (sessionId: string, messageId: string) => void
@@ -168,7 +172,11 @@ function asDoneMessage(raw: any): Message {
     ? (raw.execution_graph as ExecutionGraphData)
     : null
   const attachments = Array.isArray(raw?.attachments) ? raw.attachments as MessageAttachment[] : undefined
-  const status = (raw?.decision_type === 'interrupted' || raw?.status === 'interrupted') ? 'interrupted' as const : 'done' as const
+  const status = (raw?.decision_type === 'interrupted' || raw?.status === 'interrupted')
+    ? 'interrupted' as const
+    : ['queued', 'in_progress', 'streaming'].includes(String(raw?.status || ''))
+      ? 'streaming' as const
+      : 'done' as const
   const turnMeta =
     raw?.role === 'assistant' || raw?.role === undefined
       ? normalizeFinalAnswerEnvelope({
@@ -204,6 +212,11 @@ function asDoneMessage(raw: any): Message {
     parent_response_id: typeof raw?.parent_response_id === 'string' ? raw.parent_response_id : null,
     version_index: typeof raw?.version_index === 'number' ? raw.version_index : undefined,
     sibling_count: typeof raw?.sibling_count === 'number' ? raw.sibling_count : undefined,
+    approvals: Array.isArray(raw?.approvals)
+      ? raw.approvals as ApprovalRequest[]
+      : Array.isArray(raw?.metadata?.approvals)
+        ? raw.metadata.approvals as ApprovalRequest[]
+        : undefined,
   }
 }
 
@@ -301,6 +314,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       return { messages: { ...s.messages, [id]: list } }
     }),
 
+  appendMessageStreamingChunk: (conversationId, messageId, chunk) =>
+    set((s) => ({
+      messages: {
+        ...s.messages,
+        [conversationId]: (s.messages[conversationId] ?? []).map((message) =>
+          message.id === messageId && message.role === 'assistant' && message.status === 'streaming'
+            ? { ...message, streamText: message.streamText + chunk }
+            : message
+        ),
+      },
+    })),
+
   appendThinking: (id, text) =>
     set((s) => {
       const list = [...(s.messages[id] ?? [])]
@@ -333,6 +358,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       }
       return { messages: { ...s.messages, [id]: list }, streaming: false }
     }),
+
+  finishAssistantMessage: (conversationId, messageId, finalText) =>
+    set((s) => ({
+      messages: {
+        ...s.messages,
+        [conversationId]: (s.messages[conversationId] ?? []).map((message) =>
+          message.id === messageId && message.role === 'assistant'
+            ? { ...message, status: 'done', finalText: normalizeMessageText(finalText), streamText: '' }
+            : message
+        ),
+      },
+      streaming: false,
+    })),
 
   setLastAssistantCitations: (id, citations) =>
     set((s) => {
@@ -404,6 +442,19 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       return { messages: { ...s.messages, [id]: list }, streaming: false }
     }),
 
+  failAssistantMessage: (conversationId, messageId, text) =>
+    set((s) => ({
+      messages: {
+        ...s.messages,
+        [conversationId]: (s.messages[conversationId] ?? []).map((message) =>
+          message.id === messageId && message.role === 'assistant'
+            ? { ...message, status: 'done', finalText: text, streamText: '' }
+            : message
+        ),
+      },
+      streaming: false,
+    })),
+
   setStreaming: (v) => set({ streaming: v }),
   setActiveResponseId: (id) => set({ activeResponseId: id }),
   setMessageResponseId: (conversationId, messageId, responseId) => set((s) => ({
@@ -420,6 +471,18 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       ),
     },
     streaming: approvals.length ? false : s.streaming,
+  })),
+  resumeAssistantMessage: (conversationId, messageId) => set((s) => ({
+    messages: {
+      ...s.messages,
+      [conversationId]: (s.messages[conversationId] ?? []).map((message) =>
+        message.id === messageId
+          ? { ...message, approvals: [], status: 'streaming', streamText: '' }
+          : message
+      ),
+    },
+    activeReasoningMessageId: { ...s.activeReasoningMessageId, [conversationId]: messageId },
+    streaming: true,
   })),
   updateTitle: (id, title) =>
     set((s) => ({

@@ -8,9 +8,9 @@ OpenTrace 是一个以 Responses API 和可恢复 Agent Loop 为核心的智能�
 
 - FastAPI API Gateway；聊天统一使用 `/api/v2/responses`，旧 `/api/v1/chat` 返回 `410 Gone`。
 - **统一主路径**：PostgreSQL Response/Items/Events → Outbox → Redis Streams → 无状态 Worker → Context Assembler → Manager Agent Loop。
-- GPT-5.6 优先的模型路由、严格类型化工具、专家 Agent 内部编排、写操作审批和断线续传。
+- Qwen 主模型路由（自动/快速/深度/视觉）、严格类型化工具、专家 Agent 内部编排、写操作审批和断线续传。
 - Redis Agent Bus，当前 `.env` 启用 `KERNEL_AGENT_BUS_ENABLED=true`，模式为 `stream`。
-- 多模型 LLM 路由，OpenAI GPT-5.6 优先，Qwen 作为配置化兼容与降级模型。
+- Qwen/DashScope 是默认且完整的模型栈；不同 Qwen 模型按意图、速度、推理强度和视觉能力分工。
 - RAG 增强链路，包含 Query Rewrite、HyDE、混合检索、Rerank、证据质量门禁和 Web fallback。
 - DataAgent V2，用于 Text2SQL、指标语义、表关系、分析技能、结果解释和高级分析。
 - 多轮分支会话、Projects、Assistant Profiles、自动记忆、Goal、Scheduled Tasks、审计、技能、连接器和文档 API。
@@ -192,7 +192,7 @@ OpenTrace 通过 `infra/config/settings.py` 使用 `pydantic-settings` 读取 `.
 | App | `APP_NAME=opentrace`，`APP_ENV=development`，`APP_PORT=14100`，`DEBUG=true` |
 | Database | PostgreSQL，数据库名 `opentrace_v2`，容器内主机名 `postgres` |
 | Redis | 容器内 `redis:6379/10`，DB `10-15` 分别用于 session/cache/memory/queue/rate-limit/pubsub |
-| LLM | OpenAI GPT-5.6 为 auto/deep/fast 首选；Qwen 为配置化降级 |
+| LLM | Qwen 为主模型栈；auto/deep 使用 Qwen Max，fast 使用 Qwen 8B，图片使用 Qwen-VL |
 | Short Models | SeniorShort `qwen3-14b`，MiddleShort/JuniorShort/MinShort 当前配置为 `qwen3-8b` |
 | Embedding | DashScope `qwen3-vl-embedding`，维度 `1024` |
 | Rerank | DashScope `qwen3-vl-rerank` |
@@ -213,8 +213,9 @@ OpenTrace 通过 `infra/config/settings.py` 使用 `pydantic-settings` 读取 `.
 
 | 配置前缀 | 用途 |
 | --- | --- |
-| `DEFAULT_LLM_STRONGEST_*` | 最强模型，复杂推理或高质量任务 |
 | `DEFAULT_LLM_QUERY_*` | 主问答模型 |
+| `DEFAULT_LLM_FAST_MODEL` | 快速模式的 Qwen 模型 |
+| `DEFAULT_LLM_DEEP_MODEL` | 深度模式的 Qwen 模型 |
 | `DEFAULT_LLM_COMPRESS_*` | 上下文压缩 |
 | `DEFAULT_LLM_PLANING_*` | 计划生成，变量名沿用项目内 `PLANING` 拼写 |
 | `DEFAULT_LLM_SENIORSHORT_*` | 知识问答、轻量 critique |

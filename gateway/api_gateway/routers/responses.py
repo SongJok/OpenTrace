@@ -29,6 +29,7 @@ from infra.storage.database import AsyncSessionLocal
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
     AssistantProfile,
+    Attachment,
     ChatSession,
     DataSource,
     GoalRun,
@@ -81,6 +82,7 @@ class OpenTraceOptions(BaseModel):
     memory_mode: str = Field(default="enabled", pattern="^(enabled|disabled|temporary)$")
     enabled_skills: list[str] = Field(default_factory=list)
     data_source_ids: list[str] = Field(default_factory=list)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=10)
     goal_id: str | None = None
 
 
@@ -124,6 +126,7 @@ class ResponseCreateRequest(BaseModel):
             "enabled_skills": "enabled_skills",
             "project_id": "project_id",
             "assistant_profile_id": "assistant_profile_id",
+            "attachment_ids": "attachment_ids",
             "goal_id": "goal_id",
         }
         for old, new in aliases.items():
@@ -137,7 +140,7 @@ class ResponseCreateRequest(BaseModel):
             "disabled_skills", "data_source_name", "force_database", "force_mode",
             "execution_mode", "web_enabled", "graph_controls", "tool_permission_token",
             "confirmation_granted", "clarify_context", "clarify_question_id",
-            "parent_message_id", "attachment_ids", "reference_id", "reference_type",
+            "parent_message_id", "reference_id", "reference_type",
             "state_version", "knowledge",
         ):
             data.pop(old, None)
@@ -171,7 +174,7 @@ class ResponseCreateRequest(BaseModel):
 
     @property
     def attachment_ids(self) -> list[str]:
-        return []
+        return self.opentrace.attachment_ids
 
 
 class ResponseEventOut(BaseModel):
@@ -242,15 +245,60 @@ def _record_to_dict(
             }
             for item in items
         ]
+        payload["output_text"] = next(
+            (
+                item.content or ""
+                for item in reversed(items)
+                if item.item_type == "message" and item.role == "assistant"
+            ),
+            "",
+        )
+    metadata = dict(record.response_metadata or {})
+    payload["usage"] = {
+        "input_tokens": int(metadata.get("prompt_tokens") or 0),
+        "output_tokens": int(metadata.get("completion_tokens") or 0),
+        "total_tokens": int(metadata.get("prompt_tokens") or 0)
+        + int(metadata.get("completion_tokens") or 0),
+    }
     return payload
 
 
-async def _load_response(db: AsyncSession, response_id: str, user: User, tenant_id: str) -> ResponseRecord:
+async def _validate_attachments(
+    db: AsyncSession,
+    *,
+    attachment_ids: list[str],
+    session: ChatSession,
+    user: User,
+) -> None:
+    if not attachment_ids:
+        return
+    rows = (
+        await db.execute(
+            select(Attachment.id).where(
+                Attachment.id.in_(attachment_ids),
+                Attachment.user_id == user.id,
+                Attachment.session_id == session.id,
+                Attachment.status == "active",
+            )
+        )
+    ).scalars().all()
+    if set(rows) != set(attachment_ids):
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="附件不存在或不属于当前 Conversation")
+
+
+async def _load_response(
+    db: AsyncSession,
+    response_id: str,
+    user: User,
+    tenant_id: str,
+    workspace_id: str,
+) -> ResponseRecord:
     row = await db.scalar(
         select(ResponseRecord).where(
             ResponseRecord.id == response_id,
             ResponseRecord.user_id == user.id,
             ResponseRecord.tenant_id == tenant_id,
+            ResponseRecord.workspace_id == workspace_id,
         )
     )
     if row is None:
@@ -336,7 +384,9 @@ async def _resolve_parent(
     parent_id = request.previous_response_id or request.parent_response_id or session.active_response_id
     if not parent_id:
         return None
-    parent = await _load_response(db, str(parent_id), user, tenant_id)
+    parent = await _load_response(
+        db, str(parent_id), user, tenant_id, session.workspace_id
+    )
     if parent.conversation_id != session.id:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="previous_response_id 不属于当前 Conversation")
     return parent.id
@@ -429,6 +479,18 @@ async def create_response(
         db, request=request, user=current_user, tenant_id=tenant_id,
         workspace_id=workspace_id, org_id=org_id,
     )
+    await _validate_attachments(
+        db,
+        attachment_ids=request.opentrace.attachment_ids,
+        session=session,
+        user=current_user,
+    )
+    if session.is_temporary:
+        request.opentrace.memory_mode = "temporary"
+    if not request.opentrace.project_id and session.project_id:
+        request.opentrace.project_id = session.project_id
+    if not request.opentrace.assistant_profile_id and session.assistant_profile_id:
+        request.opentrace.assistant_profile_id = session.assistant_profile_id
     parent_id = await _resolve_parent(
         db, request=request, session=session, user=current_user, tenant_id=tenant_id
     )
@@ -483,8 +545,10 @@ async def get_response(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    tenant_id = str(build_tenant_metadata(http_request, user_id=current_user.id).get("tenant_id") or "default")
-    record = await _load_response(db, response_id, current_user, tenant_id)
+    scope = build_tenant_metadata(http_request, user_id=current_user.id)
+    tenant_id = str(scope.get("tenant_id") or "default")
+    workspace_id = str(scope.get("workspace_id") or "default")
+    record = await _load_response(db, response_id, current_user, tenant_id, workspace_id)
     if stream:
         return StreamingResponse(
             _event_stream(record.id, starting_after=starting_after), media_type="text/event-stream",
@@ -503,8 +567,10 @@ async def get_response_events(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[ResponseEventOut]:
-    tenant_id = str(build_tenant_metadata(http_request, user_id=current_user.id).get("tenant_id") or "default")
-    await _load_response(db, response_id, current_user, tenant_id)
+    scope = build_tenant_metadata(http_request, user_id=current_user.id)
+    tenant_id = str(scope.get("tenant_id") or "default")
+    workspace_id = str(scope.get("workspace_id") or "default")
+    await _load_response(db, response_id, current_user, tenant_id, workspace_id)
     cursor = starting_after if after is None else after
     events = (await db.execute(select(ResponseEvent).where(ResponseEvent.response_id == response_id, ResponseEvent.sequence_number > cursor).order_by(ResponseEvent.sequence_number))).scalars().all()
     return [ResponseEventOut(sequence_number=e.sequence_number, type=e.event_type, data=dict(e.payload or {}), created_at=e.created_at.isoformat() if e.created_at else "") for e in events]
@@ -517,8 +583,10 @@ async def list_response_siblings(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    tenant_id = str(build_tenant_metadata(http_request, user_id=current_user.id).get("tenant_id") or "default")
-    source = await _load_response(db, response_id, current_user, tenant_id)
+    scope = build_tenant_metadata(http_request, user_id=current_user.id)
+    tenant_id = str(scope.get("tenant_id") or "default")
+    workspace_id = str(scope.get("workspace_id") or "default")
+    source = await _load_response(db, response_id, current_user, tenant_id, workspace_id)
     session = await db.get(ChatSession, source.conversation_id)
     rows = (await db.execute(select(ResponseRecord).where(ResponseRecord.conversation_id == source.conversation_id, ResponseRecord.parent_response_id == source.parent_response_id, ResponseRecord.user_id == current_user.id).order_by(ResponseRecord.created_at))).scalars().all()
     return {"items": [{"id": row.id, "status": row.status, "created_at": row.created_at.isoformat(), "active": bool(session and session.active_response_id == row.id)} for row in rows]}
@@ -532,8 +600,10 @@ async def retry_response(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    tenant_id = str(build_tenant_metadata(http_request, user_id=current_user.id).get("tenant_id") or "default")
-    source = await _load_response(db, response_id, current_user, tenant_id)
+    scope = build_tenant_metadata(http_request, user_id=current_user.id)
+    tenant_id = str(scope.get("tenant_id") or "default")
+    workspace_id = str(scope.get("workspace_id") or "default")
+    source = await _load_response(db, response_id, current_user, tenant_id, workspace_id)
     payload = dict(source.request_payload or {})
     if request.input is not None:
         payload["input"] = request.input
@@ -548,8 +618,10 @@ async def cancel_response(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    tenant_id = str(build_tenant_metadata(http_request, user_id=current_user.id).get("tenant_id") or "default")
-    record = await _load_response(db, response_id, current_user, tenant_id)
+    scope = build_tenant_metadata(http_request, user_id=current_user.id)
+    tenant_id = str(scope.get("tenant_id") or "default")
+    workspace_id = str(scope.get("workspace_id") or "default")
+    record = await _load_response(db, response_id, current_user, tenant_id, workspace_id)
     if record.status not in TERMINAL_STATUSES:
         record.status = "cancelled"
         record.completed_at = datetime.now(UTC)

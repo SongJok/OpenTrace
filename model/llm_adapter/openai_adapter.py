@@ -27,7 +27,9 @@ def _should_retry_without_proxy(exc: Exception) -> bool:
     """
     import httpx
 
-    if isinstance(exc, (httpx.ConnectError, httpx.ProxyError, httpx.TimeoutException)):
+    if isinstance(
+        exc, httpx.ConnectError | httpx.ProxyError | httpx.TimeoutException
+    ):
         return True
     message = str(exc).lower()
     return any(token in message for token in ("connection error", "connect timeout", "proxy error", "name or service not known"))
@@ -99,7 +101,9 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
         oai_msgs = [self._to_oai(m) for m in messages]
         extra: dict = {}
         if "qwen3" in self.config.model.lower():
-            extra["extra_body"] = {"enable_thinking": False}
+            extra["extra_body"] = {
+                "enable_thinking": self._qwen_thinking_enabled(kwargs)
+            }
         # OpenAI-compatible chat endpoints accept the same function schema as
         # the Responses API.  Only include optional fields when requested so
         # legacy providers keep their exact request shape.
@@ -375,7 +379,9 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             oai_msgs = [self._to_oai(m) for m in messages]
             extra: dict = {}
             if "qwen3" in self.config.model.lower():
-                extra["extra_body"] = {"enable_thinking": False}
+                extra["extra_body"] = {
+                    "enable_thinking": self._qwen_thinking_enabled(kwargs)
+                }
             optional = {
                 "tools": self._chat_tools(kwargs.get("tools") or []),
                 "tool_choice": kwargs.get("tool_choice"),
@@ -455,9 +461,11 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             await client_http.aclose()
 
     def _to_oai(self, m: LLMMessage) -> dict:
-        content = m.content
-        # Pass list content (multimodal) through as-is
-        msg: dict = {"role": m.role, "content": content}
+        content = self._chat_content(m.content)
+        # DashScope Chat Completions uses the classic four roles; developer
+        # instructions retain their priority by becoming system messages.
+        role = "system" if m.role == "developer" else m.role
+        msg: dict = {"role": role, "content": content}
         if m.name:
             msg["name"] = m.name
         if m.tool_call_id:
@@ -465,3 +473,44 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
         if m.tool_calls:
             msg["tool_calls"] = m.tool_calls
         return msg
+
+    @staticmethod
+    def _qwen_thinking_enabled(kwargs: dict[str, Any]) -> bool:
+        reasoning = kwargs.get("reasoning")
+        effort = (
+            str(reasoning.get("effort") or "")
+            if isinstance(reasoning, dict)
+            else ""
+        ).lower()
+        return effort in {"medium", "high", "xhigh"}
+
+    @staticmethod
+    def _chat_content(content: Any) -> Any:
+        """Translate Responses-style multimodal parts for DashScope chat APIs."""
+        if not isinstance(content, list):
+            return content
+        normalized: list[dict[str, Any]] = []
+        for part in content:
+            if not isinstance(part, dict):
+                normalized.append({"type": "text", "text": str(part)})
+                continue
+            part_type = str(part.get("type") or "")
+            if part_type in {"input_text", "output_text"}:
+                normalized.append(
+                    {"type": "text", "text": str(part.get("text") or "")}
+                )
+            elif part_type == "input_image":
+                image_url = part.get("image_url") or part.get("url")
+                normalized.append(
+                    {
+                        "type": "image_url",
+                        "image_url": (
+                            image_url
+                            if isinstance(image_url, dict)
+                            else {"url": str(image_url or "")}
+                        ),
+                    }
+                )
+            else:
+                normalized.append(part)
+        return normalized

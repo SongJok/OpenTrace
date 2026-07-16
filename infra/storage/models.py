@@ -874,6 +874,7 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    memory_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="default")
     assistant_profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     data_source_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)

@@ -7,7 +7,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal, Self
 
-from pydantic import field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ---------------------------------------------------------------------------
@@ -59,8 +59,28 @@ class LLMSettings(BaseSettings):
     default_llm_query_model: str = "qwen3.7-max"
     default_llm_query_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     default_llm_query_api_key: str = ""
-    default_llm_fast_openai_model: str = "qwen3-8b"
-    default_llm_deep_openai_model: str = "qwen3.7-max"
+    default_llm_fast_model: str = Field(
+        default="qwen3-8b",
+        validation_alias=AliasChoices(
+            "DEFAULT_LLM_FAST_MODEL", "DEFAULT_LLM_FAST_OPENAI_MODEL"
+        ),
+    )
+    default_llm_deep_model: str = Field(
+        default="qwen3.7-max",
+        validation_alias=AliasChoices(
+            "DEFAULT_LLM_DEEP_MODEL", "DEFAULT_LLM_DEEP_OPENAI_MODEL"
+        ),
+    )
+
+    # Transitional Python aliases. Deployments keep accepting the old env
+    # names above, while runtime code no longer describes Qwen as OpenAI.
+    @property
+    def default_llm_fast_openai_model(self) -> str:
+        return self.default_llm_fast_model
+
+    @property
+    def default_llm_deep_openai_model(self) -> str:
+        return self.default_llm_deep_model
 
     # Compress LLM
     default_llm_compress_provider: str = "阿里巴巴Qwen(DashScope)"

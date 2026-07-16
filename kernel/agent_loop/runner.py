@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -96,7 +97,17 @@ class AgentLoop:
             profile = ExecutionProfile(profile_value)
         except ValueError:
             profile = ExecutionProfile.AUTO
-        tool_specs = self._available_tool_specs(payload)
+        context = await self.context_assembler.assemble(
+            db, response=response, user_query=query, request_payload=payload
+        )
+        if profile == ExecutionProfile.AUTO and context.profile_execution_default in {
+            ExecutionProfile.FAST.value,
+            ExecutionProfile.DEEP.value,
+        }:
+            profile = ExecutionProfile(context.profile_execution_default)
+        tool_specs = self._apply_tool_policy(
+            self._available_tool_specs(payload), context.tool_policy
+        )
         model_calls: list[dict[str, Any]] = []
         with capture_model_calls() as planning_calls:
             intent = await self._plan_intent(
@@ -111,36 +122,108 @@ class AgentLoop:
         selected_capabilities = set(intent.capabilities)
         if selected_capabilities:
             tool_specs = [spec for spec in tool_specs if spec.name in selected_capabilities]
+        elif str(payload.get("tool_choice") or "auto") == "required":
+            # The API contract is stronger than the semantic planner. Keep the
+            # trusted catalogue available when the caller explicitly requires a tool.
+            tool_specs = list(tool_specs)
         else:
             tool_specs = []
 
-        context = await self.context_assembler.assemble(
-            db, response=response, user_query=query, request_payload=payload
-        )
         await emit(
             "opentrace.context.ready",
             {
                 "history_items": max(0, len(context.messages) - 2),
                 "memory_ids": context.memory_ids,
+                "attachment_ids": context.attachment_ids,
                 "project_id": context.project_id,
                 "assistant_profile_id": context.assistant_profile_id,
             },
         )
+        if intent.clarification_question:
+            question = intent.clarification_question.strip()
+            await self._emit_text(emit, question)
+            return AgentLoopResult(
+                status="completed",
+                content=question,
+                model=settings.default_llm_planing_model,
+                intent=intent,
+                metadata={
+                    "model_calls": model_calls,
+                    "model_call_count": len(model_calls),
+                    "needs_clarification": True,
+                    "memory_ids": context.memory_ids,
+                    "attachment_ids": context.attachment_ids,
+                    "execution_profile": profile.value,
+                },
+            )
         messages = [
             LLMMessage(
                 role=str(item.get("role") or "user"),
                 content=item.get("content") or "",
                 name=item.get("name"),
                 tool_call_id=item.get("tool_call_id"),
+                tool_calls=item.get("tool_calls"),
             )
             for item in context.messages
         ]
         await self._restore_tool_history(db, response=response, messages=messages, emit=emit)
 
         public_tools = [spec.as_openai_tool() for spec in tool_specs]
+        if str(payload.get("tool_choice") or "auto") == "none":
+            public_tools = []
         spec_by_name = {spec.name: spec for spec in tool_specs}
         model_name, reasoning = self._model_profile(profile, payload)
+        if context.contains_images and not str(payload.get("model") or "").strip():
+            model_name = settings.default_llm_vision_model
+
+        # Most turns do not need tools. Stream those directly from Qwen so the
+        # product displays genuine incremental generation instead of replaying
+        # an already-completed answer in artificial chunks.
+        if not public_tools:
+            await emit("opentrace.model.started", {"round": 1, "model": model_name})
+            chunks: list[str] = []
+            with capture_model_calls() as calls:
+                async for chunk in get_model_gateway().stream(
+                    messages,
+                    role=LLMRole.QUERY,
+                    max_output_tokens=payload.get("max_output_tokens"),
+                    model_override=model_name,
+                    reasoning=reasoning,
+                    store=bool(payload.get("store", False)),
+                ):
+                    chunks.append(chunk)
+                    await emit("response.output_text.delta", {"delta": chunk})
+            model_calls.extend(calls)
+            content = "".join(chunks)
+            resolved_call = calls[-1] if calls else {}
+            resolved_model = str(resolved_call.get("model") or model_name)
+            prompt_tokens = int(resolved_call.get("prompt_tokens") or 0)
+            completion_tokens = int(resolved_call.get("completion_tokens") or 0)
+            await emit(
+                "opentrace.model.completed",
+                {"round": 1, "model": resolved_model, "tool_call_count": 0},
+            )
+            await emit("response.output_text.done", {"text": content})
+            return AgentLoopResult(
+                status="completed",
+                content=content,
+                model=resolved_model,
+                intent=intent,
+                metadata={
+                    "model_calls": model_calls,
+                    "model_call_count": len(model_calls),
+                    "memory_ids": context.memory_ids,
+                    "attachment_ids": context.attachment_ids,
+                    "execution_profile": profile.value,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                },
+            )
+
         for round_number in range(1, self.max_rounds + 1):
+            await db.refresh(response)
+            if response.status == "cancelled":
+                return AgentLoopResult(status="cancelled", intent=intent)
             await emit("opentrace.model.started", {"round": round_number, "model": model_name})
             with capture_model_calls() as calls:
                 model_response = await get_model_gateway().complete(
@@ -179,7 +262,7 @@ class AgentLoop:
                 if reasoning_summary:
                     await emit("response.reasoning_summary_text.done", {"text": reasoning_summary})
                 content = str(model_response.content or "")
-                await emit("response.output_text.delta", {"delta": content})
+                await self._emit_text(emit, content)
                 return AgentLoopResult(
                     status="completed",
                     content=content,
@@ -190,6 +273,7 @@ class AgentLoop:
                         "model_call_count": len(model_calls),
                         "reasoning_summary": reasoning_summary,
                         "memory_ids": context.memory_ids,
+                        "attachment_ids": context.attachment_ids,
                         "execution_profile": profile.value,
                         "provider_response_id": model_response.response_id,
                         "prompt_tokens": model_response.prompt_tokens,
@@ -214,6 +298,32 @@ class AgentLoop:
             ]
             messages.append(LLMMessage(role="assistant", content=model_response.content or None, tool_calls=assistant_calls))
 
+            item_sequence = await self._next_item_sequence(db, response.id)
+            for offset, call in enumerate(calls):
+                item = ResponseItem(
+                    id=f"item_{uuid.uuid4().hex}",
+                    response_id=response.id,
+                    sequence_number=item_sequence + offset,
+                    item_type="function_call",
+                    role="assistant",
+                    content=None,
+                    payload={
+                        "call_id": _call_id(call),
+                        "name": _tool_name(call),
+                        "arguments": _redact_sensitive(_tool_args(call)),
+                    },
+                )
+                db.add(item)
+                await emit(
+                    "response.output_item.added",
+                    {
+                        "item_id": item.id,
+                        "item_type": "function_call",
+                        "call_id": _call_id(call),
+                        "name": _tool_name(call),
+                    },
+                )
+
             approvals: list[ResponseApproval] = []
             executable: list[tuple[dict[str, Any], ToolSpec]] = []
             for call in calls:
@@ -229,7 +339,22 @@ class AgentLoop:
                     continue
                 if spec.side_effect != SideEffect.READ:
                     approval = await self._ensure_approval(db, response=response, call=call, spec=spec)
-                    approvals.append(approval)
+                    if approval.status == "pending":
+                        approvals.append(approval)
+                    elif approval.status == "approved":
+                        executable.append((call, spec))
+                    else:
+                        messages.append(
+                            LLMMessage(
+                                role="tool",
+                                name=name,
+                                tool_call_id=_call_id(call),
+                                content=json.dumps(
+                                    {"status": "rejected", "reason": approval.reason or "user_rejected"},
+                                    ensure_ascii=False,
+                                ),
+                            )
+                        )
                 else:
                     executable.append((call, spec))
 
@@ -273,7 +398,41 @@ class AgentLoop:
                 await db.commit()
                 return AgentLoopResult(status="requires_action", intent=intent)
 
-        raise RuntimeError("agent_loop_max_rounds_exceeded")
+        content = "这项请求已达到当前单轮可执行步骤上限。已保留执行记录，你可以让我继续或缩小任务范围。"
+        await self._emit_text(emit, content)
+        return AgentLoopResult(
+            status="incomplete",
+            content=content,
+            model=model_name,
+            intent=intent,
+            metadata={
+                "model_calls": model_calls,
+                "model_call_count": len(model_calls),
+                "incomplete_details": {"reason": "max_tool_rounds"},
+                "memory_ids": context.memory_ids,
+                "attachment_ids": context.attachment_ids,
+                "execution_profile": profile.value,
+            },
+        )
+
+    @staticmethod
+    def _apply_tool_policy(specs: list[ToolSpec], policy: dict[str, Any]) -> list[ToolSpec]:
+        allowed = {str(item) for item in policy.get("allowed_tools") or [] if str(item)}
+        denied = {str(item) for item in policy.get("denied_tools") or [] if str(item)}
+        result = [spec for spec in specs if spec.name not in denied]
+        if allowed:
+            result = [spec for spec in result if spec.name in allowed]
+        return result
+
+    @staticmethod
+    async def _emit_text(emit: EventEmitter, content: str) -> None:
+        if not content:
+            await emit("response.output_text.done", {"text": ""})
+            return
+        chunks = [part for part in re.findall(r".{1,96}(?:\s+|$)|.{1,96}", content, flags=re.S) if part]
+        for chunk in chunks:
+            await emit("response.output_text.delta", {"delta": chunk})
+        await emit("response.output_text.done", {"text": content})
 
     @staticmethod
     def _available_tool_specs(payload: dict[str, Any]) -> list[ToolSpec]:
@@ -427,7 +586,7 @@ class AgentLoop:
             await db.execute(
                 select(ResponseApproval).where(
                     ResponseApproval.response_id == response.id,
-                    ResponseApproval.status == "approved",
+                    ResponseApproval.status.in_(["approved", "rejected"]),
                 )
             )
         ).scalars().all()
@@ -440,7 +599,9 @@ class AgentLoop:
                 )
             )
             call = {"call_id": approval.call_id, "name": approval.tool_name, "arguments": approval.arguments}
-            if existing is None:
+            if approval.status == "rejected":
+                result = {"status": "rejected", "reason": approval.reason or "user_rejected"}
+            elif existing is None:
                 spec = ToolSpec(
                     name=approval.tool_name,
                     description=approval.tool_name,
@@ -698,10 +859,10 @@ class AgentLoop:
     def _model_profile(profile: ExecutionProfile, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         explicit = str(payload.get("model") or "").strip()
         if profile == ExecutionProfile.FAST:
-            model = explicit or settings.default_llm_fast_openai_model
+            model = explicit or settings.default_llm_fast_model
             return model, {"effort": "low", "summary": "auto"}
         if profile == ExecutionProfile.DEEP:
-            model = explicit or settings.default_llm_deep_openai_model
+            model = explicit or settings.default_llm_deep_model
             return model, {"effort": "high", "summary": "detailed"}
         return explicit or settings.default_llm_query_model, {"effort": "medium", "summary": "auto"}
 
