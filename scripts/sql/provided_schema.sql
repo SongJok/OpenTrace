@@ -25,7 +25,7 @@ CREATE UNIQUE INDEX ix_users_email ON public.users USING btree (email);
 -- DROP TABLE public.alembic_version;
 
 CREATE TABLE public.alembic_version (
-	version_num varchar(32) NOT NULL,
+	version_num varchar(128) NOT NULL,
 	CONSTRAINT alembic_version_pkey PRIMARY KEY (version_num)
 );
 
@@ -373,5 +373,4 @@ CREATE UNIQUE INDEX ix_user_ui_settings_user_id ON public.user_ui_settings USING
 
 INSERT INTO public.users (id,email,hashed_password,display_name,is_active,is_superuser,created_at,updated_at) VALUES
 	 ('10d9b603-0555-4200-9b2e-2abd79708d73','songts@tuwan.com','$2b$12$XonsQFiSGVEFX7bd7yYZOutSvkuk6Q6st47G9ciIuqtLSdo6kl1zW','Song TS',true,true,'2026-03-30 20:34:49.391731+08','2026-03-30 20:34:49.391731+08');
-
 

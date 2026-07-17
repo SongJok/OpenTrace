@@ -1,7 +1,7 @@
 """add pgvector embedding column to document_chunks
 
 Revision ID: 20260417_document_chunks_pgvector
-Revises: 20260411_documents_guard
+Revises: 20260416_version_num_128
 Create Date: 2026-04-17
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 
 revision = "20260417_document_chunks_pgvector"
-down_revision = "20260411_documents_guard"
+down_revision = "20260416_version_num_128"
 branch_labels = None
 depends_on = None
 

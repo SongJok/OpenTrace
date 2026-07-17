@@ -46,13 +46,14 @@ def upgrade() -> None:
         "(to_tsvector('simple', coalesce(text, '') || ' ' || coalesce(normalized_text, '')))"
     )
 
-    # The column is optional on legacy databases.  If a deployment still has
-    # the JSON/Text fallback, the guarded block leaves lexical retrieval intact.
+    # The column is optional on legacy databases. If a deployment still has
+    # the JSON/Text fallback, leave lexical retrieval intact until the forward
+    # normalization migration converts it to pgvector.
     op.execute(
         "DO $$ BEGIN "
         "IF EXISTS (SELECT 1 FROM information_schema.columns "
-        "WHERE table_name = 'document_chunks' AND column_name = 'embedding_vector') "
-        "AND EXISTS (SELECT 1 FROM pg_type WHERE typname = 'vector') THEN "
+        "WHERE table_schema = 'public' AND table_name = 'document_chunks' "
+        "AND column_name = 'embedding_vector' AND udt_name = 'vector') THEN "
         "EXECUTE 'CREATE INDEX IF NOT EXISTS ix_document_chunks_embedding_hnsw "
         "ON document_chunks USING hnsw (embedding_vector vector_cosine_ops)'; "
         "END IF; END $$"
