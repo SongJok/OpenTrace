@@ -1,3 +1,12 @@
+x-opentrace-build: &opentrace-build
+  context: .
+  dockerfile: deploy/docker/Dockerfile
+  args:
+    PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
+    OPENTRACE_BUILD_FINGERPRINT: ${OPENTRACE_BUILD_FINGERPRINT:-unknown}
+    PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
+    PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
+
 services:
   # -------------------------------------------------------------------------
   # PostgreSQL
@@ -42,11 +51,8 @@ services:
   # OpenTrace API Gateway — port 14100
   # -------------------------------------------------------------------------
   api:
-    build:
-      context: .
-      dockerfile: deploy/docker/Dockerfile
-      args:
-        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
+    image: ${OPENTRACE_IMAGE:-opentrace-app:local}
+    build: *opentrace-build
     container_name: opentrace_api
     restart: unless-stopped
     ports:
@@ -78,7 +84,13 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:14100/api/v1/health"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:14100/api/v1/health', timeout=5)",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -88,11 +100,8 @@ services:
   # Agent Worker
   # -------------------------------------------------------------------------
   agent-worker:
-    build:
-      context: .
-      dockerfile: deploy/docker/Dockerfile
-      args:
-        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-bookworm}
+    image: ${OPENTRACE_IMAGE:-opentrace-app:local}
+    build: *opentrace-build
     container_name: opentrace_agent_worker
     restart: unless-stopped
     env_file:

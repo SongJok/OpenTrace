@@ -15,8 +15,8 @@
 - `bash restart.sh`  
   统一重启入口（先 stop 再 start）
 
-- `bash scripts/docker_up.sh [--with-observability]`  
-  直接 Docker 启动，支持可选观测组件
+- `bash scripts/docker_up.sh [--build|--rebuild|--pull] [--with-observability]`
+  直接 Docker 启动。默认复用镜像；`--build` 增量构建，`--rebuild` 无缓存重建
 
 - `bash scripts/docker_down.sh [--volumes]`  
   停止 Docker 容器，可选删除卷
@@ -50,6 +50,25 @@
 
 ```bash
 bash start.sh
+```
+
+默认不会重复构建或拉取镜像；检测到源码指纹变化时会自动增量构建。需要强制构建时：
+
+```bash
+bash start.sh --build
+```
+
+仅在缓存损坏时：
+
+```bash
+bash start.sh --rebuild
+```
+
+服务器使用预构建镜像：
+
+```bash
+OPENTRACE_IMAGE=registry.example.com/opentrace/app:release \
+  bash start.sh --pull --no-build
 ```
 
 可选带观测组件：
@@ -123,7 +142,8 @@ bash stop.sh --volumes
    - `docker info` 能正常返回
 
 2. **镜像拉取超时**
-   - 脚本已内置重试；若仍失败，检查网络或配置镜像加速
+   - 普通启动不访问镜像仓库；只有显式 `--pull` 时拉取并重试
+   - 若仍失败，检查网络或配置镜像加速
 
 3. **端口冲突**
    - PostgreSQL/Redis 端口可通过环境变量覆盖：

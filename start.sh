@@ -3,6 +3,9 @@
 # OpenTrace — 统一 Docker 启动入口
 # 用法:
 #   bash start.sh
+#   bash start.sh --build
+#   bash start.sh --rebuild
+#   bash start.sh --pull
 #   bash start.sh --with-observability
 #   bash start.sh --verify
 #   bash start.sh --no-agent-worker
@@ -11,23 +14,39 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-WITH_OBS=""
 VERIFY="0"
+DOCKER_ARGS=()
 for arg in "$@"; do
   case "$arg" in
-    --with-observability) WITH_OBS="--with-observability" ;;
+    --with-observability)
+      DOCKER_ARGS+=("$arg")
+      ;;
+    --build|--rebuild|--no-build|--pull) DOCKER_ARGS+=("$arg") ;;
     --verify) VERIFY="1" ;;
     --no-agent-worker) echo "[WARN] --no-agent-worker is deprecated in docker mode; ignoring" ;;
+    -h|--help)
+      sed -n '2,14p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "未知参数: $arg"
+      exit 1
+      ;;
   esac
 done
 
 # Ensure target API port is available before startup
 if lsof -iTCP:14100 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "✗ 端口 14100 已被占用，请先释放后再启动"
-  exit 1
+  if (cd "$PROJECT_DIR" && docker compose ps --status running -q api | grep -q .); then
+    echo "▸ 当前项目 API 已运行，将复用现有容器"
+  else
+    echo "✗ 端口 14100 已被占用，请先释放后再启动"
+    exit 1
+  fi
 fi
 
-bash "$PROJECT_DIR/scripts/docker_up.sh" ${WITH_OBS}
+# bash 3.2 + set -u: empty "${arr[@]}" is treated as unbound
+bash "$PROJECT_DIR/scripts/docker_up.sh" ${DOCKER_ARGS+"${DOCKER_ARGS[@]}"}
 
 # Post-start hard checks
 if ! curl -sf "http://127.0.0.1:14100/api/v1/health" >/dev/null 2>&1; then

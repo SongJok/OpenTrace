@@ -22,6 +22,7 @@ START_WITH_OBS=0
 START_VERIFY=0
 START_INFRA_ONLY=0
 START_NATIVE=0
+START_DOCKER_ARGS=()
 
 for arg in "$@"; do
   case "$arg" in
@@ -29,6 +30,7 @@ for arg in "$@"; do
     --native-only) STOP_NATIVE_ONLY=1 ;;
     --infra-only) STOP_INFRA_ONLY=1 ;;
     --with-observability) START_WITH_OBS=1 ;;
+    --build|--rebuild|--no-build|--pull) START_DOCKER_ARGS+=("$arg") ;;
     --verify) START_VERIFY=1 ;;
     --native) START_NATIVE=1 ;;
     *)
@@ -51,6 +53,9 @@ start_cmd=(bash "$SCRIPT_DIR/backend-start.sh")
 [[ "$START_VERIFY" == "1" ]] && start_cmd+=(--verify)
 [[ "$START_INFRA_ONLY" == "1" ]] && start_cmd+=(--infra-only)
 [[ "$START_NATIVE" == "1" ]] && start_cmd+=(--native)
+if [ ${#START_DOCKER_ARGS[@]} -gt 0 ]; then
+  start_cmd+=("${START_DOCKER_ARGS[@]}")
+fi
 if ! "${start_cmd[@]}"; then
   echo "✗ 启动失败"
   echo "  docker compose ps"

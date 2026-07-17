@@ -65,5 +65,5 @@
 镜像通过 `COPY . .` 打入代码；若改 Python 后容器行为未变：
 
 ```bash
-docker compose build --no-cache api agent-worker && bash restart.sh
+bash restart.sh --build
 ```

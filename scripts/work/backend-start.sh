@@ -5,6 +5,8 @@
 # 用法:
 #   bash scripts/work/backend-start.sh
 #   bash scripts/work/backend-start.sh --with-observability
+#   bash scripts/work/backend-start.sh --build
+#   bash scripts/work/backend-start.sh --rebuild
 #   bash scripts/work/backend-start.sh --verify
 #   bash scripts/work/backend-start.sh --infra-only
 #   bash scripts/work/backend-start.sh --native
@@ -23,14 +25,17 @@ work_ensure_dotenv "$ROOT"
 work_load_dotenv "$ROOT"
 
 MODE="docker"
-WITH_OBS=0
 VERIFY=0
 INFRA_ONLY=0
 SKIP_MIGRATE=0
+DOCKER_ARGS=()
 
 for arg in "$@"; do
   case "$arg" in
-    --with-observability) WITH_OBS=1 ;;
+    --with-observability)
+      DOCKER_ARGS+=("$arg")
+      ;;
+    --build|--rebuild|--no-build|--pull) DOCKER_ARGS+=("$arg") ;;
     --verify) VERIFY=1 ;;
     --infra-only) INFRA_ONLY=1 ;;
     --native) MODE="native" ;;
@@ -123,12 +128,7 @@ if [[ "$INFRA_ONLY" == "1" ]]; then
   exit 0
 fi
 
-OBS_ARG=()
-if [[ "$WITH_OBS" == "1" ]]; then
-  OBS_ARG=(--with-observability)
-fi
-
-bash "$ROOT/scripts/docker_up.sh" ${OBS_ARG+"${OBS_ARG[@]}"}
+bash "$ROOT/scripts/docker_up.sh" ${DOCKER_ARGS+"${DOCKER_ARGS[@]}"}
 
 if ! work_wait_http "http://127.0.0.1:${API_PORT}/api/v1/health/deps" 40 2; then
   echo "✗ health/deps 失败"

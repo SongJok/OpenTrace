@@ -33,7 +33,9 @@ bash scripts/work/dev-stop-all.sh
 | `frontend-start.sh` / `frontend-stop.sh` | 前端分步 |
 | `lib.sh` | 公共函数（`.env`、迁移、健康检查） |
 
-根目录 **`start-dev.sh`** 为全栈入口；**`start.sh` / `stop.sh` / `restart.sh`** 仍为 Docker 后端快捷方式（与 `backend-*` 类似，但不自动拉起前端、不自动迁移）。
+根目录 **`start-dev.sh`** 为全栈入口；**`start.sh` / `stop.sh` / `restart.sh`**
+仍为 Docker 后端快捷方式。脚本通过源码指纹自动判断是否需要缓存增量构建；
+`--build` 用于强制增量构建，仅在缓存异常时使用 `--rebuild`。
 
 ## 前置条件
 
@@ -61,6 +63,12 @@ bash scripts/work/dev-boot-all-in-one.sh --frontend-only
 
 # 可观测性（Prometheus + Jaeger）
 bash start-dev.sh --with-observability
+
+# 强制执行缓存增量构建
+bash start-dev.sh --build
+
+# 完全忽略 Docker 缓存重建
+bash start-dev.sh --rebuild
 
 # 清空 Docker 数据卷后停止
 bash scripts/work/dev-stop-all.sh --volumes

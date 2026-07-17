@@ -38,6 +38,9 @@ cp .env.example .env
 
 # Docker 后端栈：API、Agent Worker、PostgreSQL、Redis
 bash start.sh                    # 启动后会执行 alembic upgrade head
+bash start.sh --build            # 强制执行缓存增量构建并启动
+bash start.sh --rebuild          # 仅排查缓存问题时完全重建
+bash start.sh --pull             # 主动更新基础或远程镜像
 bash start.sh --verify           # 启动并做 Docker 快速验收
 bash start.sh --with-observability
 bash stop.sh
@@ -50,11 +53,15 @@ bash scripts/docker_logs.sh agent-worker
 
 Prometheus 和 Jaeger 仅在 `--with-observability` 下启动。Compose 不包含前端。
 
-Docker 镜像通过 `COPY . .` 打包源码；改代码后容器行为未变化时强制重建：
+Docker 镜像通过 `COPY . .` 打包源码，并通过镜像 label 保存源码指纹。普通启动会在
+指纹变化时自动增量构建；也可以显式强制构建：
 
 ```bash
-docker compose build --no-cache api agent-worker && bash restart.sh
+bash restart.sh --build
 ```
+
+日常 `start.sh` / `restart.sh` 会复用已有统一应用镜像，不再默认构建或拉取。
+只有缓存异常时才使用 `bash restart.sh --rebuild`。
 
 宿主机运行 API、Docker 只承载 PostgreSQL/Redis 时，要覆盖容器网络主机名：
 

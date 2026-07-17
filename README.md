@@ -85,12 +85,39 @@ WEATHER_STACK_API_KEY=<optional-weatherstack-key>
 bash start.sh
 ```
 
-启动脚本会检查 Docker、Compose、`.env`、端口 `14100`，然后构建并启动：
+启动脚本会检查 Docker、Compose、`.env`、端口 `14100`，然后复用已有应用镜像并启动：
 
 - `opentrace_api`
 - `opentrace_agent_worker`
 - `opentrace_postgres`
 - `opentrace_redis`
+
+首次启动或本地还没有 `opentrace-app:local` 时会自动构建一次。之后脚本通过镜像中的
+源码指纹判断是否需要增量构建：代码未变化时直接复用，代码变化时仅更新应用代码层，
+不会重复安装未变化的 Python 依赖。
+
+需要主动强制执行一次缓存增量构建时：
+
+```bash
+bash start.sh --build
+```
+
+需要完全忽略缓存重建时才使用：
+
+```bash
+bash start.sh --rebuild
+```
+
+需要主动更新基础镜像或服务器上的远程应用镜像时增加 `--pull`。
+
+服务器推荐直接拉取 CI 已构建的应用镜像，从而完全跳过服务器端 Python 依赖安装：
+
+```bash
+OPENTRACE_IMAGE=registry.example.com/opentrace/app:release \
+  bash start.sh --pull --no-build
+```
+
+API 与 Agent Worker 会共用这一份镜像。
 
 验证：
 
@@ -146,17 +173,28 @@ npm run dev
 
 **端口真相**：API 以 **`APP_PORT=14100`** 为准（Compose、`start.sh`、健康检查、`VITE_API_URL`）。若 `.env` 中 `GATEWAY_PORT` 与 `APP_PORT` 不一致，开发环境启动时会收到警告；详见 `docs/CONFIG_TRUTH.md`。
 
-**改代码后容器行为未变**：镜像 `COPY` 打入代码，需强制重建：
+**改代码后容器行为未变**：正常启动会自动比较源码指纹；也可强制增量构建：
 
 ```bash
-docker compose build --no-cache api agent-worker && bash restart.sh
+bash restart.sh --build
 ```
+
+仅在排查缓存污染时使用 `bash restart.sh --rebuild`。
 
 ## 常用命令
 
 ```bash
 # 启动
 bash start.sh
+
+# 强制执行缓存增量构建
+bash start.sh --build
+
+# 完全无缓存重建（不建议日常使用）
+bash start.sh --rebuild
+
+# 更新基础/远程镜像
+bash start.sh --pull
 
 # 启动后端 + Prometheus + Jaeger
 bash start.sh --with-observability

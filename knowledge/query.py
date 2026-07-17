@@ -11,12 +11,12 @@ from sqlalchemy import func, or_, select
 from infra.config.settings import settings
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import (
+    ConversationState,
     KnowledgeClaim,
     KnowledgePage,
     KnowledgeRelation,
     KnowledgeSource,
     KnowledgeSourceVersion,
-    ConversationState,
 )
 from knowledge.domain import KNOWLEDGE_QUERY_PLAN_VERSION
 
@@ -45,7 +45,13 @@ def build_knowledge_query_plan(query_type: str, top_k: int) -> KnowledgeQueryPla
     elif query_type == "procedure":
         paths = ["hot_knowledge", "knowledge_procedure", "knowledge_claim", "document_evidence"]
     elif query_type == "definition":
-        paths = ["hot_knowledge", "knowledge_term", "knowledge_page", "knowledge_claim", "document_evidence"]
+        paths = [
+            "hot_knowledge",
+            "knowledge_term",
+            "knowledge_page",
+            "knowledge_claim",
+            "document_evidence",
+        ]
     return KnowledgeQueryPlan(
         query_type=query_type,
         paths=paths,
@@ -59,8 +65,57 @@ def build_knowledge_query_plan(query_type: str, top_k: int) -> KnowledgeQueryPla
     )
 
 
+def infer_knowledge_query_type(query: str) -> str:
+    """用稳定、低成本的规则识别知识查询类型。"""
+    text = (query or "").strip().lower()
+    if any(marker in text for marker in ("关系", "关联", "依赖", "影响")):
+        return "relation"
+    if any(marker in text for marker in ("区别", "对比", "比较", "差异")):
+        return "comparison"
+    if any(marker in text for marker in ("如何", "怎么", "步骤", "流程", "办理", "操作")):
+        return "procedure"
+    if any(marker in text for marker in ("是什么", "什么是", "定义", "含义", "概念")):
+        return "definition"
+    return "factual"
+
+
 def _tokens(query: str) -> list[str]:
-    return list(dict.fromkeys(re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{2,}", (query or "").lower())))[:12]
+    """为中英文查询生成可用于 ILIKE/FTS 兜底的轻量词元。
+
+    PostgreSQL ``simple`` 配置不会对中文分词。旧逻辑会把“退款政策是什么”
+    当成一个完整词元，导致页面只包含“退款政策”时无法命中。这里保留完整
+    语义片段，同时补充 2-4 字窗口，让中文查询无需额外分词服务也能工作。
+    """
+    text = (query or "").lower()
+    for marker in (
+        "请问",
+        "麻烦",
+        "帮我",
+        "根据知识库",
+        "根据文档",
+        "介绍一下",
+        "是什么",
+        "什么是",
+        "为什么",
+        "如何",
+        "怎么",
+        "有哪些",
+    ):
+        text = text.replace(marker, " ")
+
+    tokens: list[str] = []
+    for segment in re.findall(r"[a-z0-9][a-z0-9._-]*|[\u4e00-\u9fff]{2,}", text):
+        if segment not in tokens:
+            tokens.append(segment)
+        if re.fullmatch(r"[\u4e00-\u9fff]{3,}", segment):
+            for width in (4, 3, 2):
+                if len(segment) < width:
+                    continue
+                for index in range(len(segment) - width + 1):
+                    candidate = segment[index : index + width]
+                    if candidate not in tokens:
+                        tokens.append(candidate)
+    return tokens[:24]
 
 
 def _score(text: str, title: str, tokens: list[str]) -> float:
@@ -104,24 +159,38 @@ async def search_knowledge(
         async with AsyncSessionLocal() as db:
             hot_results: list[dict[str, Any]] = []
             if session_id:
-                state = await db.scalar(select(ConversationState).where(ConversationState.session_id == session_id))
-                for item in (getattr(state, "last_results", None) or []) if state is not None else []:
-                    if not isinstance(item, dict) or not str(item.get("source_type", "")).startswith("knowledge"):
+                state = await db.scalar(
+                    select(ConversationState).where(ConversationState.session_id == session_id)
+                )
+                for item in (
+                    (getattr(state, "last_results", None) or []) if state is not None else []
+                ):
+                    if not isinstance(item, dict) or not str(
+                        item.get("source_type", "")
+                    ).startswith("knowledge"):
                         continue
                     body = str(item.get("text") or item.get("summary") or "")
                     title = str(item.get("title") or "Knowledge")
                     if any(token in f"{title} {body}".lower() for token in tokens):
-                        hot_results.append({
-                            **item,
-                            "source_type": item.get("source_type", "knowledge_page"),
-                            "score": max(float(item.get("score", 0.0) or 0.0), 0.95),
-                            "evidence_tier": "hot",
-                            "disclosure_stage": "hot",
-                            "provenance": {**(item.get("provenance") or {}), "session_id": session_id},
-                        })
+                        hot_results.append(
+                            {
+                                **item,
+                                "source_type": item.get("source_type", "knowledge_page"),
+                                "score": max(float(item.get("score", 0.0) or 0.0), 0.95),
+                                "evidence_tier": "hot",
+                                "disclosure_stage": "hot",
+                                "provenance": {
+                                    **(item.get("provenance") or {}),
+                                    "session_id": session_id,
+                                },
+                            }
+                        )
             page_stmt = (
                 select(KnowledgePage, KnowledgeSource, KnowledgeSourceVersion)
-                .join(KnowledgeSourceVersion, KnowledgePage.source_version_id == KnowledgeSourceVersion.id)
+                .join(
+                    KnowledgeSourceVersion,
+                    KnowledgePage.source_version_id == KnowledgeSourceVersion.id,
+                )
                 .join(KnowledgeSource, KnowledgeSourceVersion.source_id == KnowledgeSource.id)
                 .where(
                     KnowledgePage.tenant_id == tenant,
@@ -137,7 +206,9 @@ async def search_knowledge(
             page_filters = []
             for token in tokens:
                 like = f"%{token}%"
-                page_filters.extend((KnowledgePage.title.ilike(like), KnowledgePage.content.ilike(like)))
+                page_filters.extend(
+                    (KnowledgePage.title.ilike(like), KnowledgePage.content.ilike(like))
+                )
             page_search = func.to_tsvector(
                 "simple", func.concat(KnowledgePage.title, " ", KnowledgePage.content)
             )
@@ -153,7 +224,10 @@ async def search_knowledge(
             claim_stmt = (
                 select(KnowledgeClaim, KnowledgePage, KnowledgeSource, KnowledgeSourceVersion)
                 .join(KnowledgePage, KnowledgeClaim.page_id == KnowledgePage.id)
-                .join(KnowledgeSourceVersion, KnowledgeClaim.source_version_id == KnowledgeSourceVersion.id)
+                .join(
+                    KnowledgeSourceVersion,
+                    KnowledgeClaim.source_version_id == KnowledgeSourceVersion.id,
+                )
                 .join(KnowledgeSource, KnowledgeSourceVersion.source_id == KnowledgeSource.id)
                 .where(
                     KnowledgeClaim.tenant_id == tenant,
@@ -181,7 +255,8 @@ async def search_knowledge(
             ).all()
 
             relation_rows = []
-            relation_query = query_type in {"relation", "comparison"} or any(
+            effective_query_type = query_type or infer_knowledge_query_type(query)
+            relation_query = effective_query_type in {"relation", "comparison"} or any(
                 marker in (query or "") for marker in ("关系", "区别", "对比", "关联", "依赖")
             )
             if relation_query:
@@ -234,7 +309,7 @@ async def search_knowledge(
                         relation_stmt.where(or_(*relation_filters)).limit(max(top_k * 3, 12))
                     )
                 ).all()
-                max_hops = build_knowledge_query_plan(query_type or "relation", top_k).max_hops
+                max_hops = build_knowledge_query_plan(effective_query_type, top_k).max_hops
                 if max_hops > 1:
                     # Expand a bounded graph around pages already matched by
                     # lexical/FTS retrieval.  This is intentionally bounded
@@ -244,7 +319,10 @@ async def search_knowledge(
                     graph_rows = (
                         await db.execute(
                             relation_stmt.order_by(KnowledgeRelation.confidence.desc()).limit(
-                                max(int(getattr(settings, "knowledge_query_candidate_budget", 60)), top_k * 6)
+                                max(
+                                    int(getattr(settings, "knowledge_query_candidate_budget", 60)),
+                                    top_k * 6,
+                                )
                             )
                         )
                     ).all()
@@ -298,7 +376,11 @@ async def search_knowledge(
                 "knowledge_status": page.status,
                 "evidence_tier": "factual",
                 "disclosure_stage": "summary",
-                "provenance": {"source_id": source.id, "source_version_id": version.id, "document_id": source.document_id},
+                "provenance": {
+                    "source_id": source.id,
+                    "source_version_id": version.id,
+                    "document_id": source.document_id,
+                },
             }
         )
     for claim, page, source, version in claim_rows:

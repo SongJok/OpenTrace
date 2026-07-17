@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from infra.config.settings import settings
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import (
+    Attachment,
     Document,
     DocumentChunk,
     KnowledgeClaim,
@@ -24,9 +25,13 @@ from infra.storage.models import (
     KnowledgeRelation,
     KnowledgeSource,
     KnowledgeSourceVersion,
-    Attachment,
 )
-from knowledge.domain import KNOWLEDGE_COMPILER_VERSION, KnowledgeAuthority, KnowledgeStatus, KnowledgeType
+from knowledge.domain import (
+    KNOWLEDGE_COMPILER_VERSION,
+    KnowledgeAuthority,
+    KnowledgeStatus,
+    KnowledgeType,
+)
 from knowledge.rules import active_rule, active_rule_version, validate_compiled_payload
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[。！？.!?；;])\s*|\n+")
@@ -56,12 +61,20 @@ def _chunk_metadata(chunk: DocumentChunk) -> dict[str, Any]:
 
 def _page_type(title: str, content: str) -> str:
     text = f"{title}\n{content}".lower()
+    if title.rstrip().endswith(("?", "？")) or any(
+        token in title for token in ("什么是", "为什么", "如何", "怎么")
+    ):
+        return KnowledgeType.QUESTION.value
     if any(token in text for token in ("步骤", "流程", "如何", "操作", "申请", "办理")):
         return KnowledgeType.PROCEDURE.value
     if any(token in text for token in ("政策", "制度", "规定", "规范", "条例")):
         return KnowledgeType.POLICY.value
     if any(token in text for token in ("指标", "口径", "公式", "计算")):
         return KnowledgeType.METRIC.value
+    if any(token in text for token in ("案例", "复盘", "事故", "故障", "实践")):
+        return KnowledgeType.CASE.value
+    if any(token in title for token in ("术语", "名词", "定义")):
+        return KnowledgeType.TERM.value
     return KnowledgeType.CONCEPT.value
 
 
@@ -106,7 +119,9 @@ def compile_payload(
     )
 
     for index, (heading, section_chunks) in enumerate(grouped.items(), start=1):
-        section_content = "\n".join(chunk.content for chunk in section_chunks if chunk.content).strip()
+        section_content = "\n".join(
+            chunk.content for chunk in section_chunks if chunk.content
+        ).strip()
         if not section_content:
             continue
         slug = slugify(heading, f"section-{index}")
@@ -148,7 +163,11 @@ def compile_payload(
                         "evidence_chunk_id": chunk.id,
                         "evidence_start": (chunk.content or "").find(sentence),
                         "evidence_end": (chunk.content or "").find(sentence) + len(sentence),
-                        "claim_type": "procedure" if page["page_type"] == KnowledgeType.PROCEDURE.value else "fact",
+                        "claim_type": (
+                            "procedure"
+                            if page["page_type"] == KnowledgeType.PROCEDURE.value
+                            else "fact"
+                        ),
                     }
                 )
                 claim_count += 1
@@ -158,25 +177,45 @@ def compile_payload(
                 break
 
     relations: list[dict[str, Any]] = []
+    relation_keys: set[tuple[str, str, str]] = set()
+
+    def add_relation(source_page_id: str, target_page_id: str, relation_type: str) -> None:
+        key = (source_page_id, target_page_id, relation_type)
+        if key in relation_keys or source_page_id == target_page_id:
+            return
+        relation_keys.add(key)
+        relations.append(
+            {
+                "id": stable_id(
+                    "relation",
+                    f"{source_page_id}:{target_page_id}:{relation_type}",
+                ),
+                "source_page_id": source_page_id,
+                "target_page_id": target_page_id,
+                "relation_type": relation_type,
+            }
+        )
+
     for page in pages:
         if page["id"] == overview_id:
             continue
-        relations.extend(
-            (
-                {
-                    "id": stable_id("relation", f"{overview_id}:{page['id']}:contains"),
-                    "source_page_id": overview_id,
-                    "target_page_id": page["id"],
-                    "relation_type": "contains",
-                },
-                {
-                    "id": stable_id("relation", f"{page['id']}:{overview_id}:part_of"),
-                    "source_page_id": page["id"],
-                    "target_page_id": overview_id,
-                    "relation_type": "part_of",
-                },
-            )
-        )
+        add_relation(overview_id, page["id"], "contains")
+        add_relation(page["id"], overview_id, "part_of")
+
+    # 在确定性编译阶段建立 Obsidian 风格的语义链接种子。只在一个章节正文
+    # 明确提到另一章节标题时建边，避免模型推断造成不可追溯的图谱关系。
+    section_pages = [page for page in pages if page["id"] != overview_id]
+    for source_page in section_pages:
+        source_text = source_page["content"].lower()
+        for target_page in section_pages:
+            target_title = target_page["title"].strip()
+            if (
+                source_page["id"] != target_page["id"]
+                and len(target_title) >= 2
+                and target_title.lower() in source_text
+            ):
+                add_relation(source_page["id"], target_page["id"], "references")
+                add_relation(target_page["id"], source_page["id"], "referenced_by")
     return pages, claims, relations
 
 
@@ -362,8 +401,12 @@ async def compile_document_knowledge_in_session(
         chunks = list(chunks_result.scalars().all())
         if not chunks:
             raise ValueError("document_has_no_chunks")
-        await db.execute(delete(KnowledgeRelation).where(KnowledgeRelation.source_version_id == version.id))
-        await db.execute(delete(KnowledgeClaim).where(KnowledgeClaim.source_version_id == version.id))
+        await db.execute(
+            delete(KnowledgeRelation).where(KnowledgeRelation.source_version_id == version.id)
+        )
+        await db.execute(
+            delete(KnowledgeClaim).where(KnowledgeClaim.source_version_id == version.id)
+        )
         await db.execute(delete(KnowledgePage).where(KnowledgePage.source_version_id == version.id))
         pages, claims, relations = compile_payload(
             document_id=document.id,
@@ -394,7 +437,9 @@ async def compile_document_knowledge_in_session(
                         "chunk_ids": page["chunk_ids"],
                         "compiler_version": KNOWLEDGE_COMPILER_VERSION,
                         "rule_version": rule_version,
-                        "rule_instructions": (rule.instructions[:1000] if rule and rule.instructions else None),
+                        "rule_instructions": (
+                            rule.instructions[:1000] if rule and rule.instructions else None
+                        ),
                     },
                 )
             )
@@ -421,7 +466,10 @@ async def compile_document_knowledge_in_session(
                     authority=KnowledgeAuthority.CONTEXTUAL.value,
                     confidence=0.68,
                     status=publication_status,
-                    claim_metadata={"compiler_version": KNOWLEDGE_COMPILER_VERSION, "rule_version": rule_version},
+                    claim_metadata={
+                        "compiler_version": KNOWLEDGE_COMPILER_VERSION,
+                        "rule_version": rule_version,
+                    },
                 )
             )
         await db.flush()
@@ -439,7 +487,10 @@ async def compile_document_knowledge_in_session(
                     authority=KnowledgeAuthority.CONTEXTUAL.value,
                     confidence=0.9,
                     status=publication_status,
-                    relation_metadata={"compiler_version": KNOWLEDGE_COMPILER_VERSION, "rule_version": rule_version},
+                    relation_metadata={
+                        "compiler_version": KNOWLEDGE_COMPILER_VERSION,
+                        "rule_version": rule_version,
+                    },
                 )
             )
         await db.flush()
@@ -486,7 +537,11 @@ async def compile_document_knowledge_in_session(
             if attachment_id:
                 attachment = await db.get(Attachment, attachment_id)
                 if attachment is not None:
-                    attachment.ingest_status = "published" if publication_status == KnowledgeStatus.PUBLISHED.value else "review"
+                    attachment.ingest_status = (
+                        "published"
+                        if publication_status == KnowledgeStatus.PUBLISHED.value
+                        else "review"
+                    )
                     attachment.promoted_document_id = document.id
                     attachment.asset_metadata = {
                         **(attachment.asset_metadata or {}),

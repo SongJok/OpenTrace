@@ -27,7 +27,9 @@ for arg in "$@"; do
   case "$arg" in
     --backend-only) BACKEND_ONLY=1 ;;
     --frontend-only) FRONTEND_ONLY=1 ;;
-    --with-observability|--verify) EXTRA_BACKEND_ARGS+=("$arg") ;;
+    --with-observability|--verify|--build|--rebuild|--no-build|--pull)
+      EXTRA_BACKEND_ARGS+=("$arg")
+      ;;
     -h|--help)
       sed -n '2,14p' "$0"
       exit 0

@@ -1,0 +1,51 @@
+# Git / IDE
+.git
+.gitignore
+.github
+.idea
+.vscode
+.claude
+.trae
+.DS_Store
+**/.DS_Store
+**/._*
+**/__MACOSX
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Python local environments and generated caches
+.venv
+venv
+env
+**/__pycache__
+**/*.py[cod]
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Runtime state and local artifacts
+.runtime
+.tmp
+*.log
+*.pid
+
+# Frontend is built and served outside the backend image
+frontend
+node_modules
+
+# Development-only content
+tests
+docs
+*.md
+SUMMARY.md
+KB_ORCHESTRATION_COMPLETE.md
+
+# Packaging / build output
+build
+dist
+*.egg-info
