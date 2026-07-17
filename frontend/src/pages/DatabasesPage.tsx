@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronLeft, Database, Plus, Trash2, RefreshCw, PlayCircle, BarChart3, Table2, Settings2, Search, Pencil, Circle, Zap } from 'lucide-react'
+import { ChevronLeft, Database, Plus, Trash2, RefreshCw, PlayCircle, BarChart3, Table2, Settings2, Search, Pencil, Circle, Zap, Gauge, ShieldCheck, Users } from 'lucide-react'
 import DatabaseTypeSelect, { DATABASE_HOST_MODE_OPTIONS, type DatabaseHostMode, type DatabaseType } from '../components/DatabaseTypeSelect'
 import MarkdownMessage from '../components/MarkdownMessage'
 import { useAuthStore } from '../store/auth'
@@ -26,17 +26,24 @@ import {
   apiGetSemanticConfig,
   apiUpdateSemanticConfig,
   apiAutoExtractSemantic,
+  apiGetDatabaseWorkbench,
+  apiValidateDatabase,
+  apiListPermissionSubjects,
+  apiListResourcePermissions,
+  apiGrantResourcePermission,
+  apiRevokeResourcePermission,
   type DataSourceItem,
+  type ResourcePermissionItem,
 } from '../api/client'
 
-type TabKey = 'tables' | 'query' | 'analysis' | 'settings' | 'metrics' | 'relationships' | 'skills'
+type TabKey = 'overview' | 'tables' | 'query' | 'analysis' | 'settings' | 'metrics' | 'relationships' | 'skills'
 
 export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((s) => s.token)!
   const requestPrefill = useChatPreferences((state) => state.requestPrefill)
   const [items, setItems] = useState<DataSourceItem[]>([])
   const [selected, setSelected] = useState<DataSourceItem | null>(null)
-  const [activeTab, setActiveTab] = useState<TabKey>('query')
+  const [activeTab, setActiveTab] = useState<TabKey>('overview')
   const [question, setQuestion] = useState('过去30天订单趋势')
   const [queryOutput, setQueryOutput] = useState<{
     answer?: string
@@ -84,6 +91,12 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const [metricsList, setMetricsList] = useState<any[]>([])
   const [relationshipsList, setRelationshipsList] = useState<any[]>([])
   const [skillsList, setSkillsList] = useState<any[]>([])
+  const [workbench, setWorkbench] = useState<any>(null)
+  const [validating, setValidating] = useState(false)
+  const [permissions, setPermissions] = useState<ResourcePermissionItem[]>([])
+  const [subjects, setSubjects] = useState<Array<{ id: string; email: string; display_name?: string }>>([])
+  const [grantUserId, setGrantUserId] = useState('')
+  const [grantLevel, setGrantLevel] = useState<'view' | 'query' | 'edit' | 'admin'>('query')
 
   const [form, setForm] = useState({
     name: '',
@@ -140,7 +153,24 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     apiFetch(`/api/v1/metrics?data_source_id=${selected.id}`, token).then((x) => setMetricsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setMetricsList([]))
     apiFetch(`/api/v1/table-relationships?data_source_id=${selected.id}`, token).then((x) => setRelationshipsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setRelationshipsList([]))
     apiFetch(`/api/v1/analytical-skills`, token).then((x) => setSkillsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setSkillsList([]))
+    apiGetDatabaseWorkbench(token, selected.id).then(setWorkbench).catch(() => setWorkbench(null))
+    apiListResourcePermissions(token, 'data_source', selected.id).then(setPermissions).catch(() => setPermissions([]))
+    apiListPermissionSubjects(token).then(setSubjects).catch(() => setSubjects([]))
   }, [selected?.id, token])
+
+  const validateWorkbench = async () => {
+    if (!selected) return
+    setValidating(true)
+    try { setWorkbench(await apiValidateDatabase(token, selected.id)); await load() }
+    catch (e: any) { alert(e?.message || '验证失败') }
+    finally { setValidating(false) }
+  }
+
+  const grantPermission = async () => {
+    if (!selected || !grantUserId) return
+    await apiGrantResourcePermission(token, { subject_user_id: grantUserId, resource_type: 'data_source', resource_id: selected.id, permission: grantLevel })
+    setPermissions(await apiListResourcePermissions(token, 'data_source', selected.id))
+  }
 
   useEffect(() => {
     setForm((f) => ({
@@ -408,7 +438,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                         jdbc: buildJdbc(f.source_type, host || f.host, f.port, f.database, getDefaultJdbcParams(f.source_type)),
                       }
                     })}
-                    className={`rounded-xl border px-3 py-2 text-left text-xs ${form.host_mode === opt.value ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)] bg-[var(--surface-raised)]'}`}
+                    className={`rounded-xl border px-3 py-2 text-left text-xs ${form.host_mode === opt.value ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)] bg-[var(--surface-raised)]'}`}
                   >
                     <div className="font-semibold">{opt.label}</div>
                     <div className="mt-0.5 text-[11px] text-[var(--text-secondary)]">{opt.hint}</div>
@@ -517,6 +547,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
               </div>
 
               <div className="flex gap-2 border-b border-[var(--border)] pb-2">
+                <TabButton active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} icon={<Gauge size={14} />} label="总览" />
                 <TabButton active={activeTab === 'tables'} onClick={() => setActiveTab('tables')} icon={<Table2 size={14} />} label="Tables" />
                 <TabButton active={activeTab === 'query'} onClick={() => setActiveTab('query')} icon={<Search size={14} />} label="Query" />
                 <TabButton active={activeTab === 'analysis'} onClick={() => setActiveTab('analysis')} icon={<BarChart3 size={14} />} label="Analysis" />
@@ -525,6 +556,19 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                 <TabButton active={activeTab === 'skills'} onClick={() => setActiveTab('skills')} icon={<Zap size={14} />} label="分析技能" />
                 <TabButton active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} icon={<Settings2 size={14} />} label="Settings" />
               </div>
+
+              {activeTab === 'overview' ? (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between rounded-xl border border-[var(--border)] p-4"><div><div className="text-xs text-[var(--text-secondary)]">数据工作台健康度</div><div className="mt-1 text-3xl font-semibold">{workbench?.health_score ?? 0}<span className="text-sm text-[var(--text-secondary)]">/100</span></div></div><button disabled={validating} onClick={() => void validateWorkbench()} className="rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-50"><ShieldCheck size={13} className="mr-1 inline" />{validating ? '验证中…' : '执行全链路验证'}</button></div>
+                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[
+                    ['连接', workbench?.checks?.connection, workbench?.source?.status || 'unknown'],
+                    ['表结构', workbench?.checks?.schema, `${workbench?.schema?.table_count ?? 0} 张表`],
+                    ['依赖关系', workbench?.checks?.relationships, `${workbench?.relationships?.verified ?? 0}/${workbench?.relationships?.total ?? 0} 已验证`],
+                    ['指标资产', workbench?.checks?.metrics, `${workbench?.metrics?.published ?? 0}/${workbench?.metrics?.total ?? 0} 已发布`],
+                  ].map(([label, ok, detail]) => <div key={String(label)} className="rounded-xl border border-[var(--border)] p-3"><div className={`text-xs ${ok ? 'text-emerald-500' : 'text-amber-500'}`}>{ok ? '✓ 正常' : '○ 待完善'}</div><div className="mt-2 text-sm font-medium">{label}</div><div className="mt-1 text-[11px] text-[var(--text-secondary)]">{detail}</div></div>)}</div>
+                  <div className="grid gap-3 md:grid-cols-2"><div className="rounded-xl border border-[var(--border)] p-4"><div className="text-xs font-medium">AI 问数质量</div><div className="mt-3 text-2xl font-semibold">{workbench?.queries?.success_rate == null ? '—' : `${Math.round(workbench.queries.success_rate * 100)}%`}</div><div className="text-[11px] text-[var(--text-secondary)]">累计 {workbench?.queries?.total ?? 0} 次查询</div></div><div className="rounded-xl border border-[var(--border)] p-4"><div className="text-xs font-medium">推荐下一步</div><p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">{!workbench?.checks?.schema ? '先同步 Schema，生成表结构资产。' : !workbench?.checks?.relationships ? '补充并验证表依赖，减少错误 JOIN。' : !workbench?.checks?.metrics ? '发布业务指标口径，提高问数一致性。' : '资产已就绪，可直接从 Query 或主问答发起分析。'}</p></div></div>
+                </div>
+              ) : null}
 
               {activeTab === 'tables' ? (
                 <div className="space-y-2">
@@ -875,9 +919,16 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                   </div>
 
                   <div className="rounded border border-[var(--border)] p-4 space-y-3">
+                    <h3 className="inline-flex items-center gap-2 text-sm font-semibold"><Users size={14} />共享与权限</h3>
+                    <p className="text-xs text-[var(--text-secondary)]">view 仅查看资产；query 可执行问数；edit 可维护 Schema、指标和关系；admin 可继续授权。</p>
+                    <div className="grid gap-2 sm:grid-cols-[1fr_120px_auto]"><select value={grantUserId} onChange={(e) => setGrantUserId(e.target.value)} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"><option value="">选择用户</option>{subjects.map((user) => <option key={user.id} value={user.id}>{user.display_name || user.email} · {user.email}</option>)}</select><select value={grantLevel} onChange={(e) => setGrantLevel(e.target.value as typeof grantLevel)} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"><option value="view">view</option><option value="query">query</option><option value="edit">edit</option><option value="admin">admin</option></select><button onClick={() => void grantPermission()} className="rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]">授权</button></div>
+                    <div className="space-y-2">{permissions.map((permission) => <div key={permission.id} className="flex items-center rounded bg-[var(--surface-raised)] px-3 py-2 text-xs"><span className="min-w-0 flex-1 truncate">{permission.subject_email}</span><span className="mr-3 rounded-full border border-[var(--border)] px-2 py-0.5">{permission.permission}</span><button onClick={async () => { await apiRevokeResourcePermission(token, permission.id); setPermissions((items) => items.filter((item) => item.id !== permission.id)) }} className="text-red-500"><Trash2 size={12} /></button></div>)}</div>
+                  </div>
+
+                  <div className="rounded border border-[var(--border)] p-4 space-y-3">
                     <div className="flex items-center justify-between">
                       <h3 className="text-sm font-semibold inline-flex items-center gap-1.5"><Zap size={14} /> 语义层配置</h3>
-                      <button onClick={() => void handleAutoExtractSemantic()} className="px-2 py-1 rounded bg-[var(--accent)]/10 text-[var(--accent)] text-xs inline-flex items-center gap-1"><Zap size={12} /> 自动提取</button>
+                      <button onClick={() => void handleAutoExtractSemantic()} className="px-2 py-1 rounded bg-[var(--accent-dim)] text-[var(--accent)] text-xs inline-flex items-center gap-1"><Zap size={12} /> 自动提取</button>
                     </div>
                     <p className="text-xs text-[var(--text-secondary)]">配置业务术语到数据库字段的映射，提升 Text2SQL 准确度。</p>
 

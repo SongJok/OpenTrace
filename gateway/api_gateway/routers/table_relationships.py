@@ -19,7 +19,7 @@ from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.routers.auth import get_current_user
-from gateway.api_gateway.resource_scope import get_owned_data_source, normalized_tenant_scope
+from gateway.api_gateway.resource_scope import accessible_data_sources_statement, get_accessible_data_source
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
@@ -30,15 +30,12 @@ router = APIRouter()
 
 def _scoped_relationships_statement(request: Request, current_user: User):
     tenant_md = build_tenant_metadata(request, user_id=current_user.id)
-    tenant_id, workspace_id = normalized_tenant_scope(tenant_md)
+    accessible_ids = accessible_data_sources_statement(
+        user_id=current_user.id, tenant_metadata=tenant_md, required_permission="view",
+    ).with_only_columns(DataSource.id)
     return (
         select(TableRelationship)
-        .join(DataSource, TableRelationship.data_source_id == DataSource.id)
-        .where(
-            DataSource.user_id == current_user.id,
-            DataSource.tenant_id == tenant_id,
-            DataSource.workspace_id == workspace_id,
-        )
+        .where(TableRelationship.data_source_id.in_(accessible_ids))
     )
 
 
@@ -47,13 +44,15 @@ async def _require_owned_source(
     request: Request,
     current_user: User,
     data_source_id: str,
+    required_permission: str = "view",
 ) -> DataSource:
     tenant_md = build_tenant_metadata(request, user_id=current_user.id)
-    source = await get_owned_data_source(
+    source = await get_accessible_data_source(
         db,
         user_id=current_user.id,
         tenant_metadata=tenant_md,
         data_source_id=data_source_id,
+        required_permission=required_permission,
     )
     if source is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="data source not found")
@@ -168,7 +167,7 @@ async def create_relationship(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Create a new table relationship."""
-    await _require_owned_source(db, http_request, current_user, req.data_source_id)
+    await _require_owned_source(db, http_request, current_user, req.data_source_id, "edit")
     rel = TableRelationship(
         data_source_id=req.data_source_id,
         left_table=req.left_table,
@@ -202,6 +201,7 @@ async def update_relationship(
     rel = result.scalar()
     if not rel:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="relationship not found")
+    await _require_owned_source(db, http_request, current_user, rel.data_source_id, "edit")
 
     for key, val in req.dict(exclude_unset=True, exclude_none=True).items():
         setattr(rel, key, val)
@@ -226,6 +226,7 @@ async def delete_relationship(
     rel = result.scalar()
     if not rel:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="relationship not found")
+    await _require_owned_source(db, http_request, current_user, rel.data_source_id, "edit")
     await db.delete(rel)
     await db.commit()
     return {"deleted": True, "relationship_id": rel_id}
@@ -249,6 +250,7 @@ async def verify_relationship(
     rel = result.scalar()
     if not rel:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="relationship not found")
+    await _require_owned_source(db, http_request, current_user, rel.data_source_id, "edit")
 
     rel.is_verified = True
     rel.verified_by = current_user.id

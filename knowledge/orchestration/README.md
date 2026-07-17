@@ -15,6 +15,35 @@ KnowledgeSource/Version → Page/Claim/Relation
 durable compilation jobs
 ```
 
+## 在产品页面中使用
+
+1. 在问答页选择一个 Project，再进入侧边栏的“知识编排”；页面会沿用当前 Project。
+2. 将 PDF、DOCX、Markdown 或 TXT 拖入上传区。
+3. 选择“自动纳入问答”或“人工审核后纳入问答”。自动模式会在编译成功后发布；审核模式需要调用发布接口。
+4. 在实体图谱、依赖关系、来源网络间切换，查看当前 Project 的节点、关系与可追溯来源。
+5. 如需立即扫描所有已上传文件，点击“立即编排”。Worker 还会按 `KNOWLEDGE_RECONCILE_SECONDS` 周期兜底扫描变更。
+
+主问答的 RAG Agent 默认按 `knowledge → documents → semantic_memory` 检索，并携带当前
+`project_id`。因此已发布知识无需手工添加到 prompt；切换 Project 后检索边界也会同步切换。
+
+部署时必须运行数据库迁移和 Agent Worker：
+
+```bash
+alembic upgrade head
+docker compose up -d api agent-worker
+```
+
+关键配置：
+
+```dotenv
+KNOWLEDGE_ORCHESTRATION_ENABLED=true
+KNOWLEDGE_QUERY_ENABLED=true
+KNOWLEDGE_AUTO_COMPILE_ENABLED=true
+KNOWLEDGE_AUTO_PUBLISH=true
+KNOWLEDGE_JOB_POLL_SECONDS=2
+KNOWLEDGE_RECONCILE_SECONDS=300
+```
+
 ## 分层
 
 - 数据层：`Document`、`DocumentChunk` 和 `.manifest.json`。

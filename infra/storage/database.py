@@ -230,6 +230,11 @@ async def _verify_runtime_schema(conn) -> None:
         "goal_checkpoints",
         "memory_candidates",
         "memory_evidence",
+        "alert_rules",
+        "alert_events",
+        "skill_catalog_entries",
+        "user_skill_installations",
+        "resource_permissions",
     }
     table_rows = await conn.execute(
         text(

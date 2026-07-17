@@ -18,6 +18,7 @@ import RulesPage from './pages/RulesPage'
 import KnowledgeCenterPage from './pages/KnowledgeCenterPage'
 import SharedConversationPage from './pages/SharedConversationPage'
 import WorkPage from './pages/WorkPage'
+import AlertsPage from './pages/AlertsPage'
 
 function Protected({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -80,6 +81,11 @@ function KnowledgeRoute() {
   return <KnowledgeCenterPage onBack={() => navigate('/chat')} />
 }
 
+function AlertsRoute() {
+  const navigate = useNavigate()
+  return <AlertsPage onBack={() => navigate('/chat')} />
+}
+
 export default function App() {
   const token = useAuthStore((s) => s.token)
   const mode = useThemeStore((s) => s.mode)
@@ -114,6 +120,7 @@ export default function App() {
       <Route path="/skills" element={<Protected><SkillsRoute /></Protected>} />
       <Route path="/rules" element={<Protected><RulesRoute /></Protected>} />
       <Route path="/knowledge" element={<Protected><KnowledgeRoute /></Protected>} />
+      <Route path="/alerts" element={<Protected><AlertsRoute /></Protected>} />
       <Route path="/permissions" element={<Protected><PermissionsPage /></Protected>} />
 
       <Route path="*" element={<Navigate to={token ? '/chat' : '/login'} replace />} />

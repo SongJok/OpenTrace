@@ -369,10 +369,11 @@ class DocumentPlugin(BasePlugin):
         *,
         tenant_id: str | None = None,
         workspace_id: str | None = None,
+        project_id: str | None = None,
     ) -> list[ContextChunk]:
         from kernel.context_builder import ContextChunk
 
-        scope = dict(tenant_id=tenant_id, workspace_id=workspace_id)
+        scope = dict(tenant_id=tenant_id, workspace_id=workspace_id, project_id=project_id)
         try:
             candidates = await fetch_document_candidates(
                 user_id=user_id, query=query, limit=200, **scope
@@ -410,6 +411,7 @@ class DocumentPlugin(BasePlugin):
         *,
         tenant_id: str | None = None,
         workspace_id: str | None = None,
+        project_id: str | None = None,
     ) -> list[ContextChunk]:
         from kernel.context_builder import ContextChunk
 
@@ -440,6 +442,8 @@ class DocumentPlugin(BasePlugin):
             tid = (tenant_id or "").strip() or "default"
             wid = (workspace_id or "").strip() or "default"
             stmt = stmt.where(Document.tenant_id == tid).where(Document.workspace_id == wid)
+            if project_id:
+                stmt = stmt.where(Document.project_id == project_id)
             if terms:
                 like_filters = []
                 for term in terms[:8]:

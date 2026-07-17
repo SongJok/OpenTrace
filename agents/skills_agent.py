@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import json
 from agents.base import BaseAgent, AgentResult, TaskMessage
-from infra.config.settings import settings
 from kernel.result_reference import ResultRef, serialize_refs
 from skills.store.marketplace import marketplace
 
@@ -19,20 +18,11 @@ _SKILL_TIMEOUT_SEC = 10.0
 
 
 class SkillsAgent(BaseAgent):
+    """Execute an explicitly enabled, installed Skill for specialized workflows."""
     def __init__(self) -> None:
         super().__init__(agent_type="skills")
 
     async def execute(self, task: TaskMessage) -> AgentResult:
-        if not settings.skills_inprocess_execution_enabled:
-            return AgentResult(
-                task_id=task.task_id,
-                agent_type=self.agent_type,
-                status="error",
-                content="技能执行已被系统安全策略禁用。",
-                confidence=0.0,
-                error="skill execution disabled by policy",
-                metadata={"policy_blocked": True},
-            )
         skills = marketplace.list_installed()
         if not skills:
             return AgentResult(
@@ -46,7 +36,7 @@ class SkillsAgent(BaseAgent):
 
         # Filter by enabled_skills whitelist if provided
         enabled_ids: list[str] | None = (task.params or {}).get("enabled_skills")
-        if enabled_ids:
+        if enabled_ids is not None:
             skills = [s for s in skills if s.skill_id in enabled_ids]
             if not skills:
                 return AgentResult(
@@ -64,14 +54,20 @@ class SkillsAgent(BaseAgent):
         best_result = None
         best_score = 0.0
 
-        for skill in skills:
+        ranked = sorted(
+            ((_score_match(skill, task.query, force_mode), skill) for skill in skills),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        max_skills = max(1, min(int((task.params or {}).get("max_skills", 3) or 3), 5))
+        for precomputed_score, skill in ranked[:max_skills]:
             try:
                 outcome = await asyncio.wait_for(
                     asyncio.to_thread(marketplace.test_skill, skill.skill_id, test_input),
                     timeout=_SKILL_TIMEOUT_SEC,
                 )
                 if outcome.get("success"):
-                    score = _score_match(skill, task.query, force_mode)
+                    score = precomputed_score
                     results.append({"skill_id": skill.skill_id, "name": skill.name, "score": score, "output": outcome.get("output")})
                     if score > best_score:
                         best_score = score

@@ -36,7 +36,7 @@ from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
 from infra.observability.logger import get_logger
 from infra.storage.database import db_session_dependency as get_db
-from infra.storage.models import Document, DocumentChunk, DocumentLLMWiki, User
+from infra.storage.models import Document, DocumentChunk, DocumentLLMWiki, Project, User
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -58,6 +58,7 @@ class DocumentOut(BaseModel):
     chunk_strategy: int = 1
     version: int
     status: str
+    project_id: str | None = None
     created_at: str
     updated_at: str
     metadata: dict
@@ -70,6 +71,7 @@ class DocumentDetail(DocumentOut):
 class SearchRequest(BaseModel):
     query: str
     top_k: int = 6
+    project_id: str | None = None
 
 
 class SearchResult(BaseModel):
@@ -529,6 +531,7 @@ def _doc_out(d: Document) -> DocumentOut:
         chunk_strategy=getattr(d, "chunk_strategy", 1) or 1,
         version=d.version,
         status=d.status,
+        project_id=d.project_id,
         created_at=d.created_at.isoformat(),
         updated_at=d.updated_at.isoformat(),
         metadata=meta,
@@ -540,6 +543,7 @@ def _doc_out(d: Document) -> DocumentOut:
 @router.get("/documents", response_model=list[DocumentOut])
 async def list_documents(
     http_request: Request,
+    project_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
@@ -550,6 +554,7 @@ async def list_documents(
         scoped_documents_statement(
             user_id=current_user.id,
             tenant_metadata=tenant_md,
+            project_id=project_id,
         )
         .order_by(Document.created_at.desc())
         .limit(limit)
@@ -565,6 +570,8 @@ async def upload_document(
     file: UploadFile = File(...),
     title: Optional[str] = Form(None),
     chunk_strategy: int = Form(1),
+    project_id: Optional[str] = Form(None),
+    publish_policy: str = Form("auto"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentOut:
@@ -576,18 +583,38 @@ async def upload_document(
     tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
     doc_tenant = str(tenant_md.get("tenant_id") or "default")
     doc_workspace = str(tenant_md.get("workspace_id") or "default")
+    if project_id:
+        project = await db.scalar(
+            select(Project.id).where(
+                Project.id == project_id,
+                Project.user_id == current_user.id,
+                Project.tenant_id == doc_tenant,
+                Project.workspace_id == doc_workspace,
+                Project.archived_at.is_(None),
+            )
+        )
+        if project is None:
+            raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project not found")
+    normalized_publish_policy = publish_policy.strip().lower()
+    if normalized_publish_policy not in {"auto", "review"}:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="publish_policy must be auto or review")
 
     doc = Document(
         id=str(uuid.uuid4()),
         owner_id=current_user.id,
         tenant_id=doc_tenant,
         workspace_id=doc_workspace,
+        project_id=project_id,
         title=title or filename,
         file_type=ext,
         file_size=len(raw),
         version=1,
         status="pending",
         chunk_strategy=max(1, min(chunk_strategy, 8)),
+        doc_metadata=json.dumps(
+            {"project_id": project_id, "publish_policy": normalized_publish_policy},
+            ensure_ascii=False,
+        ),
     )
     db.add(doc)
     await db.commit()
@@ -765,6 +792,7 @@ async def search_documents(
         limit=200,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
+        project_id=req.project_id,
     )
     scored = await score_document_candidates(query=req.query, candidates=candidates)
     return [

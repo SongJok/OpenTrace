@@ -187,7 +187,7 @@ export default function RulesPage({ onBack }: { onBack: () => void }) {
           ) : (
             <div className="space-y-2">
               {rules.map((r) => (
-                <div key={r.id} className={`rounded border p-3 text-xs cursor-pointer transition-colors ${selected?.id === r.id ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-[var(--border)] hover:border-[var(--accent)]/40'}`} onClick={() => { setSelected(r); void viewRule(r) }}>
+                <div key={r.id} className={`rounded border p-3 text-xs cursor-pointer transition-colors ${selected?.id === r.id ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)] hover:border-[var(--accent-border)]'}`} onClick={() => { setSelected(r); void viewRule(r) }}>
                   <div className="flex items-center justify-between">
                     <div className="font-medium text-sm">{r.name}</div>
                     <div className="flex items-center gap-1">

@@ -33,7 +33,7 @@ export default function DatabaseTypeSelect({
           key={opt.value}
           type="button"
           onClick={() => onChange(opt.value)}
-          className={`rounded-xl border px-3 py-2 text-left transition ${value === opt.value ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)] bg-[var(--surface-raised)] hover:bg-[var(--surface)]'}`}
+          className={`rounded-xl border px-3 py-2 text-left transition ${value === opt.value ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)] bg-[var(--surface-raised)] hover:bg-[var(--surface)]'}`}
         >
           <div className="text-sm font-semibold">{opt.label}</div>
           <div className="mt-0.5 text-[11px] text-[var(--text-secondary)]">{opt.hint}</div>

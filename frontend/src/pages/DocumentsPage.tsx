@@ -174,7 +174,7 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
             onClick={() => fileInputRef.current?.click()}
             className={clsx(
               'border-2 border-dashed rounded-2xl p-10 flex flex-col items-center gap-3 cursor-pointer transition-all',
-              dragOver ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-[var(--border)] hover:border-[var(--accent)]/50 hover:bg-[var(--surface)]'
+              dragOver ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)] hover:border-[var(--accent-border)] hover:bg-[var(--surface)]'
             )}
           >
             {uploading ? <Loader2 size={28} className="animate-spin text-[var(--accent)]" /> : <Upload size={28} className="text-[var(--text-secondary)]" />}
@@ -268,7 +268,7 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
               {docs.map((doc) => (
                 <div
                   key={doc.id}
-                  className="group flex items-center gap-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3 hover:border-[var(--accent)]/40 transition-colors"
+                  className="group flex items-center gap-4 bg-[var(--surface)] border border-[var(--border)] rounded-xl px-4 py-3 hover:border-[var(--accent-border)] transition-colors"
                 >
                   <FileText size={18} className="text-[var(--accent)] flex-shrink-0" />
                   <button className="flex-1 min-w-0 text-left" onClick={() => openDetail(doc.id)}>
@@ -300,7 +300,7 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
             className="w-full max-w-xl h-full bg-[var(--bg)] border-l border-[var(--border)] shadow-2xl overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="sticky top-0 bg-[var(--bg)]/95 backdrop-blur border-b border-[var(--border)] px-5 py-4 flex items-center justify-between">
+            <div className="sticky top-0 bg-[var(--bg)] backdrop-blur border-b border-[var(--border)] px-5 py-4 flex items-center justify-between">
               <div>
                 <h2 className="text-base font-semibold">Document details</h2>
                 <p className="text-xs text-[var(--text-secondary)]">{selectedDoc.id}</p>
@@ -308,7 +308,7 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => openDetail(selectedDoc.id)}
-                  className="w-9 h-9 rounded-lg bg-[var(--surface)] border border-[var(--border)] flex items-center justify-center hover:border-[var(--accent)]/40"
+                  className="w-9 h-9 rounded-lg bg-[var(--surface)] border border-[var(--border)] flex items-center justify-center hover:border-[var(--accent-border)]"
                   title="Refresh"
                 >
                   <RefreshCw size={15} />

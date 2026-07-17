@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.routers.auth import get_current_user
-from gateway.api_gateway.resource_scope import get_owned_data_source, normalized_tenant_scope
+from gateway.api_gateway.resource_scope import accessible_data_sources_statement, get_accessible_data_source
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
@@ -30,15 +30,12 @@ router = APIRouter()
 
 def _scoped_metrics_statement(request: Request, current_user: User):
     tenant_md = build_tenant_metadata(request, user_id=current_user.id)
-    tenant_id, workspace_id = normalized_tenant_scope(tenant_md)
+    accessible_ids = accessible_data_sources_statement(
+        user_id=current_user.id, tenant_metadata=tenant_md, required_permission="view",
+    ).with_only_columns(DataSource.id)
     return (
         select(MetricDefinition)
-        .join(DataSource, MetricDefinition.data_source_id == DataSource.id)
-        .where(
-            DataSource.user_id == current_user.id,
-            DataSource.tenant_id == tenant_id,
-            DataSource.workspace_id == workspace_id,
-        )
+        .where(MetricDefinition.data_source_id.in_(accessible_ids))
     )
 
 
@@ -47,13 +44,15 @@ async def _require_owned_source(
     request: Request,
     current_user: User,
     data_source_id: str,
+    required_permission: str = "view",
 ) -> DataSource:
     tenant_md = build_tenant_metadata(request, user_id=current_user.id)
-    source = await get_owned_data_source(
+    source = await get_accessible_data_source(
         db,
         user_id=current_user.id,
         tenant_metadata=tenant_md,
         data_source_id=data_source_id,
+        required_permission=required_permission,
     )
     if source is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="data source not found")
@@ -158,7 +157,7 @@ async def create_metric(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Create a new metric definition."""
-    await _require_owned_source(db, http_request, current_user, req.data_source_id)
+    await _require_owned_source(db, http_request, current_user, req.data_source_id, "edit")
     metric = MetricDefinition(
         data_source_id=req.data_source_id,
         name=req.name,
@@ -198,6 +197,7 @@ async def update_metric(
     existing = result.scalar()
     if not existing:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="metric not found")
+    await _require_owned_source(db, http_request, current_user, existing.data_source_id, "edit")
 
     update_data = req.dict(exclude_unset=True, exclude_none=True)
 
@@ -259,6 +259,7 @@ async def delete_metric(
     metric = result.scalar()
     if not metric:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="metric not found")
+    await _require_owned_source(db, http_request, current_user, metric.data_source_id, "edit")
     await db.delete(metric)
     await db.commit()
     return {"deleted": True, "metric_id": metric_id}
@@ -280,6 +281,7 @@ async def publish_metric(
     metric = result.scalar()
     if not metric:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="metric not found")
+    await _require_owned_source(db, http_request, current_user, metric.data_source_id, "edit")
     if metric.status != "draft":
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="only draft metrics can be published")
 
@@ -308,6 +310,7 @@ async def deprecate_metric(
     metric = result.scalar()
     if not metric:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="metric not found")
+    await _require_owned_source(db, http_request, current_user, metric.data_source_id, "edit")
 
     metric.status = "deprecated"
     await db.commit()

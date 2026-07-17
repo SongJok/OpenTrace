@@ -8,9 +8,10 @@
 :root,
 [data-theme='dark'] {
   --bg:             #1a1a1a;
-  --bg-secondary:   #141414;
-  --surface:        #252525;
-  --surface-raised: #2e2e2e;
+  --bg-secondary:   #1a1a1a;
+  --surface:        #1a1a1a;
+  --surface-raised: #1a1a1a;
+  --surface-hover:  #1a1a1a;
   --border:         #333333;
   --border-subtle:  #2a2a2a;
   --text:           #e8e8e8;
@@ -19,14 +20,15 @@
   --accent:         #10a37f;
   --accent-hover:   #0e8f6e;
   --accent-dim:     rgba(16, 163, 127, 0.12);
+  --accent-border:  rgba(16, 163, 127, 0.42);
   --accent-foreground: #ffffff;
-  --user-bubble:    #252525;
-  --code-bg:        #111111;
+  --user-bubble:    #1a1a1a;
+  --code-bg:        #1a1a1a;
   --scrollbar:      #3a3a3a;
   --shadow:         0 1px 3px rgba(0,0,0,0.4);
-  --hero-shell:     rgba(28, 28, 32, 0.9);
+  --hero-shell:     rgba(26, 26, 26, 0.9);
   --hero-shell-border: rgba(255, 255, 255, 0.08);
-  --hero-pill:      rgba(40, 40, 46, 0.9);
+  --hero-pill:      rgba(26, 26, 26, 0.9);
   --hero-pill-border: rgba(255, 255, 255, 0.08);
   --hero-glow-primary: rgba(108, 92, 255, 0.45);
   --hero-glow-secondary: rgba(56, 189, 248, 0.20);
@@ -36,16 +38,18 @@
   --accent: #f5f5f5;
   --accent-hover: #ffffff;
   --accent-dim: rgba(245, 245, 245, 0.12);
+  --accent-border: rgba(245, 245, 245, 0.42);
   --accent-foreground: #111111;
   --page-radial: radial-gradient(circle at top, rgba(255, 255, 255, 0.08), transparent 24%);
   --page-linear: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent);
 }
 
 [data-accent='black'] {
-  --accent: #111111;
-  --accent-hover: #000000;
-  --accent-dim: rgba(17, 17, 17, 0.12);
-  --accent-foreground: #ffffff;
+  --accent: #e4e4e7;
+  --accent-hover: #fafafa;
+  --accent-dim: rgba(228, 228, 231, 0.12);
+  --accent-border: rgba(228, 228, 231, 0.42);
+  --accent-foreground: #111111;
   --page-radial: radial-gradient(circle at top, rgba(255, 255, 255, 0.04), transparent 22%);
   --page-linear: linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent);
 }
@@ -54,20 +58,23 @@
   --accent: #c86d3a;
   --accent-hover: #b85f2e;
   --accent-dim: rgba(200, 109, 58, 0.12);
+  --accent-border: rgba(200, 109, 58, 0.42);
   --accent-foreground: #ffffff;
 }
 
 [data-theme='light'][data-accent='white'] {
-  --accent: #ffffff;
-  --accent-hover: #f7f7f7;
-  --accent-dim: rgba(255, 255, 255, 0.65);
-  --accent-foreground: #111111;
+  --accent: #52525b;
+  --accent-hover: #3f3f46;
+  --accent-dim: rgba(82, 82, 91, 0.10);
+  --accent-border: rgba(82, 82, 91, 0.38);
+  --accent-foreground: #ffffff;
 }
 
 [data-theme='light'][data-accent='black'] {
   --accent: #111111;
   --accent-hover: #000000;
   --accent-dim: rgba(17, 17, 17, 0.08);
+  --accent-border: rgba(17, 17, 17, 0.36);
   --accent-foreground: #ffffff;
 }
 
@@ -75,28 +82,31 @@
   --accent: #b85f2e;
   --accent-hover: #9f5126;
   --accent-dim: rgba(184, 95, 46, 0.10);
+  --accent-border: rgba(184, 95, 46, 0.38);
   --accent-foreground: #ffffff;
   --page-radial: radial-gradient(circle at top, rgba(255, 255, 255, 0.05), transparent 24%);
   --page-linear: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent);
 }
 
+:root:not([data-theme]),
 [data-theme='light'] {
-  --bg:             #ffffff;
-  --bg-secondary:   #f9f9f9;
-  --surface:        #f4f4f4;
-  --surface-raised: #ebebeb;
+  --bg:             #f7f8fa;
+  --bg-secondary:   #f7f8fa;
+  --surface:        #f7f8fa;
+  --surface-raised: #f7f8fa;
+  --surface-hover:  #f7f8fa;
   --border:         #e0e0e0;
   --border-subtle:  #ececec;
   --text:           #111111;
   --text-secondary: #666666;
   --text-muted:     #aaaaaa;
-  --user-bubble:    #f4f4f4;
-  --code-bg:        #f0f0f0;
+  --user-bubble:    #f7f8fa;
+  --code-bg:        #f7f8fa;
   --scrollbar:      #cccccc;
   --shadow:         0 1px 3px rgba(0,0,0,0.08);
-  --hero-shell:     rgba(255, 255, 255, 0.88);
+  --hero-shell:     rgba(247, 248, 250, 0.9);
   --hero-shell-border: rgba(15, 23, 42, 0.08);
-  --hero-pill:      rgba(255, 255, 255, 0.82);
+  --hero-pill:      rgba(247, 248, 250, 0.9);
   --hero-pill-border: rgba(15, 23, 42, 0.08);
   --hero-glow-primary: rgba(99, 102, 241, 0.34);
   --hero-glow-secondary: rgba(59, 130, 246, 0.12);
@@ -118,7 +128,26 @@ html, body, #root {
   transition: background 0.2s ease, color 0.2s ease;
 }
 
+html { color-scheme: light; }
+html[data-theme='dark'] { color-scheme: dark; }
+
 textarea { resize: none; }
+
+/* Native controls otherwise inherit an OS palette that can conflict with the
+   active application theme (for example white options with white text). */
+button, input, textarea, select { color: inherit; }
+input::placeholder, textarea::placeholder { color: var(--text-muted); opacity: 1; }
+select { color: var(--text); }
+select option { background: var(--surface); color: var(--text); }
+
+:where(button, input, textarea, select, a, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
+}
+
+textarea[data-chat-message-input]:focus-visible {
+  outline: none;
+}
 
 /* ── Scrollbar ────────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar               { width: 5px; height: 5px; }

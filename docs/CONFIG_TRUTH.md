@@ -41,6 +41,18 @@
 | `KNOWLEDGE_JOB_POLL_SECONDS` | `agents.worker` 环境变量 | 持久化编译队列轮询间隔 |
 | `KNOWLEDGE_JOB_RECLAIM_MINUTES` | `agents.worker` 环境变量 | 崩溃 worker 任务回收阈值 |
 
+## Skills 与主动预警
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `SKILLS_GIT_INSTALL_ENABLED` | `false` | 是否允许管理员从 Git 安装动态 Skill |
+| `SKILLS_LOCAL_CREATE_ENABLED` | `false` | 是否允许管理员在平台创建动态 Skill |
+| `SKILLS_SUBPROCESS_EXECUTION_ENABLED` | `false` | 是否允许受限子进程执行 Python Skill |
+| `SKILLS_EXECUTION_TIMEOUT_SECONDS` | `10` | 单次动态 Skill 执行超时（最大 60 秒） |
+| `ALERT_SCHEDULER_POLL_SECONDS` | `10` | Worker 扫描到期预警规则的周期 |
+
+`staging` 与 `production` 会强制关闭动态 Skill 安装、创建、进程内执行和子进程执行。生产部署应把第三方 Skill 放入独立容器/微虚机，并增加网络出口、密钥和文件系统策略；仓库内子进程运行器只用于显式开启的开发环境。
+
 ## LLM 配置组命名
 
 规划模型环境变量前缀为 `DEFAULT_LLM_PLANING_*`（项目内固定拼写 `PLANING`，非 PLANNING）。

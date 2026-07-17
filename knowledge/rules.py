@@ -14,17 +14,12 @@ async def active_rule_version(
     *,
     tenant_id: str,
     workspace_id: str,
+    project_id: str | None = None,
     rule_key: str = "knowledge_compiler",
 ) -> str:
-    row = await db.scalar(
-        select(KnowledgeRule)
-        .where(
-            KnowledgeRule.tenant_id == tenant_id,
-            KnowledgeRule.workspace_id == workspace_id,
-            KnowledgeRule.rule_key == rule_key,
-            KnowledgeRule.status == "approved",
-        )
-        .order_by(desc(KnowledgeRule.version))
+    row = await active_rule(
+        db, tenant_id=tenant_id, workspace_id=workspace_id,
+        project_id=project_id, rule_key=rule_key,
     )
     return f"{rule_key}_v{row.version}" if row else KNOWLEDGE_RULESET_VERSION
 
@@ -34,16 +29,24 @@ async def active_rule(
     *,
     tenant_id: str,
     workspace_id: str,
+    project_id: str | None = None,
     rule_key: str = "knowledge_compiler",
 ) -> KnowledgeRule | None:
-    return await db.scalar(
-        select(KnowledgeRule)
-        .where(
-            KnowledgeRule.tenant_id == tenant_id,
-            KnowledgeRule.workspace_id == workspace_id,
-            KnowledgeRule.rule_key == rule_key,
-            KnowledgeRule.status == "approved",
+    base = (
+        KnowledgeRule.tenant_id == tenant_id,
+        KnowledgeRule.workspace_id == workspace_id,
+        KnowledgeRule.rule_key == rule_key,
+        KnowledgeRule.status == "approved",
+    )
+    if project_id:
+        scoped = await db.scalar(
+            select(KnowledgeRule).where(*base, KnowledgeRule.project_id == project_id)
+            .order_by(desc(KnowledgeRule.version))
         )
+        if scoped is not None:
+            return scoped
+    return await db.scalar(
+        select(KnowledgeRule).where(*base, KnowledgeRule.project_id.is_(None))
         .order_by(desc(KnowledgeRule.version))
     )
 

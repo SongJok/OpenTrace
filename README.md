@@ -12,8 +12,11 @@ OpenTrace 是一个以 Responses API 和可恢复 Agent Loop 为核心的智能�
 - Redis Agent Bus，当前 `.env` 启用 `KERNEL_AGENT_BUS_ENABLED=true`，模式为 `stream`。
 - Qwen/DashScope 是默认且完整的模型栈；不同 Qwen 模型按意图、速度、推理强度和视觉能力分工。
 - RAG 增强链路，包含 Query Rewrite、HyDE、混合检索、Rerank、证据质量门禁和 Web fallback。
-- DataAgent V2，用于 Text2SQL、指标语义、表关系、分析技能、结果解释和高级分析。
-- 多轮分支会话、Projects、Assistant Profiles、自动记忆、Goal、Scheduled Tasks、审计、技能、连接器和文档 API。
+- DataAgent V2，用于受 Project 数据源白名单治理的 Text2SQL、指标语义、表关系、分析技能、结果解释和高级分析。
+- Project 级知识编排：页面上传、自动/定时编译、实体图谱、依赖图和来源网络，并自动进入主问答 RAG。
+- 主动数据预警：自然语言取数、确定性阈值判断、冷却去重、触发/恢复事件和人工确认。
+- Skills 平台：本地创建、策略控制的 Git 安装、测试、会话白名单和受限子进程执行。
+- 多轮分支会话、Projects、Assistant Profiles、自动记忆、Goal、Scheduled Tasks、审计、连接器和文档 API。
 - OpenTelemetry、Prometheus、Jaeger 可选观测栈。
 - React + Vite 前端，默认独立运行在 `14108`。
 
@@ -317,7 +320,8 @@ TEXT2SQL_MAX_RETRY=2
 | Conversations | 会话列表、创建、归档、删除、分支和消息读取 |
 | Documents | 文档上传、搜索、详情、更新和删除 |
 | Memories | 记忆列表、创建、更新、删除和设置 |
-| Tasks | 任务创建、暂停、恢复、取消、通知 |
+| Scheduled Tasks | `/api/v2/scheduled-tasks` 创建、预览、启停；每次运行复用完整 Agent Loop |
+| Active Alerts | `/api/v2/alerts/rules` 与 `/api/v2/alerts/events`，支持测试、启停和确认 |
 | Data | `POST /data/query`，schema 同步和读取 |
 | Databases | 数据库连接、连通性测试、schema 同步、SQL 查询、语义层 |
 | Metrics | 指标定义、发布、废弃和 lineage |
@@ -332,6 +336,17 @@ TEXT2SQL_MAX_RETRY=2
 | Cognitive | 认知事件 replay |
 
 完整接口以 `http://localhost:14100/docs` 为准。
+
+### 在主问答中使用
+
+主问答会根据语义选择普通回答、Project 知识、Data Agent、数据分析工具或已启用 Skill。当前会话关联 Project 后，服务端会覆盖模型传入的 tenant/workspace/project，并只允许 Project 白名单中的数据源。可以直接说：
+
+- “根据本项目上传的制度，解释退款审批依赖哪些角色。”
+- “用项目数据源分析最近 30 天退款率，并画趋势图。”
+- “列出我的定时任务”或“每天 9 点汇总昨日销售，先创建草稿”。
+- “当每小时失败订单数大于 20 时创建严重预警”。
+
+创建定时任务或预警属于写操作，会进入 Responses 审批节点；读取、问数和分析不需要写操作审批。
 
 ## 本地开发
 

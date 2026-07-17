@@ -23,6 +23,7 @@ import {
   ShieldCheck,
   Network,
   FolderKanban,
+  Activity,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
@@ -222,6 +223,13 @@ export default function Sidebar() {
           <Bell size={16} className="cartoon-icon icon-task" />
         </button>
         <button
+          onClick={() => navigate('/alerts')}
+          title="主动预警"
+          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+        >
+          <Activity size={16} />
+        </button>
+        <button
           onClick={() => navigate('/audit')}
           className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
         >
@@ -292,6 +300,7 @@ export default function Sidebar() {
       <div className="px-4 pb-3 space-y-2">
         <button onClick={() => navigate('/work')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><FolderKanban size={15} /><span>Projects 与 Goals</span></button>
         <button onClick={() => navigate('/tasks')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Bell size={15} /><span>定时任务</span></button>
+        <button onClick={() => navigate('/alerts')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Activity size={15} /><span>主动预警</span></button>
         <div className="relative rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
           <Search size={14} className="absolute left-3 top-3 text-[var(--text-secondary)]" />
           <input
@@ -396,6 +405,7 @@ export default function Sidebar() {
           <NavButton icon={<Database size={15} className="cartoon-icon icon-database" />} label="数据库" onClick={() => navigate('/databases')} />
           <NavButton icon={<Brain size={15} className="cartoon-icon icon-memory" />} label={t('nav.memories')} onClick={() => navigate('/memories')} />
           <NavButton icon={<Bell size={15} className="cartoon-icon icon-task" />} label={t('nav.tasks')} onClick={() => navigate('/tasks')} />
+          <NavButton icon={<Activity size={15} />} label="主动预警" onClick={() => navigate('/alerts')} />
           <NavButton icon={<ShieldAlert size={15} className="cartoon-icon icon-audit" />} label={t('nav.audit')} onClick={() => navigate('/audit')} />
           <NavButton icon={<Plug size={15} className="cartoon-icon icon-integrations" />} label={t('nav.integrations')} onClick={() => navigate('/integrations')} />
           <NavButton icon={<Wrench size={15} className="cartoon-icon icon-skills" />} label="Skills" onClick={() => navigate('/skills')} />

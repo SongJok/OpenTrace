@@ -145,6 +145,7 @@ export interface DocumentOut {
   chunk_strategy: number
   version: number
   status: 'pending' | 'processing' | 'ready' | 'error'
+  project_id?: string | null
   created_at: string
   updated_at: string
   metadata?: Record<string, unknown>
@@ -173,8 +174,9 @@ export interface SearchResult {
   score: number
 }
 
-export async function apiListDocuments(token: string): Promise<DocumentOut[]> {
-  const res = await apiFetch('/documents', { headers: authHeaders(token) })
+export async function apiListDocuments(token: string, projectId?: string | null): Promise<DocumentOut[]> {
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''
+  const res = await apiFetch(`/documents${query}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error('Failed to list documents')
   return res.json()
 }
@@ -182,12 +184,14 @@ export async function apiListDocuments(token: string): Promise<DocumentOut[]> {
 export async function apiUploadDocument(
   token: string,
   file: File,
-  options?: { title?: string; chunk_strategy?: number }
+  options?: { title?: string; chunk_strategy?: number; project_id?: string | null; publish_policy?: 'auto' | 'review' }
 ): Promise<DocumentOut> {
   const form = new FormData()
   form.append('file', file)
   if (options?.title) form.append('title', options.title)
   if (options?.chunk_strategy) form.append('chunk_strategy', String(options.chunk_strategy))
+  if (options?.project_id) form.append('project_id', options.project_id)
+  if (options?.publish_policy) form.append('publish_policy', options.publish_policy)
   const res = await apiFetch('/documents', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
@@ -196,6 +200,132 @@ export async function apiUploadDocument(
   if (!res.ok) {
     throw new Error(await readApiError(res, 'Upload failed'))
   }
+  return res.json()
+}
+
+export interface KnowledgeSourceItem {
+  id: string
+  document_id?: string | null
+  project_id?: string | null
+  title: string
+  source_type: string
+  authority: string
+  status: string
+  active_version_id?: string | null
+  updated_at?: string | null
+}
+
+export interface KnowledgePageItem {
+  id: string
+  source_id: string
+  title: string
+  type: string
+  summary?: string | null
+  authority: string
+  status: string
+  metadata?: Record<string, unknown>
+}
+
+export interface KnowledgeJobItem {
+  id: string
+  source_id: string
+  status: string
+  project_id?: string | null
+  error?: string | null
+  result?: Record<string, unknown>
+  created_at?: string | null
+  completed_at?: string | null
+}
+
+export interface KnowledgeGraphNode {
+  id: string
+  label: string
+  type: string
+  page_type?: string
+  document_id?: string | null
+}
+
+export interface KnowledgeGraphEdge {
+  id: string
+  source: string
+  target: string
+  type: string
+  confidence?: number
+}
+
+export interface KnowledgeGraphData {
+  network: 'entity' | 'dependency' | 'provenance'
+  project_id?: string | null
+  nodes: KnowledgeGraphNode[]
+  edges: KnowledgeGraphEdge[]
+}
+
+function projectQuery(projectId?: string | null, extra?: Record<string, string>): string {
+  const params = new URLSearchParams(extra || {})
+  if (projectId) params.set('project_id', projectId)
+  const value = params.toString()
+  return value ? `?${value}` : ''
+}
+
+export async function apiListKnowledgeSources(token: string, projectId?: string | null): Promise<KnowledgeSourceItem[]> {
+  const res = await apiFetch(`/knowledge/sources${projectQuery(projectId)}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取知识源失败'))
+  return res.json()
+}
+
+export async function apiListKnowledgePages(token: string, projectId?: string | null): Promise<KnowledgePageItem[]> {
+  const res = await apiFetch(`/knowledge/pages${projectQuery(projectId, { limit: '200' })}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取知识页面失败'))
+  return res.json()
+}
+
+export async function apiListKnowledgeJobs(token: string, projectId?: string | null): Promise<KnowledgeJobItem[]> {
+  const res = await apiFetch(`/knowledge/jobs${projectQuery(projectId, { limit: '100' })}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取编排任务失败'))
+  return res.json()
+}
+
+export async function apiGetKnowledgeGraph(
+  token: string,
+  network: KnowledgeGraphData['network'],
+  projectId?: string | null,
+): Promise<KnowledgeGraphData> {
+  const res = await apiFetch(`/knowledge/graph${projectQuery(projectId, { network })}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取知识网络失败'))
+  return res.json()
+}
+
+export async function apiOrchestrateKnowledge(token: string, projectId?: string | null): Promise<Record<string, unknown>> {
+  const res = await apiFetch(`/knowledge/orchestrate${projectQuery(projectId)}`, { method: 'POST', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '启动知识编排失败'))
+  return res.json()
+}
+
+export interface KnowledgeRuleItem {
+  id: string
+  rule_key: string
+  version: number
+  status: string
+  project_id?: string | null
+  schema: Record<string, unknown>
+  instructions?: string | null
+}
+
+export async function apiListKnowledgeRules(token: string, projectId?: string | null): Promise<KnowledgeRuleItem[]> {
+  const res = await apiFetch(`/knowledge/rules${projectQuery(projectId)}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取编排规则失败'))
+  return res.json()
+}
+
+export async function apiCreateKnowledgeRule(token: string, payload: Record<string, unknown>): Promise<any> {
+  const res = await apiFetch('/knowledge/rules', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '保存编排规则失败'))
+  return res.json()
+}
+
+export async function apiApproveKnowledgeRule(token: string, ruleId: string): Promise<any> {
+  const res = await apiFetch(`/knowledge/rules/${encodeURIComponent(ruleId)}/approve`, { method: 'POST', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '发布编排规则失败'))
   return res.json()
 }
 
@@ -551,6 +681,91 @@ export async function apiScheduledTaskAction(token: string, taskId: string, acti
   return res.json()
 }
 
+export interface AlertRuleItem {
+  id: string
+  name: string
+  question: string
+  data_source_id: string
+  project_id?: string | null
+  metric_column?: string | null
+  aggregation: 'first' | 'sum' | 'avg' | 'min' | 'max' | 'count'
+  operator: 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq' | 'change_pct_gt' | 'change_pct_lt'
+  threshold: number
+  severity: 'info' | 'warning' | 'critical'
+  rrule: string
+  timezone: string
+  status: string
+  cooldown_seconds: number
+  last_value?: number | null
+  last_state: string
+  last_error?: string | null
+  last_run_at?: string | null
+  last_triggered_at?: string | null
+  next_run_at?: string | null
+}
+
+export interface AlertEventItem {
+  id: string
+  rule_id: string
+  state: 'triggered' | 'resolved'
+  severity: 'info' | 'warning' | 'critical'
+  value?: number | null
+  threshold?: number | null
+  summary: string
+  evidence: Record<string, unknown>
+  acknowledged_at?: string | null
+  created_at?: string | null
+}
+
+export async function apiListAlertRules(token: string, projectId?: string): Promise<AlertRuleItem[]> {
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''
+  const res = await apiFetchResponses(`/alerts/rules${query}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取预警规则失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiCreateAlertRule(token: string, payload: Record<string, unknown>): Promise<AlertRuleItem> {
+  const res = await apiFetchResponses('/alerts/rules', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '创建预警规则失败'))
+  return res.json()
+}
+
+export async function apiAlertRuleAction(
+  token: string,
+  ruleId: string,
+  action: 'enable' | 'pause' | 'cancel',
+): Promise<AlertRuleItem> {
+  const res = await apiFetchResponses(`/alerts/rules/${encodeURIComponent(ruleId)}/actions/${action}`, {
+    method: 'POST', headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '更新预警规则失败'))
+  return res.json()
+}
+
+export async function apiTestAlertRule(token: string, ruleId: string): Promise<Record<string, unknown>> {
+  const res = await apiFetchResponses(`/alerts/rules/${encodeURIComponent(ruleId)}/test`, {
+    method: 'POST', headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '测试预警规则失败'))
+  return res.json()
+}
+
+export async function apiListAlertEvents(token: string, ruleId?: string): Promise<AlertEventItem[]> {
+  const query = ruleId ? `?rule_id=${encodeURIComponent(ruleId)}` : ''
+  const res = await apiFetchResponses(`/alerts/events${query}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取预警事件失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiAcknowledgeAlertEvent(token: string, eventId: string): Promise<void> {
+  const res = await apiFetchResponses(`/alerts/events/${encodeURIComponent(eventId)}/acknowledge`, {
+    method: 'POST', headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '确认预警事件失败'))
+}
+
 function parseSseEventBlock(block: string): { sequence_number?: number; type: string; data: any } | null {
   const lines = block.split(/\r?\n/).filter(Boolean)
   const dataLines = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart())
@@ -887,11 +1102,19 @@ export async function apiUpdateDatabase(token: string, id: string, payload: any)
   if (!res.ok) throw new Error(await readApiError(res, '更新数据库失败'))
   return res.json()
 }
-export async function apiAnalyzeDatabase(token: string, id: string): Promise<any> { const res = await apiFetch(`/databases/${id}/analysis`, { method: 'POST', headers: authHeaders(token) }); if (!res.ok) throw new Error('Failed to analyze database'); return res.json() }
+export async function apiAnalyzeDatabase(token: string, id: string): Promise<any> { const res = await apiFetch(`/databases/${id}/analysis`, { method: 'POST', headers: authHeaders(token), body: '{}' }); if (!res.ok) throw new Error(await readApiError(res, '数据分析失败')); return res.json() }
 export async function apiDatabaseQuery(token: string, id: string, query: any): Promise<any> { const res = await apiFetch(`/databases/${id}/query`, { method: 'POST', headers: authHeaders(token), body: JSON.stringify(query) }); if (!res.ok) throw new Error('Failed to query database'); return res.json() }
 export async function apiGetDatabaseSchema(token: string, id: string): Promise<any> { const res = await apiFetch(`/databases/${id}/schema`, { headers: authHeaders(token) }); if (!res.ok) throw new Error('Failed to get database schema'); return res.json() }
 export async function apiSyncDatabaseSchema(token: string, id: string): Promise<any> { const res = await apiFetch(`/databases/${id}/sync-schema`, { method: 'POST', headers: authHeaders(token) }); if (!res.ok) throw new Error('Failed to sync database schema'); return res.json() }
 export async function apiTestDatabaseConnection(token: string, databaseId: string): Promise<any> { const res = await apiFetch(`/databases/${databaseId}/test-connection`, { method: 'POST', headers: authHeaders(token) }); if (!res.ok) throw new Error('Failed to test database connection'); return res.json() }
+export async function apiGetDatabaseWorkbench(token: string, databaseId: string): Promise<any> { const res = await apiFetch(`/databases/${databaseId}/workbench`, { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取数据工作台失败')); return res.json() }
+export async function apiValidateDatabase(token: string, databaseId: string): Promise<any> { const res = await apiFetch(`/databases/${databaseId}/validate`, { method: 'POST', headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '数据源验证失败')); return res.json() }
+
+export interface ResourcePermissionItem { id: string; subject_user_id: string; subject_email: string; permission: 'view' | 'query' | 'edit' | 'admin'; expires_at?: string | null }
+export async function apiListPermissionSubjects(token: string): Promise<Array<{ id: string; email: string; display_name?: string }>> { const res = await apiFetch('/resource-permissions/subjects', { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取用户失败')); return (await res.json()).items ?? [] }
+export async function apiListResourcePermissions(token: string, resourceType: string, resourceId: string): Promise<ResourcePermissionItem[]> { const p = new URLSearchParams({ resource_type: resourceType, resource_id: resourceId }); const res = await apiFetch(`/resource-permissions?${p}`, { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取资源权限失败')); return (await res.json()).items ?? [] }
+export async function apiGrantResourcePermission(token: string, payload: Record<string, unknown>): Promise<any> { const res = await apiFetch('/resource-permissions', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) }); if (!res.ok) throw new Error(await readApiError(res, '授权失败')); return res.json() }
+export async function apiRevokeResourcePermission(token: string, id: string): Promise<any> { const res = await apiFetch(`/resource-permissions/${encodeURIComponent(id)}`, { method: 'DELETE', headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '撤销授权失败')); return res.json() }
 
 export async function apiUpdateDocument(
   token: string,
@@ -1006,6 +1229,30 @@ export interface SkillItem {
   created_at?: string
 }
 
+export interface SkillCatalogItem {
+  id: string
+  name: string
+  description: string
+  version?: string | null
+  github_owner: string
+  github_repo: string
+  github_stars: number
+  download_count: number
+  security_score?: number | null
+  security_status: string
+  ai_score?: number | null
+  is_verified: boolean
+  source_url: string
+  installed: boolean
+  installation_id?: string | null
+  installed_skill_id?: string | null
+}
+
+export async function apiListSkillCatalog(token: string, sort: 'popular' | 'recent', q = ''): Promise<SkillCatalogItem[]> { const p = new URLSearchParams({ sort, limit: '30' }); if (q.trim()) p.set('q', q.trim()); const res = await apiFetch(`/skills/catalog?${p}`, { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取 SkillHub 失败')); return (await res.json()).items ?? [] }
+export async function apiSyncSkillCatalog(token: string): Promise<any> { const res = await apiFetch('/skills/catalog/sync', { method: 'POST', headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '同步 SkillHub 失败')); return res.json() }
+export async function apiInstallCatalogSkill(token: string, catalogSkillId: string): Promise<any> { const res = await apiFetch('/skills/catalog/install', { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ catalog_skill_id: catalogSkillId }) }); if (!res.ok) throw new Error(await readApiError(res, '安装 Skill 失败')); return res.json() }
+export async function apiUninstallCatalogSkill(token: string, installationId: string): Promise<any> { const res = await apiFetch(`/skills/installations/${encodeURIComponent(installationId)}`, { method: 'DELETE', headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '卸载 Skill 失败')); return res.json() }
+
 export async function apiListConnectors(token: string): Promise<ConnectorItem[]> {
   const res = await apiFetch('/connectors', { headers: authHeaders(token) })
   if (!res.ok) throw new Error('Failed to list connectors')
@@ -1038,19 +1285,20 @@ export async function apiConnectorSync(token: string, provider: string): Promise
 
 export async function apiListSkills(token: string): Promise<SkillItem[]> {
   const res = await apiFetch('/skills', { headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to list skills')
-  return res.json()
+  if (!res.ok) throw new Error(await readApiError(res, '读取 Skills 失败'))
+  const data = await res.json()
+  return Array.isArray(data) ? data : data.items ?? []
 }
 
 export async function apiInstallSkill(token: string, gitUrl: string, ref: string): Promise<any> {
   const res = await apiFetch('/skills/install', { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ git_url: gitUrl, ref }) })
-  if (!res.ok) throw new Error('Failed to install skill')
+  if (!res.ok) throw new Error(await readApiError(res, '安装 Skill 失败'))
   return res.json()
 }
 
 export async function apiUninstallSkill(token: string, id: string): Promise<any> {
   const res = await apiFetch('/skills/uninstall', { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ skill_id: id }) })
-  if (!res.ok) throw new Error('Failed to uninstall skill')
+  if (!res.ok) throw new Error(await readApiError(res, '卸载 Skill 失败'))
   return res.json()
 }
 
@@ -1065,7 +1313,7 @@ export async function apiCreateSkill(token: string, payload: {
   data_source_id?: string
 }): Promise<any> {
   const res = await apiFetch('/skills/create', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
-  if (!res.ok) throw new Error('Failed to create skill')
+  if (!res.ok) throw new Error(await readApiError(res, '创建 Skill 失败'))
   return res.json()
 }
 

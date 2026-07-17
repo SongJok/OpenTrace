@@ -61,8 +61,8 @@ export function setShowAvatars(value: boolean) {
 export const useThemeStore = create<ThemeState>()(
   persist(
     (set, get) => ({
-      mode: 'dark',
-      accent: 'warm',
+      mode: 'light',
+      accent: 'white',
       setMode: (mode) => {
         set({ mode })
         applyTheme(mode, get().accent)
@@ -88,60 +88,40 @@ export const useThemeStore = create<ThemeState>()(
   )
 )
 
-export function applyTheme(mode: ThemeMode, accent: AccentMode = 'warm') {
+export function applyTheme(mode: ThemeMode, accent: AccentMode = 'white') {
   const resolvedMode =
-    accent === 'white'
-      ? 'light'
-      : accent === 'black'
+    mode === 'system'
+      ? window.matchMedia('(prefers-color-scheme: dark)').matches
         ? 'dark'
-        : mode === 'system'
-          ? window.matchMedia('(prefers-color-scheme: dark)').matches
-            ? 'dark'
-            : 'light'
-          : mode
+        : 'light'
+      : mode
 
   document.documentElement.setAttribute('data-theme', resolvedMode)
   document.documentElement.setAttribute('data-accent', accent)
 
   const root = document.documentElement
-  if (accent === 'black') {
-    root.style.setProperty('--bg', '#0f0f0f')
-    root.style.setProperty('--bg-secondary', '#141414')
-    root.style.setProperty('--surface', '#1a1a1a')
-    root.style.setProperty('--surface-raised', '#232323')
-    root.style.setProperty('--time-card-bg', '#151515')
-    root.style.setProperty('--time-card-panel', '#0f0f0f')
+  root.style.removeProperty('--bg')
+  root.style.removeProperty('--bg-secondary')
+  root.style.removeProperty('--surface')
+  root.style.removeProperty('--surface-raised')
+
+  if (resolvedMode === 'dark') {
+    root.style.setProperty('--time-card-bg', '#1a1a1a')
+    root.style.setProperty('--time-card-panel', '#1a1a1a')
     root.style.setProperty('--time-card-text', '#f5f5f5')
     root.style.setProperty('--time-card-muted', 'rgba(245,245,245,0.68)')
     root.style.setProperty('--time-card-faint', 'rgba(245,245,245,0.42)')
     root.style.setProperty('--time-card-border', 'rgba(255,255,255,0.08)')
     root.style.setProperty('--time-card-shadow', '0 22px 60px rgba(0,0,0,0.38)')
     root.style.setProperty('--time-card-accent', '#ff7b7b')
-  } else if (accent === 'white') {
-    root.style.setProperty('--bg', '#ffffff')
-    root.style.setProperty('--bg-secondary', '#f7f7f7')
-    root.style.setProperty('--surface', '#fafafa')
-    root.style.setProperty('--surface-raised', '#efefef')
-    root.style.setProperty('--time-card-bg', '#ffffff')
-    root.style.setProperty('--time-card-panel', '#f5f5f5')
+  } else {
+    root.style.setProperty('--time-card-bg', '#f7f8fa')
+    root.style.setProperty('--time-card-panel', '#f7f8fa')
     root.style.setProperty('--time-card-text', '#111111')
     root.style.setProperty('--time-card-muted', 'rgba(17,17,17,0.72)')
     root.style.setProperty('--time-card-faint', 'rgba(17,17,17,0.48)')
     root.style.setProperty('--time-card-border', 'rgba(17,17,17,0.08)')
     root.style.setProperty('--time-card-shadow', '0 18px 48px rgba(0,0,0,0.10)')
     root.style.setProperty('--time-card-accent', '#ff6b6b')
-  } else {
-    root.style.removeProperty('--bg')
-    root.style.removeProperty('--bg-secondary')
-    root.style.removeProperty('--surface')
-    root.style.removeProperty('--surface-raised')
-    root.style.removeProperty('--time-card-bg')
-    root.style.removeProperty('--time-card-panel')
-    root.style.removeProperty('--time-card-text')
-    root.style.removeProperty('--time-card-muted')
-    root.style.removeProperty('--time-card-faint')
-    root.style.removeProperty('--time-card-border')
-    root.style.removeProperty('--time-card-shadow')
-    root.style.removeProperty('--time-card-accent')
   }
 }

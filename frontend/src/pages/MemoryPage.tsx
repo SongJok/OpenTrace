@@ -131,7 +131,7 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
               <p className="text-sm">{candidate.content}</p>
               <p className="mt-1 text-xs text-[var(--text-secondary)]">{candidate.kind} · {candidate.scope_type} · 置信度 {Math.round(candidate.confidence * 100)}%</p>
               {candidate.evidence?.excerpt && <blockquote className="mt-2 border-l-2 border-[var(--border)] pl-3 text-xs text-[var(--text-secondary)]">{candidate.evidence.excerpt}</blockquote>}
-              <div className="mt-3 flex gap-2"><button onClick={() => void apiResolveMemoryCandidate(token, candidate.id, true).then(loadAll)} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs text-white">保留</button><button onClick={() => void apiResolveMemoryCandidate(token, candidate.id, false).then(loadAll)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">忽略</button></div>
+              <div className="mt-3 flex gap-2"><button onClick={() => void apiResolveMemoryCandidate(token, candidate.id, true).then(loadAll)} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]">保留</button><button onClick={() => void apiResolveMemoryCandidate(token, candidate.id, false).then(loadAll)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">忽略</button></div>
             </div>
           ))}
         </div>

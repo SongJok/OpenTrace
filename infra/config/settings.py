@@ -403,6 +403,7 @@ class AppSettings(BaseSettings):
     kernel_agent_bus_dlq_stream: str = "opentrace:agent:stream:dlq"
     response_worker_poll_seconds: float = 2.0
     response_worker_batch_size: int = 20
+    alert_scheduler_poll_seconds: int = 10
     # When True, tenant daily turn/cost quotas use Redis counters (multi-replica safe)
     enterprise_quota_redis_enabled: bool = False
     enterprise_usage_redis_enabled: bool = False
@@ -430,6 +431,18 @@ class AppSettings(BaseSettings):
     skills_git_install_enabled: bool = False
     skills_local_create_enabled: bool = False
     skills_inprocess_execution_enabled: bool = False
+    skills_subprocess_execution_enabled: bool = False
+    skills_execution_timeout_seconds: int = 10
+    skillhub_catalog_url: str = "https://skills.palebluedot.live"
+    skillhub_sync_enabled: bool = True
+    skillhub_sync_interval_seconds: int = 21600
+    skillhub_catalog_size: int = 30
+    skillhub_min_security_score: int = 80
+    # Server-side credential only. Never expose this token through frontend
+    # configuration or accept it from a Skill installation request.
+    skillhub_github_token: str = ""
+    skillhub_github_timeout_seconds: float = 20.0
+    skillhub_github_raw_fallback_enabled: bool = True
     rag_min_evidence_score: float = 0.65
     rag_auto_fallback_to_web: bool = True
     rag_rerank_enabled: bool = True
@@ -680,6 +693,7 @@ class Settings(
         self.skills_git_install_enabled = False
         self.skills_local_create_enabled = False
         self.skills_inprocess_execution_enabled = False
+        self.skills_subprocess_execution_enabled = False
         return self
 
     @model_validator(mode="after")
@@ -703,6 +717,7 @@ class Settings(
         self.skills_git_install_enabled = False
         self.skills_local_create_enabled = False
         self.skills_inprocess_execution_enabled = False
+        self.skills_subprocess_execution_enabled = False
         return self
 
     @field_validator("cors_allowed_origins", "connector_allowed_redirect_origins")

@@ -2,16 +2,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+import httpx
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.routers.admin import get_current_admin_user
 from gateway.api_gateway.routers.auth import get_current_user
+from gateway.api_gateway.resource_scope import normalized_tenant_scope
+from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
-from infra.storage.models import ChatSession, User
+from infra.storage.models import ChatSession, SkillCatalogEntry, User, UserSkillInstallation
+from skills.catalog import _catalog_item, install_catalog_skill, sync_skillhub_catalog
 from skills.store.marketplace import marketplace
 
 router = APIRouter()
@@ -49,6 +53,107 @@ class SkillSessionBindingRequest(BaseModel):
 
 class SkillSessionQuery(BaseModel):
     session_id: str
+
+
+class SkillCatalogInstallRequest(BaseModel):
+    catalog_skill_id: str = Field(min_length=1, max_length=36)
+
+
+@router.get("/skills/catalog")
+async def list_skill_catalog(
+    request: Request,
+    sort: str = Query(default="popular", pattern="^(popular|recent)$"),
+    q: str = Query(default="", max_length=200),
+    limit: int = Query(default=30, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(request, user_id=current_user.id))
+    stmt = select(SkillCatalogEntry).where(SkillCatalogEntry.status == "active")
+    if q.strip():
+        term = f"%{q.strip()}%"
+        stmt = stmt.where(or_(SkillCatalogEntry.name.ilike(term), SkillCatalogEntry.description.ilike(term)))
+    order = SkillCatalogEntry.rank_popular if sort == "popular" else SkillCatalogEntry.rank_recent
+    rows = list((await db.execute(stmt.order_by(order.asc().nullslast(), SkillCatalogEntry.ai_score.desc()).limit(limit))).scalars().all())
+    installs = list((await db.execute(select(UserSkillInstallation).where(
+        UserSkillInstallation.user_id == current_user.id,
+        UserSkillInstallation.tenant_id == tenant_id,
+        UserSkillInstallation.workspace_id == workspace_id,
+        UserSkillInstallation.catalog_skill_id.in_([row.id for row in rows] or ["-"]),
+    ))).scalars().all())
+    by_catalog = {item.catalog_skill_id: item for item in installs}
+    return {"items": [_catalog_item(row, by_catalog.get(row.id)) for row in rows], "sort": sort}
+
+
+@router.post("/skills/catalog/sync")
+async def sync_catalog(
+    current_user: User = Depends(get_current_admin_user),
+) -> dict[str, Any]:
+    return {"synced": await sync_skillhub_catalog(), "user_id": current_user.id}
+
+
+@router.post("/skills/catalog/install")
+async def install_catalog_entry(
+    request: Request,
+    req: SkillCatalogInstallRequest,
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(request, user_id=current_user.id))
+    try:
+        item = await install_catalog_skill(
+            catalog_id=req.catalog_skill_id, user_id=current_user.id,
+            tenant_id=tenant_id, workspace_id=workspace_id,
+        )
+    except PermissionError as exc:
+        raise AppException(ErrorCodes.PERMISSION_DENIED.code, message=str(exc))
+    except (ValueError, OSError) as exc:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc))
+    except httpx.HTTPError as exc:
+        raise AppException(ErrorCodes.INTERNAL_ERROR.code, message=f"SkillHub source unavailable: {exc}")
+    return {"installed": item}
+
+
+@router.get("/skills/installed/me")
+async def list_my_installed_skills(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(request, user_id=current_user.id))
+    rows = list((await db.execute(
+        select(UserSkillInstallation, SkillCatalogEntry)
+        .join(SkillCatalogEntry, UserSkillInstallation.catalog_skill_id == SkillCatalogEntry.id)
+        .where(
+            UserSkillInstallation.user_id == current_user.id,
+            UserSkillInstallation.tenant_id == tenant_id,
+            UserSkillInstallation.workspace_id == workspace_id,
+            UserSkillInstallation.status == "installed",
+        )
+        .order_by(UserSkillInstallation.installed_at.desc())
+    )).all())
+    return {"items": [_catalog_item(catalog, installation) for installation, catalog in rows]}
+
+
+@router.delete("/skills/installations/{installation_id}")
+async def uninstall_my_skill(
+    installation_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(request, user_id=current_user.id))
+    row = await db.scalar(select(UserSkillInstallation).where(
+        UserSkillInstallation.id == installation_id,
+        UserSkillInstallation.user_id == current_user.id,
+        UserSkillInstallation.tenant_id == tenant_id,
+        UserSkillInstallation.workspace_id == workspace_id,
+    ))
+    if row is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Skill installation not found")
+    marketplace.uninstall(row.installed_skill_id)
+    row.status = "uninstalled"
+    await db.commit()
+    return {"removed": True, "installation_id": installation_id}
 
 
 @router.get("/skills")
@@ -125,6 +230,18 @@ async def bind_session_skills(
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Session not found")
     enabled_skills = sorted(set(req.enabled_skills))
     disabled_skills = sorted(set(req.disabled_skills))
+    account_ids = [item for item in enabled_skills if item.startswith("acct-")]
+    if account_ids:
+        allowed = set((await db.execute(select(UserSkillInstallation.installed_skill_id).where(
+            UserSkillInstallation.user_id == current_user.id,
+            UserSkillInstallation.tenant_id == session.tenant_id,
+            UserSkillInstallation.workspace_id == session.workspace_id,
+            UserSkillInstallation.status == "installed",
+            UserSkillInstallation.installed_skill_id.in_(account_ids),
+        ))).scalars().all())
+        invalid = sorted(set(account_ids) - allowed)
+        if invalid:
+            raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="账户无权启用该 Skill")
     session.enabled_skills = enabled_skills
     session.disabled_skills = disabled_skills
     await db.commit()

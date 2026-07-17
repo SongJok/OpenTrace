@@ -408,6 +408,13 @@ class RagAgent(BaseAgent):
             user_id = (task.user_id or str(task.params.get("user_id", ""))).strip() or "shared"
             tenant_id = str(task.params.get("tenant_id", "") or "").strip() or None
             workspace_id = str(task.params.get("workspace_id", "") or "").strip() or None
+            project_id = str(task.params.get("project_id", "") or "").strip() or None
+            retrieval_scope: dict[str, Any] = {
+                "tenant_id": tenant_id,
+                "workspace_id": workspace_id,
+            }
+            if project_id:
+                retrieval_scope["project_id"] = project_id
 
             top_k = int(task.params.get("top_k", 5))
             top_k = max(1, min(top_k, 20))
@@ -477,8 +484,7 @@ class RagAgent(BaseAgent):
                         search_knowledge(
                             query=search_query,
                             user_id=user_id,
-                            tenant_id=tenant_id,
-                            workspace_id=workspace_id,
+                            **retrieval_scope,
                             top_k=max(top_k, 6),
                             query_type=query_type,
                             session_id=task.session_id or task.params.get("session_id"),
@@ -527,15 +533,13 @@ class RagAgent(BaseAgent):
                             query=sq,
                             user_id=user_id,
                             top_k=max(top_k, 8),
-                            tenant_id=tenant_id,
-                            workspace_id=workspace_id,
+                            **retrieval_scope,
                         ),
                         DocumentPlugin().search_llmwiki(
                             query=sq,
                             user_id=user_id,
                             top_k=effective_llmwiki_top_k,
-                            tenant_id=tenant_id,
-                            workspace_id=workspace_id,
+                            **retrieval_scope,
                         ),
                     )
                     return sq, doc_chunks, wiki_chunks

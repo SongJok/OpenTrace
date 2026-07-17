@@ -398,7 +398,7 @@ async def create_scheduled_task(request: Request, payload: ScheduledTaskPayload,
         rrule=payload.rrule, timezone=payload.timezone, project_id=payload.project_id,
         conversation_id=payload.conversation_id, requires_confirmation=payload.requires_confirmation,
         status="active" if payload.enabled else "draft",
-        next_run_at=next_occurrence(payload.rrule, payload.timezone),
+        next_run_at=next_occurrence(payload.rrule, payload.timezone) if payload.enabled else None,
     )
     db.add(row)
     await db.commit()
@@ -424,6 +424,7 @@ async def scheduled_task_action(task_id: str, action: str, request: Request, cur
     if row is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="定时任务不存在")
     row.status = {"enable": "active", "pause": "paused", "cancel": "cancelled"}[action]
+    row.next_run_at = next_occurrence(row.rrule or "", row.timezone) if action == "enable" and row.rrule else None
     await db.commit()
     return _scheduled_task(row)
 

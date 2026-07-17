@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agents.base import TaskMessage
 from agents.data_agent import DataAgent
 from gateway.api_gateway.routers.auth import get_current_user
-from gateway.api_gateway.resource_scope import get_owned_data_source
+from gateway.api_gateway.resource_scope import get_accessible_data_source
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.security.data_source_secrets import decrypt_data_source_secret
 from infra.config.settings import get_settings
@@ -63,11 +63,12 @@ async def data_query(
         else {"tenant_id": "default", "workspace_id": "default"}
     )
 
-    source = await get_owned_data_source(
+    source = await get_accessible_data_source(
         db,
         user_id=current_user.id,
         tenant_metadata=tenant_md,
         data_source_id=req.data_source_id,
+        required_permission="query",
     )
     if source is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="data source not found")
@@ -347,11 +348,12 @@ async def data_schema(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
-    source = await get_owned_data_source(
+    source = await get_accessible_data_source(
         db,
         user_id=current_user.id,
         tenant_metadata=tenant_md,
         data_source_id=data_source_id,
+        required_permission="view",
     )
     if source is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="data source not found")

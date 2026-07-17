@@ -26,6 +26,10 @@ class SkillLoader:
             raise FileNotFoundError("skill.json or skill.yaml not found")
 
         manifest = SkillManifest(**data)
+        root = skill_dir.resolve()
+        entrypoint = (root / manifest.entrypoint).resolve()
+        if root not in entrypoint.parents:
+            raise ValueError("skill entrypoint escapes skill directory")
         if not verifier.verify(manifest):
             raise ValueError("skill signature verification failed")
         return manifest

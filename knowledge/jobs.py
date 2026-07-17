@@ -15,6 +15,7 @@ from infra.storage.models import (
     Document,
     KnowledgeCompilationJob,
     KnowledgeSource,
+    KnowledgeSourceVersion,
 )
 from knowledge.compiler import content_hash, compile_document_knowledge, stable_id
 from knowledge.domain import KNOWLEDGE_COMPILER_VERSION, KnowledgeAuthority, KnowledgeStatus
@@ -42,6 +43,7 @@ async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
                 owner_id=document.owner_id,
                 tenant_id=document.tenant_id,
                 workspace_id=document.workspace_id,
+                project_id=document.project_id,
                 source_type="document",
                 external_ref=f"document:{document.id}",
                 title=document.title,
@@ -55,7 +57,26 @@ async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
         else:
             source.content_hash = digest
             source.title = document.title
-            source.status = KnowledgeStatus.COMPILING.value
+            source.project_id = document.project_id
+
+        compiled_revision = await db.scalar(
+            select(KnowledgeSourceVersion.id).where(
+                KnowledgeSourceVersion.source_id == source.id,
+                KnowledgeSourceVersion.content_hash == digest,
+                KnowledgeSourceVersion.compiler_version == KNOWLEDGE_COMPILER_VERSION,
+                KnowledgeSourceVersion.status.in_(["published", "review"]),
+            )
+        )
+        if compiled_revision is not None:
+            await db.commit()
+            return {
+                "status": "skipped",
+                "reason": "content_unchanged",
+                "document_id": document_id,
+                "source_version_id": compiled_revision,
+            }
+
+        source.status = KnowledgeStatus.COMPILING.value
 
         existing = await db.scalar(
             select(KnowledgeCompilationJob)
@@ -75,6 +96,7 @@ async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
             owner_id=document.owner_id,
             tenant_id=document.tenant_id,
             workspace_id=document.workspace_id,
+            project_id=document.project_id,
             status="pending",
             compiler_version=KNOWLEDGE_COMPILER_VERSION,
             result_metadata={"document_id": document.id, "document_version": document.version},
@@ -144,11 +166,38 @@ async def process_pending_compile_jobs(*, limit: int = 4, worker_id: str | None 
     return processed
 
 
+async def reconcile_ready_documents(*, limit: int = 200) -> dict[str, int]:
+    """Recover uploads missed by background tasks and enqueue changed revisions."""
+    async with AsyncSessionLocal() as db:
+        document_ids = list(
+            (
+                await db.execute(
+                    select(Document.id)
+                    .where(Document.status == "ready")
+                    .order_by(Document.updated_at.desc())
+                    .limit(max(1, min(limit, 1000)))
+                )
+            ).scalars().all()
+        )
+    queued = 0
+    for document_id in document_ids:
+        result = await enqueue_document_compile(document_id)
+        if result.get("status") == "queued" and not result.get("deduplicated"):
+            queued += 1
+    return {"scanned": len(document_ids), "queued": queued}
+
+
 async def knowledge_job_loop() -> None:
     """Long-running worker loop; safe when no jobs are available."""
     interval = max(1, int(os.getenv("KNOWLEDGE_JOB_POLL_SECONDS", "2")))
+    reconcile_interval = max(30, int(os.getenv("KNOWLEDGE_RECONCILE_SECONDS", "300")))
+    loop = asyncio.get_running_loop()
+    next_reconcile = 0.0
     while True:
         try:
+            if loop.time() >= next_reconcile:
+                await reconcile_ready_documents()
+                next_reconcile = loop.time() + reconcile_interval
             processed = await process_pending_compile_jobs()
             if not processed:
                 await asyncio.sleep(interval)

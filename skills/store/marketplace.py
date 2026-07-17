@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import hashlib
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
@@ -32,10 +33,21 @@ class InstalledSkill:
     test_cases: list[dict[str, Any]] = field(default_factory=list)
     created_at: str = ""
     data_source_id: str = ""
+    instructions: str = ""
+    source: dict[str, Any] = field(default_factory=dict)
 
 
 def _compute_skill_id(name: str, version: str) -> str:
     return f"{name}@{version}"
+
+
+def _skill_path(skill_id: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}@[A-Za-z0-9_.+-]{1,64}", skill_id or ""):
+        raise ValueError("invalid skill_id")
+    target = (INSTALLED_DIR / skill_id).resolve()
+    if INSTALLED_DIR.resolve() not in target.parents:
+        raise ValueError("invalid skill path")
+    return target
 
 
 def _generate_signature(name: str, version: str, entrypoint: str) -> str:
@@ -44,6 +56,58 @@ def _generate_signature(name: str, version: str, entrypoint: str) -> str:
 
 
 class SkillMarketplace:
+    def install_instructional(
+        self,
+        *,
+        skill_id: str,
+        name: str,
+        version: str,
+        description: str,
+        instructions: str,
+        source: dict[str, Any],
+    ) -> InstalledSkill:
+        """Install reviewed SKILL.md content without executing third-party code."""
+        target = _skill_path(skill_id)
+        if target.exists():
+            shutil.rmtree(target)
+        target.mkdir(parents=True)
+        manifest_data = {
+            "name": name,
+            "version": version,
+            "entrypoint": "SKILL.md",
+            "required_connectors": [],
+            "permissions": [],
+            "signature": _generate_signature(name, version, "SKILL.md"),
+            "public_key_id": "skillhub-instruction-only",
+        }
+        (target / "skill.json").write_text(json.dumps(manifest_data, indent=2), encoding="utf-8")
+        (target / "SKILL.md").write_text(instructions, encoding="utf-8")
+        (target / "skill_config.json").write_text(
+            json.dumps(
+                {
+                    "description": description,
+                    "skill_type": "instruction",
+                    "test_cases": [],
+                    "data_source_id": "",
+                    "source": source,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return InstalledSkill(
+            skill_id=skill_id,
+            name=name,
+            version=version,
+            entrypoint="SKILL.md",
+            path=str(target),
+            description=description,
+            skill_type="instruction",
+            instructions=instructions,
+            source=source,
+        )
+
     def install_from_git(self, git_url: str, ref: str = "main") -> InstalledSkill:
         if not settings.skills_git_install_enabled:
             raise PermissionError("Git skill installation is disabled by policy")
@@ -61,7 +125,7 @@ class SkillMarketplace:
 
         manifest = skill_loader.load_manifest(temp)
         skill_id = _compute_skill_id(manifest.name, manifest.version)
-        target = INSTALLED_DIR / skill_id
+        target = _skill_path(skill_id)
         if target.exists():
             shutil.rmtree(target)
         shutil.move(str(temp), str(target))
@@ -88,7 +152,7 @@ class SkillMarketplace:
         if not settings.skills_local_create_enabled:
             raise PermissionError("Local skill creation is disabled by policy")
         skill_id = _compute_skill_id(name, version)
-        target = INSTALLED_DIR / skill_id
+        target = _skill_path(skill_id)
         if target.exists():
             raise ValueError(f"skill {skill_id} already exists")
 
@@ -135,7 +199,10 @@ class SkillMarketplace:
         )
 
     def get_skill(self, skill_id: str) -> InstalledSkill | None:
-        target = INSTALLED_DIR / skill_id
+        try:
+            target = _skill_path(skill_id)
+        except ValueError:
+            return None
         if not target.exists():
             return None
 
@@ -162,6 +229,8 @@ class SkillMarketplace:
                 code=code,
                 test_cases=config.get("test_cases", []),
                 data_source_id=config.get("data_source_id", ""),
+                instructions=code if manifest.entrypoint.lower().endswith(".md") else "",
+                source=dict(config.get("source") or {}),
             )
         except Exception:
             return None
@@ -170,13 +239,6 @@ class SkillMarketplace:
         skill = self.get_skill(skill_id)
         if not skill:
             return {"success": False, "error": f"skill {skill_id} not found"}
-
-        if skill.code and skill.entrypoint.endswith(".py") and not settings.skills_inprocess_execution_enabled:
-            return {
-                "success": False,
-                "error": "In-process Python skill execution is disabled by policy",
-                "skill_id": skill_id,
-            }
 
         result: dict[str, Any] = {"skill_id": skill_id, "input": test_input}
 
@@ -195,6 +257,20 @@ class SkillMarketplace:
 
         # Try to execute the skill code if it's Python
         if skill.code and skill.entrypoint.endswith(".py"):
+            if bool(getattr(settings, "skills_subprocess_execution_enabled", False)):
+                from skills.runtime.executor import execute_python_skill
+
+                return {
+                    "skill_id": skill_id,
+                    "input": test_input,
+                    **execute_python_skill(Path(skill.path), skill.entrypoint, test_input),
+                }
+            if not settings.skills_inprocess_execution_enabled:
+                return {
+                    "success": False,
+                    "error": "Python skill execution is disabled; enable the subprocess runner policy",
+                    "skill_id": skill_id,
+                }
             try:
                 import importlib.util
                 import sys
@@ -220,15 +296,27 @@ class SkillMarketplace:
             except Exception as exc:
                 result["success"] = False
                 result["error"] = str(exc)
+        elif skill.instructions:
+            result["success"] = True
+            result["output"] = {
+                "skill_id": skill.skill_id,
+                "name": skill.name,
+                "description": skill.description,
+                "instructions": skill.instructions[:16000],
+                "input": test_input,
+                "trust": "user_enabled_instruction_skill",
+            }
         else:
-            # For non-Python skills, just return a placeholder
             result["success"] = True
             result["output"] = f"Skill '{skill.name}' ({skill.skill_type}) received input: {json.dumps(test_input)}"
 
         return result
 
     def uninstall(self, skill_id: str) -> bool:
-        target = INSTALLED_DIR / skill_id
+        try:
+            target = _skill_path(skill_id)
+        except ValueError:
+            return False
         if not target.exists():
             return False
         shutil.rmtree(target)
@@ -253,7 +341,7 @@ class SkillMarketplace:
 
                 items.append(
                     InstalledSkill(
-                        skill_id=f"{manifest.name}@{manifest.version}",
+                        skill_id=p.name,
                         name=manifest.name,
                         version=manifest.version,
                         entrypoint=manifest.entrypoint,
@@ -263,6 +351,8 @@ class SkillMarketplace:
                         code=code[:500] if code else "",  # truncate for listing
                         test_cases=config.get("test_cases", []),
                         data_source_id=config.get("data_source_id", ""),
+                        instructions=code if manifest.entrypoint.lower().endswith(".md") else "",
+                        source=dict(config.get("source") or {}),
                     )
                 )
             except Exception:

@@ -157,7 +157,7 @@ export default function ChatPage() {
                   onClick={toggleAvatars}
                   className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] transition-colors ${
                     showAvatars
-                      ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]'
+                      ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
                       : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]'
                   }`}
                 >

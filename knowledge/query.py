@@ -139,6 +139,7 @@ async def search_knowledge(
     user_id: str,
     tenant_id: str | None,
     workspace_id: str | None,
+    project_id: str | None = None,
     top_k: int,
     query_type: str | None = None,
     session_id: str | None = None,
@@ -203,6 +204,8 @@ async def search_knowledge(
             owner_clause = _owner_filter(KnowledgePage.owner_id, user_id)
             if owner_clause is not None:
                 page_stmt = page_stmt.where(owner_clause)
+            if project_id:
+                page_stmt = page_stmt.where(KnowledgeSource.project_id == project_id)
             page_filters = []
             for token in tokens:
                 like = f"%{token}%"
@@ -241,6 +244,8 @@ async def search_knowledge(
             owner_clause = _owner_filter(KnowledgeClaim.owner_id, user_id)
             if owner_clause is not None:
                 claim_stmt = claim_stmt.where(owner_clause)
+            if project_id:
+                claim_stmt = claim_stmt.where(KnowledgeSource.project_id == project_id)
             claim_filters = [KnowledgeClaim.text.ilike(f"%{token}%") for token in tokens]
             claim_search = func.to_tsvector(
                 "simple", func.concat(KnowledgeClaim.text, " ", KnowledgeClaim.normalized_text)
@@ -304,6 +309,8 @@ async def search_knowledge(
                         owner_clause,
                         target_page.owner_id == user_id,
                     )
+                if project_id:
+                    relation_stmt = relation_stmt.where(KnowledgeSource.project_id == project_id)
                 relation_rows = (
                     await db.execute(
                         relation_stmt.where(or_(*relation_filters)).limit(max(top_k * 3, 12))

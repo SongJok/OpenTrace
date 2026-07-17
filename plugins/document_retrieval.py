@@ -75,13 +75,22 @@ def _document_tenant_clause(tenant_id: str | None, workspace_id: str | None):
     return and_(Document.tenant_id == tid, Document.workspace_id == wid)
 
 
-def _apply_document_scope(stmt, *, user_id: str, tenant_id: str | None = None, workspace_id: str | None = None):
+def _apply_document_scope(
+    stmt,
+    *,
+    user_id: str,
+    tenant_id: str | None = None,
+    workspace_id: str | None = None,
+    project_id: str | None = None,
+):
     owner = _document_owner_clause(user_id)
     if owner is not None:
         stmt = stmt.where(owner)
     tenant = _document_tenant_clause(tenant_id, workspace_id)
     if tenant is not None:
         stmt = stmt.where(tenant)
+    if project_id:
+        stmt = stmt.where(Document.project_id == project_id)
     return stmt
 
 
@@ -92,6 +101,7 @@ async def fetch_document_candidates(
     *,
     tenant_id: str | None = None,
     workspace_id: str | None = None,
+    project_id: str | None = None,
 ) -> list[DocumentCandidate]:
     candidates = await _fetch_document_candidates_vector(
         user_id=user_id,
@@ -99,6 +109,7 @@ async def fetch_document_candidates(
         limit=limit,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
+        project_id=project_id,
     )
     if candidates:
         return candidates
@@ -115,6 +126,7 @@ async def fetch_document_candidates(
             user_id=user_id,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
+            project_id=project_id,
         )
         if terms:
             filters = []
@@ -237,6 +249,7 @@ async def _fetch_document_candidates_vector(
     *,
     tenant_id: str | None = None,
     workspace_id: str | None = None,
+    project_id: str | None = None,
 ) -> list[DocumentCandidate]:
     if not getattr(settings, "use_pgvector", True):
         return []
@@ -254,6 +267,7 @@ async def _fetch_document_candidates_vector(
                 user_id=user_id,
                 tenant_id=tenant_id,
                 workspace_id=workspace_id,
+                project_id=project_id,
             )
             stmt = stmt.order_by(DocumentChunk.embedding_vector.l2_distance(query_embedding)).limit(limit)
             result = await db.execute(stmt)
@@ -271,6 +285,7 @@ async def _fetch_document_candidates_vector(
                     user_id=user_id,
                     tenant_id=tenant_id,
                     workspace_id=workspace_id,
+                    project_id=project_id,
                 )
                 stmt = stmt.limit(limit)
                 result = await db.execute(stmt)
@@ -287,6 +302,7 @@ async def fetch_document_candidates_fallback(
     *,
     tenant_id: str | None = None,
     workspace_id: str | None = None,
+    project_id: str | None = None,
 ) -> list[DocumentCandidate]:
     terms = tokenize(query)
     async with AsyncSessionLocal() as db:
@@ -300,6 +316,7 @@ async def fetch_document_candidates_fallback(
             user_id=user_id,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
+            project_id=project_id,
         )
         if terms:
             filters = []

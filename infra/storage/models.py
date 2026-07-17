@@ -350,6 +350,7 @@ class Document(Base):
     )
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     file_type: Mapped[str] = mapped_column(String(20), default="text")  # pdf|txt|docx|md
     file_size: Mapped[int] = mapped_column(Integer, default=0)
@@ -455,6 +456,7 @@ class KnowledgeSource(Base):
     owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     source_type: Mapped[str] = mapped_column(String(64), nullable=False, default="document")
     external_ref: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -588,6 +590,7 @@ class KnowledgeCompilationJob(Base):
     owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
     compiler_version: Mapped[str] = mapped_column(String(64), nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -649,6 +652,7 @@ class KnowledgeRule(Base):
     owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     rule_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     rule_type: Mapped[str] = mapped_column(String(32), nullable=False, default="schema")
@@ -1068,6 +1072,136 @@ class TaskNotification(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AlertRule(Base):
+    """Project-scoped deterministic condition evaluated from a governed data query."""
+
+    __tablename__ = "alert_rules"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    data_source_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    metric_column: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    aggregation: Mapped[str] = mapped_column(String(20), nullable=False, default="first")
+    operator: Mapped[str] = mapped_column(String(24), nullable=False, default="gt")
+    threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="warning")
+    rrule: Mapped[str] = mapped_column(String(512), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", index=True)
+    cooldown_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=3600)
+    last_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_state: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AlertEvent(Base):
+    __tablename__ = "alert_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    rule_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="triggered", index=True)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="warning", index=True)
+    value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class SkillCatalogEntry(Base):
+    """Normalized, reviewable metadata synced from a public SkillHub catalog."""
+
+    __tablename__ = "skill_catalog_entries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, default="skillhub", index=True)
+    external_id: Mapped[str] = mapped_column(String(512), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    github_owner: Mapped[str] = mapped_column(String(255), nullable=False)
+    github_repo: Mapped[str] = mapped_column(String(255), nullable=False)
+    skill_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    license: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    github_stars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    download_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    security_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    security_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown", index=True)
+    ai_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    rank_popular: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    rank_recent: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active", index=True)
+    source_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class UserSkillInstallation(Base):
+    """Account/workspace installation state separated from the shared catalog."""
+
+    __tablename__ = "user_skill_installations"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "tenant_id", "workspace_id", "catalog_skill_id",
+            name="uq_user_skill_installation_scope",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    catalog_skill_id: Mapped[str] = mapped_column(String(36), ForeignKey("skill_catalog_entries.id", ondelete="CASCADE"), nullable=False, index=True)
+    installed_skill_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="installed", index=True)
+    install_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="instruction_only")
+    source_revision: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    manifest_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ResourcePermission(Base):
+    """Explicit resource ACL layered on top of ownership and tenant isolation."""
+
+    __tablename__ = "resource_permissions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "workspace_id", "subject_user_id", "resource_type", "resource_id",
+            name="uq_resource_permission_subject",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    subject_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    resource_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    resource_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    permission: Mapped[str] = mapped_column(String(20), nullable=False, default="view", index=True)
+    granted_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class ConversationState(Base):
     """Per-session structured conversation state for multi-turn reference resolution."""
 
@@ -1196,6 +1330,7 @@ class DataQueryLog(Base):
     row_count: Mapped[int] = mapped_column(Integer, default=0)
     success: Mapped[bool] = mapped_column(Boolean, default=True)
     error_message: Mapped[str] = mapped_column(Text, nullable=True)
+    feedback_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -20,7 +20,7 @@ const ACCENT_OPTIONS: { value: AccentMode; label: string; description: string; p
 
 function SectionCard({ eyebrow, title, meta, children }: { eyebrow: string; title: string; meta?: string; children: ReactNode }) {
   return (
-    <section className="overflow-hidden rounded-[28px] border border-[var(--border)] bg-[var(--surface)]/95 shadow-[0_18px_50px_rgba(0,0,0,0.18)] backdrop-blur-xl">
+    <section className="overflow-hidden rounded-[28px] border border-[var(--border)] bg-[var(--surface)] shadow-[0_18px_50px_rgba(0,0,0,0.18)] backdrop-blur-xl">
       <div className="h-1 bg-gradient-to-r from-[var(--accent)] via-[var(--accent)] to-transparent" />
       <div className="p-5">
         <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-secondary)]">{eyebrow}</div>
@@ -78,7 +78,7 @@ function SwitchRow({
       <span
         className={clsx(
           'relative inline-flex h-6 w-11 items-center rounded-full border transition-colors',
-          checked ? 'border-[var(--accent)] bg-[var(--accent)]/20' : 'border-[var(--border)] bg-[var(--surface)]'
+          checked ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)] bg-[var(--surface)]'
         )}
       >
         <span
@@ -235,7 +235,7 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
                       'rounded-2xl border p-4 text-left transition-all',
                       mode === opt.value
                         ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-[0_0_0_1px_var(--accent-dim)]'
-                        : 'border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--accent)]/60 hover:bg-[var(--surface)]'
+                        : 'border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--accent-border)] hover:bg-[var(--surface)]'
                     )}
                   >
                     <div className="flex items-center justify-between text-[var(--text)]">
@@ -298,7 +298,7 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
                       'rounded-2xl border p-4 text-left transition-all',
                       accent === opt.value
                         ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-[0_0_0_1px_var(--accent-dim)]'
-                        : 'border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--accent)]/60 hover:bg-[var(--surface)]'
+                        : 'border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--accent-border)] hover:bg-[var(--surface)]'
                     )}
                   >
                     <div className="flex items-center justify-between">

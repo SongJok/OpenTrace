@@ -6,6 +6,7 @@ import { useAuthStore } from '../store/auth'
 import { useChatCommands } from '../store/chatCommands'
 import { useChatPreferences } from '../store/chatPreferences'
 import { useChatStore } from '../store/chat'
+import { createClientId } from '../utils/clientId'
 
 
 type ChatInputVariant = 'default' | 'welcome'
@@ -124,7 +125,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
     try {
       const conversationId = await ensureConversation()
       for (const file of files) {
-        const localId = `attachment_${crypto.randomUUID()}`
+        const localId = createClientId('attachment_')
         setAttachments((items) => [...items, { id: localId, file, name: file.name, size: file.size, status: 'uploading' }])
         try {
           const uploaded = await apiUploadAttachment(token, file, conversationId)
@@ -218,10 +219,11 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
 
   return (
     <div className={clsx('mx-auto w-full px-4 pb-4', variant === 'welcome' ? 'max-w-3xl' : 'max-w-4xl')}>
-      <div className="rounded-[26px] border border-[var(--border)] bg-[var(--surface-raised)] p-3 shadow-[0_8px_32px_rgba(0,0,0,0.08)] focus-within:border-[var(--accent)]/50">
+      <div className="rounded-[26px] border border-[var(--border)] bg-[var(--surface-raised)] p-3 shadow-[0_8px_32px_rgba(0,0,0,0.08)] focus-within:border-[var(--accent-border)]">
         <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(event) => void selectFiles(event)} accept=".gif,.jpeg,.jpg,.png,.webp,.pdf,.txt,.md,.csv,.json,.docx,.xlsx,.pptx,.py,.js,.ts,.html,.css,.xml,.yaml,.yml,.log" />
         {attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-2 px-1">{attachments.map((item) => <div key={item.id} className="flex max-w-full items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><span className="shrink-0">{item.status === 'uploading' ? <LoaderCircle size={14} className="animate-spin" /> : <FileText size={14} />}</span><span className="max-w-48 truncate">{item.name}</span>{item.status === 'error' && <span className="text-red-500">{item.error || '上传失败'}</span>}<button type="button" onClick={() => void removeAttachment(item)} aria-label={`移除 ${item.name}`} className="rounded p-0.5 hover:bg-[var(--surface-hover)]"><X size={13} /></button></div>)}</div>}
         <textarea
+          data-chat-message-input
           ref={textareaRef}
           value={text}
           onChange={(event) => setText(event.target.value)}

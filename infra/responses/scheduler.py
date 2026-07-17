@@ -144,7 +144,6 @@ async def enqueue_due_tasks(*, limit: int = 20) -> int:
                         "project_id": task.project_id,
                         "execution_profile": "auto",
                         "memory_mode": "enabled",
-                        "enabled_skills": [],
                         "data_source_ids": [],
                     },
                 },

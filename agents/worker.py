@@ -198,13 +198,17 @@ class AgentWorker:
         from infra.message_bus.subscribers import memory_event_subscriber
         from infra.response_worker import response_job_loop
         from infra.responses.scheduler import scheduler_loop
+        from infra.alerts.scheduler import alert_scheduler_loop
         from knowledge.jobs import knowledge_job_loop
+        from skills.catalog import skillhub_sync_loop
 
         await asyncio.gather(
             self._heartbeat(),
             knowledge_job_loop(),
             response_job_loop(),
             scheduler_loop(),
+            alert_scheduler_loop(),
+            skillhub_sync_loop(),
             memory_event_subscriber.start(),
             *(self._consume(k) for k in consumers),
         )

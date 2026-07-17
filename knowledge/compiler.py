@@ -89,6 +89,7 @@ def compile_payload(
     source_version_id: str,
     title: str,
     chunks: list[DocumentChunk],
+    orchestration: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Build schema-shaped pages, claims and relations without model calls.
 
@@ -97,6 +98,13 @@ def compile_payload(
     More capable AI compilers can be added as later compiler versions without
     changing the data contract.
     """
+
+    config = orchestration or {}
+    summary_limit = max(80, min(int(config.get("summary_length", 420)), 2000))
+    content_limit = max(1000, min(int(config.get("content_limit", 16000)), 100000))
+    min_claim_length = max(4, min(int(config.get("min_claim_length", 8)), 200))
+    max_claims_per_page = max(1, min(int(config.get("max_claims_per_page", 12)), 100))
+    page_type_keywords = config.get("page_type_keywords") or {}
 
     grouped: dict[str, list[DocumentChunk]] = defaultdict(list)
     for chunk in chunks:
@@ -112,8 +120,8 @@ def compile_payload(
             "title": title,
             "slug": "overview",
             "page_type": KnowledgeType.OVERVIEW.value,
-            "content": all_content[:16000] or title,
-            "summary": _summary(all_content),
+            "content": all_content[:content_limit] or title,
+            "summary": _summary(all_content, summary_limit),
             "chunk_ids": [chunk.id for chunk in chunks],
         }
     )
@@ -126,14 +134,20 @@ def compile_payload(
             continue
         slug = slugify(heading, f"section-{index}")
         page_id = stable_id("page", f"{source_version_id}:{slug}")
+        detected_type = _page_type(heading, section_content)
+        lowered = f"{heading}\n{section_content}".lower()
+        for configured_type, keywords in page_type_keywords.items():
+            if any(str(keyword).lower() in lowered for keyword in (keywords or [])):
+                detected_type = str(configured_type)
+                break
         pages.append(
             {
                 "id": page_id,
                 "title": heading[:255],
                 "slug": slug,
-                "page_type": _page_type(heading, section_content),
-                "content": section_content[:16000],
-                "summary": _summary(section_content),
+                "page_type": detected_type,
+                "content": section_content[:content_limit],
+                "summary": _summary(section_content, summary_limit),
                 "chunk_ids": [chunk.id for chunk in section_chunks],
             }
         )
@@ -149,7 +163,7 @@ def compile_payload(
                 continue
             for sentence in _SENTENCE_SPLIT.split(chunk.content or ""):
                 text = _SPACE.sub(" ", sentence).strip()
-                if len(text) < 8:
+                if len(text) < min_claim_length:
                     continue
                 normalized = text.lower()
                 claim_digest = content_hash(normalized)
@@ -171,9 +185,9 @@ def compile_payload(
                     }
                 )
                 claim_count += 1
-                if claim_count >= 12:
+                if claim_count >= max_claims_per_page:
                     break
-            if claim_count >= 12:
+            if claim_count >= max_claims_per_page:
                 break
 
     relations: list[dict[str, Any]] = []
@@ -226,10 +240,18 @@ async def compile_document_knowledge(document_id: str, job_id: str | None = None
         try:
             result = await compile_document_knowledge_in_session(db, document_id, job_id=job_id)
             if result.get("status") == "succeeded":
+                from knowledge.graph import link_project_pages
                 from knowledge.lint import run_knowledge_lint
 
                 document = await db.get(Document, document_id)
                 if document is not None:
+                    await link_project_pages(
+                        db,
+                        tenant_id=document.tenant_id,
+                        workspace_id=document.workspace_id,
+                        owner_id=document.owner_id,
+                        project_id=document.project_id,
+                    )
                     await run_knowledge_lint(
                         db,
                         tenant_id=document.tenant_id,
@@ -297,6 +319,7 @@ async def compile_document_knowledge_in_session(
             owner_id=document.owner_id,
             tenant_id=document.tenant_id,
             workspace_id=document.workspace_id,
+            project_id=document.project_id,
             source_type="document",
             external_ref=f"document:{document.id}",
             title=document.title,
@@ -311,6 +334,7 @@ async def compile_document_knowledge_in_session(
         source.title = document.title
         source.content_hash = digest
         source.status = KnowledgeStatus.COMPILING.value
+        source.project_id = document.project_id
         source.source_metadata = {
             **(source.source_metadata or {}),
             "file_type": document.file_type,
@@ -332,6 +356,7 @@ async def compile_document_knowledge_in_session(
             owner_id=document.owner_id,
             tenant_id=document.tenant_id,
             workspace_id=document.workspace_id,
+            project_id=document.project_id,
             status="running",
             compiler_version=KNOWLEDGE_COMPILER_VERSION,
             started_at=datetime.now(timezone.utc),
@@ -343,6 +368,7 @@ async def compile_document_knowledge_in_session(
         job.owner_id = document.owner_id
         job.tenant_id = document.tenant_id
         job.workspace_id = document.workspace_id
+        job.project_id = document.project_id
         job.compiler_version = KNOWLEDGE_COMPILER_VERSION
         job.started_at = job.started_at or datetime.now(timezone.utc)
 
@@ -366,11 +392,13 @@ async def compile_document_knowledge_in_session(
             db,
             tenant_id=document.tenant_id,
             workspace_id=document.workspace_id,
+            project_id=document.project_id,
         )
         rule = await active_rule(
             db,
             tenant_id=document.tenant_id,
             workspace_id=document.workspace_id,
+            project_id=document.project_id,
         )
         if version is None:
             version = KnowledgeSourceVersion(
@@ -383,6 +411,7 @@ async def compile_document_knowledge_in_session(
                 raw_metadata={
                     "document_id": document.id,
                     "document_version": document.version,
+                    "project_id": document.project_id,
                     "rule_version": rule_version,
                 },
             )
@@ -413,6 +442,7 @@ async def compile_document_knowledge_in_session(
             source_version_id=version.id,
             title=document.title,
             chunks=chunks,
+            orchestration=(rule.schema_json if rule else None),
         )
         validate_compiled_payload(rule, pages=pages, claims=claims, relations=relations)
         for page in pages:
@@ -434,6 +464,7 @@ async def compile_document_knowledge_in_session(
                     page_metadata={
                         "document_id": document.id,
                         "document_version": document.version,
+                        "project_id": document.project_id,
                         "chunk_ids": page["chunk_ids"],
                         "compiler_version": KNOWLEDGE_COMPILER_VERSION,
                         "rule_version": rule_version,

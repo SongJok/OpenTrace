@@ -279,7 +279,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
                     </div>
                     <pre className="mt-3 max-h-40 overflow-auto rounded-xl bg-[var(--surface)] p-3 text-xs">{JSON.stringify(approval.arguments, null, 2)}</pre>
                     <div className="mt-3 flex gap-2">
-                      <button disabled={Boolean(resolvingApproval)} onClick={() => void resolveApproval(approval.id, true)} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-50">允许</button>
+                      <button disabled={Boolean(resolvingApproval)} onClick={() => void resolveApproval(approval.id, true)} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm text-[var(--accent-foreground)] disabled:opacity-50">允许</button>
                       <button disabled={Boolean(resolvingApproval)} onClick={() => void resolveApproval(approval.id, false)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm disabled:opacity-50">拒绝</button>
                     </div>
                   </div>
@@ -293,7 +293,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
               </div>
             )}
             {!isUser && (resolvedCitations.length > 0 || evidenceRefs.length > 0) && (
-              <div className="mt-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)]/45 px-3 py-2 text-xs text-[var(--text-secondary)]">
+              <div className="mt-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
                 <div className="flex flex-wrap gap-x-3 gap-y-1">
                   <span>DB 证据 {Math.round(sourceRatio.db * 100)}%</span>
                   <span>Doc / Web {Math.round(sourceRatio.docWeb * 100)}%</span>
@@ -325,7 +325,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
 function ProgressSummary({ progress, steps, complete }: { progress: string[]; steps: any[]; complete: boolean }) {
   const latest = progress[progress.length - 1] || steps[steps.length - 1]?.title || '处理中'
   return (
-    <details className="mb-2 max-w-xl rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)]/50 px-3 py-2 text-xs text-[var(--text-secondary)]" open={!complete}>
+    <details className="mb-2 max-w-xl rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]" open={!complete}>
       <summary className="flex cursor-pointer list-none items-center gap-2 select-none [&::-webkit-details-marker]:hidden">
         <span className={complete ? 'text-[var(--accent)]' : 'animate-pulse text-[var(--accent)]'}>{complete ? '✓' : '●'}</span>
         <span className="truncate">{complete ? '已完成' : latest}</span>

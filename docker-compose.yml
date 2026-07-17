@@ -59,6 +59,8 @@ services:
       - "14100:14100"
     env_file:
       - .env
+    volumes:
+      - skills_data:/app/skills/installed
     extra_hosts:
       - "host.docker.internal:host-gateway"
     sysctls:
@@ -106,6 +108,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    volumes:
+      - skills_data:/app/skills/installed
     extra_hosts:
       - "host.docker.internal:host-gateway"
     sysctls:
@@ -160,3 +164,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  skills_data:

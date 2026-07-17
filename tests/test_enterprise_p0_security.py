@@ -113,7 +113,17 @@ def test_control_plane_routes_require_admin_dependency():
     protected_routes.extend(
         route
         for route in skills.router.routes
-        if isinstance(route, APIRoute) and "/skills/session/" not in route.path
+        if isinstance(route, APIRoute)
+        and "/skills/session/" not in route.path
+        # Catalog browsing and account-scoped installs are intentionally
+        # end-user data-plane APIs. Catalog synchronization and legacy
+        # executable-skill administration remain admin-only.
+        and route.path not in {
+            "/skills/catalog",
+            "/skills/catalog/install",
+            "/skills/installed/me",
+            "/skills/installations/{installation_id}",
+        }
     )
     assert protected_routes
     missing = [

@@ -12,6 +12,7 @@ from gateway.api_gateway.routers import (
     admin,
     agent_resources,
     analytical_skills,
+    alerts,
     audit,
     auth,
     chat,
@@ -32,6 +33,7 @@ from gateway.api_gateway.routers import (
     response_aux,
     responses,
     rules,
+    resource_permissions,
     sandbox,
     skills,
     table_relationships,
@@ -119,6 +121,8 @@ app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
 app.include_router(responses.router, prefix="/api/v2", tags=["responses"])
 app.include_router(response_aux.router, prefix="/api/v2", tags=["response-resources"])
 app.include_router(agent_resources.router, prefix="/api/v2", tags=["agent-resources"])
+app.include_router(alerts.router, prefix="/api/v2", tags=["alerts"])
+app.include_router(resource_permissions.router, prefix="/api/v2", tags=["resource-permissions"])
 app.include_router(conversations.router, prefix="/api/v2", tags=["conversations-v2"])
 app.include_router(memories.router, prefix="/api/v2", tags=["memories-v2"])
 app.include_router(personalization.router, prefix="/api/v2", tags=["personalization-v2"])
