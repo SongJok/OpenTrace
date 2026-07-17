@@ -168,6 +168,11 @@ class SMTPSettings(BaseSettings):
     smtp_user: str = ""
     smtp_pass: str = ""
     smtp_from: str = ""
+    # If unset, TLS mode is inferred from the conventional ports:
+    # port 465 uses implicit TLS and port 587 uses STARTTLS.
+    smtp_use_tls: bool | None = None
+    smtp_start_tls: bool | None = None
+    smtp_timeout_seconds: float = 15.0
 
 
 class RegistrationSettings(BaseSettings):

@@ -3,7 +3,6 @@ Admin router — system management endpoints.
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
@@ -17,7 +16,7 @@ from gateway.api_gateway.routers.auth import (
     get_current_user,
 )
 from infra.errors import AppException, ErrorCodes
-from infra.notifications.mailer import notify_user_approved
+from infra.notifications.mailer import notify_user_approved, schedule_email_notification
 from infra.observability.logger import get_logger
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import User
@@ -90,10 +89,11 @@ async def approve_user(
     user.approved_by = current_user.id
     await db.commit()
 
-    try:
-        asyncio.create_task(notify_user_approved(user.email, password))
-    except Exception:
-        logger.warning("Failed to schedule approval email", email=user.email)
+    schedule_email_notification(
+        notify_user_approved(user.email, password),
+        kind="user_approved",
+        recipient=user.email,
+    )
 
     logger.info("User approved", user_id=user.id, by=current_user.email)
     return {"message": "用户已通过审核"}

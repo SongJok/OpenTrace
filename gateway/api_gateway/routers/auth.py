@@ -3,7 +3,6 @@ Auth router — login, register, me, logout.
 """
 from __future__ import annotations
 
-import asyncio
 import random
 import string
 import uuid
@@ -20,7 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
-from infra.notifications.mailer import notify_admin_new_registration
+from infra.notifications.mailer import (
+    notify_admin_new_registration,
+    schedule_email_notification,
+)
 from infra.observability.logger import get_logger
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import User
@@ -174,10 +176,11 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)) -> 
     db.add(user)
     await db.commit()
 
-    try:
-        asyncio.create_task(notify_admin_new_registration(email, req.display_name or ""))
-    except Exception:
-        logger.warning("Failed to schedule admin notification", email=email)
+    schedule_email_notification(
+        notify_admin_new_registration(email, req.display_name or ""),
+        kind="new_registration",
+        recipient=settings.admin_email,
+    )
 
     logger.info("User registered (pending approval)", email=user.email)
     return RegisterResponse(
