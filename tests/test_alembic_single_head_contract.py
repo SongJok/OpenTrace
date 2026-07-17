@@ -47,6 +47,18 @@ def test_legacy_text_embeddings_are_normalized_before_vector_indexing():
     assert "ix_document_chunks_embedding_hnsw" in normalization
 
 
+def test_user_memory_score_is_added_after_existing_runtime_migrations():
+    migration = (VERSIONS / "20260726_add_user_memory_score.py").read_text(
+        encoding="utf-8"
+    )
+    database = (ROOT / "infra/storage/database.py").read_text(encoding="utf-8")
+
+    assert 'down_revision = "20260725_vector_columns"' in migration
+    assert "ADD COLUMN IF NOT EXISTS score DOUBLE PRECISION" in migration
+    assert '"user_memories": {' in database
+    assert '"score",' in database
+
+
 def test_alembic_single_head():
     proc = subprocess.run(
         [sys.executable, "-m", "alembic", "heads"],

@@ -169,6 +169,20 @@ async def _verify_runtime_schema(conn) -> None:
             "theme_accent",
         },
         "projects": {"memory_mode"},
+        "user_memories": {
+            "score",
+            "scope_type",
+            "tenant_id",
+            "workspace_id",
+            "memory_key",
+            "scope_id",
+            "status",
+            "confidence",
+            "salience",
+            "source_response_id",
+            "supersedes_id",
+            "expires_at",
+        },
     }
     missing: list[str] = []
     for table, columns in required_columns.items():
@@ -262,6 +276,7 @@ async def _ensure_unified_runtime_columns(conn) -> None:
         "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS goal_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.response_tool_executions ADD COLUMN IF NOT EXISTS side_effect_level VARCHAR(20) NOT NULL DEFAULT 'read'",
+        "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS score DOUBLE PRECISION NOT NULL DEFAULT 0.5",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS scope_type VARCHAR(20) NOT NULL DEFAULT 'user'",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(128) NOT NULL DEFAULT 'default'",

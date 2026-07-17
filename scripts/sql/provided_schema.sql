@@ -328,6 +328,7 @@ CREATE TABLE public.user_memories (
 	pinned bool NOT NULL,
 	access_count int4 NOT NULL,
 	last_accessed_at timestamptz NULL,
+	score float8 DEFAULT 0.5 NOT NULL,
 	updated_at timestamptz DEFAULT now() NOT NULL,
 	created_at timestamptz DEFAULT now() NOT NULL,
 	CONSTRAINT user_memories_pkey PRIMARY KEY (id)
@@ -373,4 +374,3 @@ CREATE UNIQUE INDEX ix_user_ui_settings_user_id ON public.user_ui_settings USING
 
 INSERT INTO public.users (id,email,hashed_password,display_name,is_active,is_superuser,created_at,updated_at) VALUES
 	 ('10d9b603-0555-4200-9b2e-2abd79708d73','songts@tuwan.com','$2b$12$XonsQFiSGVEFX7bd7yYZOutSvkuk6Q6st47G9ciIuqtLSdo6kl1zW','Song TS',true,true,'2026-03-30 20:34:49.391731+08','2026-03-30 20:34:49.391731+08');
-
