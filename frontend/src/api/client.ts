@@ -908,7 +908,7 @@ export async function apiChatStream(
           opentrace: {
             execution_profile: mode === 'fast' || mode === 'deep' ? mode : 'auto',
             memory_mode: payload?.memory_mode === 'temporary' ? 'temporary' : 'enabled',
-            enabled_skills: Array.isArray(payload?.enabled_skills) ? payload.enabled_skills : [],
+            ...(Array.isArray(payload?.enabled_skills) ? { enabled_skills: payload.enabled_skills } : {}),
             project_id: typeof payload?.project_id === 'string' ? payload.project_id : undefined,
             assistant_profile_id: typeof payload?.assistant_profile_id === 'string' ? payload.assistant_profile_id : undefined,
             attachment_ids: Array.isArray(payload?.attachment_ids) ? payload.attachment_ids : [],

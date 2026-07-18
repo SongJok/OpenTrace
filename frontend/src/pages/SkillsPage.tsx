@@ -18,9 +18,11 @@ import {
   apiUninstallCatalogSkill,
   apiSyncSkillCatalog,
   apiSetCatalogSkillAvailability,
+  apiListConversations,
   type SkillItem,
   type SkillCatalogItem,
   type SkillCatalogSyncPolicy,
+  type ConversationItem,
 } from '../api/client'
 
 type ViewMode = 'list' | 'create' | 'detail' | 'test'
@@ -31,6 +33,7 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((s) => s.token)!
   const role = useAuthStore((s) => s.role)
   const activeSessionId = useChatStore((s) => s.activeId)
+  const setActiveSessionId = useChatStore((s) => s.setActiveId)
   const [skills, setSkills] = useState<SkillItem[]>([])
   const [view, setView] = useState<ViewMode>('list')
   const [selectedSkill, setSelectedSkill] = useState<SkillItem | null>(null)
@@ -50,6 +53,7 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
   const [busyCatalogId, setBusyCatalogId] = useState<string | null>(null)
   const [marketplaceTab, setMarketplaceTab] = useState<MarketplaceTab>('discover')
   const [category, setCategory] = useState<CatalogCategory>('全部')
+  const [sessionChoices, setSessionChoices] = useState<ConversationItem[]>([])
 
   // Create form
   const [name, setName] = useState('')
@@ -93,6 +97,20 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
       setSkills([])
     }
   }
+
+  useEffect(() => {
+    let cancelled = false
+    void apiListConversations(token).then((items) => {
+      if (cancelled) return
+      setSessionChoices(items)
+      const requestedSessionId = new URLSearchParams(window.location.search).get('session')
+      const resolvedSessionId = resolveSkillSessionId(requestedSessionId, useChatStore.getState().activeId, items)
+      if (resolvedSessionId !== useChatStore.getState().activeId) setActiveSessionId(resolvedSessionId)
+    }).catch((error) => {
+      if (!cancelled) console.error('load skill sessions failed', error)
+    })
+    return () => { cancelled = true }
+  }, [token, setActiveSessionId])
 
   useEffect(() => {
     void load()
@@ -345,7 +363,7 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
               {displayedCatalog.length ? <CatalogGrid items={displayedCatalog} busyId={busyCatalogId} activeSessionId={activeSessionId} enabledSkills={enabledSkills} onInstall={installCatalog} onUninstall={uninstallCatalog} onToggle={toggleSessionSkill} /> : <EmptyCatalog />}
             </section>}
 
-            {marketplaceTab === 'installed' && <section className="space-y-5"><SectionTitle title="我的 Skills" subtitle="管理当前账户已部署的能力，并决定哪些 Skill 可以进入当前会话" action={<div className="rounded-full border border-[var(--border)] px-3 py-1.5 text-[11px] text-[var(--text-secondary)]">{activeSessionId ? `当前会话已启用 ${enabledSkills.length} 个` : '尚未选择会话'}</div>} />{installedCatalog.length ? <CatalogGrid items={installedCatalog} busyId={busyCatalogId} activeSessionId={activeSessionId} enabledSkills={enabledSkills} onInstall={installCatalog} onUninstall={uninstallCatalog} onToggle={toggleSessionSkill} /> : <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] py-20 text-center"><PackageCheck size={30} className="mx-auto text-[var(--text-secondary)]" /><p className="mt-3 text-sm font-medium">还没有安装 Skill</p><p className="mt-1 text-xs text-[var(--text-secondary)]">前往技能广场，选择通过安全审核的能力。</p><button onClick={() => setMarketplaceTab('discover')} className="mt-4 rounded-lg bg-[var(--accent)] px-4 py-2 text-xs text-[var(--accent-foreground)]">浏览技能广场</button></div>}</section>}
+            {marketplaceTab === 'installed' && <section className="space-y-5"><SectionTitle title="我的 Skills" subtitle="管理当前账户已部署的能力，并决定哪些 Skill 可以进入当前会话" action={sessionChoices.length ? <label className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] px-3 py-1.5 text-[11px] text-[var(--text-secondary)]"><span>目标会话</span><select aria-label="目标会话" value={activeSessionId || ''} onChange={(event) => setActiveSessionId(event.target.value || null)} className="max-w-48 bg-transparent font-medium text-[var(--text)] outline-none">{sessionChoices.map((session) => <option key={session.id} value={session.id}>{session.title || '未命名会话'}</option>)}</select><span>已启用 {enabledSkills.length} 个</span></label> : <div className="rounded-full border border-[var(--border)] px-3 py-1.5 text-[11px] text-[var(--text-secondary)]">请先在主问答创建会话</div>} />{installedCatalog.length ? <CatalogGrid items={installedCatalog} busyId={busyCatalogId} activeSessionId={activeSessionId} enabledSkills={enabledSkills} onInstall={installCatalog} onUninstall={uninstallCatalog} onToggle={toggleSessionSkill} /> : <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] py-20 text-center"><PackageCheck size={30} className="mx-auto text-[var(--text-secondary)]" /><p className="mt-3 text-sm font-medium">还没有安装 Skill</p><p className="mt-1 text-xs text-[var(--text-secondary)]">前往技能广场，选择通过安全审核的能力。</p><button onClick={() => setMarketplaceTab('discover')} className="mt-4 rounded-lg bg-[var(--accent)] px-4 py-2 text-xs text-[var(--accent-foreground)]">浏览技能广场</button></div>}</section>}
 
             {marketplaceTab === 'developer' && role === 'admin' && <CatalogGovernancePanel items={adminCatalog} policy={catalogPolicy} busyId={busyCatalogId} syncing={loading} onSync={syncCatalog} onSetAvailability={setCatalogAvailability} />}
 
@@ -565,6 +583,17 @@ function formatCount(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
   if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}K`
   return String(value || 0)
+}
+
+export function resolveSkillSessionId(
+  requestedSessionId: string | null,
+  activeSessionId: string | null,
+  sessions: ConversationItem[],
+): string | null {
+  const available = new Set(sessions.map((session) => session.id))
+  if (requestedSessionId && available.has(requestedSessionId)) return requestedSessionId
+  if (activeSessionId && available.has(activeSessionId)) return activeSessionId
+  return sessions[0]?.id ?? null
 }
 
 function catalogCategory(item: SkillCatalogItem): CatalogCategory {

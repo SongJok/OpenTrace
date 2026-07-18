@@ -242,7 +242,7 @@ export default function Sidebar() {
           <Plug size={16} className="cartoon-icon icon-integrations" />
         </button>
         <button
-          onClick={() => navigate('/skills')}
+          onClick={() => navigate(store.activeId ? `/skills?session=${encodeURIComponent(store.activeId)}` : '/skills')}
           className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
         >
           <Wrench size={16} className="cartoon-icon icon-skills" />
@@ -408,7 +408,7 @@ export default function Sidebar() {
           <NavButton icon={<Activity size={15} />} label="主动预警" onClick={() => navigate('/alerts')} />
           <NavButton icon={<ShieldAlert size={15} className="cartoon-icon icon-audit" />} label={t('nav.audit')} onClick={() => navigate('/audit')} />
           <NavButton icon={<Plug size={15} className="cartoon-icon icon-integrations" />} label={t('nav.integrations')} onClick={() => navigate('/integrations')} />
-          <NavButton icon={<Wrench size={15} className="cartoon-icon icon-skills" />} label="Skills" onClick={() => navigate('/skills')} />
+          <NavButton icon={<Wrench size={15} className="cartoon-icon icon-skills" />} label="Skills" onClick={() => navigate(store.activeId ? `/skills?session=${encodeURIComponent(store.activeId)}` : '/skills')} />
           <NavButton icon={<Network size={15} className="cartoon-icon" />} label="知识编排" onClick={() => navigate('/knowledge')} />
           <NavButton icon={<FileCode size={15} className="cartoon-icon icon-rules" />} label="规则" onClick={() => navigate('/rules')} />
           {role === 'admin' && (

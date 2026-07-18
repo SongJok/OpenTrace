@@ -9,8 +9,9 @@ from typing import Any, Callable
 import httpx
 import pytest
 
-from infra.storage.models import SkillCatalogEntry
+from infra.storage.models import SkillCatalogEntry, UserSkillInstallation
 from skills import catalog
+from skills.store import marketplace as marketplace_module
 
 
 class _FakeAsyncClient:
@@ -200,3 +201,70 @@ async def test_catalog_sync_is_append_only_and_preserves_platform_disable(monkey
     assert row.source_metadata["platform_note"] == "暂不适合平台"
     assert result["added"] == 0
     assert result["preserved_disabled"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reviewed_skill_can_be_installed_and_executed_as_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    entry = SkillCatalogEntry(
+        id="catalog-debugging-agent",
+        external_id="majiayu000/claude-skill-registry/debugging-agent",
+        provider="skillhub-palebluedot",
+        name="debugging-agent",
+        description="Diagnose software failures",
+        github_owner="majiayu000",
+        github_repo="claude-skill-registry",
+        skill_path="skills/data/debugging-agent",
+        version="1.0.0",
+        security_status="pass",
+        security_score=100,
+        status="active",
+    )
+    added: list[UserSkillInstallation] = []
+
+    class FakeSession:
+        async def __aenter__(self) -> FakeSession:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def get(self, _model: Any, catalog_id: str) -> SkillCatalogEntry | None:
+            return entry if catalog_id == entry.id else None
+
+        async def scalar(self, _statement: Any) -> None:
+            return None
+
+        def add(self, row: UserSkillInstallation) -> None:
+            added.append(row)
+
+        async def commit(self) -> None:
+            return None
+
+    markdown = "---\nname: debugging-agent\n---\n# Debugging Agent\nInspect evidence before proposing a fix.\n"
+
+    async def fake_fetch(_entry: SkillCatalogEntry) -> tuple[str, str]:
+        return markdown, hashlib.sha256(markdown.encode()).hexdigest()
+
+    monkeypatch.setattr(catalog, "AsyncSessionLocal", FakeSession)
+    monkeypatch.setattr(catalog, "_fetch_skill_markdown", fake_fetch)
+    monkeypatch.setattr(marketplace_module, "INSTALLED_DIR", tmp_path / "installed")
+    marketplace_module.INSTALLED_DIR.mkdir(parents=True)
+
+    installed = await catalog.install_catalog_skill(
+        catalog_id=entry.id,
+        user_id="user-1",
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+    )
+
+    assert installed["installed"] is True
+    assert installed["installed_skill_id"].startswith("acct-")
+    assert len(added) == 1
+    assert added[0].status == "installed"
+    outcome = catalog.marketplace.test_skill(installed["installed_skill_id"], {"query": "定位服务报错"})
+    assert outcome["success"] is True
+    assert outcome["output"]["trust"] == "user_enabled_instruction_skill"
+    assert "Inspect evidence" in outcome["output"]["instructions"]

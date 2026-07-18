@@ -901,10 +901,12 @@ class AgentLoop:
         async with AsyncSessionLocal() as scope_db:
             session = await scope_db.get(ChatSession, response.conversation_id)
             if agent_name == "skills":
-                if "enabled_skills" in extension:
-                    enabled = [str(item) for item in extension.get("enabled_skills") or [] if str(item)]
-                else:
-                    enabled = list(getattr(session, "enabled_skills", None) or [])
+                # Session bindings are the canonical, server-owned allowlist.
+                # Clients always used to send ``enabled_skills: []`` which
+                # accidentally shadowed a valid database binding after the
+                # user powered a Skill on. Never let request payloads widen or
+                # clear the trusted session policy.
+                enabled = list(getattr(session, "enabled_skills", None) or [])
                 disabled = set(getattr(session, "disabled_skills", None) or [])
                 candidates = [item for item in enabled if item not in disabled]
                 account_ids = [item for item in candidates if item.startswith("acct-")]

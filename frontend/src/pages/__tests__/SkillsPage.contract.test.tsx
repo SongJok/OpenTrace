@@ -28,4 +28,17 @@ describe('SkillsPage marketplace contract', () => {
     expect(source).toContain('暂停使用')
     expect(source).toContain('立即同步')
   })
+
+  it('restores a usable conversation so installed Skills can be powered on', async () => {
+    const page = await import('../SkillsPage')
+    const sessions = [
+      { id: 'recent-session', title: '最近会话', turn_count: 1, created_at: '', last_active: '' },
+      { id: 'older-session', title: '历史会话', turn_count: 1, created_at: '', last_active: '' },
+    ]
+    expect(page.resolveSkillSessionId('older-session', null, sessions)).toBe('older-session')
+    expect(page.resolveSkillSessionId(null, 'older-session', sessions)).toBe('older-session')
+    expect(page.resolveSkillSessionId(null, 'missing-session', sessions)).toBe('recent-session')
+    expect(page.resolveSkillSessionId(null, null, [])).toBeNull()
+    expect(page.default.toString()).toContain('目标会话')
+  })
 })
