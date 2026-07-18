@@ -29,4 +29,22 @@ describe('PermissionsPage memory constitution contract', () => {
     expect(source).toContain('内容哈希')
     expect(source).not.toContain('content_hash}')
   })
+
+  it('previews impact and protects concurrent administrator updates', async () => {
+    const page = await import('../PermissionsPage')
+    const source = page.default.toString()
+
+    expect(source).toContain('影响预览')
+    expect(source).toContain('would_quarantine_count')
+    expect(source).toContain('expected_version')
+  })
+
+  it('exposes append-only history restore without rewriting old versions', async () => {
+    const page = await import('../PermissionsPage')
+    const source = page.default.toString()
+
+    expect(source).toContain('版本历史')
+    expect(source).toContain('恢复此版本')
+    expect(source).toContain('apiRestoreMemoryConstitution')
+  })
 })

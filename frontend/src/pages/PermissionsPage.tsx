@@ -6,10 +6,15 @@ import {
   apiEnableUser,
   apiGetMemoryConstitution,
   apiListMemoryConstitutionAudits,
+  apiListMemoryConstitutionHistory,
   apiListUsers,
+  apiPreviewMemoryConstitution,
+  apiRestoreMemoryConstitution,
   apiUpdateMemoryConstitution,
   type MemoryConstitutionAuditItem,
   type MemoryConstitutionData,
+  type MemoryConstitutionHistoryItem,
+  type MemoryConstitutionPreview,
   type MemoryConstitutionRules,
 } from '../api/client'
 import { t } from '../i18n'
@@ -68,6 +73,10 @@ export default function PermissionsPage() {
   const [constitutionAudits, setConstitutionAudits] = useState<MemoryConstitutionAuditItem[]>([])
   const [constitutionLoading, setConstitutionLoading] = useState(false)
   const [constitutionSaving, setConstitutionSaving] = useState(false)
+  const [constitutionPreviewing, setConstitutionPreviewing] = useState(false)
+  const [constitutionPreview, setConstitutionPreview] = useState<MemoryConstitutionPreview | null>(null)
+  const [constitutionHistory, setConstitutionHistory] = useState<MemoryConstitutionHistoryItem[]>([])
+  const [restoringVersion, setRestoringVersion] = useState<number | null>(null)
 
   async function loadUsers(status?: string) {
     if (!token) return
@@ -90,14 +99,17 @@ export default function PermissionsPage() {
     if (!token) return
     setConstitutionLoading(true)
     try {
-      const [data, audits] = await Promise.all([
+      const [data, audits, history] = await Promise.all([
         apiGetMemoryConstitution(token),
         apiListMemoryConstitutionAudits(token),
+        apiListMemoryConstitutionHistory(token),
       ])
       setConstitution(data)
       setConstitutionContent(data.content)
       setConstitutionRules(data.rules)
       setConstitutionAudits(audits)
+      setConstitutionHistory(history)
+      setConstitutionPreview(null)
     } catch (err: any) {
       setMessage(err.message)
     } finally {
@@ -117,12 +129,21 @@ export default function PermissionsPage() {
       const data = await apiUpdateMemoryConstitution(token, {
         content: constitutionContent,
         rules: constitutionRules,
+        expected_version: constitution?.version ?? 0,
       })
       setConstitution(data)
       setConstitutionContent(data.content)
       setConstitutionRules(data.rules)
-      setMessage(`记忆宪法 v${data.version} 已实时生效，已隔离 ${data.quarantined_count || 0} 条旧记忆`)
-      setConstitutionAudits(await apiListMemoryConstitutionAudits(token))
+      setMessage(data.unchanged
+        ? `记忆宪法 v${data.version} 内容未变化，无需生成新版本`
+        : `记忆宪法 v${data.version} 已实时生效，已隔离 ${data.quarantined_count || 0} 条旧记忆`)
+      const [audits, history] = await Promise.all([
+        apiListMemoryConstitutionAudits(token),
+        apiListMemoryConstitutionHistory(token),
+      ])
+      setConstitutionAudits(audits)
+      setConstitutionHistory(history)
+      setConstitutionPreview(null)
     } catch (err: any) {
       setMessage(err.message)
     } finally {
@@ -130,10 +151,50 @@ export default function PermissionsPage() {
     }
   }
 
+  async function handlePreviewConstitution() {
+    if (!token || !constitutionRules) return
+    setConstitutionPreviewing(true)
+    setMessage('')
+    try {
+      const preview = await apiPreviewMemoryConstitution(token, {
+        content: constitutionContent,
+        rules: constitutionRules,
+        expected_version: constitution?.version ?? 0,
+      })
+      setConstitutionPreview(preview)
+    } catch (err: any) {
+      setMessage(err.message)
+    } finally {
+      setConstitutionPreviewing(false)
+    }
+  }
+
+  async function handleRestoreConstitution(version: number) {
+    if (!token || !constitution || !confirm(`确认以 v${version} 的内容创建一个新的生效版本？`)) return
+    setRestoringVersion(version)
+    setMessage('')
+    try {
+      const data = await apiRestoreMemoryConstitution(token, version, constitution.version)
+      setMessage(data.unchanged
+        ? `v${version} 与当前宪法一致，无需恢复`
+        : `已从 v${version} 恢复为新的 v${data.version}，并实时生效`)
+      await loadConstitution()
+    } catch (err: any) {
+      setMessage(err.message)
+    } finally {
+      setRestoringVersion(null)
+    }
+  }
+
+  function updateConstitutionRules(next: MemoryConstitutionRules) {
+    setConstitutionRules(next)
+    setConstitutionPreview(null)
+  }
+
   function toggleCategory(category: string) {
     if (!constitutionRules || constitution?.immutable_categories.includes(category)) return
     const selected = constitutionRules.prohibited_categories.includes(category)
-    setConstitutionRules({
+    updateConstitutionRules({
       ...constitutionRules,
       prohibited_categories: selected
         ? constitutionRules.prohibited_categories.filter((item) => item !== category)
@@ -144,7 +205,7 @@ export default function PermissionsPage() {
   function toggleProactiveKind(kind: string) {
     if (!constitutionRules) return
     const selected = constitutionRules.allowed_proactive_kinds.includes(kind)
-    setConstitutionRules({
+    updateConstitutionRules({
       ...constitutionRules,
       allowed_proactive_kinds: selected
         ? constitutionRules.allowed_proactive_kinds.filter((item) => item !== kind)
@@ -255,23 +316,47 @@ export default function PermissionsPage() {
                   </div>
                   <p className="mt-1 text-xs text-[#a7a7b0]">每次写入与召回实时读取当前版本；安全底线不可被关闭。</p>
                 </div>
-                <button
-                  onClick={handleSaveConstitution}
-                  disabled={constitutionSaving || constitutionContent.trim().length < 80}
-                  className="rounded-lg bg-[#10a37f] px-4 py-2 text-sm font-medium text-white hover:bg-[#0d8c6d] disabled:opacity-50"
-                >
-                  {constitutionSaving ? '发布中…' : '发布新版本'}
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handlePreviewConstitution}
+                    disabled={constitutionPreviewing || constitutionContent.trim().length < 80}
+                    className="rounded-lg border border-[#525252] px-4 py-2 text-sm font-medium text-[#dedee3] hover:border-[#10a37f] hover:text-white disabled:opacity-50"
+                  >
+                    {constitutionPreviewing ? '评估中…' : '影响预览'}
+                  </button>
+                  <button
+                    onClick={handleSaveConstitution}
+                    disabled={constitutionSaving || constitutionContent.trim().length < 80}
+                    className="rounded-lg bg-[#10a37f] px-4 py-2 text-sm font-medium text-white hover:bg-[#0d8c6d] disabled:opacity-50"
+                  >
+                    {constitutionSaving ? '发布中…' : '发布新版本'}
+                  </button>
+                </div>
               </div>
               <textarea
                 value={constitutionContent}
-                onChange={(event) => setConstitutionContent(event.target.value)}
+                onChange={(event) => { setConstitutionContent(event.target.value); setConstitutionPreview(null) }}
                 rows={12}
                 className="w-full resize-y rounded-xl border border-[#454545] bg-[#202020] px-4 py-3 text-sm leading-6 text-white outline-none focus:border-[#10a37f]"
                 aria-label="记忆宪法内容"
               />
               <p className="mt-2 text-xs text-[#8e8ea0]">正文会实时约束模型提取；需要确定性拦截时，可在正文加入“禁止记忆词：词语A、词语B”，或使用下方禁用词。</p>
             </section>
+
+            {constitutionPreview && (
+              <section className="rounded-2xl border border-sky-500/30 bg-sky-500/5 p-5">
+                <div className="flex flex-wrap items-center gap-3">
+                  <h3 className="font-medium text-white">发布影响预览</h3>
+                  <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-xs text-sky-300">v{constitutionPreview.current_version} → v{constitutionPreview.proposed_version}</span>
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-xl bg-[#202020] p-3"><p className="text-xs text-[#92929b]">已扫描活动记忆</p><p className="mt-1 text-xl font-semibold text-white">{constitutionPreview.scanned_count}</p></div>
+                  <div className="rounded-xl bg-[#202020] p-3"><p className="text-xs text-[#92929b]">发布后将隔离</p><p className={`mt-1 text-xl font-semibold ${constitutionPreview.would_quarantine_count ? 'text-amber-300' : 'text-emerald-300'}`}>{constitutionPreview.would_quarantine_count}</p></div>
+                  <div className="rounded-xl bg-[#202020] p-3"><p className="text-xs text-[#92929b]">扫描状态</p><p className="mt-1 text-sm font-medium text-white">{constitutionPreview.scan_limited ? '已达扫描上限，召回时继续校验' : '扫描完整'}</p></div>
+                </div>
+                {Object.keys(constitutionPreview.category_counts).length > 0 && <p className="mt-3 text-xs text-[#a7a7b0]">命中类别：{Object.entries(constitutionPreview.category_counts).map(([category, count]) => `${category} × ${count}`).join('、')}</p>}
+              </section>
+            )}
 
             <section className="grid gap-5 md:grid-cols-2">
               <div className="rounded-2xl border border-[#3d3d3d] bg-[#292929] p-5">
@@ -310,23 +395,40 @@ export default function PermissionsPage() {
                 </div>
                 <label className="mb-4 block text-sm text-[#d4d4d8]">
                   自动激活最低置信度：{constitutionRules.min_proactive_confidence.toFixed(2)}
-                  <input type="range" min="0.6" max="1" step="0.01" value={constitutionRules.min_proactive_confidence} onChange={(event) => setConstitutionRules({ ...constitutionRules, min_proactive_confidence: Number(event.target.value) })} className="mt-2 w-full accent-[#10a37f]" />
+                  <input type="range" min="0.6" max="1" step="0.01" value={constitutionRules.min_proactive_confidence} onChange={(event) => updateConstitutionRules({ ...constitutionRules, min_proactive_confidence: Number(event.target.value) })} className="mt-2 w-full accent-[#10a37f]" />
                 </label>
                 <div className="grid grid-cols-3 gap-3">
                   <label className="text-xs text-[#a7a7b0]">重复观察次数
-                    <input type="number" min="1" max="3" value={constitutionRules.proactive_activation_observations} onChange={(event) => setConstitutionRules({ ...constitutionRules, proactive_activation_observations: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-[#454545] bg-[#202020] px-3 py-2 text-sm text-white" />
+                    <input type="number" min="1" max="3" value={constitutionRules.proactive_activation_observations} onChange={(event) => updateConstitutionRules({ ...constitutionRules, proactive_activation_observations: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-[#454545] bg-[#202020] px-3 py-2 text-sm text-white" />
                   </label>
                   <label className="text-xs text-[#a7a7b0]">保留天数
-                    <input type="number" min="1" max="3650" value={constitutionRules.retention_days} onChange={(event) => setConstitutionRules({ ...constitutionRules, retention_days: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-[#454545] bg-[#202020] px-3 py-2 text-sm text-white" />
+                    <input type="number" min="1" max="3650" value={constitutionRules.retention_days} onChange={(event) => updateConstitutionRules({ ...constitutionRules, retention_days: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-[#454545] bg-[#202020] px-3 py-2 text-sm text-white" />
                   </label>
                   <label className="text-xs text-[#a7a7b0]">单条最大字数
-                    <input type="number" min="200" max="10000" value={constitutionRules.max_memory_chars} onChange={(event) => setConstitutionRules({ ...constitutionRules, max_memory_chars: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-[#454545] bg-[#202020] px-3 py-2 text-sm text-white" />
+                    <input type="number" min="200" max="10000" value={constitutionRules.max_memory_chars} onChange={(event) => updateConstitutionRules({ ...constitutionRules, max_memory_chars: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-[#454545] bg-[#202020] px-3 py-2 text-sm text-white" />
                   </label>
                 </div>
                 <label className="mt-4 block text-xs text-[#a7a7b0]">自定义禁用词（每行一个，确定性拦截）
-                  <textarea value={constitutionRules.custom_blocked_terms.join('\n')} onChange={(event) => setConstitutionRules({ ...constitutionRules, custom_blocked_terms: event.target.value.split('\n').map((item) => item.trim()).filter(Boolean) })} rows={4} className="mt-1 w-full rounded-lg border border-[#454545] bg-[#202020] px-3 py-2 text-sm text-white" />
+                  <textarea value={constitutionRules.custom_blocked_terms.join('\n')} onChange={(event) => updateConstitutionRules({ ...constitutionRules, custom_blocked_terms: event.target.value.split('\n').map((item) => item.trim()).filter(Boolean) })} rows={4} className="mt-1 w-full rounded-lg border border-[#454545] bg-[#202020] px-3 py-2 text-sm text-white" />
                 </label>
               </div>
+            </section>
+
+            <section className="rounded-2xl border border-[#3d3d3d] bg-[#292929] p-5">
+              <h3 className="font-medium text-white">版本历史</h3>
+              <p className="mb-3 mt-1 text-xs text-[#a7a7b0]">历史版本不可修改；恢复操作会复制其内容并创建新的生效版本。</p>
+              {constitutionHistory.length === 0 ? <p className="text-sm text-[#8e8ea0]">当前使用内置默认宪法，尚无发布历史</p> : (
+                <div className="divide-y divide-[#3d3d3d]">
+                  {constitutionHistory.slice(0, 10).map((item) => (
+                    <div key={item.id} className="flex flex-wrap items-center gap-3 py-2.5 text-xs">
+                      <span className={`rounded-full px-2 py-0.5 ${item.is_active ? 'bg-emerald-500/15 text-emerald-300' : 'bg-[#3a3a3a] text-[#b4b4bd]'}`}>v{item.version}{item.is_active ? ' · 当前' : ''}</span>
+                      <span className="min-w-0 flex-1 truncate text-[#d4d4d8]">{item.summary}</span>
+                      <span className="text-[#777780]">{item.created_at ? formatDate(item.created_at) : '-'}</span>
+                      {!item.is_active && <button onClick={() => handleRestoreConstitution(item.version)} disabled={restoringVersion !== null} className="rounded-md border border-[#525252] px-2.5 py-1 text-[#d4d4d8] hover:border-[#10a37f] hover:text-white disabled:opacity-50">{restoringVersion === item.version ? '恢复中…' : '恢复此版本'}</button>}
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
 
             <section className="rounded-2xl border border-[#3d3d3d] bg-[#292929] p-5">

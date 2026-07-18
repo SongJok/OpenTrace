@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -375,34 +376,18 @@ async def quarantine_noncompliant_memories(
     actor_user_id: str,
     limit: int = 5000,
 ) -> tuple[int, bool]:
-    memories = list(
-        (
-            await db.execute(
-                select(UserMemory)
-                .where(
-                    UserMemory.tenant_id == tenant_id,
-                    UserMemory.workspace_id == workspace_id,
-                    UserMemory.enabled.is_(True),
-                    UserMemory.status == "active",
-                )
-                .order_by(UserMemory.updated_at.desc())
-                .limit(limit + 1)
-            )
-        ).scalars()
+    decisions, scan_limited = await scan_memory_constitution_impact(
+        db,
+        constitution=constitution,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        limit=limit,
     )
-    scan_limited = len(memories) > limit
     quarantined = 0
-    for memory in memories[:limit]:
-        metadata = parse_memory_metadata(memory.metadata_json)
-        decision = evaluate_memory_constitution(
-            memory.content,
-            constitution=constitution,
-            kind=memory.kind,
-            learning_mode=str(metadata.get("learning_mode") or "manual"),
-            confidence=float(memory.confidence or 0.0),
-        )
+    for memory, decision in decisions:
         if decision.decision != "block":
             continue
+        metadata = parse_memory_metadata(memory.metadata_json)
         memory.enabled = False
         memory.status = "rejected"
         metadata["constitution_quarantined"] = {
@@ -425,3 +410,70 @@ async def quarantine_noncompliant_memories(
         )
         quarantined += 1
     return quarantined, scan_limited
+
+
+async def scan_memory_constitution_impact(
+    db: AsyncSession,
+    *,
+    constitution: EffectiveMemoryConstitution,
+    tenant_id: str,
+    workspace_id: str,
+    limit: int = 5000,
+) -> tuple[list[tuple[UserMemory, MemoryConstitutionDecision]], bool]:
+    """只读评估活动记忆，不返回或记录原始内容。"""
+
+    memories = list(
+        (
+            await db.execute(
+                select(UserMemory)
+                .where(
+                    UserMemory.tenant_id == tenant_id,
+                    UserMemory.workspace_id == workspace_id,
+                    UserMemory.enabled.is_(True),
+                    UserMemory.status == "active",
+                )
+                .order_by(UserMemory.updated_at.desc())
+                .limit(limit + 1)
+            )
+        ).scalars()
+    )
+    scan_limited = len(memories) > limit
+    decisions: list[tuple[UserMemory, MemoryConstitutionDecision]] = []
+    for memory in memories[:limit]:
+        metadata = parse_memory_metadata(memory.metadata_json)
+        decision = evaluate_memory_constitution(
+            memory.content,
+            constitution=constitution,
+            kind=memory.kind,
+            learning_mode=str(metadata.get("learning_mode") or "manual"),
+            confidence=float(memory.confidence or 0.0),
+        )
+        decisions.append((memory, decision))
+    return decisions, scan_limited
+
+
+async def preview_memory_constitution_impact(
+    db: AsyncSession,
+    *,
+    constitution: EffectiveMemoryConstitution,
+    tenant_id: str,
+    workspace_id: str,
+    limit: int = 5000,
+) -> dict[str, Any]:
+    decisions, scan_limited = await scan_memory_constitution_impact(
+        db,
+        constitution=constitution,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        limit=limit,
+    )
+    blocked = [decision for _, decision in decisions if decision.decision == "block"]
+    reason_counts = Counter(decision.reason_code for decision in blocked)
+    category_counts = Counter(category for decision in blocked for category in decision.categories)
+    return {
+        "scanned_count": len(decisions),
+        "would_quarantine_count": len(blocked),
+        "scan_limited": scan_limited,
+        "reason_counts": dict(sorted(reason_counts.items())),
+        "category_counts": dict(sorted(category_counts.items())),
+    }

@@ -442,6 +442,26 @@ export interface MemoryConstitutionData {
   editable_categories: Record<string, string>
   quarantined_count?: number
   effective_immediately?: boolean
+  unchanged?: boolean
+}
+
+export interface MemoryConstitutionHistoryItem {
+  id: string
+  version: number
+  is_active: boolean
+  created_by: string
+  created_at?: string | null
+  summary: string
+}
+
+export interface MemoryConstitutionPreview {
+  current_version: number
+  proposed_version: number
+  scanned_count: number
+  would_quarantine_count: number
+  scan_limited: boolean
+  reason_counts: Record<string, number>
+  category_counts: Record<string, number>
 }
 
 export interface MemoryConstitutionAuditItem {
@@ -464,7 +484,7 @@ export async function apiGetMemoryConstitution(token: string): Promise<MemoryCon
 
 export async function apiUpdateMemoryConstitution(
   token: string,
-  payload: { content: string; rules: MemoryConstitutionRules },
+  payload: { content: string; rules: MemoryConstitutionRules; expected_version?: number },
 ): Promise<MemoryConstitutionData> {
   const res = await apiFetch('/admin/memory/constitution', {
     method: 'PUT',
@@ -472,6 +492,43 @@ export async function apiUpdateMemoryConstitution(
     body: JSON.stringify(payload),
   })
   if (!res.ok) throw new Error(await readApiError(res, '发布记忆宪法失败'))
+  return res.json()
+}
+
+export async function apiPreviewMemoryConstitution(
+  token: string,
+  payload: { content: string; rules: MemoryConstitutionRules; expected_version?: number },
+): Promise<MemoryConstitutionPreview> {
+  const res = await apiFetch('/admin/memory/constitution/preview', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '评估记忆宪法影响失败'))
+  return res.json()
+}
+
+export async function apiListMemoryConstitutionHistory(
+  token: string,
+): Promise<MemoryConstitutionHistoryItem[]> {
+  const res = await apiFetch('/admin/memory/constitution/history', {
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '读取宪法版本失败'))
+  return ((await res.json()).items ?? []) as MemoryConstitutionHistoryItem[]
+}
+
+export async function apiRestoreMemoryConstitution(
+  token: string,
+  version: number,
+  expectedVersion: number,
+): Promise<MemoryConstitutionData> {
+  const res = await apiFetch(`/admin/memory/constitution/history/${version}/restore`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ expected_version: expectedVersion }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '恢复宪法版本失败'))
   return res.json()
 }
 

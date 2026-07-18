@@ -13,10 +13,12 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY
 
@@ -142,7 +144,6 @@ class TraceLog(Base):
     reasoning_steps_json: Mapped[str] = mapped_column(Text, nullable=True)
     execution_graph_json: Mapped[str] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
     session: Mapped[ChatSession] = relationship(back_populates="trace_logs")
 
     def __repr__(self) -> str:
@@ -827,6 +828,14 @@ class MemoryConstitution(Base):
             "workspace_id",
             "version",
             name="uq_memory_constitution_scope_version",
+        ),
+        Index(
+            "uq_memory_constitution_active_scope",
+            "tenant_id",
+            "workspace_id",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+            sqlite_where=text("is_active = 1"),
         ),
     )
 

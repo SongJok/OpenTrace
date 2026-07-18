@@ -1,12 +1,17 @@
 from pathlib import Path
 
+import pytest
+
+import memory.constitution as constitution_module
 from memory.constitution import (
     DEFAULT_MEMORY_CONSTITUTION,
     DEFAULT_MEMORY_RULES,
     IMMUTABLE_PROHIBITED_CATEGORIES,
     EffectiveMemoryConstitution,
+    MemoryConstitutionDecision,
     evaluate_memory_constitution,
     normalize_memory_rules,
+    preview_memory_constitution_impact,
 )
 
 
@@ -137,6 +142,45 @@ def test_model_candidates_always_require_review_and_policy_controls_proactive() 
     assert low_confidence.reason_code == "proactive_confidence_requires_review"
 
 
+@pytest.mark.asyncio
+async def test_constitution_preview_returns_only_aggregate_impact(monkeypatch) -> None:
+    decisions = [
+        (
+            object(),
+            MemoryConstitutionDecision(
+                "block",
+                "prohibited_category:health",
+                ("health",),
+            ),
+        ),
+        (object(), MemoryConstitutionDecision("allow", "constitution_allowed")),
+    ]
+
+    async def fake_scan(*args, **kwargs):
+        return decisions, False
+
+    monkeypatch.setattr(
+        constitution_module,
+        "scan_memory_constitution_impact",
+        fake_scan,
+    )
+    impact = await preview_memory_constitution_impact(
+        object(),
+        constitution=_constitution(),
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+    )
+
+    assert impact == {
+        "scanned_count": 2,
+        "would_quarantine_count": 1,
+        "scan_limited": False,
+        "reason_counts": {"prohibited_category:health": 1},
+        "category_counts": {"health": 1},
+    }
+    assert "content" not in impact
+
+
 def test_constitution_is_enforced_across_all_memory_write_and_retrieval_paths() -> None:
     root = Path(__file__).resolve().parents[1]
     memories = (root / "gateway/api_gateway/routers/memories.py").read_text(encoding="utf-8")
@@ -153,6 +197,10 @@ def test_constitution_is_enforced_across_all_memory_write_and_retrieval_paths() 
     assert "context_retrieval" in context
     assert "rag_retrieval" in rag
     assert '@router.put("/admin/memory/constitution")' in admin
+    assert '@router.post("/admin/memory/constitution/preview")' in admin
+    assert '@router.post("/admin/memory/constitution/history/{version}/restore")' in admin
+    assert "pg_advisory_xact_lock" in admin
+    assert "expected_version" in admin
     assert "quarantine_noncompliant_memories" in admin
 
 
@@ -164,6 +212,19 @@ def test_constitution_schema_is_versioned_and_audit_does_not_store_raw_content()
     )
 
     assert "uq_memory_constitution_scope_version" in models
+    assert "uq_memory_constitution_active_scope" in models
+    assert 'postgresql_where=text("is_active = true")' in models
     assert "content_hash" in models
     assert "content_excerpt" not in models
     assert 'down_revision = "20260730_ds_schema_embedding"' in migration
+
+
+def test_constitution_concurrency_migration_enforces_one_active_version() -> None:
+    root = Path(__file__).resolve().parents[1]
+    migration = (root / "alembic/versions/20260801_memory_constitution_concurrency.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'down_revision = "20260731_memory_constitution"' in migration
+    assert "uq_memory_constitution_active_scope" in migration
+    assert "WHERE is_active = TRUE" in migration
