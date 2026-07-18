@@ -316,13 +316,34 @@ class ContextAssembler:
     def _rank_memories(memories: list[UserMemory], query: str) -> list[UserMemory]:
         query_terms = ContextAssembler._search_terms(query)
 
-        def score(item: UserMemory) -> tuple[float, datetime]:
+        def relevance(item: UserMemory) -> tuple[bool, float, datetime]:
             content_terms = ContextAssembler._search_terms(item.content or "")
             overlap = len(query_terms & content_terms) / max(1, len(query_terms))
-            value = (3.0 if item.pinned else 0.0) + overlap * 2.5 + float(item.salience or 0.0)
-            return value, item.updated_at or datetime.min.replace(tzinfo=UTC)
+            always_relevant = bool(item.pinned) or item.kind in {
+                "preference",
+                "profile",
+                "workflow",
+            } or item.scope_type in {"project", "conversation"}
+            value = (
+                (3.0 if item.pinned else 0.0)
+                + overlap * 2.5
+                + float(item.salience or 0.0)
+                + float(item.confidence or 0.0) * 0.25
+            )
+            return (
+                always_relevant or overlap > 0,
+                value,
+                item.updated_at or datetime.min.replace(tzinfo=UTC),
+            )
 
-        return sorted(memories, key=score, reverse=True)
+        ranked = [(relevance(item), item) for item in memories]
+        return [
+            item
+            for (is_relevant, _score, _updated_at), item in sorted(
+                ranked, key=lambda pair: pair[0][1:], reverse=True
+            )
+            if is_relevant
+        ]
 
     @staticmethod
     def _search_terms(text: str) -> set[str]:

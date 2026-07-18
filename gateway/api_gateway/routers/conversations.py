@@ -21,10 +21,12 @@ from infra.storage.models import (
     Attachment,
     ChatSession,
     ConversationShare,
+    MemoryEvidence,
     ResponseApproval,
     ResponseItem,
     ResponseRecord,
     User,
+    UserMemory,
 )
 
 router = APIRouter()
@@ -307,6 +309,25 @@ async def delete_conversation(
 ) -> dict:
     tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
     session = await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
+    scoped_memories = select(UserMemory.id).where(
+        UserMemory.user_id == current_user.id,
+        UserMemory.tenant_id == tenant_id,
+        UserMemory.workspace_id == workspace_id,
+        UserMemory.scope_type == "conversation",
+        UserMemory.scope_id == session.id,
+    )
+    await db.execute(
+        delete(MemoryEvidence).where(MemoryEvidence.memory_id.in_(scoped_memories))
+    )
+    await db.execute(
+        delete(UserMemory).where(
+            UserMemory.user_id == current_user.id,
+            UserMemory.tenant_id == tenant_id,
+            UserMemory.workspace_id == workspace_id,
+            UserMemory.scope_type == "conversation",
+            UserMemory.scope_id == session.id,
+        )
+    )
     # 依赖数据库 ON DELETE CASCADE，避免 ORM 为旧 TraceLog 关系做无意义的加载。
     await db.execute(delete(ChatSession).where(ChatSession.id == session.id))
     await db.commit()

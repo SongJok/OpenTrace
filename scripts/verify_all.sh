@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 bash "$SCRIPT_DIR/verify_error_envelope.sh"
 bash "$SCRIPT_DIR/verify_e2e.sh"
+bash "$SCRIPT_DIR/verify_memory_e2e.sh"
 bash "$SCRIPT_DIR/verify_kernel_loop.sh"
 bash "$SCRIPT_DIR/verify_code_plugin.sh"
 bash "$SCRIPT_DIR/verify_agent_bus_e2e.sh"

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.routers.auth import get_current_user
@@ -15,8 +15,10 @@ from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
+    ChatSession,
     MemoryCandidate,
     MemoryEvidence,
+    Project,
     User,
     UserMemory,
     UserMemorySettings,
@@ -57,6 +59,44 @@ class MemoryUpdateRequest(BaseModel):
 class MemorySettingsRequest(BaseModel):
     memory_learning_enabled: bool = True
     preference_learning_enabled: bool = True
+
+
+async def _validated_scope_id(
+    db: AsyncSession,
+    *,
+    scope_type: str,
+    scope_id: str | None,
+    user_id: str,
+    tenant_id: str,
+    workspace_id: str,
+) -> str | None:
+    if scope_type == "user":
+        if scope_id is not None:
+            raise AppException(
+                ErrorCodes.PARAM_INVALID.code,
+                message="user scope 不允许设置 scope_id",
+            )
+        return None
+    if not scope_id:
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message=f"{scope_type} scope 必须设置 scope_id",
+        )
+    model = Project if scope_type == "project" else ChatSession
+    row = await db.scalar(
+        select(model.id).where(
+            model.id == scope_id,
+            model.user_id == user_id,
+            model.tenant_id == tenant_id,
+            model.workspace_id == workspace_id,
+        )
+    )
+    if row is None:
+        raise AppException(
+            ErrorCodes.RESOURCE_NOT_FOUND.code,
+            message=f"{scope_type} scope 不存在或无权限",
+        )
+    return scope_id
 
 
 @router.get("/memories")
@@ -116,6 +156,14 @@ async def create_memory(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     tenant_id, workspace_id = _scope(request, current_user)
+    scope_id = await _validated_scope_id(
+        db,
+        scope_type=req.scope_type,
+        scope_id=req.scope_id,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
     m = UserMemory(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
@@ -131,7 +179,7 @@ async def create_memory(
         enabled=req.enabled,
         pinned=req.pinned,
         scope_type=req.scope_type,
-        scope_id=req.scope_id,
+        scope_id=scope_id,
         status="active",
         confidence=1.0,
     )
@@ -227,6 +275,7 @@ async def delete_memory(
     m = r.scalar_one_or_none()
     if m is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="memory not found")
+    await db.execute(delete(MemoryEvidence).where(MemoryEvidence.memory_id == m.id))
     await db.delete(m)
     await db.commit()
     return {"deleted": True}
@@ -367,7 +416,7 @@ async def set_memory_settings(
         db.add(s)
     s.memory_learning_enabled = req.memory_learning_enabled
     s.preference_learning_enabled = req.preference_learning_enabled
-    s.updated_at = datetime.utcnow()
+    s.updated_at = datetime.now(UTC)
     await db.commit()
     return {
         "memory_learning_enabled": s.memory_learning_enabled,

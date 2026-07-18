@@ -28,6 +28,7 @@ echo "== OpenTrace verify_all (docker mode) =="
 
 bash scripts/verify_error_envelope.sh
 bash scripts/verify_e2e.sh
+bash scripts/verify_memory_e2e.sh
 bash scripts/verify_kernel_loop.sh
 bash scripts/verify_code_plugin.sh
 bash scripts/verify_agent_bus_e2e.sh
