@@ -254,6 +254,38 @@ request(
     "POST",
     {"memory_learning_enabled": True, "preference_learning_enabled": True},
 )
+proactive_marker = f"主动学习-{suffix}"
+proactive_conversation = create_conversation()
+respond(
+    proactive_conversation,
+    f"我的代号是 {proactive_marker}。以后我们会在不同会话里继续合作。",
+)
+proactive_memory = wait_for_memory(proactive_marker, should_exist=True)
+assert proactive_memory is not None
+assert proactive_memory.get("metadata", {}).get("learning_mode") == "proactive"
+memory_ids.append(proactive_memory["id"])
+proactive_recall_conversation = create_conversation()
+proactive_recall = respond(proactive_recall_conversation, "我的代号是什么？")
+assert proactive_memory["id"] in response_memory_ids(proactive_recall)
+assert proactive_marker in proactive_recall.get("output_text", "")
+print("[PASS] 无需明确指令的主动学习与跨会话召回")
+
+sensitive_marker = f"敏感过滤-{suffix}"
+sensitive_conversation = create_conversation()
+respond(
+    sensitive_conversation,
+    f"我的银行卡号是 6222021234567890，备注 {sensitive_marker}。",
+)
+wait_for_memory(sensitive_marker, should_exist=False, timeout=3)
+transient_marker = f"一次性-{suffix}"
+transient_conversation = create_conversation()
+respond(
+    transient_conversation,
+    f"今天仅这一次请用 {transient_marker} 风格回答当前问题。",
+)
+wait_for_memory(transient_marker, should_exist=False, timeout=3)
+print("[PASS] 敏感信息与一次性请求不会持久化")
+
 automatic_marker = f"自动记忆-{suffix}"
 learning_conversation = create_conversation()
 respond(

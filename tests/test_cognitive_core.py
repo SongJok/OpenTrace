@@ -63,6 +63,73 @@ def test_memory_learner_classifies_explicit_preferences():
     assert candidate["confidence"] == 1.0
 
 
+def test_memory_learner_proactively_extracts_stable_profile_and_preference():
+    candidates = MemoryLearner._extract_proactive(
+        "我叫林舟。\n我偏好使用简洁的中文回答。"
+    )
+
+    assert [(item["key"], item["kind"]) for item in candidates] == [
+        ("profile.name", "profile"),
+        ("preference.response_style", "preference"),
+    ]
+    assert all(item["explicit"] is False for item in candidates)
+    assert all(item["confidence"] >= 0.85 for item in candidates)
+
+
+def test_memory_learner_proactively_extracts_goals_workflows_and_project_facts():
+    candidates = MemoryLearner._extract_proactive(
+        "我的长期目标是成为可靠的架构师。\n"
+        "我的工作流程是先写测试，再实现功能。\n"
+        "本项目数据库使用 PostgreSQL。"
+    )
+
+    assert {item["kind"] for item in candidates} == {"fact", "workflow"}
+    assert any(item["key"].startswith("goal.long_term.") for item in candidates)
+    assert any(item["key"].startswith("workflow.routine.") for item in candidates)
+    project = next(item for item in candidates if item["key"].startswith("project.fact."))
+    assert project["scope_type"] == "project"
+
+
+def test_memory_learner_rejects_transient_questions_and_sensitive_profile_data():
+    assert MemoryLearner._extract_proactive("今天请用表格回答当前问题。") == []
+    assert MemoryLearner._extract_proactive("我的银行卡号是 6222021234567890。") == []
+    assert MemoryLearner._extract_explicit("请记住：我的手机号是 13800138000。") == []
+
+
+def test_memory_learner_uses_proactive_fallback_when_model_output_is_invalid(monkeypatch):
+    class InvalidGateway:
+        async def complete(self, *args, **kwargs):
+            return SimpleNamespace(content="not-json")
+
+    monkeypatch.setattr(
+        "kernel.agent_loop.memory_learner.get_model_gateway", lambda: InvalidGateway()
+    )
+
+    candidates = asyncio.run(MemoryLearner()._extract("我的代号是主动-42。"))
+
+    assert candidates[0]["content"] == "我的代号是主动-42"
+    assert candidates[0]["explicit"] is False
+    assert candidates[0]["confidence"] >= 0.85
+
+
+def test_only_governed_proactive_candidates_auto_activate():
+    assert MemoryLearner._candidate_status(
+        confidence=0.90,
+        explicit=False,
+        learning_mode="proactive",
+    ) == "active"
+    assert MemoryLearner._candidate_status(
+        confidence=0.99,
+        explicit=False,
+        learning_mode="model",
+    ) == "pending"
+    assert MemoryLearner._candidate_status(
+        confidence=1.0,
+        explicit=True,
+        learning_mode="explicit",
+    ) == "active"
+
+
 def test_memory_learner_uses_explicit_fallback_when_model_output_is_invalid(monkeypatch):
     class InvalidGateway:
         async def complete(self, *args, **kwargs):

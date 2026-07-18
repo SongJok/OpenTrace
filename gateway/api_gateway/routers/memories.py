@@ -382,6 +382,10 @@ async def resolve_memory_candidate(
             id=str(uuid.uuid4()), user_id=current_user.id, memory_type="semantic",
             tenant_id=tenant_id, workspace_id=workspace_id,
             kind=candidate.kind, title=content[:80], content=content,
+            metadata_json=json.dumps(
+                {"learning_mode": "reviewed", "candidate_id": candidate.id},
+                ensure_ascii=False,
+            ),
             memory_key=candidate.memory_key,
             enabled=True, pinned=False, score=candidate.salience,
             scope_type=candidate.scope_type, scope_id=candidate.scope_id,

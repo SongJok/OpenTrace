@@ -125,7 +125,7 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
 
       <div className="max-w-4xl mx-auto w-full px-6 py-6 space-y-4 overflow-y-auto">
         <div className="rounded-xl border border-[var(--border)] p-4 bg-[var(--surface)] space-y-3">
-          <div><h2 className="text-sm font-semibold">记忆收件箱</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">中等置信度的自动学习结果会在这里等待确认，并显示来源证据。</p></div>
+          <div><h2 className="text-sm font-semibold">记忆收件箱</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">主动学习到但置信度不足或与旧记忆冲突的内容会在这里等待确认，并显示来源证据。</p></div>
           {inbox.length === 0 ? <p className="text-sm text-[var(--text-secondary)]">没有待确认记忆</p> : inbox.map((candidate) => (
             <div key={candidate.id} className="rounded-xl border border-[var(--border)] p-3">
               <p className="text-sm">{candidate.content}</p>
@@ -137,14 +137,14 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
         </div>
         <div className="rounded-xl border border-[var(--border)] p-4 bg-[var(--surface)] space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold">记忆学习设置</h2>
+            <div><h2 className="text-sm font-semibold">主动记忆设置</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">对话完成后自动识别稳定偏好、身份事实、长期目标和工作流程；敏感及一次性内容不会保存。</p></div>
             <button onClick={() => void saveSettings()} className="px-3 py-1.5 text-xs rounded bg-[var(--accent)] text-[var(--accent-foreground)] inline-flex items-center gap-1">
               <Save size={12} /> 保存
             </button>
           </div>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={memoryLearningEnabled} onChange={(e) => setMemoryLearningEnabled(e.target.checked)} />
-            启用记忆学习
+            启用主动记忆学习
           </label>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={preferenceLearningEnabled} onChange={(e) => setPreferenceLearningEnabled(e.target.checked)} />
@@ -215,7 +215,7 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
                         <p className="text-sm whitespace-pre-wrap">{m.content}</p>
                       </>
                     )}
-                    <p className="text-[11px] text-[var(--text-secondary)]">kind={m.kind} · access={m.access_count}{m.pinned ? ' · 已置顶（每轮优先使用）' : ''}</p>
+                    <p className="text-[11px] text-[var(--text-secondary)]">kind={m.kind} · access={m.access_count}{m.metadata?.learning_mode === 'proactive' ? ' · 主动学习' : m.metadata?.learning_mode === 'explicit' ? ' · 用户明确要求' : m.metadata?.learning_mode === 'reviewed' ? ' · 用户已确认' : ''}{m.pinned ? ' · 已置顶（每轮优先使用）' : ''}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     {editingId === m.id ? (

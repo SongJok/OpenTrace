@@ -1202,6 +1202,7 @@ export interface MemoryItem {
   pinned?: boolean
   access_count?: number
   tags?: string[]
+  metadata?: Record<string, unknown>
 }
 
 export interface DataSourceItem {
