@@ -23,13 +23,10 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import delete, select, text
-from plugins.document_retrieval import fetch_document_candidates, score_document_candidates
-from plugins.document_plugin import generate_llmwiki_entries
-from knowledge.jobs import enqueue_document_compile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.resource_scope import normalized_tenant_scope, scoped_documents_statement
+from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.audit.logger import write_audit_log
 from infra.config.settings import settings
@@ -37,6 +34,9 @@ from infra.errors import AppException, ErrorCodes
 from infra.observability.logger import get_logger
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import Document, DocumentChunk, DocumentLLMWiki, Project, User
+from knowledge.jobs import enqueue_document_compile
+from plugins.document_plugin import generate_llmwiki_entries
+from plugins.document_retrieval import fetch_document_candidates, score_document_candidates
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -385,8 +385,8 @@ def _split_chunks(text: str, strategy: int = 1, doc_title: str = "") -> list[dic
 
 
 async def _embed_chunks(chunks: list[str]) -> list[list[float]]:
-    from model.embedding.base import get_embedder, normalize_embedding_vector
     from infra.config.settings import settings
+    from model.embedding.base import get_embedder, normalize_embedding_vector
 
     vectors = await get_embedder().embed(chunks)
     return [normalize_embedding_vector(vec, settings.embedding_dims) for vec in vectors]
@@ -437,13 +437,41 @@ async def _has_table(db: AsyncSession, table: str) -> bool:
 
 # ── Ingest pipeline ───────────────────────────────────────────────────────────
 
+
+def _merge_ingest_metadata(
+    raw_metadata: str | None,
+    normalized_metadata: dict,
+    project_id: str | None,
+) -> dict:
+    """标准化摄入元数据，同时保留发布策略等编排命令。"""
+    try:
+        existing_metadata = json.loads(raw_metadata or "{}")
+        if not isinstance(existing_metadata, dict):
+            existing_metadata = {}
+    except (TypeError, json.JSONDecodeError):
+        existing_metadata = {}
+    return {
+        **normalized_metadata,
+        **existing_metadata,
+        "project_id": project_id,
+    }
+
+
 async def _ingest(db: AsyncSession, doc: Document, text: str) -> None:
     from infra.metadata.unified_metadata import make_doc_metadata
     try:
         text = _sanitize_text(text)
         doc.status = "processing"
         doc.content = text[:65535]
-        doc.doc_metadata = json.dumps(make_doc_metadata(owner=doc.owner_id).to_dict())
+        # 发布策略属于编排命令的一部分，摄入元数据标准化时不能丢失。
+        doc.doc_metadata = json.dumps(
+            _merge_ingest_metadata(
+                doc.doc_metadata,
+                make_doc_metadata(owner=doc.owner_id).to_dict(),
+                doc.project_id,
+            ),
+            ensure_ascii=False,
+        )
         await db.commit()
 
         strategy = getattr(doc, "chunk_strategy", 1) or 1
@@ -456,8 +484,8 @@ async def _ingest(db: AsyncSession, doc: Document, text: str) -> None:
         chunk_texts = [c["content"] for c in chunk_dicts]
         embeddings = await _embed_chunks(chunk_texts)
         if len(embeddings) != len(chunk_texts):
-            from model.embedding.base import HashEmbedder, normalize_embedding_vector
             from infra.config.settings import settings
+            from model.embedding.base import HashEmbedder, normalize_embedding_vector
             fallback = HashEmbedder(dims=settings.embedding_dims)
             embeddings = [normalize_embedding_vector(vec, settings.embedding_dims) for vec in await fallback.embed(chunk_texts)]
 
@@ -648,7 +676,7 @@ async def upload_document(
         if getattr(settings, "knowledge_orchestration_enabled", True) and getattr(
             settings, "knowledge_auto_compile_enabled", True
         ):
-            background_tasks.add_task(enqueue_document_compile, doc.id)
+            await enqueue_document_compile(doc.id)
     return _doc_out(doc)
 
 
@@ -769,7 +797,7 @@ async def update_document(
             if getattr(settings, "knowledge_orchestration_enabled", True) and getattr(
                 settings, "knowledge_auto_compile_enabled", True
             ):
-                background_tasks.add_task(enqueue_document_compile, doc.id)
+                await enqueue_document_compile(doc.id)
     else:
         await db.commit()
 

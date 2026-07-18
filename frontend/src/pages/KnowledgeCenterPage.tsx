@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronLeft, FileText, GitBranch, Loader2, Network, Play, RefreshCw, Upload, SlidersHorizontal, Save, ShieldCheck } from 'lucide-react'
+import { ChevronLeft, CircleCheck, FileText, GitBranch, Loader2, MessageSquareText, Network, Play, RefreshCw, Upload, SlidersHorizontal, Save, ShieldCheck } from 'lucide-react'
 import clsx from 'clsx'
 import {
   apiGetKnowledgeGraph,
@@ -12,6 +12,7 @@ import {
   apiListKnowledgeRules,
   apiCreateKnowledgeRule,
   apiApproveKnowledgeRule,
+  apiPublishKnowledgePage,
   type KnowledgeGraphData,
   type KnowledgeJobItem,
   type KnowledgePageItem,
@@ -34,6 +35,7 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
   const token = useAuthStore((state) => state.token)!
   const selectedProjectId = useChatPreferences((state) => state.projectId)
   const setSelectedProjectId = useChatPreferences((state) => state.setProjectId)
+  const requestPrefill = useChatPreferences((state) => state.requestPrefill)
   const [projects, setProjects] = useState<ProjectItem[]>([])
   const [network, setNetwork] = useState<NetworkType>('entity')
   const [graph, setGraph] = useState<KnowledgeGraphData>({ network: 'entity', nodes: [], edges: [] })
@@ -50,31 +52,43 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
   const [ruleConfig, setRuleConfig] = useState({ summary_length: 420, content_limit: 16000, min_claim_length: 8, max_claims_per_page: 12 })
   const [ruleInstructions, setRuleInstructions] = useState('按标题拆分知识页面，所有事实保留原文证据；优先建立明确依赖和实体引用。')
   const [savingRule, setSavingRule] = useState(false)
+  const [publishingSourceId, setPublishingSourceId] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     try {
-      const [nextGraph, nextSources, nextPages, nextJobs] = await Promise.all([
+      const [nextGraph, nextSources, publishedPages, reviewPages, nextJobs] = await Promise.all([
         apiGetKnowledgeGraph(token, network, selectedProjectId),
         apiListKnowledgeSources(token, selectedProjectId),
-        apiListKnowledgePages(token, selectedProjectId),
+        apiListKnowledgePages(token, selectedProjectId, 'published'),
+        apiListKnowledgePages(token, selectedProjectId, 'review'),
         apiListKnowledgeJobs(token, selectedProjectId),
       ])
       setGraph(nextGraph)
       setSources(nextSources)
-      setPages(nextPages)
+      setPages([...publishedPages, ...reviewPages])
       setJobs(nextJobs)
       setRules(await apiListKnowledgeRules(token, selectedProjectId))
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [network, selectedProjectId, token])
 
   useEffect(() => { void apiListProjects(token).then(setProjects) }, [token])
   useEffect(() => { void load() }, [load])
+  const hasActiveJobs = jobs.some((job) => ['pending', 'running'].includes(job.status))
+  const reviewSourceIds = useMemo(
+    () => new Set(pages.filter((page) => page.status === 'review').map((page) => page.source_id)),
+    [pages],
+  )
+  useEffect(() => {
+    if (!hasActiveJobs) return
+    const timer = window.setInterval(() => { void load(true) }, 2000)
+    return () => window.clearInterval(timer)
+  }, [hasActiveJobs, load])
 
   async function upload(files: FileList | null) {
     if (!files?.length) return
@@ -124,6 +138,29 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
       await load()
     } catch (error) { setMessage(error instanceof Error ? error.message : String(error)) }
     finally { setSavingRule(false) }
+  }
+
+  function verifyInChat(source: KnowledgeSourceItem) {
+    requestPrefill(`/rag 请仅根据当前 Project 的知识库《${source.title}》概括核心内容，并附上可追溯来源。`)
+    onBack?.()
+  }
+
+  async function publishSource(source: KnowledgeSourceItem) {
+    const page = pages.find((item) => item.source_id === source.id && item.status === 'review')
+    if (!page) {
+      setMessage('未找到可发布的审核版本，请等待编排完成后刷新。')
+      return
+    }
+    setPublishingSourceId(source.id)
+    try {
+      await apiPublishKnowledgePage(token, page.id)
+      setMessage(`《${source.title}》已发布并进入治理知识检索通道。`)
+      await load(true)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setPublishingSourceId(null)
+    }
   }
 
   return (
@@ -181,6 +218,7 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
               <div className="mt-3 space-y-1">{rules.slice(0, 3).map((rule) => <div key={rule.id} className="flex items-center justify-between rounded-lg bg-[var(--surface-raised)] px-2 py-1.5 text-[10px]"><span>v{rule.version} · {rule.status}</span>{rule.status === 'approved' && <ShieldCheck size={12} className="text-emerald-500" />}</div>)}</div>
             </section>
             <Stats sources={sources} pages={pages} jobs={jobs} />
+            <MainChainStatus sources={sources} pages={pages} jobs={jobs} />
             {message && <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-xs leading-5">{message}</div>}
           </aside>
 
@@ -192,7 +230,7 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
             </div>
             <GraphPanel graph={graph} loading={loading} />
             <div className="grid gap-5 lg:grid-cols-2">
-              <SourceList sources={sources} />
+              <SourceList sources={sources} reviewSourceIds={reviewSourceIds} onVerify={verifyInChat} onPublish={publishSource} publishingSourceId={publishingSourceId} />
               <JobList jobs={jobs} />
             </div>
           </section>
@@ -200,6 +238,26 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
       </main>
     </div>
   )
+}
+
+function MainChainStatus({ sources, pages, jobs }: { sources: KnowledgeSourceItem[]; pages: KnowledgePageItem[]; jobs: KnowledgeJobItem[] }) {
+  const published = sources.filter((source) => source.status === 'published').length
+  const review = new Set(pages.filter((page) => page.status === 'review').map((page) => page.source_id)).size
+  const active = jobs.filter((job) => ['pending', 'running'].includes(job.status)).length
+  const failed = jobs.filter((job) => job.status === 'failed').length
+  const tone = published > 0 ? 'text-emerald-500' : active > 0 ? 'text-amber-500' : 'text-[var(--text-secondary)]'
+  return <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+    <h2 className="flex items-center gap-2 text-xs font-semibold"><CircleCheck size={14} className={tone} />主链路状态</h2>
+    <p className="mt-2 text-[11px] leading-5 text-[var(--text-secondary)]">
+      {sources.length === 0 && '上传成功后，原文检索通道会立即可用，治理知识将在后台发布。'}
+      {sources.length > 0 && `${sources.length} 份原文已进入 RAG 检索范围；${published} 份治理知识已发布。`}
+    </p>
+    {(active > 0 || review > 0 || failed > 0) && <div className="mt-2 flex flex-wrap gap-2 text-[10px]">
+      {active > 0 && <span className="rounded-full bg-amber-500/10 px-2 py-1 text-amber-500">后台编排 {active}</span>}
+      {review > 0 && <span className="rounded-full bg-sky-500/10 px-2 py-1 text-sky-500">待发布 {review}</span>}
+      {failed > 0 && <span className="rounded-full bg-red-500/10 px-2 py-1 text-red-500">失败 {failed}</span>}
+    </div>}
+  </section>
 }
 
 function Stats({ sources, pages, jobs }: { sources: KnowledgeSourceItem[]; pages: KnowledgePageItem[]; jobs: KnowledgeJobItem[] }) {
@@ -235,8 +293,8 @@ function GraphPanel({ graph, loading }: { graph: KnowledgeGraphData; loading: bo
   </div>
 }
 
-function SourceList({ sources }: { sources: KnowledgeSourceItem[] }) {
-  return <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><h2 className="flex items-center gap-2 text-xs font-semibold"><FileText size={14} />知识源</h2><div className="mt-3 max-h-72 space-y-2 overflow-auto">{sources.length === 0 ? <p className="text-xs text-[var(--text-secondary)]">暂无知识源</p> : sources.map((source) => <div key={source.id} className="flex items-center gap-3 rounded-xl border border-[var(--border)] p-3"><div className="min-w-0 flex-1"><div className="truncate text-xs font-medium">{source.title}</div><div className="mt-1 text-[11px] text-[var(--text-secondary)]">{source.authority} · {source.source_type}</div></div><Status value={source.status} /></div>)}</div></section>
+function SourceList({ sources, reviewSourceIds, onVerify, onPublish, publishingSourceId }: { sources: KnowledgeSourceItem[]; reviewSourceIds: Set<string>; onVerify: (source: KnowledgeSourceItem) => void; onPublish: (source: KnowledgeSourceItem) => void; publishingSourceId: string | null }) {
+  return <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><h2 className="flex items-center gap-2 text-xs font-semibold"><FileText size={14} />知识源</h2><div className="mt-3 max-h-72 space-y-2 overflow-auto">{sources.length === 0 ? <p className="text-xs text-[var(--text-secondary)]">暂无知识源</p> : sources.map((source) => <div key={source.id} className="rounded-xl border border-[var(--border)] p-3"><div className="flex items-center gap-3"><div className="min-w-0 flex-1"><div className="truncate text-xs font-medium">{source.title}</div><div className="mt-1 text-[11px] text-[var(--text-secondary)]">{source.authority} · {source.source_type}</div></div><Status value={source.status} /></div><div className="mt-2 flex gap-3"><button type="button" onClick={() => onVerify(source)} className="inline-flex items-center gap-1 text-[11px] text-[var(--accent)] hover:underline"><MessageSquareText size={12} />回主问答验证</button>{reviewSourceIds.has(source.id) && <button type="button" disabled={publishingSourceId === source.id} onClick={() => onPublish(source)} className="inline-flex items-center gap-1 text-[11px] text-sky-500 hover:underline disabled:opacity-50"><ShieldCheck size={12} />审核并发布</button>}</div></div>)}</div></section>
 }
 
 function JobList({ jobs }: { jobs: KnowledgeJobItem[] }) {

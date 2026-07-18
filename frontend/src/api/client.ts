@@ -218,6 +218,8 @@ export interface KnowledgeSourceItem {
 export interface KnowledgePageItem {
   id: string
   source_id: string
+  source_version_id?: string
+  version_number?: number
   title: string
   type: string
   summary?: string | null
@@ -273,8 +275,12 @@ export async function apiListKnowledgeSources(token: string, projectId?: string 
   return res.json()
 }
 
-export async function apiListKnowledgePages(token: string, projectId?: string | null): Promise<KnowledgePageItem[]> {
-  const res = await apiFetch(`/knowledge/pages${projectQuery(projectId, { limit: '200' })}`, { headers: authHeaders(token) })
+export async function apiListKnowledgePages(
+  token: string,
+  projectId?: string | null,
+  status: 'published' | 'review' = 'published',
+): Promise<KnowledgePageItem[]> {
+  const res = await apiFetch(`/knowledge/pages${projectQuery(projectId, { limit: '200', status })}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取知识页面失败'))
   return res.json()
 }
@@ -326,6 +332,12 @@ export async function apiCreateKnowledgeRule(token: string, payload: Record<stri
 export async function apiApproveKnowledgeRule(token: string, ruleId: string): Promise<any> {
   const res = await apiFetch(`/knowledge/rules/${encodeURIComponent(ruleId)}/approve`, { method: 'POST', headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '发布编排规则失败'))
+  return res.json()
+}
+
+export async function apiPublishKnowledgePage(token: string, pageId: string): Promise<Record<string, unknown>> {
+  const res = await apiFetch(`/knowledge/pages/${encodeURIComponent(pageId)}/publish`, { method: 'POST', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '发布知识版本失败'))
   return res.json()
 }
 

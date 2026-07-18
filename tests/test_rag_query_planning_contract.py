@@ -163,7 +163,9 @@ async def test_rag_agent_returns_query_plan_trace_and_protocol_evidence(monkeypa
         ]
 
     monkeypatch.setattr("plugins.document_plugin.DocumentPlugin.search_chunks", fake_search_chunks)
-    monkeypatch.setattr("plugins.document_plugin.DocumentPlugin.search_llmwiki", fake_search_llmwiki)
+    monkeypatch.setattr(
+        "plugins.document_plugin.DocumentPlugin.search_llmwiki", fake_search_llmwiki
+    )
     monkeypatch.setattr("agents.rag_agent.settings.rag_rerank_enabled", False)
 
     result = await RagAgent().execute(
@@ -187,5 +189,67 @@ async def test_rag_agent_returns_query_plan_trace_and_protocol_evidence(monkeypa
     assert result.metadata["rag_trace"]["query_plan"]["filters"]["tenant_id"] == "tenant-a"
     assert result.metadata["quality"]["answerability_state"] in {"answerable", "weak"}
     assert result.metadata["rag_evidence_objects"][0]["version"] == RAG_EVIDENCE_VERSION
-    assert result.evidence_objects[0].metadata["rag_evidence"]["access_scope"]["workspace_id"] == "workspace-a"
-    assert any(call[0] == "llmwiki" and call[2] == "tenant-a" and call[3] == "workspace-a" for call in calls)
+    assert (
+        result.evidence_objects[0].metadata["rag_evidence"]["access_scope"]["workspace_id"]
+        == "workspace-a"
+    )
+    assert any(
+        call[0] == "llmwiki" and call[2] == "tenant-a" and call[3] == "workspace-a"
+        for call in calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_document_fallback_keeps_project_scope(monkeypatch):
+    calls = []
+
+    async def fake_search_chunks(
+        self,
+        query,
+        user_id,
+        top_k=6,
+        *,
+        tenant_id=None,
+        workspace_id=None,
+        project_id=None,
+    ):
+        calls.append(("chunks", tenant_id, workspace_id, project_id))
+        return []
+
+    async def fake_search_llmwiki(
+        self,
+        query,
+        user_id,
+        top_k=3,
+        *,
+        tenant_id=None,
+        workspace_id=None,
+        project_id=None,
+    ):
+        calls.append(("llmwiki", tenant_id, workspace_id, project_id))
+        return []
+
+    monkeypatch.setattr("plugins.document_plugin.DocumentPlugin.search_chunks", fake_search_chunks)
+    monkeypatch.setattr(
+        "plugins.document_plugin.DocumentPlugin.search_llmwiki", fake_search_llmwiki
+    )
+    monkeypatch.setattr("agents.rag_agent.settings.rag_rerank_enabled", False)
+
+    result = await RagAgent().execute(
+        TaskMessage(
+            task_id="rag-project-fallback",
+            agent_type="rag",
+            query="只在项目知识中查找不存在的条目",
+            user_id="u1",
+            params={
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "project_id": "project-a",
+                "sources": ["documents"],
+            },
+        )
+    )
+
+    assert result.status == "success"
+    assert calls
+    assert all(call[1:] == ("tenant-a", "workspace-a", "project-a") for call in calls)

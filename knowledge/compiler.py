@@ -7,7 +7,7 @@ import json
 import re
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import delete, select, update
@@ -31,6 +31,7 @@ from knowledge.domain import (
     KnowledgeAuthority,
     KnowledgeStatus,
     KnowledgeType,
+    source_status_during_refresh,
 )
 from knowledge.rules import active_rule, active_rule_version, validate_compiled_payload
 
@@ -157,6 +158,7 @@ def compile_payload(
         if page["page_type"] == KnowledgeType.OVERVIEW.value:
             continue
         page_chunk_ids = set(page["chunk_ids"])
+        page_claim_hashes: set[str] = set()
         claim_count = 0
         for chunk in chunks:
             if chunk.id not in page_chunk_ids:
@@ -167,6 +169,12 @@ def compile_payload(
                     continue
                 normalized = text.lower()
                 claim_digest = content_hash(normalized)
+                # 同一章节可能因分块重叠或原文重复出现相同句子。Claim 主键按
+                # 页面与内容稳定生成，因此只保留首次出现的证据，避免批量写入
+                # 产生重复主键，同时让重新编译仍保持确定性。
+                if claim_digest in page_claim_hashes:
+                    continue
+                page_claim_hashes.add(claim_digest)
                 claims.append(
                     {
                         "id": stable_id("claim", f"{page['id']}:{claim_digest}"),
@@ -296,7 +304,7 @@ async def compile_document_knowledge_in_session(
                 job.status = "succeeded"
                 job.source_id = source.id
                 job.source_version_id = active_version.id
-                job.completed_at = datetime.now(timezone.utc)
+                job.completed_at = datetime.now(UTC)
                 job.error = None
                 job.result_metadata = {
                     **(job.result_metadata or {}),
@@ -333,7 +341,10 @@ async def compile_document_knowledge_in_session(
     else:
         source.title = document.title
         source.content_hash = digest
-        source.status = KnowledgeStatus.COMPILING.value
+        source.status = source_status_during_refresh(
+            source.active_version_id,
+            KnowledgeStatus.COMPILING,
+        )
         source.project_id = document.project_id
         source.source_metadata = {
             **(source.source_metadata or {}),
@@ -359,7 +370,7 @@ async def compile_document_knowledge_in_session(
             project_id=document.project_id,
             status="running",
             compiler_version=KNOWLEDGE_COMPILER_VERSION,
-            started_at=datetime.now(timezone.utc),
+            started_at=datetime.now(UTC),
         )
         db.add(job)
     else:
@@ -370,7 +381,7 @@ async def compile_document_knowledge_in_session(
         job.workspace_id = document.workspace_id
         job.project_id = document.project_id
         job.compiler_version = KNOWLEDGE_COMPILER_VERSION
-        job.started_at = job.started_at or datetime.now(timezone.utc)
+        job.started_at = job.started_at or datetime.now(UTC)
 
     try:
         try:
@@ -541,7 +552,7 @@ async def compile_document_knowledge_in_session(
                         .values(status=KnowledgeStatus.ARCHIVED.value)
                     )
         version.status = publication_status
-        version.compiled_at = datetime.now(timezone.utc)
+        version.compiled_at = datetime.now(UTC)
         if publication_status == KnowledgeStatus.PUBLISHED.value:
             source.active_version_id = version.id
             source.status = KnowledgeStatus.PUBLISHED.value
@@ -554,7 +565,7 @@ async def compile_document_knowledge_in_session(
                 else KnowledgeStatus.REVIEW.value
             )
         job.status = "succeeded"
-        job.completed_at = datetime.now(timezone.utc)
+        job.completed_at = datetime.now(UTC)
         job.result_metadata = {
             "pages": len(pages),
             "claims": len(claims),
@@ -589,8 +600,11 @@ async def compile_document_knowledge_in_session(
             **job.result_metadata,
         }
     except Exception as exc:
-        source.status = KnowledgeStatus.ERROR.value
+        source.status = source_status_during_refresh(
+            source.active_version_id,
+            KnowledgeStatus.ERROR,
+        )
         job.status = "failed"
         job.error = str(exc)[:2000]
-        job.completed_at = datetime.now(timezone.utc)
+        job.completed_at = datetime.now(UTC)
         raise

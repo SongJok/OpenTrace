@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,18 +23,18 @@ from infra.storage.models import (
     KnowledgeLintIssue,
     KnowledgeMergeCase,
     KnowledgePage,
-    KnowledgeRule,
     KnowledgeRelation,
+    KnowledgeRule,
     KnowledgeSource,
     KnowledgeSourceVersion,
     Project,
     User,
 )
+from knowledge.domain import KnowledgeStatus, source_status_during_refresh
+from knowledge.evolution import build_evolution_proposal
 from knowledge.graph import build_project_graph, link_project_pages
 from knowledge.jobs import enqueue_document_compile
-from knowledge.domain import KnowledgeStatus
 from knowledge.lint import run_knowledge_lint
-from knowledge.evolution import build_evolution_proposal
 from knowledge.merge import resolve_merge_case as apply_merge_case
 from knowledge.trace import trace_knowledge_assets
 
@@ -246,7 +246,7 @@ async def list_knowledge_pages(
 ) -> list[dict]:
     tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
     stmt = (
-        select(KnowledgePage, KnowledgeSource)
+        select(KnowledgePage, KnowledgeSource, KnowledgeSourceVersion)
         .join(KnowledgeSourceVersion, KnowledgePage.source_version_id == KnowledgeSourceVersion.id)
         .join(KnowledgeSource, KnowledgeSourceVersion.source_id == KnowledgeSource.id)
         .where(
@@ -263,11 +263,20 @@ async def list_knowledge_pages(
         stmt = stmt.where(KnowledgeSource.id == source_id)
     if project_id:
         stmt = stmt.where(KnowledgeSource.project_id == project_id)
-    rows = (await db.execute(stmt.order_by(KnowledgePage.title.asc()).limit(max(1, min(limit, 200))))).all()
+    rows = (
+        await db.execute(
+            stmt.order_by(
+                KnowledgeSourceVersion.version_number.desc(),
+                KnowledgePage.title.asc(),
+            ).limit(max(1, min(limit, 200)))
+        )
+    ).all()
     return [
         {
             "id": page.id,
             "source_id": source.id,
+            "source_version_id": version.id,
+            "version_number": version.version_number,
             "title": page.title,
             "type": page.page_type,
             "summary": page.summary,
@@ -275,7 +284,7 @@ async def list_knowledge_pages(
             "status": page.status,
             "metadata": page.page_metadata,
         }
-        for page, source in rows
+        for page, source, version in rows
     ]
 
 
@@ -283,7 +292,6 @@ async def list_knowledge_pages(
 async def compile_document(
     http_request: Request,
     document_id: str,
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -298,8 +306,8 @@ async def compile_document(
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Document not found")
     if doc.status != "ready":
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="Document is not ready for compilation")
-    background_tasks.add_task(enqueue_document_compile, document_id)
-    return {"accepted": True, "document_id": document_id, "status": "queued"}
+    result = await enqueue_document_compile(document_id)
+    return {"accepted": True, **result}
 
 
 @router.get("/knowledge/jobs")
@@ -455,7 +463,10 @@ async def retry_knowledge_job(
     job.started_at = None
     job.completed_at = None
     job.result_metadata = {**(job.result_metadata or {}), "retry_requested_at": datetime.now(timezone.utc).isoformat()}
-    source.status = "compiling"
+    source.status = source_status_during_refresh(
+        source.active_version_id,
+        KnowledgeStatus.COMPILING,
+    )
     await db.commit()
     return {"accepted": True, "job_id": job.id, "document_id": source.document_id, "status": "pending"}
 

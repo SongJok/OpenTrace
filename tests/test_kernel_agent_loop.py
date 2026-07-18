@@ -1,6 +1,8 @@
 import unittest
 from pathlib import Path
 
+from kernel.agent_loop.runner import AgentLoop
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -55,6 +57,15 @@ class KernelFlowContractTests(unittest.TestCase):
         txt = self._read("kernel/agent_loop/runner.py")
         self.assertIn("AgentLoopResult", txt)
         self.assertIn("model_response.content", txt)
+
+    def test_explicit_knowledge_grounding_is_deterministically_prefetched(self):
+        self.assertTrue(AgentLoop._requires_knowledge_grounding("请根据已发布知识库回答这个问题"))
+        self.assertTrue(AgentLoop._requires_knowledge_grounding("请从上传的文档中查找答案"))
+        self.assertFalse(AgentLoop._requires_knowledge_grounding("请解释什么是知识库"))
+
+        txt = self._read("kernel/agent_loop/runner.py")
+        self.assertIn("_prefetch_knowledge_grounding", txt)
+        self.assertIn('and "rag" in spec_by_name', txt)
 
     def test_analytics_tools_registered_module_importable(self):
         txt = self._read("tools/builtin_tools/analytics_tools.py")

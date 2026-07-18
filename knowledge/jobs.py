@@ -17,8 +17,13 @@ from infra.storage.models import (
     KnowledgeSource,
     KnowledgeSourceVersion,
 )
-from knowledge.compiler import content_hash, compile_document_knowledge, stable_id
-from knowledge.domain import KNOWLEDGE_COMPILER_VERSION, KnowledgeAuthority, KnowledgeStatus
+from knowledge.compiler import compile_document_knowledge, content_hash, stable_id
+from knowledge.domain import (
+    KNOWLEDGE_COMPILER_VERSION,
+    KnowledgeAuthority,
+    KnowledgeStatus,
+    source_status_during_refresh,
+)
 
 
 async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
@@ -76,7 +81,10 @@ async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
                 "source_version_id": compiled_revision,
             }
 
-        source.status = KnowledgeStatus.COMPILING.value
+        source.status = source_status_during_refresh(
+            source.active_version_id,
+            KnowledgeStatus.COMPILING,
+        )
 
         existing = await db.scalar(
             select(KnowledgeCompilationJob)

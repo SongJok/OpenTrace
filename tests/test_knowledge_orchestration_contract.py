@@ -1,6 +1,10 @@
 from infra.storage.models import DocumentChunk
 from knowledge.compiler import compile_payload
-from knowledge.domain import KNOWLEDGE_QUERY_PLAN_VERSION
+from knowledge.domain import (
+    KNOWLEDGE_QUERY_PLAN_VERSION,
+    KnowledgeStatus,
+    source_status_during_refresh,
+)
 from knowledge.query import build_knowledge_query_plan
 from services.rag_query_planning import build_rag_query_plan, normalize_rag_evidence
 from services.rag_retrieval_fusion import reciprocal_rank_fusion
@@ -22,7 +26,9 @@ def test_compiler_creates_traceable_pages_claims_and_bidirectional_navigation_se
         source_version_id="version-1",
         title="退款制度",
         chunks=[
-            _chunk("chunk-1", 0, "退款需要在订单完成后七天内申请。提交申请后由客服审核。", "退款流程"),
+            _chunk(
+                "chunk-1", 0, "退款需要在订单完成后七天内申请。提交申请后由客服审核。", "退款流程"
+            ),
             _chunk("chunk-2", 1, "特殊订单不支持退款。", "退款限制"),
         ],
     )
@@ -32,6 +38,37 @@ def test_compiler_creates_traceable_pages_claims_and_bidirectional_navigation_se
     assert claims and all(claim["evidence_chunk_id"] for claim in claims)
     assert {relation["relation_type"] for relation in relations} == {"contains", "part_of"}
     assert len(relations) == (len(pages) - 1) * 2
+
+
+def test_compiler_deduplicates_repeated_claims_within_the_same_page():
+    _, claims, _ = compile_payload(
+        document_id="doc-1",
+        source_version_id="version-1",
+        title="运行手册",
+        chunks=[
+            _chunk("chunk-1", 0, "服务启动后执行健康检查。", "部署流程"),
+            _chunk("chunk-2", 1, "服务启动后执行健康检查。", "部署流程"),
+        ],
+    )
+
+    assert len(claims) == 1
+    assert claims[0]["evidence_chunk_id"] == "chunk-1"
+    assert len({claim["id"] for claim in claims}) == len(claims)
+
+
+def test_refresh_keeps_previous_published_revision_queryable():
+    assert (
+        source_status_during_refresh("version-live", KnowledgeStatus.COMPILING)
+        == KnowledgeStatus.PUBLISHED.value
+    )
+    assert (
+        source_status_during_refresh("version-live", KnowledgeStatus.ERROR)
+        == KnowledgeStatus.PUBLISHED.value
+    )
+    assert (
+        source_status_during_refresh(None, KnowledgeStatus.COMPILING)
+        == KnowledgeStatus.COMPILING.value
+    )
 
 
 def test_knowledge_query_plan_uses_progressive_disclosure_and_relation_hops():

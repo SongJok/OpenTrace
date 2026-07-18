@@ -60,3 +60,13 @@ KNOWLEDGE_COMPILER_VERSION = "knowledge_compiler_v1"
 KNOWLEDGE_QUERY_PLAN_VERSION = "knowledge_query_plan_v1"
 KNOWLEDGE_EVIDENCE_VERSION = "knowledge_evidence_object_v1"
 KNOWLEDGE_RULESET_VERSION = "knowledge_ruleset_v1"
+
+
+def source_status_during_refresh(
+    active_version_id: str | None,
+    fallback: KnowledgeStatus,
+) -> str:
+    """重编译期间保留上一已发布版本的在线可见性。"""
+    if active_version_id:
+        return KnowledgeStatus.PUBLISHED.value
+    return fallback.value

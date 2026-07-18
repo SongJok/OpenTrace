@@ -15,10 +15,10 @@ from kernel.cognitive_controls import (
     _substantive_query_terms,
     relevance_score,
 )
+from knowledge.query import search_knowledge
 from model.reranker.base import get_reranker
 from plugins.document_plugin import DocumentPlugin
 from plugins.document_retrieval import DocumentEvidenceGate, ScoredDocumentChunk
-from knowledge.query import search_knowledge
 from services.rag_query_planning import (
     assess_answerability,
     build_rag_query_plan,
@@ -724,6 +724,7 @@ class RagAgent(BaseAgent):
                             top_k=max(top_k, 8),
                             tenant_id=tenant_id,
                             workspace_id=workspace_id,
+                            project_id=project_id,
                         )
                         for sq in fallback_queries
                     ],

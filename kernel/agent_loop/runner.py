@@ -169,10 +169,24 @@ class AgentLoop:
         ]
         await self._restore_tool_history(db, response=response, messages=messages, emit=emit)
 
+        spec_by_name = {spec.name: spec for spec in tool_specs}
+        if (
+            str(payload.get("tool_choice") or "auto") != "none"
+            and "rag" in spec_by_name
+            and self._requires_knowledge_grounding(query)
+        ):
+            await self._prefetch_knowledge_grounding(
+                db,
+                response=response,
+                query=query,
+                spec=spec_by_name["rag"],
+                messages=messages,
+                emit=emit,
+            )
+
         public_tools = [spec.as_openai_tool() for spec in tool_specs]
         if str(payload.get("tool_choice") or "auto") == "none":
             public_tools = []
-        spec_by_name = {spec.name: spec for spec in tool_specs}
         model_name, reasoning = self._model_profile(profile, payload)
         if context.contains_images and not str(payload.get("model") or "").strip():
             model_name = settings.default_llm_vision_model
@@ -645,6 +659,113 @@ class AgentLoop:
             )
             messages.append(LLMMessage(role="tool", name=approval.tool_name, tool_call_id=approval.call_id, content=json.dumps(result, ensure_ascii=False, default=str)))
 
+    @staticmethod
+    def _requires_knowledge_grounding(query: str) -> bool:
+        """识别用户明确要求以知识库或文档为事实依据的请求。"""
+        normalized = re.sub(r"\s+", "", (query or "").lower())
+        markers = (
+            "根据知识库",
+            "基于知识库",
+            "使用知识库",
+            "参考知识库",
+            "查询知识库",
+            "检索知识库",
+            "从知识库",
+            "知识库中",
+            "知识库证据",
+            "已发布知识",
+            "根据文档",
+            "基于文档",
+            "参考文档",
+            "查询文档",
+            "检索文档",
+            "从文档",
+            "文档中",
+            "上传的文档",
+            "basedontheknowledgebase",
+            "fromtheknowledgebase",
+            "basedonthedocument",
+            "fromthedocument",
+            "uploadeddocument",
+        )
+        return any(marker in normalized for marker in markers)
+
+    async def _prefetch_knowledge_grounding(
+        self,
+        db: AsyncSession,
+        *,
+        response: ResponseRecord,
+        query: str,
+        spec: ToolSpec,
+        messages: list[LLMMessage],
+        emit: EventEmitter,
+    ) -> None:
+        """在用户明确要求事实依据时，先执行只读 RAG 再进入 Manager 合成。"""
+        call_id = f"call_grounding_{hashlib.sha256(response.id.encode()).hexdigest()[:20]}"
+        arguments = {"query": query, "parameters_json": "{}"}
+        call = {"call_id": call_id, "name": "rag", "arguments": arguments}
+        item = ResponseItem(
+            id=f"item_{uuid.uuid4().hex}",
+            response_id=response.id,
+            sequence_number=await self._next_item_sequence(db, response.id),
+            item_type="function_call",
+            role="assistant",
+            content=None,
+            payload={"call_id": call_id, "name": "rag", "arguments": arguments},
+        )
+        db.add(item)
+        await db.flush()
+        await emit(
+            "response.output_item.added",
+            {
+                "item_id": item.id,
+                "item_type": "function_call",
+                "call_id": call_id,
+                "name": "rag",
+            },
+        )
+        result = await self._execute_tool(
+            db,
+            response=response,
+            call=call,
+            spec=spec,
+            emit=emit,
+        )
+        messages.append(
+            LLMMessage(
+                role="system",
+                content=(
+                    "用户明确要求依据知识库或文档回答。必须优先依据紧随其后的 rag 工具证据，"
+                    "不要用模型记忆替代；证据不足时应明确说明。"
+                ),
+            )
+        )
+        messages.append(
+            LLMMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    {
+                        "id": call_id,
+                        "call_id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "rag",
+                            "arguments": json.dumps(arguments, ensure_ascii=False),
+                        },
+                    }
+                ],
+            )
+        )
+        messages.append(
+            LLMMessage(
+                role="tool",
+                name="rag",
+                tool_call_id=call_id,
+                content=json.dumps(result, ensure_ascii=False, default=str),
+            )
+        )
+
     async def _ensure_approval(
         self,
         db: AsyncSession,
@@ -883,9 +1004,15 @@ class AgentLoop:
         params: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Resolve trusted scope server-side; never trust model-supplied ids."""
-        from infra.storage.database import AsyncSessionLocal
-        from infra.storage.models import ChatSession, DataSource, Project, SkillCatalogEntry, UserSkillInstallation
         from gateway.api_gateway.resource_scope import accessible_data_sources_statement
+        from infra.storage.database import AsyncSessionLocal
+        from infra.storage.models import (
+            ChatSession,
+            DataSource,
+            Project,
+            SkillCatalogEntry,
+            UserSkillInstallation,
+        )
 
         hydrated = dict(params or {})
         extension = dict((response.request_payload or {}).get("opentrace") or {})
