@@ -60,9 +60,9 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-echo "▸ 检查关键端口(14101/14108)"
-if ! lsof -i :14101 >/dev/null 2>&1; then
-  echo "⚠ 14101 未监听（后端可能未启动）"
+echo "▸ 检查关键端口(14100/14108)"
+if ! lsof -i :14100 >/dev/null 2>&1; then
+  echo "⚠ 14100 未监听（后端可能未启动）"
 fi
 if ! lsof -i :14108 >/dev/null 2>&1; then
   echo "⚠ 14108 未监听（前端可能未启动）"

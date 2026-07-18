@@ -47,10 +47,8 @@ def test_worker_reconciles_uploads_and_main_rag_receives_project_scope():
     assert "reconcile_ready_documents()" in jobs
     assert "KNOWLEDGE_RECONCILE_SECONDS" in jobs
     assert 'hydrated["project_id"] = project_id' in runner
-    assert (
-        'agent_params.setdefault("sources", ["knowledge", "documents", "semantic_memory"])'
-        in runner
-    )
+    assert "agent_params.setdefault(" in runner
+    assert '"sources", ["knowledge", "documents", "semantic_memory"]' in runner
     assert 'retrieval_scope["project_id"] = project_id' in rag
     assert "project_id=project_id" in rag
 

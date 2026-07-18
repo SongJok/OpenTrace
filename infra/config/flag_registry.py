@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 FlagPhase = Literal["experimental", "stable", "deprecated"]
@@ -21,7 +21,7 @@ class FlagSpec:
 KERNEL_FLAG_REGISTRY: tuple[FlagSpec, ...] = (
     FlagSpec(
         "kernel_runtime_phase_transition_strict",
-        False,
+        True,
         "stable",
         affects="runtime",
     ),

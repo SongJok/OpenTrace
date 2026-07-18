@@ -87,7 +87,7 @@ class ShadowRedis:
         ok = await self.r.set(k, v); await shadow_store.upsert(self.db, k, "string", {"value": v}); return ok
 
     async def setex(self, k, ttl, v):
-        ok = await self.r.setex(k, ttl, v); await shadow_store.upsert(self.db, k, "string", {"value": v}, time.time()+max(int(ttl),0)); return ok
+        ok = await self.r.set(k, v, ex=ttl); await shadow_store.upsert(self.db, k, "string", {"value": v}, time.time()+max(int(ttl),0)); return ok
 
     async def get(self, k):
         v = await self.r.get(k)
@@ -97,7 +97,7 @@ class ShadowRedis:
         v, exp = row[1].get("value"), row[2]
         if v is None: return None
         ttl = int(exp - time.time()) if exp else None
-        if ttl and ttl > 0: await self.r.setex(k, ttl, v)
+        if ttl and ttl > 0: await self.r.set(k, v, ex=ttl)
         else: await self.r.set(k, v)
         return v
 

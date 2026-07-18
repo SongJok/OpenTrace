@@ -71,7 +71,7 @@ print("✅ verify_code_plugin 完成")
 PY
 
 # 可选：API 探测（需已登录 TOKEN）
-# BASE_URL="${BASE_URL:-http://127.0.0.1:14101}"
-# curl -sS -X POST "$BASE_URL/api/v1/chat" -H "Authorization: Bearer $TOKEN" \
+# BASE_URL="${BASE_URL:-http://127.0.0.1:14100}"
+# curl -sS -X POST "$BASE_URL/api/v2/responses" -H "Authorization: Bearer $TOKEN" \
 #   -H "Content-Type: application/json" \
-#   -d '{"message":"画一个正弦曲线图表","session_id":"verify-chart"}' | head -c 400
+#   -d '{"input":"画一个正弦曲线图表","stream":false}' | head -c 400

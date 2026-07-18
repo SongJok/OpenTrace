@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,10 +51,12 @@ class KnowledgeFeedbackRequest(BaseModel):
 
 
 class KnowledgeRuleRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     rule_key: str
     project_id: str | None = None
     rule_type: str = "schema"
-    schema_json: dict = Field(default_factory=dict)
+    schema_payload: dict = Field(default_factory=dict, alias="schema_json")
     instructions: str | None = None
     provenance: dict = Field(default_factory=dict)
 
@@ -183,7 +185,7 @@ async def create_knowledge_rule(
         "page_type_keywords", "required_page_fields", "required_claim_fields",
         "required_relation_fields", "allowed_page_types",
     }
-    unknown = sorted(set(req.schema_json) - allowed_keys)
+    unknown = sorted(set(req.schema_payload) - allowed_keys)
     if unknown:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message=f"Unsupported orchestration fields: {', '.join(unknown)}")
     latest = await db.scalar(select(KnowledgeRule).where(
@@ -196,7 +198,7 @@ async def create_knowledge_rule(
     row = KnowledgeRule(
         id=str(uuid.uuid4()), owner_id=current_user.id, tenant_id=tenant_id, workspace_id=workspace_id,
         project_id=req.project_id, rule_key=req.rule_key, version=version,
-        rule_type=req.rule_type, schema_json=req.schema_json,
+        rule_type=req.rule_type, schema_json=req.schema_payload,
         instructions=req.instructions, provenance={**req.provenance, "created_via": "knowledge_api"},
         created_by=current_user.id,
     )

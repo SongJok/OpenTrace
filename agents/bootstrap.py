@@ -8,7 +8,7 @@ Tier-1 agent list is defined in kernel/agent_runtime/agent_topology_manifest.yam
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from infra.observability.logger import get_logger
 
@@ -17,6 +17,22 @@ logger = get_logger(__name__)
 _bootstrapped = False
 
 _BUILTIN_FACTORIES: dict[str, Callable[[], object]] = {}
+
+
+def is_builtin_agent_enabled(agent_type: str) -> bool:
+    """统一解释全局及分 Agent 开关，供 Responses 与 Worker 共用。"""
+    from infra.config.settings import settings
+
+    if not bool(getattr(settings, "kernel_agent_enabled", True)):
+        return False
+    setting_name = {
+        "data": "kernel_agent_data_enabled",
+        "rag": "kernel_agent_rag_enabled",
+        "web_intelligence": "kernel_agent_web_enabled",
+        "tool": "kernel_agent_tool_enabled",
+        "vision": "kernel_agent_vision_enabled",
+    }.get(agent_type)
+    return setting_name is None or bool(getattr(settings, setting_name, True))
 
 
 def _load_factories() -> dict[str, Callable[[], object]]:

@@ -131,7 +131,6 @@ class TraceLog(Base):
     )
     trace_id: Mapped[str] = mapped_column(String(64), nullable=True, index=True)
     span_id: Mapped[str] = mapped_column(String(32), nullable=True)
-    parent_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     query: Mapped[str] = mapped_column(Text, nullable=False)
     response: Mapped[str] = mapped_column(Text, nullable=True)
     decision_type: Mapped[str] = mapped_column(String(50), nullable=True)

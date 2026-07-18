@@ -40,20 +40,19 @@
 <!-- KERNEL_REGISTRY_AUTO_START -->
 | Flag | 默认 | Phase | 依赖 | 影响面 |
 |------|------|-------|------|--------|
-| `kernel_runtime_phase_transition_strict` | false | stable | — | runtime |
+| `kernel_runtime_phase_transition_strict` | true | stable | — | runtime |
 | `kernel_cognitive_state_persist_enabled` | false | stable | — | runtime |
 | `kernel_staging_phase_transition_strict` | false | stable | kernel_runtime_phase_transition_strict | runtime |
 | `kernel_refine_replan_enabled` | true | stable | — | planning |
 | `kernel_memory_fabric_primary_only` | false | stable | — | memory |
 | `kernel_runtime_replay_enabled` | false | experimental | — | replay |
 | `kernel_agent_runtime_v3_enabled` | true | stable | — | agent_runtime |
-| `kernel_agent_runtime_v3_strict` | false | experimental | kernel_agent_runtime_v3_enabled | agent_runtime |
-| `kernel_unified_evidence_strict` | false | experimental | kernel_agent_runtime_v3_enabled | evidence |
+| `kernel_agent_runtime_v3_strict` | false | stable | kernel_agent_runtime_v3_enabled | agent_runtime |
+| `kernel_unified_evidence_strict` | false | stable | kernel_agent_runtime_v3_enabled | evidence |
 | `kernel_web_intelligence_preferred` | true | stable | — | routing |
+| `kernel_capability_intelligence_enabled` | true | stable | — | capability_intelligence |
+| `kernel_agent_learning_auto_apply` | false | experimental | kernel_capability_intelligence_enabled | capability_intelligence |
 | `enterprise_quota_redis_enabled` | false | experimental | — | control_plane |
 | `enterprise_usage_redis_enabled` | false | experimental | — | control_plane |
-| `enterprise_tenant_rls_enabled` | false | experimental | tenants migration | tenant |
-| `enterprise_billing_prompt_per_million` | 0.15 | stable | — | billing |
-| `enterprise_billing_completion_per_million` | 0.60 | stable | — | billing |
-| `enterprise_tenant_rls_enabled` | false | experimental | Postgres `tenants` + `app.tenant_id` | tenant |
+| `kernel_world_model_cross_process_enabled` | false | experimental | — | world_model |
 <!-- KERNEL_REGISTRY_AUTO_END -->

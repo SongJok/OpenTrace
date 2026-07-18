@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, desc, or_, select
+from sqlalchemy import and_, delete, desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.routers.auth import get_current_user
@@ -307,7 +307,8 @@ async def delete_conversation(
 ) -> dict:
     tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
     session = await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
-    await db.delete(session)
+    # 依赖数据库 ON DELETE CASCADE，避免 ORM 为旧 TraceLog 关系做无意义的加载。
+    await db.execute(delete(ChatSession).where(ChatSession.id == session.id))
     await db.commit()
     return {"deleted": True}
 

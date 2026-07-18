@@ -1,7 +1,6 @@
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -33,6 +32,14 @@ class DocumentUploadSearchContractTests(unittest.TestCase):
         txt = self._read("gateway/api_gateway/routers/documents.py")
         self.assertIn("background_tasks.add_task(generate_llmwiki_entries, doc.id)", txt)
         self.assertIn("delete(DocumentLLMWiki).where(DocumentLLMWiki.document_id == doc.id)", txt)
+
+    def test_llmwiki_publish_and_delete_share_a_document_lock(self):
+        router = self._read("gateway/api_gateway/routers/documents.py")
+        plugin = self._read("plugins/document_plugin.py")
+        lock_sql = "pg_advisory_xact_lock(hashtext(:document_id))"
+        self.assertIn(lock_sql, router)
+        self.assertIn(lock_sql, plugin)
+        self.assertIn('Document.status == "ready"', plugin)
 
 
 if __name__ == "__main__":

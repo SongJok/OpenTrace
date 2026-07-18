@@ -7,7 +7,11 @@ import json
 from typing import Any
 
 from agents.base import TaskMessage
-from agents.bootstrap import instantiate_builtin_agents, register_builtin_agents
+from agents.bootstrap import (
+    instantiate_builtin_agents,
+    is_builtin_agent_enabled,
+    register_builtin_agents,
+)
 from infra.config.settings import settings
 from infra.message_bus.agent_bus import AgentMessageBus
 
@@ -191,14 +195,18 @@ class AgentWorker:
 
         manifest = get_manifest()
         eligible = set(manifest.bus_eligible_agent_types())
-        return tuple(k for k in self.agents.keys() if k in eligible)
+        return tuple(
+            agent_type
+            for agent_type in self.agents
+            if agent_type in eligible and is_builtin_agent_enabled(agent_type)
+        )
 
     async def run_forever(self) -> None:
         consumers = self._bus_consumer_agent_types()
+        from infra.alerts.scheduler import alert_scheduler_loop
         from infra.message_bus.subscribers import memory_event_subscriber
         from infra.response_worker import response_job_loop
         from infra.responses.scheduler import scheduler_loop
-        from infra.alerts.scheduler import alert_scheduler_loop
         from knowledge.jobs import knowledge_job_loop
         from skills.catalog import skillhub_sync_loop
 

@@ -34,7 +34,7 @@ _banner_ok() {
   echo -e "  ${BOLD}后端 API${NC}  →  ${YELLOW}http://localhost:$bp${NC}"
   echo -e "  ${BOLD}Swagger  ${NC}  →  ${YELLOW}http://localhost:$bp/docs${NC}"
   echo ""
-  echo -e "  ${BOLD}登录账号${NC}  songts@tuwan.com  /  123456"
+  echo -e "  ${BOLD}登录账号${NC}  dev@example.com  /  opentrace123"
   echo -e "${BOLD}${GREEN}════════════════════════════════════════════${NC}"
   echo ""
   echo -e "  日志:  ${CYAN}tail -f /tmp/opentrace-backend.log${NC}"

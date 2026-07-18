@@ -1,10 +1,14 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# 统一 Worker 与 Responses 专家能力验收。
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:14100}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
+VERIFY_EMAIL="${VERIFY_EMAIL:-dev@example.com}"
+VERIFY_PASSWORD="${VERIFY_PASSWORD:-opentrace123}"
 
 echo "=== Unified Agent Worker Verify ==="
-python -m unittest \
+"$PYTHON_BIN" -m pytest -q \
   tests/test_rag_agent_contract.py \
   tests/test_responses_contract.py \
   tests/test_scheduler_v2.py \
@@ -14,63 +18,43 @@ python -m unittest \
   tests/test_rag_web_fallback_contract.py \
   tests/test_sql_join_planner_contract.py
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "[WARN] jq not found, skip e2e assertions"
-  echo "PASS"
-  exit 0
-fi
+login_payload=$("$PYTHON_BIN" - "$VERIFY_EMAIL" "$VERIFY_PASSWORD" <<'PY'
+import json, sys
+print(json.dumps({"email": sys.argv[1], "password": sys.argv[2]}))
+PY
+)
+login=$(curl -fsS --max-time 15 -X POST "${BASE_URL}/api/v1/auth/login" \
+  -H "Content-Type: application/json" -d "$login_payload")
+TOKEN=$("$PYTHON_BIN" - "$login" <<'PY'
+import json, sys
+print(json.loads(sys.argv[1]).get("access_token") or "")
+PY
+)
+[ -n "$TOKEN" ] || { echo "FAIL: login"; exit 1; }
 
-login=$(curl -s --max-time 10 -X POST "${BASE_URL}/api/v1/auth/login" \
-  -H "Content-Type: application/json" \
-  -d '{"email":"songts@tuwan.com","password":"123456"}')
-TOKEN=$(echo "$login" | jq -r '.access_token // empty')
-if [ -z "$TOKEN" ]; then
-  echo "[WARN] login failed, skip e2e assertions"
-  echo "PASS"
-  exit 0
-fi
+conversation=$(curl -fsS --max-time 15 -X POST "${BASE_URL}/api/v2/conversations" \
+  -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" -d '{}')
+SID=$("$PYTHON_BIN" - "$conversation" <<'PY'
+import json, sys
+print(json.loads(sys.argv[1]).get("id") or "")
+PY
+)
+[ -n "$SID" ] || { echo "FAIL: create conversation"; exit 1; }
 
-conv=$(curl -s --max-time 10 -X POST "${BASE_URL}/api/v1/conversations" \
-  -H "Authorization: Bearer ${TOKEN}")
-SID=$(echo "$conv" | jq -r '.id // empty')
-if [ -z "$SID" ]; then
-  echo "[WARN] create conversation failed, skip e2e assertions"
-  echo "PASS"
-  exit 0
-fi
-
-QUERY1="根据内部文档，我们的退货政策是什么？如果文档信息不足，请联网补充。"
-resp1=$(curl -s --max-time 40 -X POST "${BASE_URL}/api/v1/chat" \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\":\"${QUERY1}\",\"session_id\":\"${SID}\",\"stream\":false}")
-
-echo "$resp1" | jq -e '.metadata.orchestrator_version == "v4"' >/dev/null || {
-  echo "FAIL: orchestrator_version is not v4"
-  exit 1
-}
-
-echo "$resp1" | jq -e '.metadata.plan.subtasks[] | select(.agent_type=="rag")' >/dev/null || {
-  echo "FAIL: rag subtask not found in plan"
-  exit 1
-}
-
-echo "$resp1" | jq -e '.metadata.plan.subtasks[] | select(.agent_type=="web")' >/dev/null || {
-  echo "FAIL: web subtask not found for fallback scenario"
-  exit 1
-}
-
-QUERY2="查询订单表和客户表的关联信息，并说明客户与订单之间的关系。"
-resp2=$(curl -s --max-time 40 -X POST "${BASE_URL}/api/v1/chat" \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\":\"${QUERY2}\",\"session_id\":\"${SID}\",\"stream\":false}")
-
-echo "$resp2" | jq -e '.metadata.plan.subtasks[] | select(.agent_type=="data")' >/dev/null || {
-  echo "FAIL: data subtask not found for JOIN scenario"
-  exit 1
-}
-
-echo "$resp2" | jq -e '.metadata.plan.subtasks[]? | .params.join_path? // empty' >/dev/null || true
-
-echo "PASS"
+response=$(curl -fsS --max-time 150 -X POST "${BASE_URL}/api/v2/responses" \
+  -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  -d "{\"input\":\"请根据已发布知识库或上传文档说明 OpenTrace 的主链路；若资料不足请明确说明。\",\"conversation\":\"${SID}\",\"stream\":false}")
+"$PYTHON_BIN" - "$response" <<'PY'
+import json, sys
+obj = json.loads(sys.argv[1])
+if obj.get("status") != "completed" or not str(obj.get("output_text") or "").strip():
+    raise SystemExit(f"FAIL: response={obj}")
+output = obj.get("output") or []
+types = {item.get("type") for item in output}
+if not {"function_call", "function_call_output", "message"}.issubset(types):
+    raise SystemExit(f"FAIL: RAG 专家未完整进入 Responses 投影，types={sorted(types)}")
+rag_calls = [item for item in output if item.get("type") == "function_call" and (item.get("payload") or {}).get("name") == "rag"]
+if not rag_calls:
+    raise SystemExit("FAIL: Responses 输出中没有 rag function_call")
+print("PASS: Responses → RAG → Manager 最终回答链路完整")
+PY

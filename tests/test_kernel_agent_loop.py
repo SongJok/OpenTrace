@@ -1,6 +1,8 @@
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from agents.bootstrap import register_builtin_agents
 from kernel.agent_loop.runner import AgentLoop
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -66,6 +68,18 @@ class KernelFlowContractTests(unittest.TestCase):
         txt = self._read("kernel/agent_loop/runner.py")
         self.assertIn("_prefetch_knowledge_grounding", txt)
         self.assertIn('and "rag" in spec_by_name', txt)
+
+    def test_responses_agent_catalogue_obeys_runtime_flags(self):
+        register_builtin_agents(force=True)
+        with patch("infra.config.settings.settings.kernel_agent_rag_enabled", False):
+            names = {spec.name for spec in AgentLoop._available_tool_specs({})}
+        self.assertNotIn("rag", names)
+        self.assertIn("data", names)
+
+        with patch("infra.config.settings.settings.kernel_agent_enabled", False):
+            names = {spec.name for spec in AgentLoop._available_tool_specs({})}
+        self.assertTrue({"data", "rag", "web_intelligence", "skills", "rules"}.isdisjoint(names))
+        self.assertIn("calculator", names)
 
     def test_analytics_tools_registered_module_importable(self):
         txt = self._read("tools/builtin_tools/analytics_tools.py")

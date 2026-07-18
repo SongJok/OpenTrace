@@ -23,7 +23,6 @@ python -m pytest \
   tests/test_execution_projection_enrichment_runtime.py \
   tests/test_clarification_enrichment_contract.py \
   tests/test_turn_bootstrap_contract.py \
-  tests/test_v6_v4_import_gate_contract.py \
   tests/test_p2_p3_completion_contract.py \
   tests/test_cognitive_controls_contract.py \
   tests/test_clarification_gate.py \

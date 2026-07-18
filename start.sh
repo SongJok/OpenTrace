@@ -73,6 +73,13 @@ if ! (cd "$PROJECT_DIR" && docker compose exec -T postgres psql -U postgres -d o
   exit 1
 fi
 
+# 开发环境必须有一个与当前认证状态机一致的可登录账号；脚本会在非开发环境自行跳过。
+echo "▸ 确保本地开发登录账号..."
+if ! (cd "$PROJECT_DIR" && docker compose exec -T api python scripts/seed_dev_user.py); then
+  echo "✗ 开发登录账号初始化失败"
+  exit 1
+fi
+
 if [[ "$VERIFY" == "1" ]]; then
   bash "$PROJECT_DIR/scripts/verify_docker.sh"
 fi

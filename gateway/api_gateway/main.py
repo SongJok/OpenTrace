@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException
 
 from gateway.api_gateway.routers import (
     admin,
     agent_resources,
-    analytical_skills,
     alerts,
+    analytical_skills,
     audit,
     auth,
     chat,
@@ -30,10 +34,10 @@ from gateway.api_gateway.routers import (
     metrics,
     personalization,
     prometheus,
+    resource_permissions,
     response_aux,
     responses,
     rules,
-    resource_permissions,
     sandbox,
     skills,
     table_relationships,
@@ -47,7 +51,28 @@ from infra.storage.database import ensure_runtime_schema
 
 logger = get_logger(__name__)
 
-app = FastAPI(title="OpenTrace API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    from agents.bootstrap import register_builtin_agents
+
+    register_builtin_agents()
+    await ensure_runtime_schema()
+    yield
+
+
+app = FastAPI(title="OpenTrace API", version="0.1.0", lifespan=lifespan)
+
+
+def _error_payload(request: Request, *, code: int, message: str, details: Any) -> dict[str, Any]:
+    return {
+        "code": code,
+        "message": message,
+        "details": jsonable_encoder(details),
+        "request_id": getattr(request.state, "request_id", str(uuid.uuid4())),
+        "timestamp": int(time.time()),
+    }
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -81,37 +106,55 @@ async def request_context_middleware(request: Request, call_next):
 
 @app.exception_handler(AppException)
 async def app_exception_handler(request: Request, exc: AppException):
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-    payload: dict[str, Any] = {
-        "code": exc.code,
-        "message": exc.message,
-        "details": exc.details,
-        "request_id": request_id,
-        "timestamp": int(time.time()),
-    }
+    payload = _error_payload(
+        request,
+        code=exc.code,
+        message=exc.message,
+        details=exc.details,
+    )
     return JSONResponse(status_code=exc.http_status, content=payload)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    spec = ErrorCodes.PARAM_INVALID
+    return JSONResponse(
+        status_code=422,
+        content=_error_payload(
+            request,
+            code=spec.code,
+            message=spec.message,
+            details=exc.errors(),
+        ),
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    spec = {
+        403: ErrorCodes.PERMISSION_DENIED,
+        404: ErrorCodes.RESOURCE_NOT_FOUND,
+        409: ErrorCodes.RESOURCE_EXISTS,
+    }.get(exc.status_code, ErrorCodes.PARAM_INVALID)
+    message = exc.detail if isinstance(exc.detail, str) else spec.message
+    details = None if isinstance(exc.detail, str) else exc.detail
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=_error_payload(request, code=spec.code, message=message, details=details),
+        headers=exc.headers,
+    )
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
     spec = ErrorCodes.INTERNAL_ERROR
-    payload = {
-        "code": spec.code,
-        "message": spec.message,
-        "details": str(exc) if settings.debug and settings.app_env == "development" else None,
-        "request_id": request_id,
-        "timestamp": int(time.time()),
-    }
+    payload = _error_payload(
+        request,
+        code=spec.code,
+        message=spec.message,
+        details=str(exc) if settings.debug and settings.app_env == "development" else None,
+    )
     return JSONResponse(status_code=spec.http_status, content=payload)
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    from agents.bootstrap import register_builtin_agents
-
-    register_builtin_agents()
-    await ensure_runtime_schema()
 
 
 app.include_router(health.router, prefix="/api/v1", tags=["health"])

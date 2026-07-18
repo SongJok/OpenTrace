@@ -412,9 +412,9 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
           <SectionCard eyebrow="System" title="System Info" meta="运行环境与版本信息">
             <div className="divide-y divide-[var(--border)] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-secondary)]">
               {[
-                { label: 'API Endpoint', value: 'http://localhost:14101' },
-                { label: 'Version', value: '0.3.5' },
-                { label: 'Kernel', value: 'trace' },
+                { label: 'API Endpoint', value: ((import.meta as any).env?.VITE_API_URL || 'http://localhost:14100') },
+                { label: 'Version', value: '0.1.0' },
+                { label: 'Kernel', value: 'responses-agent-loop' },
               ].map(({ label, value }) => (
                 <div key={label} className="flex items-center justify-between px-4 py-3 text-sm">
                   <span className="text-[var(--text-secondary)]">{label}</span>

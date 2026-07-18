@@ -711,6 +711,10 @@ async def delete_document(
 ) -> dict:
     tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
     tenant_id, workspace_id = normalized_tenant_scope(tenant_md)
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:document_id))"),
+        {"document_id": doc_id},
+    )
     # Use a narrow existence check first so we do not trigger ORM relationship loading.
     result = await db.execute(
         select(Document.id, Document.title).where(
@@ -729,6 +733,11 @@ async def delete_document(
     if await _has_table(db, "knowledge_sources"):
         await db.execute(text("DELETE FROM knowledge_sources WHERE document_id = :doc_id"), {"doc_id": doc_id})
     # Use raw SQL deletes to avoid ORM cascade / lazy-load behavior entirely.
+    if await _has_table(db, "document_llmwiki"):
+        await db.execute(
+            text("DELETE FROM document_llmwiki WHERE document_id = :doc_id"),
+            {"doc_id": doc_id},
+        )
     await db.execute(text("DELETE FROM document_chunks WHERE document_id = :doc_id"), {"doc_id": doc_id})
     await db.execute(
         text(

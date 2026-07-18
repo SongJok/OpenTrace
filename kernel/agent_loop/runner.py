@@ -453,6 +453,7 @@ class AgentLoop:
     def _available_tool_specs(payload: dict[str, Any]) -> list[ToolSpec]:
         """Return the planning catalogue; only selected tools reach the manager."""
         import tools  # noqa: F401
+        from agents.bootstrap import is_builtin_agent_enabled
         from kernel.runtime.capability import capability_registry
         from tools.builtin_tools import analytics_tools as _analytics_tools  # noqa: F401
         from tools.builtin_tools import platform_tools as _platform_tools  # noqa: F401
@@ -483,6 +484,10 @@ class AgentLoop:
                 ),
             )
         for capability in capability_registry.list_capabilities("agent"):
+            if not is_builtin_agent_enabled(capability.name):
+                continue
+            # 图片附件由 ContextAssembler 直接组装为多模态消息；ToolAgent 的
+            # 能力已由细粒度 typed tools 暴露，避免在主链路中形成重复入口。
             if capability.name in {"vision", "tool"}:
                 continue
             by_name.setdefault(

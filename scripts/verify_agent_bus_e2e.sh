@@ -1,65 +1,35 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# AgentMessageBus 与 Responses Stream 是独立通道；本脚本直接验证前者。
 set -euo pipefail
 
-BASE_URL="${BASE_URL:-http://127.0.0.1:14100}"
-
 echo "=== Agent Bus E2E Verify ==="
+docker compose exec -T agent-worker python - <<'PY'
+import asyncio
+import uuid
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "FAIL: jq is required"
-  exit 1
-fi
+from infra.message_bus.agent_bus import AgentMessageBus, AgentTaskEnvelope
 
-# Ensure bus mode for this check
-export KERNEL_ORCHESTRATOR_VERSION="${KERNEL_ORCHESTRATOR_VERSION:-v4}"
-export KERNEL_AGENT_BUS_ENABLED="${KERNEL_AGENT_BUS_ENABLED:-true}"
-export KERNEL_AGENT_BUS_MODE="${KERNEL_AGENT_BUS_MODE:-stream}"
 
-echo "bus enabled: ${KERNEL_AGENT_BUS_ENABLED}, mode: ${KERNEL_AGENT_BUS_MODE}"
+async def main():
+    bus = AgentMessageBus()
+    if bus.mode != "stream":
+        raise SystemExit(f"FAIL: 此验收需要 stream 模式，当前为 {bus.mode}")
+    task_id = f"verify-{uuid.uuid4().hex}"
+    await bus.publish_task(
+        AgentTaskEnvelope(
+            task_id=task_id,
+            agent_type="tool",
+            query="现在几点？",
+            params={},
+            session_id="agent-bus-e2e",
+            user_id="system-verify",
+        )
+    )
+    result = await bus.wait_for_result(task_id, timeout_sec=45)
+    if result.get("status") != "success" or not str(result.get("content") or "").strip():
+        raise SystemExit(f"FAIL: Agent Bus 返回异常: {result}")
+    print(f"PASS: agent={result.get('agent_type')} content={result['content'][:100]}")
 
-login=$(curl -s --max-time 15 -X POST "${BASE_URL}/api/v1/auth/login" \
-  -H "Content-Type: application/json" \
-  -d '{"email":"songts@tuwan.com","password":"123456"}')
 
-token=$(echo "$login" | jq -r '.access_token // empty')
-if [ -z "$token" ]; then
-  echo "FAIL: login failed"
-  exit 1
-fi
-
-conv=$(curl -s --max-time 15 -X POST "${BASE_URL}/api/v1/conversations" \
-  -H "Authorization: Bearer ${token}")
-sid=$(echo "$conv" | jq -r '.id // empty')
-if [ -z "$sid" ]; then
-  echo "FAIL: create conversation failed"
-  exit 1
-fi
-
-query="根据内部文档总结关键政策，并结合历史记忆给出建议"
-resp=$(curl -s --max-time 50 -X POST "${BASE_URL}/api/v1/chat" \
-  -H "Authorization: Bearer ${token}" \
-  -H "Content-Type: application/json" \
-  -d "{\"query\":\"${query}\",\"session_id\":\"${sid}\",\"stream\":false}")
-
-echo "$resp" | jq -e '.metadata.orchestrator_version == "v4"' >/dev/null || {
-  echo "FAIL: orchestrator_version != v4"
-  exit 1
-}
-
-echo "$resp" | jq -e '.metadata.plan.subtasks | length >= 1' >/dev/null || {
-  echo "FAIL: no subtasks"
-  exit 1
-}
-
-# We require at least one rag or data task in plan to validate bus path usage.
-echo "$resp" | jq -e '.metadata.plan.subtasks[] | select(.agent_type=="rag" or .agent_type=="data")' >/dev/null || {
-  echo "FAIL: no rag/data subtask found for bus path"
-  exit 1
-}
-
-echo "$resp" | jq -e '.metadata.agent_results | length >= 1' >/dev/null || {
-  echo "FAIL: no agent_results"
-  exit 1
-}
-
-echo "PASS"
+asyncio.run(main())
+PY

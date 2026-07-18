@@ -300,11 +300,36 @@ async def generate_llmwiki_entries(document_id: str) -> int:
         )
         chunks = chunk_rows.scalars().all()
 
-        await db.execute(delete(DocumentLLMWiki).where(DocumentLLMWiki.document_id == document_id))
+        # 生成过程可能包含模型与嵌入调用，不在此期间持有数据库锁。
         await db.commit()
 
         drafts = await _build_llmwiki_drafts(document.title, chunks)
-        for draft in drafts:
+        # 删除文档与衍生内容发布共用事务级 advisory lock。删除若先完成，
+        # 这里会在重检时安全退出；发布若先完成，删除会等待并级联清理。
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:document_id))"),
+            {"document_id": document_id},
+        )
+        current = await db.scalar(
+            select(Document)
+            .where(Document.id == document_id, Document.status == "ready")
+            .with_for_update()
+        )
+        if current is None:
+            await db.rollback()
+            return 0
+        chunk_ids = set(
+            (
+                await db.execute(
+                    select(DocumentChunk.id).where(DocumentChunk.document_id == document_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        valid_drafts = [draft for draft in drafts if draft.chunk_id in chunk_ids]
+        await db.execute(delete(DocumentLLMWiki).where(DocumentLLMWiki.document_id == document_id))
+        for draft in valid_drafts:
             db.add(
                 DocumentLLMWiki(
                     id=str(uuid.uuid4()),
@@ -320,8 +345,8 @@ async def generate_llmwiki_entries(document_id: str) -> int:
             )
 
         await db.commit()
-        logger.info("LLMwiki entries generated", document_id=document_id, count=len(drafts))
-        return len(drafts)
+        logger.info("LLMwiki entries generated", document_id=document_id, count=len(valid_drafts))
+        return len(valid_drafts)
 
 
 class DocumentPlugin(BasePlugin):
