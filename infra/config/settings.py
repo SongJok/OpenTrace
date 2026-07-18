@@ -436,6 +436,7 @@ class AppSettings(BaseSettings):
     skillhub_catalog_url: str = "https://skills.palebluedot.live"
     skillhub_sync_enabled: bool = True
     skillhub_sync_interval_seconds: int = 21600
+    skillhub_sync_retry_seconds: int = 60
     skillhub_catalog_size: int = 30
     skillhub_min_security_score: int = 80
     # Server-side credential only. Never expose this token through frontend

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -111,3 +112,33 @@ def test_compose_shares_installed_skills_between_api_and_worker() -> None:
     compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
     assert compose.count("skills_data:/app/skills/installed") == 2
     assert "skills_data:" in compose
+
+
+@pytest.mark.asyncio
+async def test_catalog_loop_retries_quickly_after_startup_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = 0
+    delays: list[int] = []
+
+    async def fake_sync() -> dict[str, int]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError('catalog table is not ready')
+        return {"popular": 30, "recent": 30, "stored": 50}
+
+    async def fake_sleep(seconds: int) -> None:
+        delays.append(seconds)
+        if len(delays) == 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(catalog.settings, "skillhub_sync_enabled", True)
+    monkeypatch.setattr(catalog.settings, "skillhub_sync_interval_seconds", 21600)
+    monkeypatch.setattr(catalog.settings, "skillhub_sync_retry_seconds", 60)
+    monkeypatch.setattr(catalog, "sync_skillhub_catalog", fake_sync)
+    monkeypatch.setattr(catalog.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await catalog.skillhub_sync_loop()
+
+    assert attempts == 2
+    assert delays == [60, 21600]

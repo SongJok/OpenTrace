@@ -276,7 +276,9 @@ async def install_catalog_skill(
 
 async def skillhub_sync_loop() -> None:
     interval = max(300, int(settings.skillhub_sync_interval_seconds))
+    retry_interval = max(5, min(interval, int(settings.skillhub_sync_retry_seconds)))
     while True:
+        delay = interval
         try:
             if settings.skillhub_sync_enabled:
                 await sync_skillhub_catalog()
@@ -284,4 +286,8 @@ async def skillhub_sync_loop() -> None:
             raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("skillhub_sync_failed", error=str(exc))
-        await asyncio.sleep(interval)
+            # On a fresh deployment the worker may start before Alembic creates
+            # the catalog tables. Do not leave the marketplace empty for the
+            # full six-hour refresh interval after that transient failure.
+            delay = retry_interval
+        await asyncio.sleep(delay)
