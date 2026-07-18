@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from infra.config.settings import settings
 from infra.observability.logger import get_logger
@@ -28,6 +28,7 @@ _GITHUB_API_VERSION = "2022-11-28"
 
 
 def _catalog_item(row: SkillCatalogEntry, installed: UserSkillInstallation | None = None) -> dict[str, Any]:
+    metadata = dict(row.source_metadata or {})
     return {
         "id": row.id,
         "external_id": row.external_id,
@@ -47,6 +48,9 @@ def _catalog_item(row: SkillCatalogEntry, installed: UserSkillInstallation | Non
         "is_verified": row.is_verified,
         "rank_popular": row.rank_popular,
         "rank_recent": row.rank_recent,
+        "status": row.status,
+        "platform_disabled": row.status != "active",
+        "platform_note": str(metadata.get("platform_note") or ""),
         "source_url": f"https://github.com/{row.github_owner}/{row.github_repo}/tree/HEAD/{row.skill_path}",
         "installed": installed is not None and installed.status == "installed",
         "installation_id": installed.id if installed else None,
@@ -77,12 +81,34 @@ async def sync_skillhub_catalog(*, limit: int | None = None) -> dict[str, int]:
             indexed[external_id] = {**indexed.get(external_id, {}), **item}
             ranks.setdefault(external_id, {})[label] = rank
     now = datetime.now(UTC)
+    added = 0
+    updated = 0
+    preserved_disabled = 0
     async with AsyncSessionLocal() as db:
+        # Keep historical records, but only the current upstream result owns a
+        # current popular/recent rank. This lets newly published Skills enter
+        # the visible top lists without deleting older catalog entries.
+        await db.execute(
+            update(SkillCatalogEntry)
+            .where(SkillCatalogEntry.provider == "skillhub-palebluedot")
+            .values(rank_popular=None, rank_recent=None)
+        )
         for external_id, item in indexed.items():
             row = await db.scalar(select(SkillCatalogEntry).where(SkillCatalogEntry.external_id == external_id))
             if row is None:
                 row = SkillCatalogEntry(id=str(uuid.uuid4()), external_id=external_id)
                 db.add(row)
+                row.status = "active"
+                added += 1
+            else:
+                updated += 1
+                if row.status != "active":
+                    preserved_disabled += 1
+            governance = {
+                key: value
+                for key, value in dict(row.source_metadata or {}).items()
+                if key.startswith("platform_")
+            }
             row.provider = "skillhub-palebluedot"
             row.name = str(item.get("name") or external_id.rsplit("/", 1)[-1])[:255]
             row.description = str(item.get("description") or "")[:20000]
@@ -100,11 +126,20 @@ async def sync_skillhub_catalog(*, limit: int | None = None) -> dict[str, int]:
             row.is_verified = bool(item.get("isVerified"))
             row.rank_popular = ranks.get(external_id, {}).get("popular")
             row.rank_recent = ranks.get(external_id, {}).get("recent")
-            row.status = "active"
-            row.source_metadata = item
+            # Catalog synchronization is append/update-only. Platform
+            # governance fields and disabled status are never reset by an
+            # upstream refresh, and records missing upstream are never deleted.
+            row.source_metadata = {**item, **governance}
             row.synced_at = now
         await db.commit()
-    return {"popular": len(popular), "recent": len(recent), "stored": len(indexed)}
+    return {
+        "popular": len(popular),
+        "recent": len(recent),
+        "stored": len(indexed),
+        "added": added,
+        "updated": updated,
+        "preserved_disabled": preserved_disabled,
+    }
 
 
 def _github_api_headers(token: str = "") -> dict[str, str]:

@@ -884,7 +884,7 @@ class AgentLoop:
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Resolve trusted scope server-side; never trust model-supplied ids."""
         from infra.storage.database import AsyncSessionLocal
-        from infra.storage.models import ChatSession, DataSource, Project, UserSkillInstallation
+        from infra.storage.models import ChatSession, DataSource, Project, SkillCatalogEntry, UserSkillInstallation
         from gateway.api_gateway.resource_scope import accessible_data_sources_statement
 
         hydrated = dict(params or {})
@@ -911,11 +911,14 @@ class AgentLoop:
                 allowed_account_ids: set[str] = set()
                 if account_ids:
                     allowed_account_ids = set((await scope_db.execute(
-                        select(UserSkillInstallation.installed_skill_id).where(
+                        select(UserSkillInstallation.installed_skill_id)
+                        .join(SkillCatalogEntry, UserSkillInstallation.catalog_skill_id == SkillCatalogEntry.id)
+                        .where(
                             UserSkillInstallation.user_id == response.user_id,
                             UserSkillInstallation.tenant_id == response.tenant_id,
                             UserSkillInstallation.workspace_id == response.workspace_id,
                             UserSkillInstallation.status == "installed",
+                            SkillCatalogEntry.status == "active",
                             UserSkillInstallation.installed_skill_id.in_(account_ids),
                         )
                     )).scalars().all())

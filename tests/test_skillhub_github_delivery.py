@@ -9,6 +9,7 @@ from typing import Any, Callable
 import httpx
 import pytest
 
+from infra.storage.models import SkillCatalogEntry
 from skills import catalog
 
 
@@ -142,3 +143,60 @@ async def test_catalog_loop_retries_quickly_after_startup_failure(monkeypatch: p
 
     assert attempts == 2
     assert delays == [60, 21600]
+
+
+@pytest.mark.asyncio
+async def test_catalog_sync_is_append_only_and_preserves_platform_disable(monkeypatch: pytest.MonkeyPatch) -> None:
+    row = SkillCatalogEntry(
+        id="catalog-1",
+        external_id="owner/repo/skill",
+        provider="skillhub-palebluedot",
+        name="skill",
+        description="old",
+        github_owner="owner",
+        github_repo="repo",
+        skill_path="skills/skill",
+        status="disabled",
+        source_metadata={"platform_note": "暂不适合平台", "platform_disabled_by": "admin-1"},
+    )
+
+    class FakeSession:
+        async def __aenter__(self) -> FakeSession:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def execute(self, _statement: Any) -> None:
+            return None
+
+        async def scalar(self, _statement: Any) -> SkillCatalogEntry:
+            return row
+
+        def add(self, _row: SkillCatalogEntry) -> None:
+            raise AssertionError("existing disabled row must be updated, not recreated")
+
+        async def commit(self) -> None:
+            return None
+
+    async def fake_fetch(_sort: str, _limit: int) -> list[dict[str, Any]]:
+        return [{
+            "id": "owner/repo/skill",
+            "name": "skill-v2",
+            "description": "new",
+            "githubOwner": "owner",
+            "githubRepo": "repo",
+            "skillPath": "skills/skill",
+            "securityStatus": "pass",
+        }]
+
+    monkeypatch.setattr(catalog, "AsyncSessionLocal", FakeSession)
+    monkeypatch.setattr(catalog, "_fetch_catalog", fake_fetch)
+
+    result = await catalog.sync_skillhub_catalog(limit=30)
+
+    assert row.status == "disabled"
+    assert row.name == "skill-v2"
+    assert row.source_metadata["platform_note"] == "暂不适合平台"
+    assert result["added"] == 0
+    assert result["preserved_disabled"] == 1

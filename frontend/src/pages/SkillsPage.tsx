@@ -12,11 +12,15 @@ import {
   apiGetSessionSkills,
   apiSetSessionSkills,
   apiListSkillCatalog,
+  apiListMyInstalledSkills,
+  apiListAdminSkillCatalog,
   apiInstallCatalogSkill,
   apiUninstallCatalogSkill,
   apiSyncSkillCatalog,
+  apiSetCatalogSkillAvailability,
   type SkillItem,
   type SkillCatalogItem,
+  type SkillCatalogSyncPolicy,
 } from '../api/client'
 
 type ViewMode = 'list' | 'create' | 'detail' | 'test'
@@ -38,6 +42,9 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
   const [gitRef, setGitRef] = useState('main')
   const [popularCatalog, setPopularCatalog] = useState<SkillCatalogItem[]>([])
   const [recentCatalog, setRecentCatalog] = useState<SkillCatalogItem[]>([])
+  const [accountCatalog, setAccountCatalog] = useState<SkillCatalogItem[]>([])
+  const [adminCatalog, setAdminCatalog] = useState<SkillCatalogItem[]>([])
+  const [catalogPolicy, setCatalogPolicy] = useState<SkillCatalogSyncPolicy | null>(null)
   const [catalogSort, setCatalogSort] = useState<'popular' | 'recent'>('popular')
   const [catalogQuery, setCatalogQuery] = useState('')
   const [busyCatalogId, setBusyCatalogId] = useState<string | null>(null)
@@ -59,15 +66,19 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
 
   const load = async () => {
     try {
-      const [popular, recent] = await Promise.all([
+      const [popular, recent, installed] = await Promise.all([
         apiListSkillCatalog(token, 'popular', catalogQuery),
         apiListSkillCatalog(token, 'recent', catalogQuery),
+        apiListMyInstalledSkills(token),
       ])
       setPopularCatalog(popular)
       setRecentCatalog(recent)
+      setAccountCatalog(installed)
       if (role === 'admin') {
-        const ss = await apiListSkills(token)
+        const [ss, governance] = await Promise.all([apiListSkills(token), apiListAdminSkillCatalog(token)])
         setSkills(Array.isArray(ss) ? ss : [])
+        setAdminCatalog(governance.items)
+        setCatalogPolicy(governance.policy)
       } else setSkills([])
       if (activeSessionId) {
         const binding = await apiGetSessionSkills(token, activeSessionId)
@@ -89,13 +100,42 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
 
   const refreshCatalog = async (query = catalogQuery) => {
     try {
-      const [popular, recent] = await Promise.all([
+      const [popular, recent, installed] = await Promise.all([
         apiListSkillCatalog(token, 'popular', query),
         apiListSkillCatalog(token, 'recent', query),
+        apiListMyInstalledSkills(token),
       ])
       setPopularCatalog(popular)
       setRecentCatalog(recent)
+      setAccountCatalog(installed)
+      if (role === 'admin') {
+        const governance = await apiListAdminSkillCatalog(token)
+        setAdminCatalog(governance.items)
+        setCatalogPolicy(governance.policy)
+      }
     } catch (e: any) { setOutput(`读取 SkillHub 失败：${e?.message || e}`) }
+  }
+
+  const syncCatalog = async () => {
+    setLoading(true)
+    try {
+      const result = await apiSyncSkillCatalog(token)
+      await refreshCatalog()
+      const synced = result?.synced || {}
+      setOutput(`目录同步完成：新增 ${synced.added ?? 0}，更新 ${synced.updated ?? 0}，保留停用 ${synced.preserved_disabled ?? 0}。`)
+    } catch (e: any) { setOutput(`同步 SkillHub 失败：${e?.message || e}`) }
+    finally { setLoading(false) }
+  }
+
+  const setCatalogAvailability = async (item: SkillCatalogItem) => {
+    setBusyCatalogId(item.id)
+    const enabled = item.platform_disabled
+    try {
+      await apiSetCatalogSkillAvailability(token, item.id, enabled, enabled ? '' : '管理员暂停平台使用')
+      await refreshCatalog()
+      setOutput(`${item.name} 已${enabled ? '恢复使用' : '暂停使用'}；目录记录将永久保留。`)
+    } catch (e: any) { setOutput(`更新 Skill 状态失败：${e?.message || e}`) }
+    finally { setBusyCatalogId(null) }
   }
 
   const installCatalog = async (item: SkillCatalogItem) => {
@@ -233,9 +273,9 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
 
   const allCatalog = useMemo(() => {
     const byId = new Map<string, SkillCatalogItem>()
-    for (const item of [...popularCatalog, ...recentCatalog]) byId.set(item.id, item)
+    for (const item of [...popularCatalog, ...recentCatalog, ...accountCatalog]) byId.set(item.id, item)
     return [...byId.values()]
-  }, [popularCatalog, recentCatalog])
+  }, [popularCatalog, recentCatalog, accountCatalog])
 
   const filterCatalog = (items: SkillCatalogItem[]) => category === '全部'
     ? items
@@ -300,12 +340,14 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
                 <input value={catalogQuery} onChange={(e) => setCatalogQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void refreshCatalog() }} placeholder="搜索 Skill 名称、描述或 GitHub 仓库" className="min-w-0 flex-1 bg-transparent px-2 py-2.5 text-sm outline-none" />
                 <button onClick={() => void refreshCatalog()} className="rounded-xl bg-[var(--accent)] px-5 py-2.5 text-xs font-medium text-[var(--accent-foreground)]">搜索</button>
               </div>
-              <div className="flex flex-wrap items-center gap-2">{(['全部', '办公效率', '数据分析', '开发工具', '搜索研究', '内容创作', '自动化'] as CatalogCategory[]).map((item) => <button key={item} onClick={() => setCategory(item)} className={`rounded-full border px-3 py-1.5 text-[11px] transition ${category === item ? 'border-[var(--accent)] bg-[var(--accent-dim)] font-medium text-[var(--accent)]' : 'border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text)]'}`}>{item}</button>)}{role === 'admin' && <button onClick={async () => { await apiSyncSkillCatalog(token); await refreshCatalog() }} className="ml-auto rounded-full border border-[var(--border)] px-3 py-1.5 text-[11px]">同步目录</button>}</div>
+              <div className="flex flex-wrap items-center gap-2">{(['全部', '办公效率', '数据分析', '开发工具', '搜索研究', '内容创作', '自动化'] as CatalogCategory[]).map((item) => <button key={item} onClick={() => setCategory(item)} className={`rounded-full border px-3 py-1.5 text-[11px] transition ${category === item ? 'border-[var(--accent)] bg-[var(--accent-dim)] font-medium text-[var(--accent)]' : 'border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text)]'}`}>{item}</button>)}{role === 'admin' && <button disabled={loading} onClick={() => void syncCatalog()} className="ml-auto rounded-full border border-[var(--border)] px-3 py-1.5 text-[11px] disabled:opacity-50">{loading ? '同步中…' : '同步目录'}</button>}</div>
               <div className="flex items-center justify-between border-b border-[var(--border)] pb-3"><p className="text-xs text-[var(--text-secondary)]">找到 {displayedCatalog.length} 个结果</p><div className="flex gap-5">{(['popular', 'recent'] as const).map((sort) => <button key={sort} onClick={() => setCatalogSort(sort)} className={`text-xs ${catalogSort === sort ? 'font-medium text-[var(--accent)]' : 'text-[var(--text-secondary)]'}`}>{sort === 'popular' ? '热门优先' : '最新优先'}</button>)}</div></div>
               {displayedCatalog.length ? <CatalogGrid items={displayedCatalog} busyId={busyCatalogId} activeSessionId={activeSessionId} enabledSkills={enabledSkills} onInstall={installCatalog} onUninstall={uninstallCatalog} onToggle={toggleSessionSkill} /> : <EmptyCatalog />}
             </section>}
 
             {marketplaceTab === 'installed' && <section className="space-y-5"><SectionTitle title="我的 Skills" subtitle="管理当前账户已部署的能力，并决定哪些 Skill 可以进入当前会话" action={<div className="rounded-full border border-[var(--border)] px-3 py-1.5 text-[11px] text-[var(--text-secondary)]">{activeSessionId ? `当前会话已启用 ${enabledSkills.length} 个` : '尚未选择会话'}</div>} />{installedCatalog.length ? <CatalogGrid items={installedCatalog} busyId={busyCatalogId} activeSessionId={activeSessionId} enabledSkills={enabledSkills} onInstall={installCatalog} onUninstall={uninstallCatalog} onToggle={toggleSessionSkill} /> : <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] py-20 text-center"><PackageCheck size={30} className="mx-auto text-[var(--text-secondary)]" /><p className="mt-3 text-sm font-medium">还没有安装 Skill</p><p className="mt-1 text-xs text-[var(--text-secondary)]">前往技能广场，选择通过安全审核的能力。</p><button onClick={() => setMarketplaceTab('discover')} className="mt-4 rounded-lg bg-[var(--accent)] px-4 py-2 text-xs text-[var(--accent-foreground)]">浏览技能广场</button></div>}</section>}
+
+            {marketplaceTab === 'developer' && role === 'admin' && <CatalogGovernancePanel items={adminCatalog} policy={catalogPolicy} busyId={busyCatalogId} syncing={loading} onSync={syncCatalog} onSetAvailability={setCatalogAvailability} />}
 
             {marketplaceTab === 'developer' && role === 'admin' && <section className="space-y-5"><SectionTitle title="开发者工具" subtitle="创建、测试和管理平台自有的可执行 Skills" action={<button onClick={() => { resetCreateForm(); setCode(defaultCodeTemplate); setView('create') }} className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)]"><Plus size={13} />创建 Skill</button>} /><div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="flex items-center gap-2 text-sm font-medium"><Download size={14} />从 Git 安装</div><div className="mt-3 grid gap-2 sm:grid-cols-[1fr_140px_auto]"><input value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} placeholder="https://github.com/org/skill.git" className="rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /><input value={gitRef} onChange={(e) => setGitRef(e.target.value)} placeholder="分支或标签" className="rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /><button disabled={loading || !gitUrl.trim()} onClick={() => void handleInstall()} className="rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-50">安装</button></div><p className="mt-2 text-[11px] text-[var(--text-secondary)]">可执行 Skill 受平台策略控制，生产环境默认禁止动态安装。</p></div>{skills.length === 0 ? <div className="rounded-2xl border border-dashed border-[var(--border)] p-12 text-center text-xs text-[var(--text-secondary)]">暂无平台自有 Skill</div> : <div className="space-y-2">{skills.map((skill) => <div key={skill.skill_id || skill.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="grid h-9 w-9 place-items-center rounded-lg bg-[var(--accent-dim)] text-[var(--accent)]"><Boxes size={16} /></div><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{skill.name || skill.id}</p><p className="text-[11px] text-[var(--text-secondary)]">v{skill.version} · {skill.skill_type || 'generic'} · {skill.entrypoint || 'main.py'}</p></div><button onClick={() => void handleSelectSkill(skill)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs"><FileText size={12} className="mr-1 inline" />详情</button><button onClick={() => void handleUninstall(skill.skill_id || skill.id)} className="rounded-lg border border-red-500/20 px-3 py-1.5 text-xs text-red-500"><Trash2 size={12} className="mr-1 inline" />移除</button></div>)}</div>}</section>}
           </main>
@@ -425,8 +467,52 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
   )
 }
 
+export function CatalogGovernancePanel({ items, policy, busyId, syncing, onSync, onSetAvailability }: {
+  items: SkillCatalogItem[]
+  policy: SkillCatalogSyncPolicy | null
+  busyId: string | null
+  syncing: boolean
+  onSync: () => Promise<void>
+  onSetAvailability: (item: SkillCatalogItem) => Promise<void>
+}) {
+  const disabledCount = items.filter((item) => item.platform_disabled).length
+  return <section className="mb-8 space-y-5">
+    <SectionTitle
+      title="平台目录治理"
+      subtitle="目录只增不删；定时拉取新增与更新，平台停用状态不会被同步覆盖"
+      action={<button disabled={syncing} onClick={() => void onSync()} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-2 text-xs disabled:opacity-50"><RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />{syncing ? '同步中…' : '立即同步'}</button>}
+    />
+    <div className="grid gap-3 sm:grid-cols-4">
+      {[
+        [policy?.sync_enabled ? '运行中' : '已暂停', '自动同步'],
+        [formatDuration(policy?.sync_interval_seconds), '同步周期'],
+        [formatDuration(policy?.sync_retry_seconds), '失败重试'],
+        [`${disabledCount}/${items.length}`, '暂停使用'],
+      ].map(([value, label]) => <div key={label} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3"><p className="text-sm font-semibold">{value}</p><p className="mt-1 text-[10px] text-[var(--text-secondary)]">{label}</p></div>)}
+    </div>
+    <div className="overflow-hidden rounded-2xl border border-[var(--border)]">
+      <div className="grid grid-cols-[minmax(0,1fr)_110px_110px] border-b border-[var(--border)] px-4 py-2 text-[10px] text-[var(--text-secondary)]"><span>Skill</span><span>状态</span><span className="text-right">治理操作</span></div>
+      <div className="max-h-[420px] divide-y divide-[var(--border)] overflow-y-auto">
+        {items.map((item) => <div key={item.id} className="grid grid-cols-[minmax(0,1fr)_110px_110px] items-center px-4 py-3 text-xs">
+          <div className="min-w-0"><p className="truncate font-medium">{item.name}</p><p className="mt-0.5 truncate text-[10px] text-[var(--text-secondary)]">{item.github_owner}/{item.github_repo}{item.platform_note ? ` · ${item.platform_note}` : ''}</p></div>
+          <span className={item.platform_disabled ? 'text-amber-500' : 'text-emerald-500'}>{item.platform_disabled ? '暂停使用' : '正常使用'}</span>
+          <button disabled={busyId === item.id} onClick={() => void onSetAvailability(item)} className="justify-self-end rounded-lg border border-[var(--border)] px-3 py-1.5 text-[11px] disabled:opacity-50">{busyId === item.id ? '处理中…' : item.platform_disabled ? '恢复使用' : '暂停使用'}</button>
+        </div>)}
+        {!items.length && <div className="p-8 text-center text-xs text-[var(--text-secondary)]">目录尚未同步</div>}
+      </div>
+    </div>
+  </section>
+}
+
 function SectionTitle({ title, subtitle, action }: { title: string; subtitle: string; action?: React.ReactNode }) {
   return <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-2xl font-semibold tracking-tight">{title}</h2><p className="mt-1.5 text-xs text-[var(--text-secondary)]">{subtitle}</p></div>{action}</div>
+}
+
+function formatDuration(seconds?: number): string {
+  if (!seconds) return '—'
+  if (seconds % 3600 === 0) return `${seconds / 3600} 小时`
+  if (seconds % 60 === 0) return `${seconds / 60} 分钟`
+  return `${seconds} 秒`
 }
 
 function CatalogGrid({ items, busyId, activeSessionId, enabledSkills, onInstall, onUninstall, onToggle }: {
@@ -451,7 +537,8 @@ function CatalogCard({ item, busy, activeSessionId, enabled, onInstall, onUninst
   onToggle: (skillId: string) => Promise<void>
 }) {
   const label = catalogCategory(item)
-  const installable = item.security_status === 'pass'
+  const platformAvailable = !item.platform_disabled && item.status !== 'disabled'
+  const installable = platformAvailable && item.security_status === 'pass'
   return <article className="group flex min-h-[170px] flex-col rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-[var(--accent-border)] hover:shadow-md">
     <div className="flex min-w-0 items-center gap-2"><h3 className="truncate text-sm font-semibold">{item.name}</h3>{item.is_verified && <BadgeCheck size={14} className="shrink-0 text-sky-500" />}<span className="ml-auto shrink-0 rounded-full border border-violet-500/20 bg-violet-500/10 px-2.5 py-0.5 text-[10px] text-violet-500">@global</span></div>
     <p className="mt-3 line-clamp-2 text-xs leading-5 text-[var(--text-secondary)]">{item.description || '该 Skill 暂无详细描述。'}</p>
@@ -464,8 +551,8 @@ function CatalogCard({ item, busy, activeSessionId, enabled, onInstall, onUninst
     <div className="mt-3 flex items-center gap-2 border-t border-[var(--border)] pt-3">
       <span className="mr-auto rounded-full bg-[var(--surface-raised)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)]">{label}</span>
       <a href={item.source_url} target="_blank" rel="noreferrer" className="grid h-7 w-7 place-items-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--accent)]" title={`${item.github_owner}/${item.github_repo}`}><ExternalLink size={12} /></a>
-      <button disabled={busy || !installable} onClick={() => void (item.installed ? onUninstall(item) : onInstall(item))} className={`rounded-full px-3 py-1.5 text-[11px] font-medium disabled:cursor-not-allowed disabled:opacity-40 ${item.installed ? 'border border-[var(--border)] text-[var(--text-secondary)]' : 'bg-[var(--accent)] text-[var(--accent-foreground)]'}`}>{busy ? '处理中…' : item.installed ? '卸载' : installable ? '安装' : '审核未通过'}</button>
-      {item.installed && item.installed_skill_id && <button disabled={!activeSessionId} onClick={() => void onToggle(item.installed_skill_id!)} className={`grid h-7 w-7 place-items-center rounded-full border disabled:opacity-40 ${enabled ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500' : 'border-[var(--border)]'}`} title={activeSessionId ? '切换当前会话权限' : '请先选择会话'}><Power size={12} /></button>}
+      <button disabled={busy || (!item.installed && !installable) || !platformAvailable} onClick={() => void (item.installed ? onUninstall(item) : onInstall(item))} className={`rounded-full px-3 py-1.5 text-[11px] font-medium disabled:cursor-not-allowed disabled:opacity-40 ${item.installed ? 'border border-[var(--border)] text-[var(--text-secondary)]' : 'bg-[var(--accent)] text-[var(--accent-foreground)]'}`}>{busy ? '处理中…' : !platformAvailable ? '平台已暂停' : item.installed ? '卸载' : installable ? '安装' : '审核未通过'}</button>
+      {item.installed && item.installed_skill_id && <button disabled={!activeSessionId || !platformAvailable} onClick={() => void onToggle(item.installed_skill_id!)} className={`grid h-7 w-7 place-items-center rounded-full border disabled:opacity-40 ${enabled ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500' : 'border-[var(--border)]'}`} title={!platformAvailable ? '平台已暂停该 Skill' : activeSessionId ? '切换当前会话权限' : '请先选择会话'}><Power size={12} /></button>}
     </div>
   </article>
 }

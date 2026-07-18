@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -12,6 +13,7 @@ from gateway.api_gateway.routers.admin import get_current_admin_user
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.resource_scope import normalized_tenant_scope
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
+from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import ChatSession, SkillCatalogEntry, User, UserSkillInstallation
@@ -59,6 +61,11 @@ class SkillCatalogInstallRequest(BaseModel):
     catalog_skill_id: str = Field(min_length=1, max_length=36)
 
 
+class SkillCatalogAvailabilityRequest(BaseModel):
+    enabled: bool
+    reason: str = Field(default="", max_length=500)
+
+
 @router.get("/skills/catalog")
 async def list_skill_catalog(
     request: Request,
@@ -85,11 +92,59 @@ async def list_skill_catalog(
     return {"items": [_catalog_item(row, by_catalog.get(row.id)) for row in rows], "sort": sort}
 
 
+@router.get("/skills/catalog/admin")
+async def list_admin_skill_catalog(
+    q: str = Query(default="", max_length=200),
+    limit: int = Query(default=100, ge=1, le=500),
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    stmt = select(SkillCatalogEntry)
+    if q.strip():
+        term = f"%{q.strip()}%"
+        stmt = stmt.where(or_(SkillCatalogEntry.name.ilike(term), SkillCatalogEntry.description.ilike(term)))
+    rows = list((await db.execute(
+        stmt.order_by(SkillCatalogEntry.status.asc(), SkillCatalogEntry.rank_popular.asc().nullslast()).limit(limit)
+    )).scalars().all())
+    return {
+        "items": [_catalog_item(row) for row in rows],
+        "policy": {
+            "sync_enabled": bool(settings.skillhub_sync_enabled),
+            "sync_interval_seconds": int(settings.skillhub_sync_interval_seconds),
+            "sync_retry_seconds": int(settings.skillhub_sync_retry_seconds),
+            "catalog_size": int(settings.skillhub_catalog_size),
+            "retention": "append_only",
+        },
+        "user_id": current_user.id,
+    }
+
+
 @router.post("/skills/catalog/sync")
 async def sync_catalog(
     current_user: User = Depends(get_current_admin_user),
 ) -> dict[str, Any]:
     return {"synced": await sync_skillhub_catalog(), "user_id": current_user.id}
+
+
+@router.patch("/skills/catalog/{catalog_id}/availability")
+async def set_catalog_availability(
+    catalog_id: str,
+    payload: SkillCatalogAvailabilityRequest,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    row = await db.get(SkillCatalogEntry, catalog_id)
+    if row is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Skill catalog entry not found")
+    row.status = "active" if payload.enabled else "disabled"
+    metadata = dict(row.source_metadata or {})
+    metadata["platform_note"] = payload.reason.strip()
+    metadata["platform_disabled_by"] = None if payload.enabled else current_user.id
+    metadata["platform_disabled_at"] = None if payload.enabled else datetime.now(UTC).isoformat()
+    row.source_metadata = metadata
+    await db.commit()
+    await db.refresh(row)
+    return {"item": _catalog_item(row), "user_id": current_user.id}
 
 
 @router.post("/skills/catalog/install")
@@ -232,13 +287,18 @@ async def bind_session_skills(
     disabled_skills = sorted(set(req.disabled_skills))
     account_ids = [item for item in enabled_skills if item.startswith("acct-")]
     if account_ids:
-        allowed = set((await db.execute(select(UserSkillInstallation.installed_skill_id).where(
-            UserSkillInstallation.user_id == current_user.id,
-            UserSkillInstallation.tenant_id == session.tenant_id,
-            UserSkillInstallation.workspace_id == session.workspace_id,
-            UserSkillInstallation.status == "installed",
-            UserSkillInstallation.installed_skill_id.in_(account_ids),
-        ))).scalars().all())
+        allowed = set((await db.execute(
+            select(UserSkillInstallation.installed_skill_id)
+            .join(SkillCatalogEntry, UserSkillInstallation.catalog_skill_id == SkillCatalogEntry.id)
+            .where(
+                UserSkillInstallation.user_id == current_user.id,
+                UserSkillInstallation.tenant_id == session.tenant_id,
+                UserSkillInstallation.workspace_id == session.workspace_id,
+                UserSkillInstallation.status == "installed",
+                SkillCatalogEntry.status == "active",
+                UserSkillInstallation.installed_skill_id.in_(account_ids),
+            )
+        )).scalars().all())
         invalid = sorted(set(account_ids) - allowed)
         if invalid:
             raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="账户无权启用该 Skill")

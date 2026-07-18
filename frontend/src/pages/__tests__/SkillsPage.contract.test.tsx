@@ -19,4 +19,13 @@ describe('SkillsPage marketplace contract', () => {
     expect(source).toContain('安全通过')
     expect(source).toContain('当前会话启用')
   })
+
+  it('exposes append-only catalog governance to administrators', async () => {
+    const page = await import('../SkillsPage')
+    const source = page.CatalogGovernancePanel.toString()
+    expect(source).toContain('平台目录治理')
+    expect(source).toContain('只增不删')
+    expect(source).toContain('暂停使用')
+    expect(source).toContain('立即同步')
+  })
 })
