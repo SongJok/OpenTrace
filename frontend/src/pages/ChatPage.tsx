@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { BarChart3, ChevronDown, Database, FileWarning, FileText, Package, User, Share2, MoreHorizontal, Sparkles, type LucideIcon } from 'lucide-react'
+import { BarChart3, ChevronDown, Database, FileWarning, FileText, Menu, Package, User, Share2, MoreHorizontal, Sparkles, type LucideIcon } from 'lucide-react'
 import Sidebar from '../components/Sidebar'
 import MessageList, { type MessageListHandle } from '../components/MessageList'
 import ChatInput from '../components/ChatInput'
@@ -62,6 +62,7 @@ export default function ChatPage() {
   const [projects, setProjects] = useState<ProjectItem[]>([])
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [showMoreMenu, setShowMoreMenu] = useState(false)
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
 
   const selectProfile = (next: 'auto' | 'fast' | 'deep') => {
     setProfile(next)
@@ -120,10 +121,18 @@ export default function ChatPage() {
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-[var(--bg)] text-[var(--text)]">
-      <Sidebar />
+      <Sidebar mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} />
       <div className="relative flex min-w-0 flex-1 flex-col bg-[var(--bg)]">
         {showWelcome ? (
           <div className="relative flex flex-1 flex-col justify-center overflow-hidden px-2 py-10 sm:px-6 animate-fade-in">
+            <button
+              type="button"
+              aria-label="打开会话侧栏"
+              onClick={() => setMobileSidebarOpen(true)}
+              className="absolute left-3 top-3 z-30 flex h-9 w-9 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] text-[var(--text-secondary)] md:hidden"
+            >
+              <Menu size={17} />
+            </button>
             <div className="pointer-events-none absolute inset-0">
               <div className="absolute left-1/2 top-[18%] h-72 w-[34rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,var(--hero-glow-secondary),transparent_72%)] blur-3xl opacity-80" />
               <div className="absolute left-1/2 top-[48%] h-96 w-[48rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.7),transparent_70%)] blur-3xl opacity-70" />
@@ -136,26 +145,36 @@ export default function ChatPage() {
           </div>
         ) : (
           <>
-            <header className="flex h-14 flex-shrink-0 items-center justify-between border-b border-[var(--border-subtle)] px-4 sm:px-6">
-              <div className="relative">
+            <header className="flex h-14 flex-shrink-0 items-center justify-between gap-2 border-b border-[var(--border-subtle)] px-2 sm:px-6">
+              <div className="flex min-w-0 items-center gap-1">
+              <button
+                type="button"
+                aria-label="打开会话侧栏"
+                onClick={() => setMobileSidebarOpen(true)}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface)] md:hidden"
+              >
+                <Menu size={17} />
+              </button>
+              <div className="relative min-w-0">
               <button type="button" onClick={() => setShowProfileMenu((v) => !v)} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--text)] hover:bg-[var(--surface)]" aria-label="选择模型">
                 <Sparkles size={16} className="text-[var(--accent)]" />
                 <span>OpenTrace</span>
-                <span className="text-[var(--text-secondary)]">· {profile === 'auto' ? '自动' : profile === 'fast' ? '快速' : '深度思考'}</span>
+                <span className="hidden text-[var(--text-secondary)] sm:inline">· {profile === 'auto' ? '自动' : profile === 'fast' ? '快速' : '深度思考'}</span>
                 <ChevronDown size={14} className="text-[var(--text-secondary)]" />
               </button>
               {showProfileMenu && <div className="absolute left-0 top-10 z-30 w-36 rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] p-1 shadow-lg">{([['auto','自动'], ['fast','快速'], ['deep','深度思考']] as const).map(([value, label]) => <button key={value} onClick={() => selectProfile(value)} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)]">{label}</button>)}</div>}
               </div>
+              </div>
               <div className="flex items-center gap-1.5">
-                <select aria-label="Project" value={projectId ?? ''} onChange={(event) => setProjectId(event.target.value || null)} className="max-w-36 rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text-secondary)]"><option value="">无 Project</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-                <select aria-label="助手角色" value={assistantProfileId ?? ''} onChange={(event) => setAssistantProfileId(event.target.value || null)} className="rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text-secondary)]">
+                <select aria-label="Project" value={projectId ?? ''} onChange={(event) => setProjectId(event.target.value || null)} className="hidden max-w-36 rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text-secondary)] sm:block"><option value="">无 Project</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+                <select aria-label="助手角色" value={assistantProfileId ?? ''} onChange={(event) => setAssistantProfileId(event.target.value || null)} className="hidden rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text-secondary)] sm:block">
                   {assistantProfiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select>
                 <button type="button" onClick={() => void shareConversation()} aria-label="分享对话" title="分享对话" className="rounded-lg p-2 text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Share2 size={16} /></button>
                 <div className="relative"><button type="button" onClick={() => setShowMoreMenu((v) => !v)} aria-label="更多操作" title="更多操作" className="rounded-lg p-2 text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><MoreHorizontal size={18} /></button>{showMoreMenu && <div className="absolute right-0 top-10 z-30 w-32 rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] p-1 shadow-lg"><button onClick={() => void moreAction('rename')} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)]">重命名</button><button onClick={() => void moreAction('pin')} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)]">置顶/取消置顶</button><button onClick={() => void moreAction('delete')} className="w-full rounded-lg px-3 py-2 text-left text-sm text-red-500 hover:bg-[var(--surface)]">删除</button></div>}</div>
                 <button
                   onClick={toggleAvatars}
-                  className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] transition-colors ${
+                  className={`hidden items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] transition-colors sm:inline-flex ${
                     showAvatars
                       ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
                       : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]'

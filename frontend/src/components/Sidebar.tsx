@@ -24,6 +24,7 @@ import {
   Network,
   FolderKanban,
   Activity,
+  X,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
@@ -39,7 +40,12 @@ import {
   apiArchiveConversation,
 } from '../api/client'
 
-export default function Sidebar() {
+interface SidebarProps {
+  mobileOpen?: boolean
+  onMobileClose?: () => void
+}
+
+export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false)
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
@@ -111,6 +117,7 @@ export default function Sidebar() {
         }
       }
       navigate('/chat')
+      onMobileClose?.()
     } catch (e: any) {
       alert(e?.message || '加载会话失败')
     }
@@ -123,6 +130,7 @@ export default function Sidebar() {
       store.setActiveId(conv.id)
       store.setMessages(conv.id, [])
       navigate('/chat')
+      onMobileClose?.()
     } catch (e: any) {
       alert(e?.message || '创建会话失败')
     }
@@ -134,6 +142,7 @@ export default function Sidebar() {
       store.setActiveId(conv.id)
       store.setMessages(conv.id, [])
       navigate('/chat')
+      onMobileClose?.()
     } catch (e: any) {
       alert(e?.message || '创建临时聊天失败')
     }
@@ -177,7 +186,7 @@ export default function Sidebar() {
 
   if (collapsed) {
     return (
-      <div className="flex h-full w-14 flex-col items-center gap-2 border-r border-[var(--border)] bg-[var(--bg-secondary)] py-3 text-[var(--text-secondary)] shadow-[0_20px_50px_rgba(0,0,0,0.18)]">
+      <div className="hidden h-full w-14 flex-col items-center gap-2 border-r border-[var(--border)] bg-[var(--bg-secondary)] py-3 text-[var(--text-secondary)] shadow-[0_20px_50px_rgba(0,0,0,0.18)] md:flex">
         <button
           onClick={() => setCollapsed(false)}
           className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
@@ -272,15 +281,40 @@ export default function Sidebar() {
   }
 
   return (
-    <aside aria-label="会话侧栏" className="flex h-full w-[260px] max-md:w-[220px] flex-col border-r border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text)] animate-slide-in">
+    <>
+      {mobileOpen && (
+        <button
+          type="button"
+          aria-label="关闭会话侧栏"
+          className="fixed inset-0 z-40 bg-black/35 backdrop-blur-[1px] md:hidden"
+          onClick={onMobileClose}
+        />
+      )}
+      <aside
+        aria-label="会话侧栏"
+        className={clsx(
+          'h-full w-[260px] flex-col border-r border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text)] animate-slide-in md:flex',
+          'max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50 max-md:w-[min(86vw,320px)] max-md:shadow-2xl',
+          mobileOpen ? 'max-md:flex' : 'max-md:hidden',
+        )}
+      >
       <div className="px-3 pb-3 pt-3">
         <div className="px-2 py-1">
           <div className="flex items-center justify-between">
             <button
               onClick={() => setCollapsed(true)}
-              className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+              aria-label="收起会话侧栏"
+              className="hidden h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)] md:flex"
             >
               <ChevronLeft size={16} />
+            </button>
+            <button
+              type="button"
+              onClick={onMobileClose}
+              aria-label="关闭会话侧栏"
+              className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)] md:hidden"
+            >
+              <X size={16} />
             </button>
             <button
               onClick={newChat}
@@ -430,7 +464,8 @@ export default function Sidebar() {
           <LogOut size={14} />
         </button>
       </div>
-    </aside>
+      </aside>
+    </>
   )
 }
 

@@ -13,6 +13,7 @@
     "@tanstack/react-virtual": "^3.10.8",
     "@types/react-syntax-highlighter": "^15.5.13",
     "clsx": "^2.1.1",
+    "katex": "^0.16.47",
     "lucide-react": "^0.395.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -20,8 +21,9 @@
     "react-router-dom": "^6.23.1",
     "react-syntax-highlighter": "^15.5.0",
     "recharts": "^3.8.1",
-    "rehype-raw": "^7.0.0",
+    "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.0",
+    "remark-math": "^6.0.0",
     "run": "^1.5.0",
     "shiki": "^1.12.1",
     "zustand": "^4.5.2"
