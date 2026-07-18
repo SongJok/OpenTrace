@@ -68,3 +68,30 @@ def test_memory_e2e_covers_cross_conversation_and_isolation() -> None:
     assert "Project 记忆隔离" in source
     assert "对话自动学习与新会话召回" in source
     assert "冲突记忆替代与旧值失效" in source
+
+
+def test_rag_memory_retrieval_keeps_runtime_scope_and_lifecycle_filters() -> None:
+    root = Path(__file__).resolve().parents[1]
+    rag = (root / "agents/rag_agent.py").read_text(encoding="utf-8")
+    runner = (root / "kernel/agent_loop/runner.py").read_text(encoding="utf-8")
+
+    for clause in (
+        "UserMemory.tenant_id == tenant_id",
+        "UserMemory.workspace_id == workspace_id",
+        'UserMemory.status == "active"',
+        "UserMemory.expires_at > now",
+        'UserMemory.scope_type == "conversation"',
+        'UserMemory.scope_type == "project"',
+    ):
+        assert clause in rag
+    assert 'hydrated["memory_enabled"]' in runner
+    assert 'hydrated["memory_project_only"]' in runner
+
+
+def test_confirmed_memory_prompt_requires_direct_answers() -> None:
+    root = Path(__file__).resolve().parents[1]
+    platform_prompt = (root / "kernel/agent_loop/prompt.py").read_text(encoding="utf-8")
+    context = (root / "kernel/agent_loop/context.py").read_text(encoding="utf-8")
+
+    assert "应依据记忆直接回答" in platform_prompt
+    assert "不要声称未找到" in context

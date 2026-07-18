@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gateway.api_gateway.resource_scope import get_accessible_data_source
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.errors import AppException, ErrorCodes
@@ -111,6 +112,7 @@ async def _seed_profiles(db: AsyncSession, user: User, tenant_id: str, workspace
         select(AssistantProfile.id).where(
             AssistantProfile.user_id == user.id,
             AssistantProfile.tenant_id == tenant_id,
+            AssistantProfile.workspace_id == workspace_id,
             AssistantProfile.built_in.is_(True),
         ).limit(1)
     )
@@ -126,6 +128,45 @@ async def _seed_profiles(db: AsyncSession, user: User, tenant_id: str, workspace
     await db.commit()
 
 
+async def _validate_project_bindings(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    tenant_id: str,
+    workspace_id: str,
+    assistant_profile_id: str | None,
+    data_source_ids: list[str],
+) -> None:
+    if assistant_profile_id:
+        profile = await db.scalar(
+            select(AssistantProfile.id).where(
+                AssistantProfile.id == assistant_profile_id,
+                AssistantProfile.user_id == user_id,
+                AssistantProfile.tenant_id == tenant_id,
+                AssistantProfile.workspace_id == workspace_id,
+            )
+        )
+        if profile is None:
+            raise AppException(
+                ErrorCodes.RESOURCE_NOT_FOUND.code,
+                message="助手角色不存在或无权限",
+            )
+    tenant_metadata = {"tenant_id": tenant_id, "workspace_id": workspace_id}
+    for source_id in dict.fromkeys(data_source_ids):
+        source = await get_accessible_data_source(
+            db,
+            user_id=user_id,
+            tenant_metadata=tenant_metadata,
+            data_source_id=source_id,
+            required_permission="view",
+        )
+        if source is None:
+            raise AppException(
+                ErrorCodes.RESOURCE_NOT_FOUND.code,
+                message="数据源不存在或无权限",
+            )
+
+
 @router.get("/projects")
 async def list_projects(request: Request, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     tenant_id, workspace_id = _scope(request, current_user)
@@ -136,10 +177,14 @@ async def list_projects(request: Request, current_user: User = Depends(get_curre
 @router.post("/projects")
 async def create_project(request: Request, payload: ProjectPayload, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     tenant_id, workspace_id = _scope(request, current_user)
-    if payload.assistant_profile_id:
-        profile = await db.scalar(select(AssistantProfile.id).where(AssistantProfile.id == payload.assistant_profile_id, AssistantProfile.user_id == current_user.id, AssistantProfile.tenant_id == tenant_id, AssistantProfile.workspace_id == workspace_id))
-        if profile is None:
-            raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="助手角色不存在或无权限")
+    await _validate_project_bindings(
+        db,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        assistant_profile_id=payload.assistant_profile_id,
+        data_source_ids=payload.data_source_ids,
+    )
     row = Project(id=str(uuid.uuid4()), user_id=current_user.id, tenant_id=tenant_id, workspace_id=workspace_id, **payload.model_dump())
     db.add(row)
     await db.commit()
@@ -153,10 +198,14 @@ async def update_project(project_id: str, request: Request, payload: ProjectPayl
     row = await db.scalar(select(Project).where(Project.id == project_id, Project.user_id == current_user.id, Project.tenant_id == tenant_id, Project.workspace_id == workspace_id))
     if row is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project 不存在")
-    if payload.assistant_profile_id:
-        profile = await db.scalar(select(AssistantProfile.id).where(AssistantProfile.id == payload.assistant_profile_id, AssistantProfile.user_id == current_user.id, AssistantProfile.tenant_id == tenant_id, AssistantProfile.workspace_id == workspace_id))
-        if profile is None:
-            raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="助手角色不存在或无权限")
+    await _validate_project_bindings(
+        db,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        assistant_profile_id=payload.assistant_profile_id,
+        data_source_ids=payload.data_source_ids,
+    )
     for key, value in payload.model_dump().items():
         setattr(row, key, value)
     await db.commit()
@@ -186,7 +235,7 @@ async def list_assistant_profiles(request: Request, current_user: User = Depends
 async def create_assistant_profile(request: Request, payload: AssistantProfilePayload, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     tenant_id, workspace_id = _scope(request, current_user)
     if payload.is_default:
-        rows = (await db.execute(select(AssistantProfile).where(AssistantProfile.user_id == current_user.id, AssistantProfile.tenant_id == tenant_id))).scalars().all()
+        rows = (await db.execute(select(AssistantProfile).where(AssistantProfile.user_id == current_user.id, AssistantProfile.tenant_id == tenant_id, AssistantProfile.workspace_id == workspace_id))).scalars().all()
         for item in rows:
             item.is_default = False
     row = AssistantProfile(id=str(uuid.uuid4()), user_id=current_user.id, tenant_id=tenant_id, workspace_id=workspace_id, **payload.model_dump())
@@ -204,7 +253,7 @@ async def update_assistant_profile(profile_id: str, request: Request, payload: A
     if row.built_in and payload.name != row.name:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="内置角色不能重命名")
     if payload.is_default:
-        others = (await db.execute(select(AssistantProfile).where(AssistantProfile.user_id == current_user.id))).scalars().all()
+        others = (await db.execute(select(AssistantProfile).where(AssistantProfile.user_id == current_user.id, AssistantProfile.tenant_id == tenant_id, AssistantProfile.workspace_id == workspace_id))).scalars().all()
         for item in others:
             item.is_default = item.id == row.id
     for key, value in payload.model_dump().items():
@@ -243,9 +292,13 @@ async def create_goal(request: Request, payload: GoalPayload, current_user: User
 
     tenant_id, workspace_id = _scope(request, current_user)
     if payload.project_id:
-        project = await db.scalar(select(Project.id).where(Project.id == payload.project_id, Project.user_id == current_user.id, Project.tenant_id == tenant_id, Project.workspace_id == workspace_id))
+        project = await db.scalar(select(Project.id).where(Project.id == payload.project_id, Project.user_id == current_user.id, Project.tenant_id == tenant_id, Project.workspace_id == workspace_id, Project.archived_at.is_(None)))
         if project is None:
             raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project 不存在或无权限")
+    if payload.conversation_id:
+        conversation = await db.scalar(select(ChatSession.id).where(ChatSession.id == payload.conversation_id, ChatSession.user_id == current_user.id, ChatSession.tenant_id == tenant_id, ChatSession.workspace_id == workspace_id, ChatSession.is_temporary.is_(False)))
+        if conversation is None:
+            raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation 不存在、无权限或为临时对话")
     row = GoalRun(
         id=str(uuid.uuid4()), user_id=current_user.id, tenant_id=tenant_id, workspace_id=workspace_id,
         project_id=payload.project_id, conversation_id=payload.conversation_id,
@@ -265,6 +318,7 @@ async def create_goal(request: Request, payload: GoalPayload, current_user: User
     row.response_id = str(result.get("id") or "")
     row.conversation_id = str(result.get("conversation_id") or row.conversation_id or "") or None
     await db.commit()
+    await db.refresh(row)
     return _goal(row)
 
 
@@ -289,6 +343,7 @@ async def update_goal(goal_id: str, request: Request, payload: GoalUpdatePayload
     if payload.success_criteria is not None:
         row.success_criteria = payload.success_criteria
     await db.commit()
+    await db.refresh(row)
     return _goal(row)
 
 
@@ -320,6 +375,7 @@ async def goal_action(goal_id: str, action: str, request: Request, current_user:
         row.response_id = str(result.get("id") or "")
         row.status = "queued"
     await db.commit()
+    await db.refresh(row)
     return _goal(row)
 
 
@@ -383,7 +439,7 @@ async def create_scheduled_task(request: Request, payload: ScheduledTaskPayload,
     _validate_schedule(payload.rrule, payload.timezone)
     tenant_id, workspace_id = _scope(request, current_user)
     if payload.project_id:
-        project = await db.scalar(select(Project.id).where(Project.id == payload.project_id, Project.user_id == current_user.id, Project.tenant_id == tenant_id, Project.workspace_id == workspace_id))
+        project = await db.scalar(select(Project.id).where(Project.id == payload.project_id, Project.user_id == current_user.id, Project.tenant_id == tenant_id, Project.workspace_id == workspace_id, Project.archived_at.is_(None)))
         if project is None:
             raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project 不存在或无权限")
     if payload.conversation_id:
@@ -417,6 +473,8 @@ async def get_scheduled_task(task_id: str, request: Request, current_user: User 
 
 @router.post("/scheduled-tasks/{task_id}/actions/{action}")
 async def scheduled_task_action(task_id: str, action: str, request: Request, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    from infra.responses.scheduler import next_occurrence
+
     if action not in {"enable", "pause", "cancel"}:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="定时任务操作不受支持")
     tenant_id, workspace_id = _scope(request, current_user)

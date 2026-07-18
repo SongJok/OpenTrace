@@ -356,7 +356,7 @@ async def _validate_opentrace_scope(
     if extension.memory_mode == "temporary" and (extension.project_id or extension.goal_id):
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="临时对话不能加入 Project 或 Goal")
     if extension.project_id:
-        owned = await db.scalar(select(Project.id).where(Project.id == extension.project_id, Project.user_id == user.id, Project.tenant_id == tenant_id, Project.workspace_id == workspace_id))
+        owned = await db.scalar(select(Project.id).where(Project.id == extension.project_id, Project.user_id == user.id, Project.tenant_id == tenant_id, Project.workspace_id == workspace_id, Project.archived_at.is_(None)))
         if owned is None:
             raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project 不存在或无权限")
     if extension.assistant_profile_id:
@@ -491,6 +491,13 @@ async def create_response(
         request.opentrace.project_id = session.project_id
     if not request.opentrace.assistant_profile_id and session.assistant_profile_id:
         request.opentrace.assistant_profile_id = session.assistant_profile_id
+    await _validate_opentrace_scope(
+        db,
+        request=request,
+        user=current_user,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
     parent_id = await _resolve_parent(
         db, request=request, session=session, user=current_user, tenant_id=tenant_id
     )
@@ -623,10 +630,14 @@ async def cancel_response(
     workspace_id = str(scope.get("workspace_id") or "default")
     record = await _load_response(db, response_id, current_user, tenant_id, workspace_id)
     if record.status not in TERMINAL_STATUSES:
+        claimed_by_worker = bool(record.lease_owner)
         record.status = "cancelled"
         record.completed_at = datetime.now(UTC)
-        record.lease_owner = None
-        record.lease_expires_at = None
+        # 运行中的模型调用无法被数据库状态立即中断。保留租约，直到 Worker
+        # 观察到取消并退出，避免会话删除后 Worker 继续写入已级联删除的 Response。
+        if not claimed_by_worker:
+            record.lease_owner = None
+            record.lease_expires_at = None
         await append_event(db, response_id=response_id, event_type="response.cancelled", payload={"status": "cancelled"})
         await db.commit()
     return _record_to_dict(record)

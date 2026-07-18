@@ -18,10 +18,12 @@ from infra.errors import AppException, ErrorCodes
 from infra.responses.repository import add_outbox, append_event
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
+    AssistantProfile,
     Attachment,
     ChatSession,
     ConversationShare,
     MemoryEvidence,
+    Project,
     ResponseApproval,
     ResponseItem,
     ResponseRecord,
@@ -141,8 +143,54 @@ async def _owned_session(
     return session
 
 
-async def _active_chain(db: AsyncSession, session: ChatSession, user_id: str) -> list[ResponseRecord]:
-    current_id = session.active_response_id
+async def _validate_conversation_bindings(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    tenant_id: str,
+    workspace_id: str,
+    project_id: str | None,
+    assistant_profile_id: str | None,
+) -> None:
+    if project_id:
+        project = await db.scalar(
+            select(Project.id).where(
+                Project.id == project_id,
+                Project.user_id == user_id,
+                Project.tenant_id == tenant_id,
+                Project.workspace_id == workspace_id,
+                Project.archived_at.is_(None),
+            )
+        )
+        if project is None:
+            raise AppException(
+                ErrorCodes.RESOURCE_NOT_FOUND.code,
+                message="Project 不存在或无权限",
+            )
+    if assistant_profile_id:
+        profile = await db.scalar(
+            select(AssistantProfile.id).where(
+                AssistantProfile.id == assistant_profile_id,
+                AssistantProfile.user_id == user_id,
+                AssistantProfile.tenant_id == tenant_id,
+                AssistantProfile.workspace_id == workspace_id,
+            )
+        )
+        if profile is None:
+            raise AppException(
+                ErrorCodes.RESOURCE_NOT_FOUND.code,
+                message="助手角色不存在或无权限",
+            )
+
+
+async def _active_chain(
+    db: AsyncSession,
+    session: ChatSession,
+    user_id: str,
+    *,
+    starting_response_id: str | None = None,
+) -> list[ResponseRecord]:
+    current_id = starting_response_id or session.active_response_id
     if not current_id:
         latest = await db.scalar(
             select(ResponseRecord)
@@ -238,6 +286,16 @@ async def create_conversation(
 ) -> ConversationOut:
     payload = req or CreateConversationRequest()
     tenant_id, org_id, workspace_id = _scope(request, current_user.id)
+    if payload.temporary and payload.project_id:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="临时对话不能加入 Project")
+    await _validate_conversation_bindings(
+        db,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        project_id=payload.project_id,
+        assistant_profile_id=payload.assistant_profile_id,
+    )
     session = ChatSession(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
@@ -268,15 +326,33 @@ async def update_conversation(
 ) -> ConversationOut:
     tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
     session = await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
+    requested_project_id = (
+        req.project_id if "project_id" in req.model_fields_set else session.project_id
+    )
+    requested_profile_id = (
+        req.assistant_profile_id
+        if "assistant_profile_id" in req.model_fields_set
+        else session.assistant_profile_id
+    )
+    if session.is_temporary and requested_project_id:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="临时对话不能加入 Project")
+    await _validate_conversation_bindings(
+        db,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        project_id=requested_project_id,
+        assistant_profile_id=requested_profile_id,
+    )
     if req.title is not None:
         session.title = session.display_title = req.title.strip()
     if req.tags is not None:
         session.tags = req.tags
     if req.pinned is not None:
         session.pinned = req.pinned
-    if req.project_id is not None and not session.is_temporary:
+    if "project_id" in req.model_fields_set:
         session.project_id = req.project_id or None
-    if req.assistant_profile_id is not None:
+    if "assistant_profile_id" in req.model_fields_set:
         session.assistant_profile_id = req.assistant_profile_id or None
     if req.instructions is not None:
         session.conversation_instructions = req.instructions.strip() or None
@@ -309,6 +385,29 @@ async def delete_conversation(
 ) -> dict:
     tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
     session = await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
+    active_response = await db.scalar(
+        select(ResponseRecord.id)
+        .where(
+            ResponseRecord.conversation_id == session.id,
+            ResponseRecord.user_id == current_user.id,
+            or_(
+                ResponseRecord.status.in_(("queued", "in_progress")),
+                and_(
+                    ResponseRecord.lease_owner.isnot(None),
+                    or_(
+                        ResponseRecord.lease_expires_at.is_(None),
+                        ResponseRecord.lease_expires_at > datetime.now(UTC),
+                    ),
+                ),
+            ),
+        )
+        .limit(1)
+    )
+    if active_response:
+        raise AppException(
+            ErrorCodes.RESOURCE_EXISTS.code,
+            message="Conversation 仍有运行中的 Response，请先取消并等待执行结束",
+        )
     scoped_memories = select(UserMemory.id).where(
         UserMemory.user_id == current_user.id,
         UserMemory.tenant_id == tenant_id,
@@ -421,8 +520,12 @@ async def branch_conversation(
     )
     if item is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Message not found")
-    source_session.active_response_id = item.response_id
-    chain = await _active_chain(db, source_session, current_user.id)
+    chain = await _active_chain(
+        db,
+        source_session,
+        current_user.id,
+        starting_response_id=item.response_id,
+    )
     by_response = await _items_for(db, [row.id for row in chain])
     new_session = ChatSession(
         id=str(uuid.uuid4()),
@@ -442,8 +545,7 @@ async def branch_conversation(
     for source in chain:
         copied_id = f"resp_{uuid.uuid4().hex}"
         id_map[source.id] = copied_id
-        db.add(
-            ResponseRecord(
+        copied_response = ResponseRecord(
                 id=copied_id,
                 conversation_id=new_session.id,
                 user_id=source.user_id,
@@ -460,8 +562,10 @@ async def branch_conversation(
                 response_metadata={**dict(source.response_metadata or {}), "branched_from": source.id},
                 version=source.version,
                 completed_at=source.completed_at,
-            )
         )
+        db.add(copied_response)
+        # ResponseItem 只持有纯外键，没有 ORM relationship 可推断插入顺序。
+        await db.flush()
         for copied_sequence, source_item in enumerate(by_response.get(source.id, [])):
             db.add(
                 ResponseItem(

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import false, or_, select
 
 from agents.base import AgentResult, BaseAgent, TaskMessage
 from infra.config.settings import settings
@@ -574,12 +575,44 @@ class RagAgent(BaseAgent):
             is_memory_intent = query_type == "memory" or any(
                 k in rewritten_query.lower() for k in ["记忆", "偏好", "之前", "上次", "历史", "用户设置", "profile", "preference"]
             )
-            if (doc_evidence_count == 0 and not llmwiki_entries or is_memory_intent) and ("semantic_memory" in sources or "episodic_memory" in sources):
+            memory_enabled = bool(task.params.get("memory_enabled", True))
+            if not tenant_id or not workspace_id:
+                memory_enabled = False
+            if (
+                memory_enabled
+                and (doc_evidence_count == 0 and not llmwiki_entries or is_memory_intent)
+                and ("semantic_memory" in sources or "episodic_memory" in sources)
+            ):
+                conversation_id = str(
+                    task.params.get("conversation_id") or task.session_id or ""
+                ).strip()
+                scope_clauses = []
+                if not bool(task.params.get("memory_project_only", False)):
+                    scope_clauses.append(UserMemory.scope_type == "user")
+                if project_id:
+                    scope_clauses.append(
+                        (UserMemory.scope_type == "project")
+                        & (UserMemory.scope_id == project_id)
+                    )
+                if conversation_id:
+                    scope_clauses.append(
+                        (UserMemory.scope_type == "conversation")
+                        & (UserMemory.scope_id == conversation_id)
+                    )
+                now = datetime.now(UTC)
                 async with AsyncSessionLocal() as db:
                     q = (
                         select(UserMemory)
                         .where(UserMemory.enabled == True)  # noqa: E712
                         .where(UserMemory.user_id == user_id)
+                        .where(UserMemory.tenant_id == tenant_id)
+                        .where(UserMemory.workspace_id == workspace_id)
+                        .where(UserMemory.status == "active")
+                        .where(
+                            UserMemory.expires_at.is_(None)
+                            | (UserMemory.expires_at > now)
+                        )
+                        .where(or_(*(scope_clauses or [false()])))
                         .order_by(UserMemory.updated_at.desc())
                         .limit(300)
                     )

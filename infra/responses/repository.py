@@ -94,7 +94,7 @@ async def renew_lease(db: AsyncSession, response_id: str, owner: str, lease_seco
         select(ResponseRecord).where(
             ResponseRecord.id == response_id,
             ResponseRecord.lease_owner == owner,
-            ResponseRecord.status == "in_progress",
+            ResponseRecord.status.in_(("in_progress", "cancelled")),
         )
     )
     if row is None:
