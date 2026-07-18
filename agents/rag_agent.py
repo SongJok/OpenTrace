@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from datetime import UTC, datetime
 from typing import Any
@@ -17,6 +18,12 @@ from kernel.cognitive_controls import (
     relevance_score,
 )
 from knowledge.query import search_knowledge
+from memory.constitution import (
+    add_memory_constitution_audit,
+    evaluate_memory_constitution,
+    load_effective_memory_constitution,
+    parse_memory_metadata,
+)
 from model.reranker.base import get_reranker
 from plugins.document_plugin import DocumentPlugin
 from plugins.document_retrieval import DocumentEvidenceGate, ScoredDocumentChunk
@@ -75,7 +82,9 @@ class RagAgent(BaseAgent):
         # Remove trailing question/filler particles (strip ? first to catch 吗/呢 before ？)
         q = re.sub(r"[？?！!]+$", "", q)
         q = re.sub(r"[吗呢啊吧呀嘛哈哦喔]{1,2}$", "", q)
-        q = re.sub(r"^(请问|我想问一下|我想知道|告诉我|请告诉我|帮我查一下|帮我查查|帮我看看)", "", q)
+        q = re.sub(
+            r"^(请问|我想问一下|我想知道|告诉我|请告诉我|帮我查一下|帮我查查|帮我看看)", "", q
+        )
 
         # Normalize common patterns
         replacements = [
@@ -134,9 +143,18 @@ class RagAgent(BaseAgent):
             "公司信息": ["企业信息", "公司简介", "组织信息", "单位概况"],
             # 角色/权限
             "队长": [
-                "负责人", "组长", "管理员", "leader", "captain",
-                "录入大厅账号", "大厅账号", "有资质账号", "准入账号",
-                "大厅操作员", "准入操作员", "资质账号"
+                "负责人",
+                "组长",
+                "管理员",
+                "leader",
+                "captain",
+                "录入大厅账号",
+                "大厅账号",
+                "有资质账号",
+                "准入账号",
+                "大厅操作员",
+                "准入操作员",
+                "资质账号",
             ],
             "管理员": ["admin", "administrator", "负责人", "主管", "组长"],
             "操作员": ["operator", "执行人", "工作人员", "经办人"],
@@ -186,9 +204,13 @@ class RagAgent(BaseAgent):
             meta = c.metadata if isinstance(c.metadata, dict) else {}
             title = str(meta.get("title") or "Document")
             question = str(meta.get("question") or "文档摘要").strip()
-            answer = "".join(ch for ch in (c.content or "") if ch.isprintable() or ch in "\n\t").strip()[:500]
+            answer = "".join(
+                ch for ch in (c.content or "") if ch.isprintable() or ch in "\n\t"
+            ).strip()[:500]
             score = float(getattr(c, "score", 0.0) or 0.0)
-            entry_id = str(meta.get("chunk_id") or f"{meta.get('document_id')}::wiki::{question[:60]}")
+            entry_id = str(
+                meta.get("chunk_id") or f"{meta.get('document_id')}::wiki::{question[:60]}"
+            )
             if entry_id in existing_ids:
                 continue
             existing_ids.add(entry_id)
@@ -226,10 +248,20 @@ class RagAgent(BaseAgent):
     def _is_definition_query(query: str) -> bool:
         """判断是否为定义类查询（如"什么是X？"、"X的定义"）"""
         q = (query or "").lower()
-        return any(k in q for k in [
-            "什么是", "定义", "含义", "是指", "什么意思",
-            "啥是", "什么叫", "指什么", "解释一下"
-        ])
+        return any(
+            k in q
+            for k in [
+                "什么是",
+                "定义",
+                "含义",
+                "是指",
+                "什么意思",
+                "啥是",
+                "什么叫",
+                "指什么",
+                "解释一下",
+            ]
+        )
 
     @staticmethod
     def _classify_query_type(query: str) -> dict[str, Any]:
@@ -241,9 +273,42 @@ class RagAgent(BaseAgent):
         """
         q = (query or "").lower()
 
-        definition_kw = ["什么是", "定义", "含义", "是指", "什么意思", "啥是", "什么叫", "指什么", "解释一下", "概念"]
-        fact_kw = ["是谁", "多少", "什么时候", "在哪里", "哪个", "有没有", "是否", "联系方式", "地址", "电话", "邮箱"]
-        procedure_kw = ["怎么做", "如何", "步骤", "流程", "怎样", "方法", "怎么申请", "如何成为", "怎么操作"]
+        definition_kw = [
+            "什么是",
+            "定义",
+            "含义",
+            "是指",
+            "什么意思",
+            "啥是",
+            "什么叫",
+            "指什么",
+            "解释一下",
+            "概念",
+        ]
+        fact_kw = [
+            "是谁",
+            "多少",
+            "什么时候",
+            "在哪里",
+            "哪个",
+            "有没有",
+            "是否",
+            "联系方式",
+            "地址",
+            "电话",
+            "邮箱",
+        ]
+        procedure_kw = [
+            "怎么做",
+            "如何",
+            "步骤",
+            "流程",
+            "怎样",
+            "方法",
+            "怎么申请",
+            "如何成为",
+            "怎么操作",
+        ]
         comparison_kw = ["区别", "对比", "不同", "一样吗", "哪个更好", "比较", "vs"]
         memory_kw = ["偏好", "之前", "上次", "历史", "我记得", "我的设置", "我设置", "记忆"]
 
@@ -290,7 +355,9 @@ class RagAgent(BaseAgent):
         for idx, c in enumerate(doc_chunks, start=1):
             meta = c.metadata if isinstance(c.metadata, dict) else {}
             title = str(meta.get("title") or meta.get("document_title") or "Document")
-            txt = "".join(ch for ch in (c.content or "") if ch.isprintable() or ch in "\n\t").strip()[:500]
+            txt = "".join(
+                ch for ch in (c.content or "") if ch.isprintable() or ch in "\n\t"
+            ).strip()[:500]
             score = float(getattr(c, "score", 0.0) or 0.0)
             chunk_id = f"{meta.get('document_id')}::{meta.get('chunk_index')}::{txt[:80]}"
             if chunk_id in seen_chunks:
@@ -556,15 +623,21 @@ class RagAgent(BaseAgent):
                     sq, doc_chunks, wiki_chunks = result
                     llmwiki_entries.extend(
                         self._build_llmwiki_evidence(
-                            query=query, search_query=sq,
-                            llmwiki_chunks=wiki_chunks, citations=citations,
+                            query=query,
+                            search_query=sq,
+                            llmwiki_chunks=wiki_chunks,
+                            citations=citations,
                             existing_ids=seen_llmwiki_ids,
                         )
                     )
                     new_vector_chunks = self._build_vector_evidence(
-                        query=query, query_terms=query_terms, search_query=sq,
-                        doc_chunks=doc_chunks, min_score=min_score,
-                        citations=citations, seen_chunks=seen_chunks,
+                        query=query,
+                        query_terms=query_terms,
+                        search_query=sq,
+                        doc_chunks=doc_chunks,
+                        min_score=min_score,
+                        citations=citations,
+                        seen_chunks=seen_chunks,
                     )
                     vector_chunks.extend(new_vector_chunks)
                     doc_evidence_count += len(new_vector_chunks)
@@ -573,7 +646,17 @@ class RagAgent(BaseAgent):
                 evidence.extend(vector_chunks)
 
             is_memory_intent = query_type == "memory" or any(
-                k in rewritten_query.lower() for k in ["记忆", "偏好", "之前", "上次", "历史", "用户设置", "profile", "preference"]
+                k in rewritten_query.lower()
+                for k in [
+                    "记忆",
+                    "偏好",
+                    "之前",
+                    "上次",
+                    "历史",
+                    "用户设置",
+                    "profile",
+                    "preference",
+                ]
             )
             memory_enabled = bool(task.params.get("memory_enabled", True))
             if not tenant_id or not workspace_id:
@@ -591,8 +674,7 @@ class RagAgent(BaseAgent):
                     scope_clauses.append(UserMemory.scope_type == "user")
                 if project_id:
                     scope_clauses.append(
-                        (UserMemory.scope_type == "project")
-                        & (UserMemory.scope_id == project_id)
+                        (UserMemory.scope_type == "project") & (UserMemory.scope_id == project_id)
                     )
                 if conversation_id:
                     scope_clauses.append(
@@ -608,18 +690,57 @@ class RagAgent(BaseAgent):
                         .where(UserMemory.tenant_id == tenant_id)
                         .where(UserMemory.workspace_id == workspace_id)
                         .where(UserMemory.status == "active")
-                        .where(
-                            UserMemory.expires_at.is_(None)
-                            | (UserMemory.expires_at > now)
-                        )
+                        .where(UserMemory.expires_at.is_(None) | (UserMemory.expires_at > now))
                         .where(or_(*(scope_clauses or [false()])))
                         .order_by(UserMemory.updated_at.desc())
                         .limit(300)
                     )
                     r = await db.execute(q)
-                    rows = r.scalars().all()
+                    constitution = await load_effective_memory_constitution(
+                        db,
+                        tenant_id=tenant_id,
+                        workspace_id=workspace_id,
+                    )
+                    rows = []
+                    quarantined = False
+                    for memory in r.scalars().all():
+                        metadata = parse_memory_metadata(memory.metadata_json)
+                        decision = evaluate_memory_constitution(
+                            memory.content,
+                            constitution=constitution,
+                            kind=memory.kind,
+                            learning_mode=str(metadata.get("learning_mode") or "manual"),
+                            confidence=float(memory.confidence or 0.0),
+                        )
+                        if decision.decision != "block":
+                            rows.append(memory)
+                            continue
+                        memory.enabled = False
+                        memory.status = "rejected"
+                        metadata["constitution_quarantined"] = {
+                            "version": constitution.version,
+                            "reason": decision.reason_code,
+                            "at": now.isoformat(),
+                        }
+                        memory.metadata_json = json.dumps(metadata, ensure_ascii=False)
+                        add_memory_constitution_audit(
+                            db,
+                            tenant_id=tenant_id,
+                            workspace_id=workspace_id,
+                            constitution_version=constitution.version,
+                            decision=decision,
+                            content=memory.content,
+                            source="rag_retrieval",
+                            subject_user_id=user_id,
+                            response_id=str(task.params.get("response_id") or "") or None,
+                            memory_id=memory.id,
+                        )
+                        quarantined = True
+                    if quarantined:
+                        await db.commit()
 
                 import re
+
                 q_tokens = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{1,}", rewritten_query.lower())
                 for m in rows:
                     mt = str(m.memory_type or "")
@@ -631,7 +752,9 @@ class RagAgent(BaseAgent):
                     hay = f"{m.title or ''} {m.content or ''}".lower()
                     hit = any(tok in hay for tok in q_tokens) if q_tokens else False
                     if not hit:
-                        if not (mt == "semantic" and getattr(m, "pinned", False) and is_memory_intent):
+                        if not (
+                            mt == "semantic" and getattr(m, "pinned", False) and is_memory_intent
+                        ):
                             continue
 
                     txt = (m.content or "")[:500]
@@ -678,19 +801,27 @@ class RagAgent(BaseAgent):
                     lane_weights={lane.name: lane.weight for lane in rag_plan.lanes},
                 )
 
-            sorted_chunks = sorted(deduped, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:top_k]
+            sorted_chunks = sorted(
+                deduped, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True
+            )[:top_k]
             sorted_knowledge_chunks = sorted(
                 [e for e in deduped if str(e.get("source_type", "")).startswith("knowledge")],
                 key=lambda x: float(x.get("score", 0.0) or 0.0),
                 reverse=True,
             )[:top_k]
-            sorted_llmwiki_entries = sorted(llmwiki_entries, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:llmwiki_top_k]
-            sorted_vector_chunks = sorted(vector_chunks, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:top_k]
+            sorted_llmwiki_entries = sorted(
+                llmwiki_entries, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True
+            )[:llmwiki_top_k]
+            sorted_vector_chunks = sorted(
+                vector_chunks, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True
+            )[:top_k]
 
             # Neural rerank via qwen3-vl-rerank (when enabled) — rerank deduped evidence
             if settings.rag_rerank_enabled and deduped:
                 deduped = await self._rerank_evidence(rewritten_query, deduped, top_k)
-                sorted_chunks = sorted(deduped, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:top_k]
+                sorted_chunks = sorted(
+                    deduped, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True
+                )[:top_k]
                 sorted_knowledge_chunks = sorted(
                     [e for e in deduped if str(e.get("source_type", "")).startswith("knowledge")],
                     key=lambda x: float(x.get("score", 0.0) or 0.0),
@@ -698,11 +829,13 @@ class RagAgent(BaseAgent):
                 )[:top_k]
                 sorted_llmwiki_entries = sorted(
                     [e for e in deduped if e.get("source_type") == "llmwiki"],
-                    key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True,
+                    key=lambda x: float(x.get("score", 0.0) or 0.0),
+                    reverse=True,
                 )[:llmwiki_top_k]
                 sorted_vector_chunks = sorted(
                     [e for e in deduped if e.get("source_type") == "document"],
-                    key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True,
+                    key=lambda x: float(x.get("score", 0.0) or 0.0),
+                    reverse=True,
                 )[:top_k]
 
             content_parts = []
@@ -715,14 +848,16 @@ class RagAgent(BaseAgent):
                     f"{prefix}{chunk.get('text', '')[:300]}"
                 )
             for i, chunk in enumerate(sorted_llmwiki_entries, start=1):
-                title_ctx = chunk.get('title', '')
+                title_ctx = chunk.get("title", "")
                 prefix = f"[{title_ctx}] " if title_ctx else ""
                 content_parts.append(
                     f"[LLMWiki {i}] {chunk.get('question', '摘要')} tier={chunk.get('evidence_tier', '-')} score={float(chunk.get('score', 0.0)):.3f}\n"
                     f"{prefix}{chunk.get('answer', '')[:220]}"
                 )
-            for i, chunk in enumerate(sorted_vector_chunks[: max(1, top_k - len(sorted_llmwiki_entries))], start=1):
-                title_ctx = chunk.get('title', '')
+            for i, chunk in enumerate(
+                sorted_vector_chunks[: max(1, top_k - len(sorted_llmwiki_entries))], start=1
+            ):
+                title_ctx = chunk.get("title", "")
                 prefix = f"[{title_ctx}] " if title_ctx else ""
                 content_parts.append(
                     f"[Doc {i}] tier={chunk.get('evidence_tier', '-')} score={float(chunk.get('score', 0.0)):.3f}\n"
@@ -730,16 +865,20 @@ class RagAgent(BaseAgent):
                 )
             if not content_parts:
                 for i, chunk in enumerate(sorted_chunks, start=1):
-                    title_ctx = chunk.get('title', '')
+                    title_ctx = chunk.get("title", "")
                     prefix = f"[{title_ctx}] " if title_ctx else ""
                     content_parts.append(
                         f"[{i}] source={chunk.get('source_type')} tier={chunk.get('evidence_tier', '-')} score={float(chunk.get('score', 0.0)):.3f}\n"
                         f"{prefix}{chunk.get('text', '')[:240]}"
                     )
-            content = "\n\n".join(content_parts) if content_parts else (
-                "当前账户下暂未上传任何文档。请先在「文档」页面上传知识库文档（PDF/DOCX/TXT/MD 等格式），"
-                "上传后即可使用 /rag 模式进行文档检索与问答。\n\n"
-                "如果不需要检索文档，可以使用 /web 联网搜索，或直接输入问题进行通用问答。"
+            content = (
+                "\n\n".join(content_parts)
+                if content_parts
+                else (
+                    "当前账户下暂未上传任何文档。请先在「文档」页面上传知识库文档（PDF/DOCX/TXT/MD 等格式），"
+                    "上传后即可使用 /rag 模式进行文档检索与问答。\n\n"
+                    "如果不需要检索文档，可以使用 /web 联网搜索，或直接输入问题进行通用问答。"
+                )
             )
 
             if not sorted_chunks and query_terms and "documents" in sources:
@@ -770,8 +909,12 @@ class RagAgent(BaseAgent):
                     for idx, c in enumerate(doc_chunks, start=1):
                         meta = c.metadata if isinstance(c.metadata, dict) else {}
                         title = str(meta.get("title") or meta.get("document_title") or "Document")
-                        txt = "".join(ch for ch in (c.content or "") if ch.isprintable() or ch in "\n\t").strip()[:500]
-                        chunk_id = f"{meta.get('document_id')}::{meta.get('chunk_index')}::{txt[:80]}"
+                        txt = "".join(
+                            ch for ch in (c.content or "") if ch.isprintable() or ch in "\n\t"
+                        ).strip()[:500]
+                        chunk_id = (
+                            f"{meta.get('document_id')}::{meta.get('chunk_index')}::{txt[:80]}"
+                        )
                         if chunk_id in seen_chunks:
                             continue
                         seen_chunks.add(chunk_id)
@@ -800,13 +943,21 @@ class RagAgent(BaseAgent):
                             }
                         )
 
-                sorted_chunks = sorted(evidence, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:top_k]
+                sorted_chunks = sorted(
+                    evidence, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True
+                )[:top_k]
                 sorted_knowledge_chunks = sorted(
-                    [e for e in sorted_chunks if str(e.get("source_type", "")).startswith("knowledge")],
+                    [
+                        e
+                        for e in sorted_chunks
+                        if str(e.get("source_type", "")).startswith("knowledge")
+                    ],
                     key=lambda x: float(x.get("score", 0.0) or 0.0),
                     reverse=True,
                 )[:top_k]
-                sorted_vector_chunks = sorted(vector_chunks, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)[:top_k]
+                sorted_vector_chunks = sorted(
+                    vector_chunks, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True
+                )[:top_k]
                 if not content_parts and sorted_vector_chunks:
                     content_parts = [
                         (
@@ -823,7 +974,9 @@ class RagAgent(BaseAgent):
                 scores = [float(chunk.get("score", 0.0) or 0.0) for chunk in sorted_chunks]
                 avg_score = sum(scores) / len(scores)
                 max_score = max(scores)
-                score_spread = (scores[0] - scores[-1]) / max(0.01, scores[0]) if len(scores) >= 2 else 0.0
+                score_spread = (
+                    (scores[0] - scores[-1]) / max(0.01, scores[0]) if len(scores) >= 2 else 0.0
+                )
                 source_types = {chunk.get("source_type") for chunk in sorted_chunks}
                 source_diversity = min(1.0, len(source_types) / 3.0)
 
@@ -932,21 +1085,26 @@ class RagAgent(BaseAgent):
                 for citation in citations:
                     if not isinstance(citation, dict):
                         continue
-                    same_doc = citation.get("document_id") and citation.get("document_id") == chunk.get("document_id")
-                    same_chunk = (
-                        citation.get("chunk_index") is not None
-                        and citation.get("chunk_index") == chunk.get("chunk_index")
-                    )
+                    same_doc = citation.get("document_id") and citation.get(
+                        "document_id"
+                    ) == chunk.get("document_id")
+                    same_chunk = citation.get("chunk_index") is not None and citation.get(
+                        "chunk_index"
+                    ) == chunk.get("chunk_index")
                     same_type = citation.get("source_type") == chunk.get("source_type")
                     same_knowledge = (
-                        citation.get("claim_id")
-                        and citation.get("claim_id") == chunk.get("claim_id")
-                    ) or (
-                        citation.get("knowledge_page_id")
-                        and citation.get("knowledge_page_id") == chunk.get("knowledge_page_id")
-                    ) or (
-                        citation.get("relation_id")
-                        and citation.get("relation_id") == chunk.get("relation_id")
+                        (
+                            citation.get("claim_id")
+                            and citation.get("claim_id") == chunk.get("claim_id")
+                        )
+                        or (
+                            citation.get("knowledge_page_id")
+                            and citation.get("knowledge_page_id") == chunk.get("knowledge_page_id")
+                        )
+                        or (
+                            citation.get("relation_id")
+                            and citation.get("relation_id") == chunk.get("relation_id")
+                        )
                     )
                     if same_type and (same_doc or same_chunk or same_knowledge):
                         return citation
@@ -972,7 +1130,8 @@ class RagAgent(BaseAgent):
             evidence_objects = []
             for ch in sorted_chunks:
                 matching_citations = [
-                    citation for citation in citations
+                    citation
+                    for citation in citations
                     if (
                         citation.get("document_id") == ch.get("document_id")
                         or citation.get("chunk_id") == ch.get("chunk_id")
@@ -990,7 +1149,11 @@ class RagAgent(BaseAgent):
                     self._make_evidence(
                         source=ch.get("title", ""),
                         source_type=ch.get("source_type", "document"),
-                        payload={"text": ch.get("text", ""), "title": ch.get("title", ""), "id": ch.get("id", "")},
+                        payload={
+                            "text": ch.get("text", ""),
+                            "title": ch.get("title", ""),
+                            "id": ch.get("id", ""),
+                        },
                         credibility=ch.get("score", 0.5),
                         relevance=ch.get("score", 0.5),
                         provenance=ch.get("id", ""),
@@ -1024,25 +1187,37 @@ class RagAgent(BaseAgent):
 
             result_refs: list[ResultRef] = []
             for i, ch in enumerate((sorted_vector_chunks or [])[:5]):
-                result_refs.append(ResultRef(
-                    ref_id=f"doc_chunk:{ch.get('id', task.task_id)}",
-                    type="doc_chunk",
-                    title=f"Chunk: {ch.get('title', 'Untitled')}",
-                    summary=(str(ch.get('text', '')) or '')[:120],
-                    payload={"chunk": ch, "score": ch.get("score", 0)},
-                    source_agent="rag",
-                    message_id=task.task_id,
-                ))
+                result_refs.append(
+                    ResultRef(
+                        ref_id=f"doc_chunk:{ch.get('id', task.task_id)}",
+                        type="doc_chunk",
+                        title=f"Chunk: {ch.get('title', 'Untitled')}",
+                        summary=(str(ch.get("text", "")) or "")[:120],
+                        payload={"chunk": ch, "score": ch.get("score", 0)},
+                        source_agent="rag",
+                        message_id=task.task_id,
+                    )
+                )
             for c in (citations or [])[:5]:
-                result_refs.append(ResultRef(
-                    ref_id=f"citation:{c.get('source_name', task.task_id)}" if isinstance(c, dict) else f"citation:{task.task_id}",
-                    type="citation",
-                    title=f"Citation: {c.get('source_name', 'Unknown')}",
-                    summary=c.get('content_snippet', '')[:120] if isinstance(c, dict) else str(c)[:120],
-                    payload={"citation": c} if isinstance(c, dict) else {},
-                    source_agent="rag",
-                    message_id=task.task_id,
-                ))
+                result_refs.append(
+                    ResultRef(
+                        ref_id=(
+                            f"citation:{c.get('source_name', task.task_id)}"
+                            if isinstance(c, dict)
+                            else f"citation:{task.task_id}"
+                        ),
+                        type="citation",
+                        title=f"Citation: {c.get('source_name', 'Unknown')}",
+                        summary=(
+                            c.get("content_snippet", "")[:120]
+                            if isinstance(c, dict)
+                            else str(c)[:120]
+                        ),
+                        payload={"citation": c} if isinstance(c, dict) else {},
+                        source_agent="rag",
+                        message_id=task.task_id,
+                    )
+                )
             rag_intel: dict[str, Any] = {}
             try:
                 from services.rag_evidence_intelligence import enrich_evidence_intelligence
@@ -1064,8 +1239,10 @@ class RagAgent(BaseAgent):
                         chunk_dicts, query=query, source_kind="document"
                     )
                     contradictions = rag_intel.get("contradictions") or []
-                    claim = (rag_intel.get("claim_verification") or {})
-                    contradiction_count = len(contradictions) if isinstance(contradictions, list) else 0
+                    claim = rag_intel.get("claim_verification") or {}
+                    contradiction_count = (
+                        len(contradictions) if isinstance(contradictions, list) else 0
+                    )
                     claim_needs_review = bool(isinstance(claim, dict) and claim.get("needs_review"))
                     answerability_decision = assess_answerability(
                         has_evidence=bool(sorted_chunks),
@@ -1092,7 +1269,9 @@ class RagAgent(BaseAgent):
                             confidence = min(confidence, 0.3)
                             answerability_decision["answerable"] = False
                             answerability_decision["state"] = "unanswerable"
-                            answerability_decision.setdefault("reasons", []).append("claim_anchor_suppressed")
+                            answerability_decision.setdefault("reasons", []).append(
+                                "claim_anchor_suppressed"
+                            )
                     if contradictions and answerable:
                         confidence = min(confidence, 0.55)
                         for ch in sorted_chunks:
@@ -1107,7 +1286,9 @@ class RagAgent(BaseAgent):
                             confidence = min(confidence, 0.35)
                             answerability_decision["answerable"] = False
                             answerability_decision["state"] = "conflict"
-                            answerability_decision.setdefault("reasons", []).append("contradiction_suppressed")
+                            answerability_decision.setdefault("reasons", []).append(
+                                "contradiction_suppressed"
+                            )
             except Exception:
                 pass
 
@@ -1135,7 +1316,8 @@ class RagAgent(BaseAgent):
                 "max_score": max_score,
                 "top1_top3_gap": top1_top3_gap,
                 "relevance_anchor": anchor_score,
-                "sufficient": avg_score >= float(task.params.get("min_evidence_score", os.getenv("RAG_MIN_SCORE", "0.35"))),
+                "sufficient": avg_score
+                >= float(task.params.get("min_evidence_score", os.getenv("RAG_MIN_SCORE", "0.35"))),
                 "answerable": answerable,
                 "answerability": answerability_decision,
                 "answerability_state": answerability_decision.get("state"),

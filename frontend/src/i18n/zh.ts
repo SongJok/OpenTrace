@@ -31,7 +31,7 @@ const zh = {
     hasAccount: '已有账号？登录',
   },
   permissions: {
-    title: '用户权限管理',
+    title: '权限与记忆治理',
     noAccess: '无权限访问',
     allUsers: '全部',
     pending: '待审核',

@@ -817,6 +817,52 @@ class UserMemorySettings(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class MemoryConstitution(Base):
+    """工作区记忆宪法的不可变版本。"""
+
+    __tablename__ = "memory_constitutions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "workspace_id",
+            "version",
+            name="uq_memory_constitution_scope_version",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    rules_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_by: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MemoryConstitutionAudit(Base):
+    """记忆宪法决策审计；不保存原始敏感内容。"""
+
+    __tablename__ = "memory_constitution_audits"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    actor_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    subject_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    memory_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    candidate_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    constitution_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    decision: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    categories_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class UserCustomInstruction(Base):
     """Explicit user instructions, kept separate from learned memory."""
 
@@ -978,8 +1024,14 @@ class MemoryCandidate(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     salience: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    observations: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    learning_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="model")
+    constitution_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

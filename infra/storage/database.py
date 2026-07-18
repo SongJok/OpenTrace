@@ -183,6 +183,12 @@ async def _verify_runtime_schema(conn) -> None:
             "supersedes_id",
             "expires_at",
         },
+        "memory_candidates": {
+            "observations",
+            "learning_mode",
+            "constitution_version",
+            "last_observed_at",
+        },
     }
     missing: list[str] = []
     for table, columns in required_columns.items():
@@ -230,6 +236,8 @@ async def _verify_runtime_schema(conn) -> None:
         "goal_checkpoints",
         "memory_candidates",
         "memory_evidence",
+        "memory_constitutions",
+        "memory_constitution_audits",
         "alert_rules",
         "alert_events",
         "skill_catalog_entries",
@@ -289,6 +297,10 @@ async def _ensure_unified_runtime_columns(conn) -> None:
         "ALTER TABLE IF EXISTS public.memory_candidates ADD COLUMN IF NOT EXISTS memory_key VARCHAR(128)",
         "ALTER TABLE IF EXISTS public.memory_candidates ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'",
         "ALTER TABLE IF EXISTS public.memory_candidates ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(128) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE IF EXISTS public.memory_candidates ADD COLUMN IF NOT EXISTS observations INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE IF EXISTS public.memory_candidates ADD COLUMN IF NOT EXISTS learning_mode VARCHAR(20) NOT NULL DEFAULT 'model'",
+        "ALTER TABLE IF EXISTS public.memory_candidates ADD COLUMN IF NOT EXISTS constitution_version INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE IF EXISTS public.memory_candidates ADD COLUMN IF NOT EXISTS last_observed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS scope_id VARCHAR(64)",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active'",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION NOT NULL DEFAULT 1.0",

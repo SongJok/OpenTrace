@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
 
@@ -20,20 +21,33 @@ from infra.storage.models import (
     UserMemory,
     UserMemorySettings,
 )
+from memory.constitution import (
+    EffectiveMemoryConstitution,
+    add_memory_constitution_audit,
+    evaluate_memory_constitution,
+    load_effective_memory_constitution,
+    memory_expiry,
+)
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
 
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|密码|密钥)\s*[:=：]\s*\S+"),
+    re.compile(
+        r"(?i)(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|密码|密钥)\s*[:=：]\s*\S+"
+    ),
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
 
 _SENSITIVE_PATTERNS = (
-    re.compile(r"(?i)(?:身份证|护照|社保|驾驶证|银行卡|信用卡|银行账号|支付账号|税号)\s*(?:号|号码)?\s*[:：=]?\s*[A-Z0-9-]{5,}"),
+    re.compile(
+        r"(?i)(?:身份证|护照|社保|驾驶证|银行卡|信用卡|银行账号|支付账号|税号)\s*(?:号码|号)?\s*(?:是|为|[:：=])?\s*[A-Z0-9-]{5,}"
+    ),
     re.compile(r"(?i)(?:手机号|手机号码|电话号码|电子邮箱|邮箱|家庭住址|详细地址)\s*[:：=]?\s*\S+"),
     re.compile(r"(?i)(?:我|本人).{0,12}(?:患有|确诊|病史|过敏|正在服用|用药|心理疾病|精神疾病)"),
-    re.compile(r"(?i)(?:我的|本人).{0,8}(?:收入|薪资|工资|存款|债务|贷款|账户余额)\s*(?:是|为|[:：=])"),
+    re.compile(
+        r"(?i)(?:我的|本人).{0,8}(?:收入|薪资|工资|存款|债务|贷款|账户余额)\s*(?:是|为|[:：=])"
+    ),
 )
 
 _TRANSIENT_MARKERS = re.compile(
@@ -66,7 +80,11 @@ class MemoryLearner:
         if session is None or session.is_temporary:
             return []
         extension = dict((response.request_payload or {}).get("opentrace") or {})
-        mode = str(extension.get("memory_mode") or (response.request_payload or {}).get("memory_mode") or "enabled")
+        mode = str(
+            extension.get("memory_mode")
+            or (response.request_payload or {}).get("memory_mode")
+            or "enabled"
+        )
         if mode != "enabled":
             return []
         project = await db.get(Project, session.project_id) if session.project_id else None
@@ -79,10 +97,7 @@ class MemoryLearner:
             return []
         project_only = bool(
             project
-            and (
-                project.memory_mode == "project_only"
-                or memory_policy.get("project_only") is True
-            )
+            and (project.memory_mode == "project_only" or memory_policy.get("project_only") is True)
         )
         settings_row = await db.scalar(
             select(UserMemorySettings).where(UserMemorySettings.user_id == response.user_id)
@@ -94,13 +109,43 @@ class MemoryLearner:
         )
         input_item = await db.scalar(
             select(ResponseItem)
-            .where(ResponseItem.response_id == response.id, ResponseItem.item_type == "input_message")
+            .where(
+                ResponseItem.response_id == response.id, ResponseItem.item_type == "input_message"
+            )
             .order_by(ResponseItem.sequence_number)
         )
         text = str(input_item.content or "") if input_item else ""
-        if not text or self._contains_secret(text) or self._contains_sensitive(text):
+        if not text:
             return []
-        candidates = await self._extract(text)
+        constitution = await load_effective_memory_constitution(
+            db,
+            tenant_id=response.tenant_id,
+            workspace_id=response.workspace_id,
+        )
+        source_decision = evaluate_memory_constitution(
+            text,
+            constitution=constitution,
+            learning_mode="proactive",
+            confidence=1.0,
+        )
+        explicit_memory_request = bool(
+            re.search(r"(?:记住|记下来|remember(?:\s+that)?)", text, flags=re.I)
+        )
+        if source_decision.decision == "block" and explicit_memory_request:
+            add_memory_constitution_audit(
+                db,
+                tenant_id=response.tenant_id,
+                workspace_id=response.workspace_id,
+                constitution_version=constitution.version,
+                decision=source_decision,
+                content=text,
+                source="response_learning",
+                subject_user_id=response.user_id,
+                response_id=response.id,
+            )
+            await db.commit()
+            return []
+        candidates = await self._extract(text, constitution=constitution)
         created: list[str] = []
         for candidate in candidates[:8]:
             content = str(candidate.get("content") or "").strip()[:2000]
@@ -119,15 +164,38 @@ class MemoryLearner:
             confidence = min(1.0, max(0.0, float(candidate.get("confidence") or 0.0)))
             explicit = bool(candidate.get("explicit", False))
             learning_mode = str(
-                candidate.get("_learning_mode")
-                or ("explicit" if explicit else "model")
+                candidate.get("_learning_mode") or ("explicit" if explicit else "model")
             )
             status = self._candidate_status(
                 confidence=confidence,
                 explicit=explicit,
                 learning_mode=learning_mode,
             )
-            scope_type = str(candidate.get("scope_type") or ("project" if session.project_id else "user"))
+            constitution_decision = evaluate_memory_constitution(
+                content,
+                constitution=constitution,
+                kind=kind,
+                learning_mode=learning_mode,
+                confidence=confidence,
+            )
+            if constitution_decision.decision == "block":
+                add_memory_constitution_audit(
+                    db,
+                    tenant_id=response.tenant_id,
+                    workspace_id=response.workspace_id,
+                    constitution_version=constitution.version,
+                    decision=constitution_decision,
+                    content=content,
+                    source="response_learning",
+                    subject_user_id=response.user_id,
+                    response_id=response.id,
+                )
+                continue
+            if constitution_decision.decision == "review":
+                status = "pending"
+            scope_type = str(
+                candidate.get("scope_type") or ("project" if session.project_id else "user")
+            )
             if scope_type not in {"user", "project", "conversation"}:
                 scope_type = "user"
             if project_only:
@@ -138,56 +206,145 @@ class MemoryLearner:
             scope_id = (
                 session.project_id
                 if scope_type == "project"
-                else session.id
-                if scope_type == "conversation"
-                else None
+                else session.id if scope_type == "conversation" else None
             )
-            memory_key = re.sub(r"[^a-z0-9_.:-]+", "_", str(candidate.get("key") or "").lower()).strip("_")[:128] or None
+            memory_key = (
+                re.sub(r"[^a-z0-9_.:-]+", "_", str(candidate.get("key") or "").lower()).strip("_")[
+                    :128
+                ]
+                or None
+            )
             conflict = await self._find_conflict(
-                db, response.user_id, response.tenant_id, response.workspace_id,
-                scope_type, scope_id, memory_key, content
+                db,
+                response.user_id,
+                response.tenant_id,
+                response.workspace_id,
+                scope_type,
+                scope_id,
+                memory_key,
+                content,
             )
             if conflict and conflict.content != content and not explicit:
                 status = "pending"
-            row = MemoryCandidate(
-                id=str(uuid.uuid4()), user_id=response.user_id, response_id=response.id,
-                tenant_id=response.tenant_id, workspace_id=response.workspace_id,
-                scope_type=scope_type, scope_id=scope_id,
-                kind=kind, memory_key=memory_key, content=content,
-                confidence=confidence, salience=min(1.0, max(0.0, float(candidate.get("salience") or 0.5))),
-                status=status,
-                rejection_reason="low_confidence" if status == "rejected" else None,
+            row = await self._find_pending_candidate(
+                db,
+                response.user_id,
+                response.tenant_id,
+                response.workspace_id,
+                scope_type,
+                scope_id,
+                memory_key,
+                content,
             )
-            db.add(row)
+            if row is None:
+                row = MemoryCandidate(
+                    id=str(uuid.uuid4()),
+                    user_id=response.user_id,
+                    response_id=response.id,
+                    tenant_id=response.tenant_id,
+                    workspace_id=response.workspace_id,
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    kind=kind,
+                    memory_key=memory_key,
+                    content=content,
+                    confidence=confidence,
+                    salience=min(1.0, max(0.0, float(candidate.get("salience") or 0.5))),
+                    observations=1,
+                    learning_mode=learning_mode,
+                    constitution_version=constitution.version,
+                    status=status,
+                    rejection_reason="low_confidence" if status == "rejected" else None,
+                )
+                db.add(row)
+            else:
+                row.observations = int(row.observations or 1) + 1
+                row.confidence = max(float(row.confidence or 0.0), confidence)
+                row.salience = max(
+                    float(row.salience or 0.0),
+                    min(1.0, max(0.0, float(candidate.get("salience") or 0.5))),
+                )
+                row.constitution_version = constitution.version
+                row.last_observed_at = datetime.now(UTC)
+                if constitution_decision.decision == "allow":
+                    status = self._candidate_status(
+                        confidence=row.confidence,
+                        explicit=explicit,
+                        learning_mode=learning_mode,
+                    )
+                row.status = status
+            if conflict and conflict.content != content and not explicit:
+                row.status = "pending"
+            required_observations = int(constitution.rules["proactive_activation_observations"])
+            if (
+                learning_mode == "proactive"
+                and row.status == "active"
+                and int(row.observations or 1) < required_observations
+            ):
+                row.status = "pending"
             await db.flush()
             evidence = MemoryEvidence(
-                id=str(uuid.uuid4()), candidate_id=row.id, response_id=response.id,
-                item_id=input_item.id if input_item else None, excerpt=text[:500],
+                id=str(uuid.uuid4()),
+                candidate_id=row.id,
+                response_id=response.id,
+                item_id=input_item.id if input_item else None,
+                excerpt=text[:500],
             )
             db.add(evidence)
-            if status == "active" and not await self._has_duplicate(
-                db, response.user_id, response.tenant_id, response.workspace_id,
-                scope_type, scope_id, content
+            if constitution_decision.decision == "review":
+                add_memory_constitution_audit(
+                    db,
+                    tenant_id=response.tenant_id,
+                    workspace_id=response.workspace_id,
+                    constitution_version=constitution.version,
+                    decision=constitution_decision,
+                    content=content,
+                    source="response_learning",
+                    subject_user_id=response.user_id,
+                    response_id=response.id,
+                    candidate_id=row.id,
+                )
+            if row.status == "active" and not await self._has_duplicate(
+                db,
+                response.user_id,
+                response.tenant_id,
+                response.workspace_id,
+                scope_type,
+                scope_id,
+                content,
             ):
                 memory = UserMemory(
-                    id=str(uuid.uuid4()), user_id=response.user_id,
+                    id=str(uuid.uuid4()),
+                    user_id=response.user_id,
                     memory_type={"workflow": "procedural", "episodic": "episodic"}.get(
                         kind, "semantic"
                     ),
-                    tenant_id=response.tenant_id, workspace_id=response.workspace_id,
-                    kind=row.kind, title=content[:80], content=content, enabled=True,
+                    tenant_id=response.tenant_id,
+                    workspace_id=response.workspace_id,
+                    kind=row.kind,
+                    title=content[:80],
+                    content=content,
+                    enabled=True,
                     metadata_json=json.dumps(
                         {
                             "learning_mode": learning_mode,
                             "candidate_id": row.id,
+                            "constitution_version": constitution.version,
+                            "observations": int(row.observations or 1),
                         },
                         ensure_ascii=False,
                     ),
                     memory_key=memory_key,
-                    pinned=explicit, score=row.salience, scope_type=scope_type, scope_id=scope_id,
-                    status="active", confidence=confidence, salience=row.salience,
+                    pinned=explicit,
+                    score=row.salience,
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    status="active",
+                    confidence=confidence,
+                    salience=row.salience,
                     source_response_id=response.id,
                     supersedes_id=conflict.id if conflict and explicit else None,
+                    expires_at=memory_expiry(constitution),
                 )
                 db.add(memory)
                 await db.flush()
@@ -199,7 +356,12 @@ class MemoryLearner:
         await db.commit()
         return created
 
-    async def _extract(self, text: str) -> list[dict[str, Any]]:
+    async def _extract(
+        self,
+        text: str,
+        *,
+        constitution: EffectiveMemoryConstitution | None = None,
+    ) -> list[dict[str, Any]]:
         explicit_candidates = self._extract_explicit(text)
         proactive_candidates = self._extract_proactive(text)
         prompt = (
@@ -209,6 +371,11 @@ class MemoryLearner:
             "scope_type 可为 user|project|conversation。优先提取用户直接陈述的稳定身份、长期偏好、长期目标、重复工作方式和项目约定。"
             "不要记录问题、一次性请求、临时状态、模型推测、第三方信息、健康/财务/身份号码/联系方式等敏感信息、认证信息或秘密。"
         )
+        if constitution is not None:
+            prompt += (
+                "\n必须遵守以下工作区记忆宪法；若内容与宪法冲突，不得输出候选：\n"
+                + constitution.content[:6000]
+            )
         try:
             result = await get_model_gateway().complete(
                 [LLMMessage(role="system", content=prompt), LLMMessage(role="user", content=text)],
@@ -237,9 +404,7 @@ class MemoryLearner:
         # 明确“记住”仍以确定性候选为准，确保模型变化不会破坏稳定 key 和冲突替代。
         candidates = [*explicit_candidates, *proactive_candidates]
         seen_keys = {
-            str(item.get("key") or "").strip().lower()
-            for item in candidates
-            if item.get("key")
+            str(item.get("key") or "").strip().lower() for item in candidates if item.get("key")
         }
         seen_contents = {str(item.get("content") or "").strip() for item in candidates}
         for item in model_candidates:
@@ -359,11 +524,15 @@ class MemoryLearner:
             )
             if preference_match:
                 value = preference_match.group("value").strip()
-                topic = "response_style" if re.search(
-                    r"回答|回复|输出|格式|语言|中文|英文|简洁|详细|代码|表格|answer|response|format|language|concise|detailed",
-                    value,
-                    flags=re.I,
-                ) else sha256(value.lower().encode("utf-8")).hexdigest()[:16]
+                topic = (
+                    "response_style"
+                    if re.search(
+                        r"回答|回复|输出|格式|语言|中文|英文|简洁|详细|代码|表格|answer|response|format|language|concise|detailed",
+                        value,
+                        flags=re.I,
+                    )
+                    else sha256(value.lower().encode("utf-8")).hexdigest()[:16]
+                )
                 add(
                     content=statement,
                     key=f"preference.{topic}",
@@ -433,7 +602,11 @@ class MemoryLearner:
                     content=statement,
                     key=f"workflow.routine.{digest}",
                     kind="workflow",
-                    confidence=0.88 if "流程" in statement.lower() or "workflow" in statement.lower() else 0.78,
+                    confidence=(
+                        0.88
+                        if "流程" in statement.lower() or "workflow" in statement.lower()
+                        else 0.78
+                    ),
                     salience=0.78,
                 )
                 continue
@@ -569,8 +742,13 @@ class MemoryLearner:
 
     @staticmethod
     async def _has_duplicate(
-        db: AsyncSession, user_id: str, tenant_id: str, workspace_id: str,
-        scope_type: str, scope_id: str | None, content: str
+        db: AsyncSession,
+        user_id: str,
+        tenant_id: str,
+        workspace_id: str,
+        scope_type: str,
+        scope_id: str | None,
+        content: str,
     ) -> bool:
         row = await db.scalar(
             select(UserMemory.id).where(
@@ -612,4 +790,31 @@ class MemoryLearner:
             )
             .order_by(UserMemory.updated_at.desc())
         )
+
+    @staticmethod
+    async def _find_pending_candidate(
+        db: AsyncSession,
+        user_id: str,
+        tenant_id: str,
+        workspace_id: str,
+        scope_type: str,
+        scope_id: str | None,
+        memory_key: str | None,
+        content: str,
+    ) -> MemoryCandidate | None:
+        conditions = [
+            MemoryCandidate.user_id == user_id,
+            MemoryCandidate.tenant_id == tenant_id,
+            MemoryCandidate.workspace_id == workspace_id,
+            MemoryCandidate.scope_type == scope_type,
+            MemoryCandidate.scope_id == scope_id,
+            MemoryCandidate.content == content,
+            MemoryCandidate.status == "pending",
+        ]
+        if memory_key:
+            conditions.append(MemoryCandidate.memory_key == memory_key)
+        return await db.scalar(
+            select(MemoryCandidate).where(*conditions).order_by(MemoryCandidate.created_at.desc())
+        )
+
     Project,

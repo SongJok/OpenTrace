@@ -24,6 +24,8 @@ conversation_ids: list[str] = []
 memory_ids: list[str] = []
 project_ids: list[str] = []
 original_settings: dict | None = None
+original_constitution: dict | None = None
+constitution_changed = False
 
 
 def request(path: str, method: str = "GET", body: dict | None = None, timeout: int = 180):
@@ -106,6 +108,7 @@ def wait_for_memory(marker: str, *, should_exist: bool, timeout: float = 20.0) -
 
 
 def cleanup() -> None:
+    global constitution_changed
     if not token:
         return
     for memory_id in reversed(memory_ids):
@@ -128,6 +131,20 @@ def cleanup() -> None:
             request("/api/v2/memories/settings", "POST", original_settings, timeout=20)
         except Exception:
             pass
+    if original_constitution is not None and constitution_changed:
+        try:
+            request(
+                "/api/v1/admin/memory/constitution",
+                "PUT",
+                {
+                    "content": original_constitution["content"],
+                    "rules": original_constitution["rules"],
+                },
+                timeout=20,
+            )
+            constitution_changed = False
+        except Exception:
+            pass
 
 
 atexit.register(cleanup)
@@ -141,6 +158,7 @@ login = request(
 )
 token = login["access_token"]
 original_settings = request("/api/v2/memories/settings")
+original_constitution = request("/api/v1/admin/memory/constitution")
 request(
     "/api/v2/memories/settings",
     "POST",
@@ -269,6 +287,38 @@ proactive_recall = respond(proactive_recall_conversation, "我的代号是什么
 assert proactive_memory["id"] in response_memory_ids(proactive_recall)
 assert proactive_marker in proactive_recall.get("output_text", "")
 print("[PASS] 无需明确指令的主动学习与跨会话召回")
+
+reinforcement_rules = dict(original_constitution["rules"])
+reinforcement_rules["proactive_activation_observations"] = 2
+request(
+    "/api/v1/admin/memory/constitution",
+    "PUT",
+    {"content": original_constitution["content"], "rules": reinforcement_rules},
+)
+constitution_changed = True
+reinforcement_marker = f"重复观察-{suffix}"
+first_observation = create_conversation()
+respond(first_observation, f"我的代号是 {reinforcement_marker}。")
+wait_for_memory(reinforcement_marker, should_exist=False, timeout=3)
+pending = request("/api/v2/memories/inbox")["items"]
+candidate = next(item for item in pending if reinforcement_marker in item.get("content", ""))
+assert candidate["observations"] == 1
+second_observation = create_conversation()
+respond(second_observation, f"我的代号是 {reinforcement_marker}。")
+reinforced_memory = wait_for_memory(reinforcement_marker, should_exist=True)
+assert reinforced_memory is not None
+assert reinforced_memory.get("metadata", {}).get("observations") == 2
+memory_ids.append(reinforced_memory["id"])
+request(
+    "/api/v1/admin/memory/constitution",
+    "PUT",
+    {
+        "content": original_constitution["content"],
+        "rules": original_constitution["rules"],
+    },
+)
+constitution_changed = False
+print("[PASS] 主动记忆可配置为重复观察后激活")
 
 sensitive_marker = f"敏感过滤-{suffix}"
 sensitive_conversation = create_conversation()
