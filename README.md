@@ -580,6 +580,7 @@ SMTP_FROM=<sender>
 | `docs/catalog/data_cognition.md` | Data Cognition / Text2SQL 说明 |
 | `docs/catalog/rag_retrieval.md` | RAG 与检索说明 |
 | `docs/catalog/memory_system.md` | Memory System 说明 |
+| `docs/catalog/chatgpt_five_pillars.md` | Agentic Planning、记忆图、多模态、能力发现与长上下文主链说明 |
 | `scripts/work/README.md` | 启停与开发工作流脚本 |
 
 ## 贡献约定

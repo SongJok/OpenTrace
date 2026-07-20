@@ -42,6 +42,133 @@ class IntentPlan:
             "clarification_question": self.clarification_question,
         }
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> IntentPlan:
+        try:
+            risk = SideEffect(str(value.get("risk") or SideEffect.READ.value))
+        except ValueError:
+            risk = SideEffect.READ
+        try:
+            profile = ExecutionProfile(
+                str(value.get("execution_profile") or ExecutionProfile.AUTO.value)
+            )
+        except ValueError:
+            profile = ExecutionProfile.AUTO
+        execution_mode = str(value.get("execution_mode") or "interactive")
+        if execution_mode not in {"interactive", "background", "goal"}:
+            execution_mode = "interactive"
+        return cls(
+            goal=str(value.get("goal") or "").strip(),
+            task_type=str(value.get("task_type") or "chat"),
+            capabilities=tuple(str(item) for item in value.get("capabilities") or []),
+            ambiguity=str(value.get("ambiguity")) if value.get("ambiguity") else None,
+            risk=risk,
+            execution_profile=profile,
+            execution_mode=execution_mode,
+            expected_outputs=tuple(
+                str(item) for item in (value.get("expected_outputs") or ["answer"])
+            ),
+            clarification_question=(
+                str(value.get("clarification_question"))
+                if value.get("clarification_question")
+                else None
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ExecutionStep:
+    """面向用户可见、可持久化的执行步骤，不包含模型隐藏思维链。"""
+
+    id: str
+    objective: str
+    capability: str | None = None
+    depends_on: tuple[str, ...] = ()
+    success_criteria: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "objective": self.objective,
+            "capability": self.capability,
+            "depends_on": list(self.depends_on),
+            "success_criteria": self.success_criteria,
+        }
+
+
+@dataclass(frozen=True)
+class ExecutionPlan:
+    """Response 级执行计划，可随持久事件恢复和审计。"""
+
+    goal: str
+    complexity: str = "simple"
+    steps: tuple[ExecutionStep, ...] = ()
+    success_criteria: tuple[str, ...] = ()
+    replan_limit: int = 1
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "goal": self.goal,
+            "complexity": self.complexity,
+            "steps": [step.to_dict() for step in self.steps],
+            "success_criteria": list(self.success_criteria),
+            "replan_limit": self.replan_limit,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> ExecutionPlan:
+        candidate_steps = value.get("steps")
+        raw_steps: list[Any] = candidate_steps if isinstance(candidate_steps, list) else []
+        steps: list[ExecutionStep] = []
+        known_ids: set[str] = set()
+        for index, raw in enumerate(raw_steps[:16], start=1):
+            if not isinstance(raw, dict):
+                continue
+            objective = str(raw.get("objective") or "").strip()
+            if not objective:
+                continue
+            base_id = str(raw.get("id") or f"step_{index}").strip()[:80] or f"step_{index}"
+            step_id = base_id
+            suffix = 2
+            while step_id in known_ids:
+                step_id = f"{base_id[:72]}_{suffix}"
+                suffix += 1
+            depends_on = tuple(
+                dependency
+                for dependency in (str(item).strip()[:80] for item in raw.get("depends_on") or [])
+                if dependency in known_ids
+            )
+            steps.append(
+                ExecutionStep(
+                    id=step_id,
+                    objective=objective[:500],
+                    capability=str(raw.get("capability") or "").strip() or None,
+                    depends_on=depends_on,
+                    success_criteria=str(raw.get("success_criteria") or "")[:500],
+                )
+            )
+            known_ids.add(step_id)
+        complexity = str(value.get("complexity") or "simple")
+        if complexity not in {"simple", "moderate", "complex"}:
+            complexity = "simple"
+        try:
+            replan_limit = int(value.get("replan_limit") or 1)
+        except (TypeError, ValueError):
+            replan_limit = 1
+        return cls(
+            goal=str(value.get("goal") or "").strip(),
+            complexity=complexity,
+            steps=tuple(steps),
+            success_criteria=tuple(str(item) for item in value.get("success_criteria") or []),
+            replan_limit=max(0, min(3, replan_limit)),
+        )
+
+
+@dataclass(frozen=True)
+class PlanningDecision:
+    intent: IntentPlan
+    execution_plan: ExecutionPlan
+
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -111,8 +238,12 @@ def parse_tool_specs(raw_tools: list[dict[str, Any]]) -> list[ToolSpec]:
                 parameters=dict(function.get("parameters") or {}),
                 side_effect=side_effect,
                 required_permissions=tuple(extension.get("required_permissions") or ()),
-                timeout_seconds=float(extension["timeout_seconds"]) if "timeout_seconds" in extension else 30.0,
-                max_retries=max(0, int(extension["max_retries"])) if "max_retries" in extension else 2,
+                timeout_seconds=(
+                    float(extension["timeout_seconds"]) if "timeout_seconds" in extension else 30.0
+                ),
+                max_retries=(
+                    max(0, int(extension["max_retries"])) if "max_retries" in extension else 2
+                ),
                 supports_parallel=bool(extension.get("supports_parallel", True)),
                 idempotency_scope=str(extension.get("idempotency_scope") or "response_call"),
             )

@@ -28,6 +28,7 @@ from memory.constitution import (
     load_effective_memory_constitution,
     memory_expiry,
 )
+from memory.graph import link_memory_graph
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
 
@@ -348,6 +349,11 @@ class MemoryLearner:
                 )
                 db.add(memory)
                 await db.flush()
+                await link_memory_graph(
+                    db,
+                    memory=memory,
+                    evidence_response_id=response.id,
+                )
                 if conflict and explicit:
                     conflict.status = "superseded"
                     conflict.enabled = False

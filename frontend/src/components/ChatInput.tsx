@@ -220,7 +220,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   return (
     <div className={clsx('mx-auto w-full px-4 pb-4', variant === 'welcome' ? 'max-w-3xl' : 'max-w-4xl')}>
       <div className="rounded-[26px] border border-[var(--border)] bg-[var(--surface-raised)] p-3 shadow-[0_8px_32px_rgba(0,0,0,0.08)] focus-within:border-[var(--accent-border)]">
-        <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(event) => void selectFiles(event)} accept=".gif,.jpeg,.jpg,.png,.webp,.pdf,.txt,.md,.csv,.json,.docx,.xlsx,.pptx,.py,.js,.ts,.html,.css,.xml,.yaml,.yml,.log" />
+        <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(event) => void selectFiles(event)} accept=".gif,.jpeg,.jpg,.png,.webp,.aac,.flac,.m4a,.mp3,.ogg,.wav,.avi,.flv,.mkv,.mov,.mp4,.webm,.wmv,.pdf,.txt,.md,.csv,.json,.docx,.xlsx,.pptx,.py,.js,.ts,.html,.css,.xml,.yaml,.yml,.log" />
         {attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-2 px-1">{attachments.map((item) => <div key={item.id} className="flex max-w-full items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><span className="shrink-0">{item.status === 'uploading' ? <LoaderCircle size={14} className="animate-spin" /> : <FileText size={14} />}</span><span className="max-w-48 truncate">{item.name}</span>{item.status === 'error' && <span className="text-red-500">{item.error || '上传失败'}</span>}<button type="button" onClick={() => void removeAttachment(item)} aria-label={`移除 ${item.name}`} className="rounded p-0.5 hover:bg-[var(--surface-hover)]"><X size={13} /></button></div>)}</div>}
         <textarea
           data-chat-message-input
@@ -235,7 +235,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
         />
         <div className="mt-2 flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2 px-2 text-xs text-[var(--text-secondary)]">
-            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={attachments.length >= 10 || streaming} aria-label="添加附件" title="添加图片或文件" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--border)] hover:bg-[var(--surface-hover)] disabled:opacity-40"><Paperclip size={15} /></button>
+            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={attachments.length >= 10 || streaming} aria-label="添加附件" title="添加图片、音视频或文件" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--border)] hover:bg-[var(--surface-hover)] disabled:opacity-40"><Paperclip size={15} /></button>
             <span className="hidden truncate sm:inline">
               {executionProfile === 'deep' ? '深度思考' : executionProfile === 'fast' ? '快速' : '自动'}
               {projectId ? ' · Project 上下文' : ''}

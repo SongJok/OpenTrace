@@ -2,10 +2,14 @@
 
 ## Expand
 
-1. 依次部署 `20260723_unified_agent_runtime` 与 `20260724_chatgpt_runtime_completion`；迁移只增加表、列和索引。
+1. 依次部署 `20260723_unified_agent_runtime`、`20260724_chatgpt_runtime_completion` 与
+   `20260803_chatgpt_five_pillars`；迁移只增加表、列和索引。
 2. 先部署兼容读取的新 API，再滚动部署 Agent Worker；API 实例不得运行模型任务。
 3. 确认 `response_outbox`、Responses Stream consumer group 和 Worker heartbeat 正常。
-4. 验证附件上传、Qwen 原生流式输出、审批允许/拒绝后的续跑，以及 Project-only 记忆隔离。
+4. 验证图片/音视频附件、Qwen 原生流式输出、审批允许/拒绝后的续跑，以及 Project-only 记忆隔离。
+5. 从 SSE 核对 `opentrace.capabilities.discovered`、`opentrace.plan.*` 和
+   `opentrace.context.ready.manifest`；复杂任务应保留计划，工具失败应产生有上限的重规划事件。
+6. 在记忆页核对 `user_memory_relations` 图；禁用、替代或删除记忆后，不得从关系边跨越用户、租户、工作区或 Project scope 召回。
 
 ## Backfill 与校验
 

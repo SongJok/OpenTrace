@@ -106,7 +106,7 @@ export type ResponseStatus = 'queued' | 'in_progress' | 'requires_action' | 'com
 
 export interface ResponseOutputItem {
   id: string
-  type: 'input_message' | 'message' | 'reasoning' | 'function_call' | 'function_call_output' | 'approval_request' | 'citation' | 'error'
+  type: 'input_message' | 'message' | 'reasoning' | 'agent_plan' | 'function_call' | 'function_call_output' | 'approval_request' | 'citation' | 'error'
   role?: string | null
   content?: string | null
   payload?: Record<string, unknown>
@@ -1169,7 +1169,41 @@ export async function streamSseResponse(
           callbacks.onResponseCreated?.(data)
           continue
         }
-        if (type.startsWith('opentrace.intent.') || type.startsWith('opentrace.context.') || type.startsWith('opentrace.model.')) {
+        if (type === 'opentrace.plan.created') {
+          const steps = Array.isArray(data?.plan?.steps) ? data.plan.steps : []
+          const statuses = (data?.statuses && typeof data.statuses === 'object') ? data.statuses : {}
+          for (const step of steps) {
+            const durableStatus = String(statuses[String(step.id)] || 'pending')
+            callbacks.onReasoningStep?.({
+              id: String(step.id),
+              node_id: String(step.id),
+              stage: 'PLAN',
+              content: String(step.objective || ''),
+              status: durableStatus === 'running'
+                ? 'running'
+                : durableStatus === 'completed' || durableStatus === 'failed'
+                  ? 'done'
+                  : 'pending',
+            })
+          }
+          continue
+        }
+        if (type.startsWith('opentrace.plan.step.')) {
+          const step = data?.step || {}
+          callbacks.onReasoningStep?.({
+            id: String(step.id || `plan-${event.sequence_number ?? Date.now()}`),
+            node_id: String(step.id || ''),
+            stage: 'PLAN',
+            content: String(step.objective || ''),
+            status: type.endsWith('.started')
+              ? 'running'
+              : type.endsWith('.deferred')
+                ? 'pending'
+                : 'done',
+          })
+          continue
+        }
+        if (type.startsWith('opentrace.intent.') || type.startsWith('opentrace.context.') || type.startsWith('opentrace.model.') || type.startsWith('opentrace.capabilities.') || type === 'opentrace.plan.replanned') {
           callbacks.onThinking?.(data)
           continue
         }
@@ -1383,6 +1417,17 @@ export async function apiListMemories(token: string, memoryType?: string): Promi
   if (!res.ok) throw new Error('Failed to list memories')
   const data = await res.json()
   return Array.isArray(data) ? data : (data.items || [])
+}
+
+export interface MemoryGraph {
+  nodes: Array<{ id: string; label: string; kind: string; scope_type: string; salience: number }>
+  edges: Array<{ id: string; source: string; target: string; relation: string; weight: number }>
+}
+
+export async function apiGetMemoryGraph(token: string): Promise<MemoryGraph> {
+  const res = await apiFetchResponses('/memories/graph', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error('Failed to load memory graph')
+  return res.json()
 }
 
 export async function apiDeleteMemory(token: string, id: string): Promise<void> {
@@ -1820,6 +1865,7 @@ export interface AttachmentUploadResponse {
   is_duplicate: boolean
   scope?: 'session' | 'workspace'
   ingest_status?: string
+  media_kind?: 'image' | 'audio' | 'video' | null
 }
 
 export interface AttachmentInfo {
@@ -1835,6 +1881,7 @@ export interface AttachmentInfo {
   scope?: 'session' | 'workspace'
   ingest_status?: string
   promoted_document_id?: string | null
+  media_kind?: 'image' | 'audio' | 'video' | null
 }
 
 export interface AttachmentListResponse {

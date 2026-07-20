@@ -5,6 +5,7 @@ import {
   apiCreateMemory,
   apiDeleteMemory,
   apiGetMemorySettings,
+  apiGetMemoryGraph,
   apiListMemories,
   apiSetMemorySettings,
   apiUpdateMemory,
@@ -12,6 +13,7 @@ import {
   apiResolveMemoryCandidate,
   type MemoryItem,
   type MemoryCandidateItem,
+  type MemoryGraph,
 } from '../api/client'
 
 type MemoryType = 'semantic' | 'episodic' | 'procedural'
@@ -29,23 +31,26 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
   const [editingTitle, setEditingTitle] = useState('')
   const [editingContent, setEditingContent] = useState('')
   const [inbox, setInbox] = useState<MemoryCandidateItem[]>([])
+  const [graph, setGraph] = useState<MemoryGraph>({ nodes: [], edges: [] })
 
   const filtered = useMemo(() => items.filter((i) => i.memory_type === tab), [items, tab])
 
   const loadAll = async () => {
     setLoading(true)
     try {
-      const [semantic, episodic, procedural, settings, candidates] = await Promise.all([
+      const [semantic, episodic, procedural, settings, candidates, memoryGraph] = await Promise.all([
         apiListMemories(token, 'semantic'),
         apiListMemories(token, 'episodic'),
         apiListMemories(token, 'procedural'),
         apiGetMemorySettings(token),
         apiListMemoryInbox(token),
+        apiGetMemoryGraph(token),
       ])
       setItems([...semantic, ...episodic, ...procedural])
       setMemoryLearningEnabled(settings.memory_learning_enabled)
       setPreferenceLearningEnabled(settings.preference_learning_enabled)
       setInbox(candidates)
+      setGraph(memoryGraph)
     } finally {
       setLoading(false)
     }
@@ -124,6 +129,23 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
       </div>
 
       <div className="max-w-4xl mx-auto w-full px-6 py-6 space-y-4 overflow-y-auto">
+        <div className="rounded-xl border border-[var(--border)] p-4 bg-[var(--surface)] space-y-3">
+          <div>
+            <h2 className="text-sm font-semibold">记忆关系图</h2>
+            <p className="mt-1 text-xs text-[var(--text-secondary)]">{graph.nodes.length} 个记忆节点 · {graph.edges.length} 条持久关系；相关记忆会在回答时进行一跳扩展。</p>
+          </div>
+          {graph.edges.length === 0 ? (
+            <p className="text-sm text-[var(--text-secondary)]">随着稳定记忆增加，系统会自动建立同主题、支持与替代关系。</p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {graph.edges.slice(0, 6).map((edge) => {
+                const source = graph.nodes.find((node) => node.id === edge.source)
+                const target = graph.nodes.find((node) => node.id === edge.target)
+                return <div key={edge.id} className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs"><span className="font-medium">{source?.label || edge.source}</span><span className="mx-2 text-[var(--text-secondary)]">— {edge.relation} →</span><span className="font-medium">{target?.label || edge.target}</span></div>
+              })}
+            </div>
+          )}
+        </div>
         <div className="rounded-xl border border-[var(--border)] p-4 bg-[var(--surface)] space-y-3">
           <div><h2 className="text-sm font-semibold">记忆收件箱</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">主动学习到但置信度不足或与旧记忆冲突的内容会在这里等待确认，并显示来源证据。</p></div>
           {inbox.length === 0 ? <p className="text-sm text-[var(--text-secondary)]">没有待确认记忆</p> : inbox.map((candidate) => (

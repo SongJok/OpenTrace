@@ -189,6 +189,7 @@ async def _verify_runtime_schema(conn) -> None:
             "constitution_version",
             "last_observed_at",
         },
+        "attachments": {"media_base64", "media_mime", "media_kind"},
     }
     missing: list[str] = []
     for table, columns in required_columns.items():
@@ -236,6 +237,7 @@ async def _verify_runtime_schema(conn) -> None:
         "goal_checkpoints",
         "memory_candidates",
         "memory_evidence",
+        "user_memory_relations",
         "memory_constitutions",
         "memory_constitution_audits",
         "chat_constitutions",
@@ -308,6 +310,10 @@ async def _ensure_unified_runtime_columns(conn) -> None:
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS source_response_id VARCHAR(64)",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS supersedes_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE IF EXISTS public.attachments ADD COLUMN IF NOT EXISTS media_base64 TEXT",
+        "ALTER TABLE IF EXISTS public.attachments ADD COLUMN IF NOT EXISTS media_mime VARCHAR(100)",
+        "ALTER TABLE IF EXISTS public.attachments ADD COLUMN IF NOT EXISTS media_kind VARCHAR(20)",
+        "CREATE INDEX IF NOT EXISTS ix_attachments_media_kind ON public.attachments (media_kind)",
         "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'",
         "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(128) NOT NULL DEFAULT 'default'",
         "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS project_id VARCHAR(36)",

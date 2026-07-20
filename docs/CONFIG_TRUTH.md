@@ -58,6 +58,25 @@
 
 规划模型环境变量前缀为 `DEFAULT_LLM_PLANING_*`（项目内固定拼写 `PLANING`，非 PLANNING）。
 
+## Responses Agent Loop 预算
+
+以下配置只作用于当前在线 `/api/v2/responses → Worker → AgentLoop` 主链；旧内核的
+`CONTEXT_WINDOW_MAX_TOKENS` 不控制在线对话。
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `DEFAULT_LLM_OMNI_MODEL` | `qwen3.5-omni-flash` | 音频/视频原生理解模型；复用 Query role 的 Provider 凭据 |
+| `RESPONSES_CONTEXT_WINDOW_TOKENS` | `131072` | 文本、媒体估算、工具 schema 共用的输入窗口 |
+| `RESPONSES_CONTEXT_OUTPUT_RESERVE_TOKENS` | `8192` | 为模型输出预留的 token |
+| `RESPONSES_SUMMARY_TRIGGER_TOKENS` | `48000` | 持久会话摘要的 token 触发阈值 |
+| `RESPONSES_CAPABILITY_CATALOG_LIMIT` | `48` | 大型工具生态中交给规划器的相关能力上限；调用方显式工具始终保留 |
+| `RESPONSES_AGENT_DEEP_MAX_ROUNDS` | `16` | deep/complex 任务单个 Response 的最大工具轮次 |
+| `RESPONSES_AGENT_REPLAN_LIMIT` | `3` | 只读工具失败后的最大重规划次数 |
+| `MULTIMODAL_INLINE_MAX_MB` | `7` | Base64 音视频上传上限，编码后保持在 Provider 10MB 限制内 |
+
+每轮实际上下文用量、裁剪数、摘要命中、媒体数量和工具 schema 估算会写入
+`opentrace.context.ready.manifest` 及最终 Response metadata。
+
 ## 密钥
 
 - 所有 `*_API_KEY`、`SMTP_PASS`、`APP_SECRET_KEY` 仅放在 `.env` 或密钥管理系统。
@@ -68,6 +87,7 @@
 
 - `development` 启动时允许 `ensure_runtime_schema()` 做本地兼容性 DDL 修复。
 - `staging` / `production` 启动时只做只读 schema readiness 校验；缺少 Alembic 迁移会启动失败，请先执行 `alembic upgrade head`。
+- `user_memory_relations` 是记忆关系图事实来源；Redis Memory Fabric 只能作为加速投影，不能替代该表。
 
 ## 健康检查 `orchestrator` 字段
 

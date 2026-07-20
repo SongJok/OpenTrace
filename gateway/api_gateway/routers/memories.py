@@ -30,6 +30,7 @@ from memory.constitution import (
     memory_expiry,
     parse_memory_metadata,
 )
+from memory.graph import link_memory_graph, rebuild_memory_graph_links, scoped_memory_graph
 
 router = APIRouter()
 
@@ -229,6 +230,8 @@ async def create_memory(
         expires_at=memory_expiry(constitution),
     )
     db.add(m)
+    await db.flush()
+    await link_memory_graph(db, memory=m)
     await db.commit()
     return {"id": m.id, "created": True}
 
@@ -277,6 +280,21 @@ async def export_memories(
             for row in rows
         ],
     }
+
+
+@router.get("/memories/graph")
+async def get_memory_graph(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = _scope(request, current_user)
+    return await scoped_memory_graph(
+        db,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
 
 
 @router.patch("/memories/{memory_id}")
@@ -353,6 +371,16 @@ async def update_memory(
     if req.status is not None:
         m.status = req.status
 
+    if any(
+        (
+            req.content is not None,
+            req.tags is not None,
+            req.enabled is not None,
+            req.status is not None,
+        )
+    ):
+        await db.flush()
+        await rebuild_memory_graph_links(db, memory=m)
     await db.commit()
     return {"updated": True}
 
@@ -573,6 +601,11 @@ async def resolve_memory_candidate(
         )
         db.add(memory)
         await db.flush()
+        await link_memory_graph(
+            db,
+            memory=memory,
+            evidence_response_id=candidate.response_id,
+        )
         evidence = await db.scalar(
             select(MemoryEvidence).where(MemoryEvidence.candidate_id == candidate.id)
         )

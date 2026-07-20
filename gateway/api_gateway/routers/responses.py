@@ -210,6 +210,7 @@ def extract_user_input(value: str | list[ResponseInputItem] | list[dict[str, Any
         if value.strip():
             return value.strip()
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="input 不能为空")
+    has_multimodal_input = False
     for item in reversed(value):
         role: str
         content: Any
@@ -228,9 +229,20 @@ def extract_user_input(value: str | list[ResponseInputItem] | list[dict[str, Any
             for part in reversed(content):
                 if not isinstance(part, dict):
                     continue
+                if str(part.get("type") or "") in {
+                    "input_image",
+                    "image_url",
+                    "input_audio",
+                    "audio_url",
+                    "input_video",
+                    "video_url",
+                }:
+                    has_multimodal_input = True
                 text = part.get("text") or part.get("input_text")
                 if isinstance(text, str) and text.strip():
                     return text.strip()
+    if has_multimodal_input:
+        return "请理解并处理用户提供的多模态内容。"
     raise AppException(ErrorCodes.PARAM_INVALID.code, message="input 必须包含非空 user 消息")
 
 

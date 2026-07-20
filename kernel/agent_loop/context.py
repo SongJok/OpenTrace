@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from infra.config.settings import settings
 from infra.storage.models import (
     AssistantProfile,
     Attachment,
@@ -20,12 +21,14 @@ from infra.storage.models import (
     UserMemory,
 )
 from kernel.agent_loop.prompt import PLATFORM_PROMPT, render_scope_prompt
+from kernel.token_counter import get_token_counter
 from memory.constitution import (
     add_memory_constitution_audit,
     evaluate_memory_constitution,
     load_effective_memory_constitution,
     parse_memory_metadata,
 )
+from memory.graph import memory_graph_boosts
 
 
 @dataclass
@@ -40,6 +43,10 @@ class AssembledContext:
     profile_execution_default: str
     tool_policy: dict[str, Any]
     memory_policy: dict[str, Any]
+    modality_counts: dict[str, int]
+    context_manifest: dict[str, Any]
+    memory_relation_count: int = 0
+    current_message_count: int = 1
 
 
 class ContextAssembler:
@@ -48,9 +55,20 @@ class ContextAssembler:
     Legacy chat rows are migration inputs, not online conversation state.
     """
 
-    def __init__(self, *, max_history_items: int = 80, max_chars: int = 120_000):
+    def __init__(
+        self,
+        *,
+        max_history_items: int = 200,
+        max_chars: int | None = None,
+        max_input_tokens: int | None = None,
+    ):
         self.max_history_items = max_history_items
         self.max_chars = max_chars
+        window = int(getattr(settings, "responses_context_window_tokens", 131_072))
+        reserve = int(getattr(settings, "responses_context_output_reserve_tokens", 8_192))
+        self.max_input_tokens = max_input_tokens or max(4_096, window - reserve)
+        self.output_reserve_tokens = reserve
+        self.token_counter = get_token_counter()
 
     async def assemble(
         self,
@@ -175,7 +193,7 @@ class ContextAssembler:
             str(item) for item in extension.get("attachment_ids") or [] if str(item).strip()
         ][:10]
         attachment_context = ""
-        image_parts: list[dict[str, Any]] = []
+        attachment_parts: list[dict[str, Any]] = []
         if attachment_ids:
             attachments = (
                 (
@@ -197,9 +215,10 @@ class ContextAssembler:
             if ordered:
                 blocks: list[str] = []
                 image_budget = 12_000_000
+                media_budget = max(1, int(settings.multimodal_inline_max_mb)) * 1024 * 1024 * 4 // 3
                 for attachment in ordered:
                     excerpt = (attachment.content_text or attachment.content_summary or "").strip()[
-                        :12_000
+                        : max(1, int(settings.attachment_max_chars))
                     ]
                     blocks.append(
                         f"[附件 {attachment.id}: {attachment.filename}]\n"
@@ -210,7 +229,7 @@ class ContextAssembler:
                         and attachment.image_mime
                         and len(attachment.image_base64) <= image_budget
                     ):
-                        image_parts.append(
+                        attachment_parts.append(
                             {
                                 "type": "input_image",
                                 "image_url": (
@@ -220,6 +239,43 @@ class ContextAssembler:
                             }
                         )
                         image_budget -= len(attachment.image_base64)
+                    elif (
+                        attachment.media_base64
+                        and attachment.media_mime
+                        and attachment.media_kind == "audio"
+                        and len(attachment.media_base64) <= media_budget
+                    ):
+                        attachment_parts.append(
+                            {
+                                "type": "input_audio",
+                                "input_audio": {
+                                    "data": (
+                                        f"data:{attachment.media_mime};base64,"
+                                        f"{attachment.media_base64}"
+                                    ),
+                                    "format": attachment.file_extension or "wav",
+                                },
+                            }
+                        )
+                        media_budget -= len(attachment.media_base64)
+                    elif (
+                        attachment.media_base64
+                        and attachment.media_mime
+                        and attachment.media_kind == "video"
+                        and len(attachment.media_base64) <= media_budget
+                    ):
+                        attachment_parts.append(
+                            {
+                                "type": "input_video",
+                                "video_url": {
+                                    "url": (
+                                        f"data:{attachment.media_mime};base64,"
+                                        f"{attachment.media_base64}"
+                                    )
+                                },
+                            }
+                        )
+                        media_budget -= len(attachment.media_base64)
                 attachment_context = "\n\n".join(blocks)
                 system_blocks.append(
                     "当前回合上传附件的内容已经完整注入下方上下文。应直接根据这些内容回答；"
@@ -231,6 +287,7 @@ class ContextAssembler:
             extension.get("memory_mode") or request_payload.get("memory_mode") or "enabled"
         )
         memory_ids: list[str] = []
+        memory_relation_count = 0
         if memory_policy.get("enabled") is False:
             memory_mode = "disabled"
         if memory_mode == "enabled" and not bool(getattr(session, "is_temporary", False)):
@@ -311,12 +368,26 @@ class ContextAssembler:
                     memory_id=memory.id,
                 )
             memories = compliant_memories
-            memories = self._rank_memories(memories, user_query)[:24]
+            anchors = self._rank_memories(memories, user_query)[:12]
+            graph_boosts, relation_edges = await memory_graph_boosts(
+                db,
+                memory_ids=[memory.id for memory in anchors],
+                user_id=response.user_id,
+                tenant_id=response.tenant_id,
+                workspace_id=response.workspace_id,
+            )
+            memory_relation_count = len(relation_edges)
+            memories = self._rank_memories(
+                memories,
+                user_query,
+                graph_boosts=graph_boosts,
+            )[:24]
             if memories:
                 memory_ids = [memory.id for memory in memories]
                 for memory in memories:
                     memory.access_count = int(memory.access_count or 0) + 1
                     memory.last_accessed_at = now
+                    memory.salience = min(1.0, float(memory.salience or 0.0) + 0.01)
                 system_blocks.append(
                     "已确认的用户记忆（用户提供或确认的个人上下文）：\n"
                     + "\n".join(f"- {memory.content}" for memory in memories)
@@ -330,7 +401,7 @@ class ContextAssembler:
         current_messages = self._current_input_messages(
             request_payload.get("input"), fallback=user_query
         )
-        if image_parts:
+        if attachment_parts:
             target = next(
                 (item for item in reversed(current_messages) if item.get("role") == "user"),
                 None,
@@ -340,22 +411,39 @@ class ContextAssembler:
                 if isinstance(content, str):
                     target["content"] = [
                         {"type": "input_text", "text": content},
-                        *image_parts,
+                        *attachment_parts,
                     ]
                 elif isinstance(content, list):
-                    target["content"] = [*content, *image_parts]
+                    target["content"] = [*content, *attachment_parts]
         messages.extend(current_messages)
+        modality_counts = self._modality_counts(current_messages)
+        packed_messages, context_manifest = self._pack_messages(
+            messages,
+            current_count=len(current_messages),
+            modality_counts=modality_counts,
+        )
+        context_manifest.update(
+            {
+                "memory_count": len(memory_ids),
+                "memory_relation_count": memory_relation_count,
+                "attachment_count": len(attachment_ids),
+            }
+        )
         return AssembledContext(
-            messages=self._trim(messages),
+            messages=packed_messages,
             memory_ids=memory_ids,
             attachment_ids=attachment_ids,
             attachment_context=attachment_context,
-            contains_images=bool(image_parts),
+            contains_images=modality_counts.get("image", 0) > 0,
             project_id=project_id,
             assistant_profile_id=profile_id,
             profile_execution_default=profile_execution_default,
             tool_policy=tool_policy,
             memory_policy=memory_policy,
+            modality_counts=modality_counts,
+            context_manifest=context_manifest,
+            memory_relation_count=memory_relation_count,
+            current_message_count=len(current_messages),
         )
 
     @staticmethod
@@ -379,8 +467,8 @@ class ContextAssembler:
                 )
         return "\n".join(part.strip() for part in parts if part.strip())
 
-    @staticmethod
-    def _current_input_messages(value: Any, *, fallback: str) -> list[dict[str, Any]]:
+    @classmethod
+    def _current_input_messages(cls, value: Any, *, fallback: str) -> list[dict[str, Any]]:
         if isinstance(value, str):
             return [{"role": "user", "content": value}]
         if not isinstance(value, list):
@@ -393,17 +481,56 @@ class ContextAssembler:
             if role not in {"user", "assistant", "developer", "system"}:
                 continue
             content = item.get("content")
-            if isinstance(content, str | list):
+            if isinstance(content, str):
                 messages.append({"role": role, "content": content})
+            elif isinstance(content, list):
+                messages.append({"role": role, "content": cls._normalize_content_parts(content)})
         return messages or [{"role": "user", "content": fallback}]
 
     @staticmethod
-    def _rank_memories(memories: list[UserMemory], query: str) -> list[UserMemory]:
+    def _normalize_content_parts(content: list[Any]) -> list[dict[str, Any]]:
+        allowed = {
+            "input_text",
+            "output_text",
+            "input_image",
+            "image_url",
+            "input_audio",
+            "audio_url",
+            "input_video",
+            "video_url",
+        }
+        normalized: list[dict[str, Any]] = []
+        for raw in content[:32]:
+            if not isinstance(raw, dict):
+                normalized.append({"type": "input_text", "text": str(raw)})
+                continue
+            part = dict(raw)
+            part_type = str(part.get("type") or "")
+            if part_type not in allowed:
+                continue
+            if part_type in {"input_text", "output_text"}:
+                part["text"] = str(part.get("text") or part.get("input_text") or "")
+            normalized.append(part)
+        return normalized
+
+    @staticmethod
+    def _rank_memories(
+        memories: list[UserMemory],
+        query: str,
+        *,
+        graph_boosts: dict[str, float] | None = None,
+    ) -> list[UserMemory]:
         query_terms = ContextAssembler._search_terms(query)
+        boosts = graph_boosts or {}
 
         def relevance(item: UserMemory) -> tuple[bool, float, datetime]:
             content_terms = ContextAssembler._search_terms(item.content or "")
             overlap = len(query_terms & content_terms) / max(1, len(query_terms))
+            updated_at = item.updated_at or datetime.min.replace(tzinfo=UTC)
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=UTC)
+            age_days = max(0.0, (datetime.now(UTC) - updated_at).total_seconds() / 86400)
+            salience_decay = 1.0 if item.pinned else max(0.60, 0.995**age_days)
             always_relevant = (
                 bool(item.pinned)
                 or item.kind
@@ -417,13 +544,14 @@ class ContextAssembler:
             value = (
                 (3.0 if item.pinned else 0.0)
                 + overlap * 2.5
-                + float(item.salience or 0.0)
+                + float(item.salience or 0.0) * salience_decay
                 + float(item.confidence or 0.0) * 0.25
+                + float(boosts.get(item.id, 0.0)) * 1.5
             )
             return (
-                always_relevant or overlap > 0,
+                always_relevant or overlap > 0 or item.id in boosts,
                 value,
-                item.updated_at or datetime.min.replace(tzinfo=UTC),
+                updated_at,
             )
 
         ranked = [(relevance(item), item) for item in memories]
@@ -493,7 +621,10 @@ class ContextAssembler:
                 "conversation_summary",
             } and item.role in {"user", "assistant", "system", "developer"}:
                 if item.content:
-                    result.append({"role": item.role, "content": item.content})
+                    message = {"role": item.role, "content": item.content}
+                    if item.item_type == "conversation_summary":
+                        message["_context_kind"] = "conversation_summary"
+                    result.append(message)
             elif item.item_type == "function_call":
                 payload = dict(item.payload or {})
                 call_id = str(payload.get("call_id") or item.id)
@@ -529,19 +660,201 @@ class ContextAssembler:
                 )
         return result[-self.max_history_items :]
 
+    def _pack_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        current_count: int,
+        modality_counts: dict[str, int],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if not messages:
+            return [], {
+                "max_input_tokens": self.max_input_tokens,
+                "estimated_input_tokens": 0,
+                "dropped_history_items": 0,
+                "used_conversation_summary": False,
+                "modality_counts": modality_counts,
+            }
+
+        system = dict(messages[0])
+        history_end = max(1, len(messages) - max(0, current_count))
+        history = [dict(item) for item in messages[1:history_end]]
+        current = [dict(item) for item in messages[history_end:]]
+
+        # 平台/租户/用户指令永远保留；过长时同时保留头尾，防止附件或当前回合指令
+        # 挤掉平台安全边界。
+        system_limit = max(2_048, int(self.max_input_tokens * 0.35))
+        if self._message_tokens(system) > system_limit:
+            system["content"] = self._truncate_text(
+                str(system.get("content") or ""), system_limit, preserve_tail=True
+            )
+
+        base = [system, *current]
+        used = sum(self._message_tokens(item) for item in base)
+        budget = max(0, self.max_input_tokens - used)
+        selected_indices: set[int] = set()
+
+        summary_index = next(
+            (
+                index
+                for index in range(len(history) - 1, -1, -1)
+                if history[index].get("_context_kind") == "conversation_summary"
+            ),
+            None,
+        )
+        if summary_index is not None:
+            summary_tokens = self._message_tokens(history[summary_index])
+            if summary_tokens <= budget:
+                selected_indices.add(summary_index)
+                budget -= summary_tokens
+
+        index = len(history) - 1
+        while index >= 0:
+            if index in selected_indices:
+                index -= 1
+                continue
+            group = [index]
+            if (
+                history[index].get("role") == "tool"
+                and index > 0
+                and history[index - 1].get("tool_calls")
+            ):
+                group.insert(0, index - 1)
+            group_tokens = sum(self._message_tokens(history[item]) for item in group)
+            if group_tokens <= budget:
+                selected_indices.update(group)
+                budget -= group_tokens
+            index = min(group) - 1
+
+        packed_history = [item for index, item in enumerate(history) if index in selected_indices]
+        dropped = len(history) - len(packed_history)
+        if dropped:
+            packed_history.insert(
+                0,
+                {
+                    "role": "system",
+                    "content": (
+                        f"[为适配上下文窗口，已省略 {dropped} 条较早消息；"
+                        "保留了最近对话和最新持久摘要。]"
+                    ),
+                },
+            )
+        packed = [system, *packed_history, *current]
+        estimated = sum(self._message_tokens(item) for item in packed)
+        return packed, {
+            "max_input_tokens": self.max_input_tokens,
+            "output_reserve_tokens": self.output_reserve_tokens,
+            "estimated_input_tokens": estimated,
+            "dropped_history_items": dropped,
+            "used_conversation_summary": (
+                summary_index in selected_indices if summary_index is not None else False
+            ),
+            "overflow": estimated > self.max_input_tokens,
+            "modality_counts": modality_counts,
+        }
+
+    def repack_for_tool_schemas(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        current_count: int,
+        modality_counts: dict[str, int],
+        tool_schema_tokens: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        original_budget = self.max_input_tokens
+        try:
+            self.max_input_tokens = max(4_096, original_budget - max(0, tool_schema_tokens))
+            packed, manifest = self._pack_messages(
+                messages,
+                current_count=current_count,
+                modality_counts=modality_counts,
+            )
+            manifest["context_payload_budget_tokens"] = self.max_input_tokens
+            manifest["max_input_tokens"] = original_budget
+            return packed, manifest
+        finally:
+            self.max_input_tokens = original_budget
+
+    def _truncate_text(self, text: str, max_tokens: int, *, preserve_tail: bool) -> str:
+        if self.token_counter.count(text) <= max_tokens:
+            return text
+        ratio = max_tokens / max(1, self.token_counter.count(text))
+        chars = max(256, int(len(text) * ratio * 0.92))
+        marker = "\n\n[中间内容已按上下文预算压缩]\n\n"
+        if preserve_tail:
+            head = max(128, chars * 2 // 3)
+            tail = max(128, chars - head)
+            return text[:head] + marker + text[-tail:]
+        return text[:chars] + marker
+
+    def _message_tokens(self, message: dict[str, Any]) -> int:
+        total = 4 + self._content_tokens(message.get("content"))
+        for call in message.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            raw_function = call.get("function")
+            function: dict[str, Any] = raw_function if isinstance(raw_function, dict) else {}
+            total += self.token_counter.count(str(function.get("name") or ""))
+            total += self.token_counter.count(str(function.get("arguments") or ""))
+        return total
+
+    def _content_tokens(self, content: Any) -> int:
+        if isinstance(content, str):
+            return self.token_counter.count(content)
+        if not isinstance(content, list):
+            return self.token_counter.count(str(content or ""))
+        total = 0
+        for part in content:
+            if not isinstance(part, dict):
+                total += self.token_counter.count(str(part))
+                continue
+            part_type = str(part.get("type") or "")
+            if part_type in {"input_image", "image_url"}:
+                total += 1_024
+            elif part_type in {"input_audio", "audio_url"}:
+                total += 4_096
+            elif part_type in {"input_video", "video_url"}:
+                total += 8_192
+            else:
+                total += self.token_counter.count(
+                    str(part.get("text") or part.get("input_text") or "")
+                )
+        return total
+
+    @staticmethod
+    def _modality_counts(messages: list[dict[str, Any]]) -> dict[str, int]:
+        counts = {"text": 0, "image": 0, "audio": 0, "video": 0}
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, str):
+                if content.strip():
+                    counts["text"] += 1
+                continue
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict):
+                    counts["text"] += 1
+                    continue
+                part_type = str(part.get("type") or "")
+                if part_type in {"input_image", "image_url"}:
+                    counts["image"] += 1
+                elif part_type in {"input_audio", "audio_url"}:
+                    counts["audio"] += 1
+                elif part_type in {"input_video", "video_url"}:
+                    counts["video"] += 1
+                elif part_type in {"input_text", "output_text"}:
+                    counts["text"] += 1
+        return counts
+
     def _trim(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if sum(self._content_size(item.get("content")) for item in messages) <= self.max_chars:
-            return messages
-        system, rest = messages[0], messages[1:]
-        kept: list[dict[str, Any]] = []
-        budget = max(0, self.max_chars - self._content_size(system.get("content")))
-        for item in reversed(rest):
-            size = self._content_size(item.get("content"))
-            if kept and size > budget:
-                break
-            kept.append(item)
-            budget -= size
-        return [system, *reversed(kept)]
+        """兼容旧调用；新主路径使用 token-aware packer。"""
+        packed, _manifest = self._pack_messages(
+            messages,
+            current_count=1 if len(messages) > 1 else 0,
+            modality_counts=self._modality_counts(messages),
+        )
+        return packed
 
     @staticmethod
     def _content_size(content: Any) -> int:

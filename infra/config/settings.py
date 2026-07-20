@@ -123,6 +123,9 @@ class LLMSettings(BaseSettings):
     default_llm_vision_model: str = "qwen3.6-vl-plus"
     default_llm_vision_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     default_llm_vision_api_key: str = ""
+    # Omni LLM — audio/image/video native understanding; uses the Query role
+    # credentials and endpoint unless the caller explicitly selects another model.
+    default_llm_omni_model: str = "qwen3.5-omni-flash"
 
 
 class EmbeddingSettings(BaseSettings):
@@ -508,6 +511,14 @@ class AppSettings(BaseSettings):
     context_max_history_tokens: int = 4096
     context_keep_recent_turns_min: int = 2
 
+    # Canonical Responses Agent Loop context and planning budgets.
+    responses_context_window_tokens: int = 131072
+    responses_context_output_reserve_tokens: int = 8192
+    responses_summary_trigger_tokens: int = 48000
+    responses_capability_catalog_limit: int = 48
+    responses_agent_deep_max_rounds: int = 16
+    responses_agent_replan_limit: int = 3
+
     # Feature ③ Memory Value Feedback Loop
     kernel_memory_value_scoring_enabled: bool = True
     kernel_memory_feedback_like_bonus: float = 0.3
@@ -523,6 +534,7 @@ class AppSettings(BaseSettings):
     attachment_storage_path: str = "/tmp/opentrace_attachments"
     attachment_max_chars: int = 4000
     multimodal_attachment_enabled: bool = True
+    multimodal_inline_max_mb: int = 7
 
     # ── Feature ⑦ CriticSelfCorrection REVISE loop ──────────────────────
     kernel_revise_loop_enabled: bool = True

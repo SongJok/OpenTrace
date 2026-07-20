@@ -22,17 +22,31 @@ from infra.storage.models import (
 from kernel.agent_loop.context import ContextAssembler
 from kernel.agent_loop.contracts import (
     AgentLoopResult,
+    ExecutionPlan,
     ExecutionProfile,
+    ExecutionStep,
     IntentPlan,
+    PlanningDecision,
     SideEffect,
     ToolSpec,
     parse_tool_specs,
 )
+from kernel.agent_loop.discovery import CapabilityDiscovery
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, capture_model_calls, get_model_gateway
 
 EventEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
-_SENSITIVE_KEYS = {"password", "passwd", "token", "access_token", "refresh_token", "secret", "api_key", "authorization", "cookie"}
+_SENSITIVE_KEYS = {
+    "password",
+    "passwd",
+    "token",
+    "access_token",
+    "refresh_token",
+    "secret",
+    "api_key",
+    "authorization",
+    "cookie",
+}
 
 
 def _tool_name(call: dict[str, Any]) -> str:
@@ -60,10 +74,17 @@ def _call_id(call: dict[str, Any]) -> str:
 
 def _redact_sensitive(value: Any, *, key: str = "") -> Any:
     lowered_key = key.lower()
-    if lowered_key in _SENSITIVE_KEYS or lowered_key.endswith("_token") or any(part in lowered_key for part in ("password", "secret", "api_key")):
+    if (
+        lowered_key in _SENSITIVE_KEYS
+        or lowered_key.endswith("_token")
+        or any(part in lowered_key for part in ("password", "secret", "api_key"))
+    ):
         return "[REDACTED]"
     if isinstance(value, dict):
-        return {str(item_key): _redact_sensitive(item, key=str(item_key)) for item_key, item in value.items()}
+        return {
+            str(item_key): _redact_sensitive(item, key=str(item_key))
+            for item_key, item in value.items()
+        }
     if isinstance(value, list):
         return [_redact_sensitive(item) for item in value]
     if isinstance(value, str) and (value.startswith("sk-") or "BEGIN PRIVATE KEY" in value):
@@ -92,7 +113,9 @@ class AgentLoop:
         payload = dict(response.request_payload or {})
         query = self._query(payload)
         extension = dict(payload.get("opentrace") or {})
-        profile_value = str(extension.get("execution_profile") or payload.get("execution_profile") or "auto")
+        profile_value = str(
+            extension.get("execution_profile") or payload.get("execution_profile") or "auto"
+        )
         try:
             profile = ExecutionProfile(profile_value)
         except ValueError:
@@ -105,20 +128,58 @@ class AgentLoop:
             ExecutionProfile.DEEP.value,
         }:
             profile = ExecutionProfile(context.profile_execution_default)
-        tool_specs = self._apply_tool_policy(
+        available_specs = self._apply_tool_policy(
             self._available_tool_specs(payload), context.tool_policy
         )
+        client_tool_names = {
+            spec.name for spec in parse_tool_specs(list(payload.get("tools") or []))
+        }
+        discovery = CapabilityDiscovery(
+            catalogue_limit=int(settings.responses_capability_catalog_limit)
+        ).discover(query, available_specs, pinned_names=client_tool_names)
+        tool_specs = list(discovery.specs)
+        await emit(
+            "opentrace.capabilities.discovered",
+            {
+                "total_available": discovery.total_available,
+                "catalogue_size": len(discovery.matches),
+                "matches": [match.to_dict() for match in discovery.matches[:12]],
+            },
+        )
         model_calls: list[dict[str, Any]] = []
-        with capture_model_calls() as planning_calls:
-            intent = await self._plan_intent(
-                query=query,
-                attachment_context=context.attachment_context,
-                profile=profile,
-                tool_specs=tool_specs,
-                goal_mode=bool(extension.get("goal_id")),
-            )
-        model_calls.extend(planning_calls)
+        decision = await self._restore_planning_decision(db, response=response)
+        if decision is None:
+            with capture_model_calls() as planning_calls:
+                decision = await self._plan_turn(
+                    query=query,
+                    attachment_context=context.attachment_context,
+                    profile=profile,
+                    tool_specs=tool_specs,
+                    goal_mode=bool(extension.get("goal_id")),
+                    capability_catalogue=discovery.prompt_catalogue(),
+                )
+            model_calls.extend(planning_calls)
+        intent = decision.intent
+        execution_plan = await self._restore_or_persist_execution_plan(
+            db,
+            response=response,
+            proposed=decision.execution_plan,
+            intent=intent,
+        )
+        plan_statuses, replan_count = await self._execution_plan_runtime(
+            db,
+            response=response,
+            plan=execution_plan,
+        )
         await emit("opentrace.intent.resolved", {"intent": intent.to_dict()})
+        await emit(
+            "opentrace.plan.created",
+            {
+                "plan": execution_plan.to_dict(),
+                "statuses": dict(plan_statuses),
+                "replan_count": replan_count,
+            },
+        )
 
         selected_capabilities = set(intent.capabilities)
         if selected_capabilities:
@@ -130,6 +191,25 @@ class AgentLoop:
         else:
             tool_specs = []
 
+        tool_schema_tokens = sum(
+            max(1, len(json.dumps(spec.as_openai_tool(), ensure_ascii=False)) // 4)
+            for spec in tool_specs
+        )
+        if int(
+            context.context_manifest.get("estimated_input_tokens") or 0
+        ) + tool_schema_tokens > int(context.context_manifest.get("max_input_tokens") or 0):
+            context.messages, repacked_manifest = self.context_assembler.repack_for_tool_schemas(
+                context.messages,
+                current_count=context.current_message_count,
+                modality_counts=context.modality_counts,
+                tool_schema_tokens=tool_schema_tokens,
+            )
+            context.context_manifest.update(repacked_manifest)
+        context.context_manifest["tool_schema_tokens"] = tool_schema_tokens
+        context.context_manifest["estimated_request_tokens"] = (
+            int(context.context_manifest.get("estimated_input_tokens") or 0) + tool_schema_tokens
+        )
+
         await emit(
             "opentrace.context.ready",
             {
@@ -138,6 +218,8 @@ class AgentLoop:
                 "attachment_ids": context.attachment_ids,
                 "project_id": context.project_id,
                 "assistant_profile_id": context.assistant_profile_id,
+                "modalities": context.modality_counts,
+                "manifest": context.context_manifest,
             },
         )
         if intent.clarification_question:
@@ -155,6 +237,10 @@ class AgentLoop:
                     "memory_ids": context.memory_ids,
                     "attachment_ids": context.attachment_ids,
                     "execution_profile": profile.value,
+                    "execution_plan": execution_plan.to_dict(),
+                    "execution_plan_status": dict(plan_statuses),
+                    "execution_plan_replan_count": replan_count,
+                    "context_manifest": context.context_manifest,
                 },
             )
         messages = [
@@ -167,7 +253,50 @@ class AgentLoop:
             )
             for item in context.messages
         ]
-        await self._restore_tool_history(db, response=response, messages=messages, emit=emit)
+        restored_tools = await self._restore_tool_history(
+            db,
+            response=response,
+            messages=messages,
+            emit=emit,
+        )
+        for tool_name, result in restored_tools:
+            step = self._plan_step_for_capability(
+                execution_plan,
+                plan_statuses,
+                tool_name,
+                recovering=True,
+            )
+            if step is None:
+                continue
+            succeeded = self._tool_result_succeeded(result)
+            plan_statuses[step.id] = "completed" if succeeded else "failed"
+            await emit(
+                ("opentrace.plan.step.completed" if succeeded else "opentrace.plan.step.failed"),
+                {
+                    "step": step.to_dict(),
+                    "status": plan_statuses[step.id],
+                    "tool": tool_name,
+                    "restored": True,
+                },
+            )
+        if restored_tools:
+            await self._persist_execution_plan_runtime(
+                db,
+                response=response,
+                statuses=plan_statuses,
+                replan_count=replan_count,
+            )
+        if execution_plan.steps:
+            messages.append(
+                LLMMessage(
+                    role="system",
+                    content=self._execution_plan_prompt(
+                        execution_plan,
+                        statuses=plan_statuses,
+                        replan_count=replan_count,
+                    ),
+                )
+            )
 
         spec_by_name = {spec.name: spec for spec in tool_specs}
         if (
@@ -188,8 +317,19 @@ class AgentLoop:
         if str(payload.get("tool_choice") or "auto") == "none":
             public_tools = []
         model_name, reasoning = self._model_profile(profile, payload)
-        if context.contains_images and not str(payload.get("model") or "").strip():
+        if (
+            context.modality_counts.get("audio", 0) or context.modality_counts.get("video", 0)
+        ) and not str(payload.get("model") or "").strip():
+            model_name = settings.default_llm_omni_model
+            reasoning = {"effort": "low", "summary": "auto"}
+        elif context.contains_images and not str(payload.get("model") or "").strip():
             model_name = settings.default_llm_vision_model
+        round_limit = self.max_rounds
+        if profile == ExecutionProfile.DEEP or execution_plan.complexity == "complex":
+            round_limit = max(
+                round_limit,
+                int(settings.responses_agent_deep_max_rounds),
+            )
 
         # Most turns do not need tools. Stream those directly from Qwen so the
         # product displays genuine incremental generation instead of replaying
@@ -219,6 +359,13 @@ class AgentLoop:
                 {"round": 1, "model": resolved_model, "tool_call_count": 0},
             )
             await emit("response.output_text.done", {"text": content})
+            await self._complete_remaining_plan(emit, execution_plan, plan_statuses)
+            await self._persist_execution_plan_runtime(
+                db,
+                response=response,
+                statuses=plan_statuses,
+                replan_count=replan_count,
+            )
             return AgentLoopResult(
                 status="completed",
                 content=content,
@@ -232,10 +379,15 @@ class AgentLoop:
                     "execution_profile": profile.value,
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
+                    "execution_plan": execution_plan.to_dict(),
+                    "execution_plan_status": dict(plan_statuses),
+                    "execution_plan_replan_count": replan_count,
+                    "context_manifest": context.context_manifest,
+                    "capability_discovery": [match.to_dict() for match in discovery.matches[:12]],
                 },
             )
 
-        for round_number in range(1, self.max_rounds + 1):
+        for round_number in range(1, round_limit + 1):
             await db.refresh(response)
             if response.status == "cancelled":
                 return AgentLoopResult(status="cancelled", intent=intent)
@@ -270,7 +422,11 @@ class AgentLoop:
                 )
             await emit(
                 "opentrace.model.completed",
-                {"round": round_number, "model": model_response.model, "tool_call_count": len(model_response.tool_calls)},
+                {
+                    "round": round_number,
+                    "model": model_response.model,
+                    "tool_call_count": len(model_response.tool_calls),
+                },
             )
             if not model_response.tool_calls or str(payload.get("tool_choice") or "auto") == "none":
                 reasoning_summary = self._reasoning_summary(model_response.output_items)
@@ -278,6 +434,13 @@ class AgentLoop:
                     await emit("response.reasoning_summary_text.done", {"text": reasoning_summary})
                 content = str(model_response.content or "")
                 await self._emit_text(emit, content)
+                await self._complete_remaining_plan(emit, execution_plan, plan_statuses)
+                await self._persist_execution_plan_runtime(
+                    db,
+                    response=response,
+                    statuses=plan_statuses,
+                    replan_count=replan_count,
+                )
                 return AgentLoopResult(
                     status="completed",
                     content=content,
@@ -293,6 +456,13 @@ class AgentLoop:
                         "provider_response_id": model_response.response_id,
                         "prompt_tokens": model_response.prompt_tokens,
                         "completion_tokens": model_response.completion_tokens,
+                        "execution_plan": execution_plan.to_dict(),
+                        "execution_plan_status": dict(plan_statuses),
+                        "execution_plan_replan_count": replan_count,
+                        "context_manifest": context.context_manifest,
+                        "capability_discovery": [
+                            match.to_dict() for match in discovery.matches[:12]
+                        ],
                     },
                 )
 
@@ -311,7 +481,13 @@ class AgentLoop:
                 }
                 for call in calls
             ]
-            messages.append(LLMMessage(role="assistant", content=model_response.content or None, tool_calls=assistant_calls))
+            messages.append(
+                LLMMessage(
+                    role="assistant",
+                    content=model_response.content or None,
+                    tool_calls=assistant_calls,
+                )
+            )
 
             item_sequence = await self._next_item_sequence(db, response.id)
             for offset, call in enumerate(calls):
@@ -345,17 +521,94 @@ class AgentLoop:
                 name = _tool_name(call)
                 spec = spec_by_name.get(name)
                 if spec is None:
-                    messages.append(LLMMessage(role="tool", name=name or "unknown", tool_call_id=_call_id(call), content=json.dumps({"status": "failed", "error": "tool_not_available"})))
+                    messages.append(
+                        LLMMessage(
+                            role="tool",
+                            name=name or "unknown",
+                            tool_call_id=_call_id(call),
+                            content=json.dumps({"status": "failed", "error": "tool_not_available"}),
+                        )
+                    )
                     continue
+                step = self._plan_step_for_capability(execution_plan, plan_statuses, name)
+                if step:
+                    unmet_dependencies = [
+                        dependency
+                        for dependency in step.depends_on
+                        if plan_statuses.get(dependency) not in {"completed", "failed"}
+                    ]
+                    if unmet_dependencies:
+                        messages.append(
+                            LLMMessage(
+                                role="tool",
+                                name=name,
+                                tool_call_id=_call_id(call),
+                                content=json.dumps(
+                                    {
+                                        "status": "deferred",
+                                        "reason": "plan_dependency_not_ready",
+                                        "unmet_dependencies": unmet_dependencies,
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            )
+                        )
+                        await emit(
+                            "opentrace.plan.step.deferred",
+                            {
+                                "step": step.to_dict(),
+                                "status": "pending",
+                                "unmet_dependencies": unmet_dependencies,
+                            },
+                        )
+                        continue
+                    plan_statuses[step.id] = "running"
+                    await emit(
+                        "opentrace.plan.step.started",
+                        {"step": step.to_dict(), "status": "running", "round": round_number},
+                    )
                 if _has_sensitive_arguments(_tool_args(call)):
                     failure = {"status": "failed", "error": "sensitive_argument_rejected"}
-                    messages.append(LLMMessage(role="tool", name=name, tool_call_id=_call_id(call), content=json.dumps(failure)))
-                    await emit("opentrace.tool.failed", {"call_id": _call_id(call), "name": name, **failure})
+                    messages.append(
+                        LLMMessage(
+                            role="tool",
+                            name=name,
+                            tool_call_id=_call_id(call),
+                            content=json.dumps(failure),
+                        )
+                    )
+                    await emit(
+                        "opentrace.tool.failed",
+                        {"call_id": _call_id(call), "name": name, **failure},
+                    )
+                    if step:
+                        plan_statuses[step.id] = "failed"
+                        await emit(
+                            "opentrace.plan.step.failed",
+                            {
+                                "step": step.to_dict(),
+                                "status": "failed",
+                                "reason": failure["error"],
+                                "round": round_number,
+                            },
+                        )
                     continue
                 if spec.side_effect != SideEffect.READ:
-                    approval = await self._ensure_approval(db, response=response, call=call, spec=spec)
+                    approval = await self._ensure_approval(
+                        db, response=response, call=call, spec=spec
+                    )
                     if approval.status == "pending":
                         approvals.append(approval)
+                        if step:
+                            plan_statuses[step.id] = "requires_action"
+                            await emit(
+                                "opentrace.plan.step.deferred",
+                                {
+                                    "step": step.to_dict(),
+                                    "status": "requires_action",
+                                    "reason": "approval_required",
+                                },
+                            )
                     elif approval.status == "approved":
                         executable.append((call, spec))
                     else:
@@ -365,22 +618,50 @@ class AgentLoop:
                                 name=name,
                                 tool_call_id=_call_id(call),
                                 content=json.dumps(
-                                    {"status": "rejected", "reason": approval.reason or "user_rejected"},
+                                    {
+                                        "status": "rejected",
+                                        "reason": approval.reason or "user_rejected",
+                                    },
                                     ensure_ascii=False,
                                 ),
                             )
                         )
+                        if step:
+                            plan_statuses[step.id] = "failed"
+                            await emit(
+                                "opentrace.plan.step.failed",
+                                {
+                                    "step": step.to_dict(),
+                                    "status": "failed",
+                                    "reason": approval.reason or "user_rejected",
+                                    "round": round_number,
+                                },
+                            )
                 else:
                     executable.append((call, spec))
+
+            await self._persist_execution_plan_runtime(
+                db,
+                response=response,
+                statuses=plan_statuses,
+                replan_count=replan_count,
+            )
 
             parallel = [(call, spec) for call, spec in executable if spec.supports_parallel]
             serial = [(call, spec) for call, spec in executable if not spec.supports_parallel]
             executed: list[tuple[dict[str, Any], ToolSpec, dict[str, Any]]] = []
             if parallel:
-                results = await self._execute_tools(db, response=response, calls=parallel, emit=emit)
-                executed.extend((call, spec, result) for (call, spec), result in zip(parallel, results, strict=True))
+                results = await self._execute_tools(
+                    db, response=response, calls=parallel, emit=emit
+                )
+                executed.extend(
+                    (call, spec, result)
+                    for (call, spec), result in zip(parallel, results, strict=True)
+                )
             for call, spec in serial:
-                result = await self._execute_tool(db, response=response, call=call, spec=spec, emit=emit)
+                result = await self._execute_tool(
+                    db, response=response, call=call, spec=spec, emit=emit
+                )
                 executed.append((call, spec, result))
             for call, spec, result in executed:
                 messages.append(
@@ -391,6 +672,61 @@ class AgentLoop:
                         content=json.dumps(result, ensure_ascii=False, default=str),
                     )
                 )
+                step = next(
+                    (
+                        item
+                        for item in execution_plan.steps
+                        if item.capability == spec.name and plan_statuses.get(item.id) == "running"
+                    ),
+                    None,
+                )
+                if step:
+                    succeeded = self._tool_result_succeeded(result)
+                    plan_statuses[step.id] = "completed" if succeeded else "failed"
+                    await emit(
+                        (
+                            "opentrace.plan.step.completed"
+                            if succeeded
+                            else "opentrace.plan.step.failed"
+                        ),
+                        {
+                            "step": step.to_dict(),
+                            "status": plan_statuses[step.id],
+                            "round": round_number,
+                            "tool": spec.name,
+                        },
+                    )
+                    if (
+                        not succeeded
+                        and replan_count < execution_plan.replan_limit
+                        and round_number < round_limit
+                    ):
+                        replan_count += 1
+                        await emit(
+                            "opentrace.plan.replanned",
+                            {
+                                "failed_step_id": step.id,
+                                "reason": str(result.get("error") or "tool_failed")[:500],
+                                "replan_count": replan_count,
+                                "replan_limit": execution_plan.replan_limit,
+                            },
+                        )
+                        messages.append(
+                            LLMMessage(
+                                role="system",
+                                content=(
+                                    f"执行步骤 {step.id} 失败。请基于工具返回重新规划剩余路径，"
+                                    "优先选择已授权的替代只读能力；不要重复副作用操作。"
+                                ),
+                            )
+                        )
+
+            await self._persist_execution_plan_runtime(
+                db,
+                response=response,
+                statuses=plan_statuses,
+                replan_count=replan_count,
+            )
 
             if approvals:
                 response.status = "requires_action"
@@ -411,10 +747,27 @@ class AgentLoop:
                     },
                 )
                 await db.commit()
-                return AgentLoopResult(status="requires_action", intent=intent)
+                return AgentLoopResult(
+                    status="requires_action",
+                    intent=intent,
+                    metadata={
+                        "execution_plan": execution_plan.to_dict(),
+                        "execution_plan_status": dict(plan_statuses),
+                        "execution_plan_replan_count": replan_count,
+                        "context_manifest": context.context_manifest,
+                    },
+                )
 
-        content = "这项请求已达到当前单轮可执行步骤上限。已保留执行记录，你可以让我继续或缩小任务范围。"
+        content = (
+            "这项请求已达到当前单轮可执行步骤上限。已保留执行记录，你可以让我继续或缩小任务范围。"
+        )
         await self._emit_text(emit, content)
+        await self._persist_execution_plan_runtime(
+            db,
+            response=response,
+            statuses=plan_statuses,
+            replan_count=replan_count,
+        )
         return AgentLoopResult(
             status="incomplete",
             content=content,
@@ -423,12 +776,210 @@ class AgentLoop:
             metadata={
                 "model_calls": model_calls,
                 "model_call_count": len(model_calls),
-                "incomplete_details": {"reason": "max_tool_rounds"},
+                "incomplete_details": {
+                    "reason": "max_tool_rounds",
+                    "round_limit": round_limit,
+                },
                 "memory_ids": context.memory_ids,
                 "attachment_ids": context.attachment_ids,
                 "execution_profile": profile.value,
+                "execution_plan": execution_plan.to_dict(),
+                "execution_plan_status": dict(plan_statuses),
+                "execution_plan_replan_count": replan_count,
+                "context_manifest": context.context_manifest,
             },
         )
+
+    async def _restore_planning_decision(
+        self,
+        db: AsyncSession,
+        *,
+        response: ResponseRecord,
+    ) -> PlanningDecision | None:
+        item = await db.scalar(
+            select(ResponseItem)
+            .where(
+                ResponseItem.response_id == response.id,
+                ResponseItem.item_type == "agent_plan",
+            )
+            .order_by(ResponseItem.sequence_number.desc())
+        )
+        if item is None:
+            return None
+        payload = dict(item.payload or {})
+        raw_intent = payload.get("intent")
+        raw_plan = payload.get("plan")
+        if not isinstance(raw_intent, dict) or not isinstance(raw_plan, dict):
+            return None
+        intent = IntentPlan.from_dict(raw_intent)
+        plan = ExecutionPlan.from_dict(raw_plan)
+        if not intent.goal or not plan.steps:
+            return None
+        return PlanningDecision(intent=intent, execution_plan=plan)
+
+    async def _restore_or_persist_execution_plan(
+        self,
+        db: AsyncSession,
+        *,
+        response: ResponseRecord,
+        proposed: ExecutionPlan,
+        intent: IntentPlan | None = None,
+    ) -> ExecutionPlan:
+        existing = await db.scalar(
+            select(ResponseItem)
+            .where(
+                ResponseItem.response_id == response.id,
+                ResponseItem.item_type == "agent_plan",
+            )
+            .order_by(ResponseItem.sequence_number.desc())
+        )
+        if existing:
+            payload = dict(existing.payload or {})
+            restored = ExecutionPlan.from_dict(dict(payload.get("plan") or payload))
+            if restored.steps:
+                if intent is not None and not isinstance(payload.get("intent"), dict):
+                    payload["intent"] = intent.to_dict()
+                    existing.payload = payload
+                    await db.flush()
+                return restored
+        item = ResponseItem(
+            id=f"item_{uuid.uuid4().hex}",
+            response_id=response.id,
+            sequence_number=await self._next_item_sequence(db, response.id),
+            item_type="agent_plan",
+            role="assistant",
+            content=None,
+            payload={
+                "plan": proposed.to_dict(),
+                "intent": intent.to_dict() if intent is not None else None,
+                "statuses": {step.id: "pending" for step in proposed.steps},
+                "replan_count": 0,
+                "version": 1,
+            },
+        )
+        db.add(item)
+        await db.flush()
+        return proposed
+
+    async def _execution_plan_runtime(
+        self,
+        db: AsyncSession,
+        *,
+        response: ResponseRecord,
+        plan: ExecutionPlan,
+    ) -> tuple[dict[str, str], int]:
+        item = await db.scalar(
+            select(ResponseItem)
+            .where(
+                ResponseItem.response_id == response.id,
+                ResponseItem.item_type == "agent_plan",
+            )
+            .order_by(ResponseItem.sequence_number.desc())
+        )
+        payload = dict(item.payload or {}) if item else {}
+        raw_statuses = dict(payload.get("statuses") or {})
+        allowed = {"pending", "running", "requires_action", "completed", "failed"}
+        statuses: dict[str, str] = {}
+        for step in plan.steps:
+            status = str(raw_statuses.get(step.id) or "pending")
+            if status not in allowed:
+                status = "pending"
+            # Worker 在工具运行中失租或退出时，由持久化工具账本负责幂等；计划步骤
+            # 回到 pending，允许新的租约持有者继续恢复。
+            statuses[step.id] = "pending" if status == "running" else status
+        replan_count = max(0, int(payload.get("replan_count") or 0))
+        return statuses, replan_count
+
+    async def _persist_execution_plan_runtime(
+        self,
+        db: AsyncSession,
+        *,
+        response: ResponseRecord,
+        statuses: dict[str, str],
+        replan_count: int,
+    ) -> None:
+        item = await db.scalar(
+            select(ResponseItem)
+            .where(
+                ResponseItem.response_id == response.id,
+                ResponseItem.item_type == "agent_plan",
+            )
+            .order_by(ResponseItem.sequence_number.desc())
+        )
+        if item is None:
+            return
+        payload = dict(item.payload or {})
+        payload["statuses"] = dict(statuses)
+        payload["replan_count"] = max(0, int(replan_count))
+        item.payload = payload
+        await db.flush()
+
+    @staticmethod
+    def _execution_plan_prompt(
+        plan: ExecutionPlan,
+        *,
+        statuses: dict[str, str] | None = None,
+        replan_count: int = 0,
+    ) -> str:
+        return (
+            "这是当前 Response 已持久化的执行计划。按依赖推进，并在工具失败或证据不足时"
+            "重新评估后续步骤；不要声称未实际完成的步骤已经完成。\n"
+            + json.dumps(
+                {
+                    "plan": plan.to_dict(),
+                    "statuses": statuses or {},
+                    "replan_count": replan_count,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    @staticmethod
+    def _plan_step_for_capability(
+        plan: ExecutionPlan,
+        statuses: dict[str, str],
+        capability: str,
+        *,
+        recovering: bool = False,
+    ) -> ExecutionStep | None:
+        eligible_statuses = {"pending", "running", "requires_action"} if recovering else {"pending"}
+        exact = next(
+            (
+                step
+                for step in plan.steps
+                if step.capability == capability and statuses.get(step.id) in eligible_statuses
+            ),
+            None,
+        )
+        if exact:
+            return exact
+        return next(
+            (
+                step
+                for step in plan.steps
+                if step.capability is None and statuses.get(step.id) in eligible_statuses
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _tool_result_succeeded(result: dict[str, Any]) -> bool:
+        return str(result.get("status") or "") in {"completed", "success"}
+
+    @staticmethod
+    async def _complete_remaining_plan(
+        emit: EventEmitter,
+        plan: ExecutionPlan,
+        statuses: dict[str, str],
+    ) -> None:
+        for step in plan.steps:
+            if statuses.get(step.id) in {"completed", "failed"}:
+                continue
+            statuses[step.id] = "completed"
+            await emit(
+                "opentrace.plan.step.completed",
+                {"step": step.to_dict(), "status": "completed"},
+            )
 
     @staticmethod
     def _apply_tool_policy(specs: list[ToolSpec], policy: dict[str, Any]) -> list[ToolSpec]:
@@ -444,7 +995,9 @@ class AgentLoop:
         if not content:
             await emit("response.output_text.done", {"text": ""})
             return
-        chunks = [part for part in re.findall(r".{1,96}(?:\s+|$)|.{1,96}", content, flags=re.S) if part]
+        chunks = [
+            part for part in re.findall(r".{1,96}(?:\s+|$)|.{1,96}", content, flags=re.S) if part
+        ]
         for chunk in chunks:
             await emit("response.output_text.delta", {"delta": chunk})
         await emit("response.output_text.done", {"text": content})
@@ -473,8 +1026,7 @@ class AgentLoop:
                     name=capability.name,
                     description=capability.description,
                     parameters=dict(
-                        getattr(source, "parameters", None)
-                        or {"type": "object", "properties": {}}
+                        getattr(source, "parameters", None) or {"type": "object", "properties": {}}
                     ),
                     side_effect=side_effect,
                     required_permissions=tuple(getattr(source, "required_permissions", []) or []),
@@ -499,7 +1051,10 @@ class AgentLoop:
                         "type": "object",
                         "properties": {
                             "query": {"type": "string"},
-                            "parameters_json": {"type": "string", "description": "Optional expert parameters as a JSON object."},
+                            "parameters_json": {
+                                "type": "string",
+                                "description": "Optional expert parameters as a JSON object.",
+                            },
                         },
                         "required": ["query", "parameters_json"],
                     },
@@ -511,7 +1066,7 @@ class AgentLoop:
         # governed by tools/tool_choice and AssistantProfile.tool_policy.
         return list(by_name.values())
 
-    async def _plan_intent(
+    async def _plan_turn(
         self,
         *,
         query: str,
@@ -519,7 +1074,8 @@ class AgentLoop:
         profile: ExecutionProfile,
         tool_specs: list[ToolSpec],
         goal_mode: bool,
-    ) -> IntentPlan:
+        capability_catalogue: list[dict[str, Any]],
+    ) -> PlanningDecision:
         """Use a strict model tool call for semantic intent selection.
 
         Permission and side-effect decisions are deliberately recomputed from
@@ -536,15 +1092,63 @@ class AgentLoop:
                 "properties": {
                     "goal": {"type": "string"},
                     "task_type": {"type": "string"},
-                    "capabilities": {"type": "array", "items": {"type": "string", "enum": names} if names else {"type": "string"}},
+                    "capabilities": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": names} if names else {"type": "string"},
+                    },
                     "ambiguity": {"type": ["string", "null"]},
-                    "execution_mode": {"type": "string", "enum": ["interactive", "background", "goal"]},
+                    "execution_mode": {
+                        "type": "string",
+                        "enum": ["interactive", "background", "goal"],
+                    },
                     "expected_outputs": {"type": "array", "items": {"type": "string"}},
                     "clarification_question": {"type": ["string", "null"]},
+                    "complexity": {
+                        "type": "string",
+                        "enum": ["simple", "moderate", "complex"],
+                    },
+                    "steps": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "objective": {"type": "string"},
+                                "capability": {
+                                    "type": ["string", "null"],
+                                    "enum": [*names, None],
+                                },
+                                "depends_on": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "success_criteria": {"type": "string"},
+                            },
+                            "required": [
+                                "id",
+                                "objective",
+                                "capability",
+                                "depends_on",
+                                "success_criteria",
+                            ],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "success_criteria": {"type": "array", "items": {"type": "string"}},
+                    "replan_limit": {"type": "integer", "minimum": 0, "maximum": 3},
                 },
                 "required": [
-                    "goal", "task_type", "capabilities", "ambiguity",
-                    "execution_mode", "expected_outputs", "clarification_question",
+                    "goal",
+                    "task_type",
+                    "capabilities",
+                    "ambiguity",
+                    "execution_mode",
+                    "expected_outputs",
+                    "clarification_question",
+                    "complexity",
+                    "steps",
+                    "success_criteria",
+                    "replan_limit",
                 ],
                 "additionalProperties": False,
             },
@@ -554,11 +1158,18 @@ class AgentLoop:
             query=query,
             capability_names=names,
             attachment_context=attachment_context,
+            capability_catalogue=capability_catalogue,
         )
         parsed: dict[str, Any] = {}
         try:
             result = await get_model_gateway().complete(
-                [LLMMessage(role="system", content="你是 OpenTrace 意图规划器，只调用 emit_intent_plan。"), LLMMessage(role="user", content=prompt)],
+                [
+                    LLMMessage(
+                        role="system",
+                        content="你是 OpenTrace 意图规划器，只调用 emit_intent_plan。",
+                    ),
+                    LLMMessage(role="user", content=prompt),
+                ],
                 role=LLMRole.PLANNING,
                 fallback_roles=[LLMRole.QUERY],
                 tools=[planning_tool],
@@ -572,8 +1183,19 @@ class AgentLoop:
         except Exception:
             parsed = {}
 
+        planned_capabilities = [
+            str(step.get("capability") or "")
+            for step in parsed.get("steps") or []
+            if isinstance(step, dict)
+        ]
         selected = (
-            tuple(name for name in parsed.get("capabilities", []) if name in names)
+            tuple(
+                dict.fromkeys(
+                    name
+                    for name in [*parsed.get("capabilities", []), *planned_capabilities]
+                    if name in names
+                )
+            )
             if parsed
             else tuple(names)
         )
@@ -583,27 +1205,106 @@ class AgentLoop:
             default=SideEffect.READ,
             key=self._risk_order,
         )
-        return IntentPlan(
+        intent = IntentPlan(
             goal=str(parsed.get("goal") or query),
             task_type=str(parsed.get("task_type") or ("goal" if goal_mode else "chat")),
             capabilities=selected,
             ambiguity=str(parsed.get("ambiguity")) if parsed.get("ambiguity") else None,
             risk=risk,
             execution_profile=profile,
-            execution_mode=str(parsed.get("execution_mode") or ("goal" if goal_mode else "interactive")),
-            expected_outputs=tuple(str(item) for item in (parsed.get("expected_outputs") or ["answer"])),
-            clarification_question=str(parsed.get("clarification_question")) if parsed.get("clarification_question") else None,
+            execution_mode=str(
+                parsed.get("execution_mode") or ("goal" if goal_mode else "interactive")
+            ),
+            expected_outputs=tuple(
+                str(item) for item in (parsed.get("expected_outputs") or ["answer"])
+            ),
+            clarification_question=(
+                str(parsed.get("clarification_question"))
+                if parsed.get("clarification_question")
+                else None
+            ),
         )
+        raw_plan: dict[str, Any] = {
+            "goal": intent.goal,
+            "complexity": parsed.get("complexity")
+            or ("complex" if goal_mode or profile == ExecutionProfile.DEEP else "simple"),
+            "steps": parsed.get("steps") or [],
+            "success_criteria": parsed.get("success_criteria") or list(intent.expected_outputs),
+            "replan_limit": (
+                parsed.get("replan_limit")
+                if parsed.get("replan_limit") is not None
+                else int(settings.responses_agent_replan_limit)
+            ),
+        }
+        execution_plan = ExecutionPlan.from_dict(raw_plan)
+        if not execution_plan.steps:
+            default_steps = tuple(
+                ExecutionStep(
+                    id=f"step_{index}",
+                    objective=f"调用 {capability} 获取完成目标所需的可核验证据",
+                    capability=capability,
+                    depends_on=(f"step_{index - 1}",) if index > 1 else (),
+                    success_criteria="能力调用成功并返回可用于最终回答的结果",
+                )
+                for index, capability in enumerate(intent.capabilities[:8], start=1)
+            ) or (
+                ExecutionStep(
+                    id="step_1",
+                    objective="综合当前请求、对话上下文和已确认记忆生成回答",
+                    success_criteria="回答直接满足用户目标与输出约束",
+                ),
+            )
+            execution_plan = ExecutionPlan(
+                goal=intent.goal,
+                complexity=str(raw_plan["complexity"]),
+                steps=default_steps,
+                success_criteria=tuple(str(item) for item in raw_plan["success_criteria"]),
+                replan_limit=max(0, min(3, int(raw_plan["replan_limit"]))),
+            )
+        return PlanningDecision(intent=intent, execution_plan=execution_plan)
+
+    async def _plan_intent(
+        self,
+        *,
+        query: str,
+        attachment_context: str,
+        profile: ExecutionProfile,
+        tool_specs: list[ToolSpec],
+        goal_mode: bool,
+    ) -> IntentPlan:
+        """兼容只消费 IntentPlan 的内部扩展点。"""
+        decision = await self._plan_turn(
+            query=query,
+            attachment_context=attachment_context,
+            profile=profile,
+            tool_specs=tool_specs,
+            goal_mode=goal_mode,
+            capability_catalogue=[
+                {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "side_effect": spec.side_effect.value,
+                }
+                for spec in tool_specs
+            ],
+        )
+        return decision.intent
 
     @staticmethod
     def _intent_planning_prompt(
-        *, query: str, capability_names: list[str], attachment_context: str
+        *,
+        query: str,
+        capability_names: list[str],
+        attachment_context: str,
+        capability_catalogue: list[dict[str, Any]] | None = None,
     ) -> str:
         prompt = (
             "识别用户真实目标并选择完成它所需的最小能力集合。不要用关键词路由。"
             "有歧义且会显著改变结果时给出 clarification_question。"
-            f"\n可用能力：{json.dumps(capability_names, ensure_ascii=False)}"
+            f"\n可用能力：{json.dumps(capability_catalogue or capability_names, ensure_ascii=False)}"
             f"\n用户请求：{query}"
+            "\n对复杂任务给出2到8个可验证步骤及依赖；简单问答只给一个步骤。"
+            "步骤是面向用户的执行摘要，不要输出隐藏思维链。工具失败时允许在上限内重规划。"
         )
         if attachment_context:
             prompt += (
@@ -621,15 +1322,20 @@ class AgentLoop:
         response: ResponseRecord,
         messages: list[LLMMessage],
         emit: EventEmitter,
-    ) -> None:
+    ) -> list[tuple[str, dict[str, Any]]]:
+        restored: list[tuple[str, dict[str, Any]]] = []
         approvals = (
-            await db.execute(
-                select(ResponseApproval).where(
-                    ResponseApproval.response_id == response.id,
-                    ResponseApproval.status.in_(["approved", "rejected"]),
+            (
+                await db.execute(
+                    select(ResponseApproval).where(
+                        ResponseApproval.response_id == response.id,
+                        ResponseApproval.status.in_(["approved", "rejected"]),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for approval in approvals:
             existing = await db.scalar(
                 select(ResponseToolExecution).where(
@@ -638,7 +1344,11 @@ class AgentLoop:
                     ResponseToolExecution.status == "completed",
                 )
             )
-            call = {"call_id": approval.call_id, "name": approval.tool_name, "arguments": approval.arguments}
+            call = {
+                "call_id": approval.call_id,
+                "name": approval.tool_name,
+                "arguments": approval.arguments,
+            }
             if approval.status == "rejected":
                 result = {"status": "rejected", "reason": approval.reason or "user_rejected"}
             elif existing is None:
@@ -648,22 +1358,38 @@ class AgentLoop:
                     parameters={"type": "object", "properties": {}},
                     side_effect=SideEffect(approval.side_effect_level),
                 )
-                result = await self._execute_tool(db, response=response, call=call, spec=spec, emit=emit)
+                result = await self._execute_tool(
+                    db, response=response, call=call, spec=spec, emit=emit
+                )
             else:
                 result = dict(existing.result or {})
             messages.append(
                 LLMMessage(
                     role="assistant",
                     content=None,
-                    tool_calls=[{
-                        "id": approval.call_id,
-                        "call_id": approval.call_id,
-                        "type": "function",
-                        "function": {"name": approval.tool_name, "arguments": json.dumps(approval.arguments, ensure_ascii=False)},
-                    }],
+                    tool_calls=[
+                        {
+                            "id": approval.call_id,
+                            "call_id": approval.call_id,
+                            "type": "function",
+                            "function": {
+                                "name": approval.tool_name,
+                                "arguments": json.dumps(approval.arguments, ensure_ascii=False),
+                            },
+                        }
+                    ],
                 )
             )
-            messages.append(LLMMessage(role="tool", name=approval.tool_name, tool_call_id=approval.call_id, content=json.dumps(result, ensure_ascii=False, default=str)))
+            messages.append(
+                LLMMessage(
+                    role="tool",
+                    name=approval.tool_name,
+                    tool_call_id=approval.call_id,
+                    content=json.dumps(result, ensure_ascii=False, default=str),
+                )
+            )
+            restored.append((approval.tool_name, result))
+        return restored
 
     @staticmethod
     def _requires_knowledge_grounding(query: str) -> bool:
@@ -805,12 +1531,22 @@ class AgentLoop:
             )
         )
         if existing_ledger is None:
-            db.add(ResponseToolExecution(
-                id=f"tool_{uuid.uuid4().hex}", response_id=response.id, call_id=call_id,
-                idempotency_key=self._idempotency_key(response.id, call_id, spec.name, _tool_args(call)),
-                tool_name=spec.name, status="pending_approval", arguments=_tool_args(call), result={},
-                side_effect=True, side_effect_level=spec.side_effect.value,
-            ))
+            db.add(
+                ResponseToolExecution(
+                    id=f"tool_{uuid.uuid4().hex}",
+                    response_id=response.id,
+                    call_id=call_id,
+                    idempotency_key=self._idempotency_key(
+                        response.id, call_id, spec.name, _tool_args(call)
+                    ),
+                    tool_name=spec.name,
+                    status="pending_approval",
+                    arguments=_tool_args(call),
+                    result={},
+                    side_effect=True,
+                    side_effect_level=spec.side_effect.value,
+                )
+            )
         await db.flush()
         return row
 
@@ -823,7 +1559,9 @@ class AgentLoop:
         spec: ToolSpec,
         emit: EventEmitter,
     ) -> dict[str, Any]:
-        return (await self._execute_tools(db, response=response, calls=[(call, spec)], emit=emit))[0]
+        return (await self._execute_tools(db, response=response, calls=[(call, spec)], emit=emit))[
+            0
+        ]
 
     async def _execute_tools(
         self,
@@ -854,7 +1592,9 @@ class AgentLoop:
                 }
                 ledger.status = "incomplete"
                 ledger.result = unknown
-                ledger.error_message = "外部操作已发起但结果未知；为避免重复副作用，系统不会自动重试。"
+                ledger.error_message = (
+                    "外部操作已发起但结果未知；为避免重复副作用，系统不会自动重试。"
+                )
                 results[index] = unknown
                 await emit(
                     "opentrace.tool.incomplete",
@@ -863,19 +1603,33 @@ class AgentLoop:
                 continue
             if ledger is None:
                 ledger = ResponseToolExecution(
-                    id=f"tool_{uuid.uuid4().hex}", response_id=response.id, call_id=call_id,
-                    idempotency_key=self._idempotency_key(response.id, call_id, spec.name, _tool_args(call)),
-                    tool_name=spec.name, status="running", arguments=_tool_args(call), result={},
-                    side_effect=spec.side_effect != SideEffect.READ, side_effect_level=spec.side_effect.value,
+                    id=f"tool_{uuid.uuid4().hex}",
+                    response_id=response.id,
+                    call_id=call_id,
+                    idempotency_key=self._idempotency_key(
+                        response.id, call_id, spec.name, _tool_args(call)
+                    ),
+                    tool_name=spec.name,
+                    status="running",
+                    arguments=_tool_args(call),
+                    result={},
+                    side_effect=spec.side_effect != SideEffect.READ,
+                    side_effect_level=spec.side_effect.value,
                 )
                 db.add(ledger)
             else:
                 ledger.status = "running"
-            await emit("opentrace.tool.started", {"call_id": call_id, "name": spec.name, "side_effect": spec.side_effect.value})
+            await emit(
+                "opentrace.tool.started",
+                {"call_id": call_id, "name": spec.name, "side_effect": spec.side_effect.value},
+            )
             pending.append((index, call, spec, ledger))
 
         raw_results = await asyncio.gather(
-            *(self._invoke_tool(response=response, call=call, spec=spec) for _, call, spec, _ in pending),
+            *(
+                self._invoke_tool(response=response, call=call, spec=spec)
+                for _, call, spec, _ in pending
+            ),
             return_exceptions=True,
         )
         for (index, call, spec, ledger), raw_result in zip(pending, raw_results, strict=True):
@@ -890,20 +1644,39 @@ class AgentLoop:
             ledger.result = raw
             ledger.error_message = str(raw.get("error") or "") or None
             ledger.completed_at = datetime.now(UTC)
-            db.add(ResponseItem(
-                id=f"item_{uuid.uuid4().hex}", response_id=response.id,
-                sequence_number=await self._next_item_sequence(db, response.id),
-                item_type="function_call_output", role="tool",
-                content=json.dumps(raw, ensure_ascii=False, default=str),
-                payload={"call_id": _call_id(call), "name": spec.name, "side_effect": spec.side_effect.value},
-            ))
+            db.add(
+                ResponseItem(
+                    id=f"item_{uuid.uuid4().hex}",
+                    response_id=response.id,
+                    sequence_number=await self._next_item_sequence(db, response.id),
+                    item_type="function_call_output",
+                    role="tool",
+                    content=json.dumps(raw, ensure_ascii=False, default=str),
+                    payload={
+                        "call_id": _call_id(call),
+                        "name": spec.name,
+                        "side_effect": spec.side_effect.value,
+                    },
+                )
+            )
             await emit(
-                "opentrace.tool.completed" if ledger.status == "completed" else "opentrace.tool.failed",
-                {"call_id": _call_id(call), "name": spec.name, "status": ledger.status, "result": raw},
+                (
+                    "opentrace.tool.completed"
+                    if ledger.status == "completed"
+                    else "opentrace.tool.failed"
+                ),
+                {
+                    "call_id": _call_id(call),
+                    "name": spec.name,
+                    "status": ledger.status,
+                    "result": raw,
+                },
             )
             results[index] = raw
         await db.flush()
-        return [result or {"status": "failed", "error": "tool_execution_failed"} for result in results]
+        return [
+            result or {"status": "failed", "error": "tool_execution_failed"} for result in results
+        ]
 
     async def _invoke_tool(
         self,
@@ -935,7 +1708,9 @@ class AgentLoop:
                 if scope_error is not None:
                     return {"status": "failed", **scope_error}
                 if spec.name == "rag":
-                    agent_params.setdefault("sources", ["knowledge", "documents", "semantic_memory"])
+                    agent_params.setdefault(
+                        "sources", ["knowledge", "documents", "semantic_memory"]
+                    )
                 agent_result = await capability_registry.get_agent(spec.name).execute(
                     TaskMessage(
                         task_id=f"{response.id}:{_call_id(call)}",
@@ -1093,25 +1868,37 @@ class AgentLoop:
                 account_ids = [item for item in candidates if item.startswith("acct-")]
                 allowed_account_ids: set[str] = set()
                 if account_ids:
-                    allowed_account_ids = set((await scope_db.execute(
-                        select(UserSkillInstallation.installed_skill_id)
-                        .join(SkillCatalogEntry, UserSkillInstallation.catalog_skill_id == SkillCatalogEntry.id)
-                        .where(
-                            UserSkillInstallation.user_id == response.user_id,
-                            UserSkillInstallation.tenant_id == response.tenant_id,
-                            UserSkillInstallation.workspace_id == response.workspace_id,
-                            UserSkillInstallation.status == "installed",
-                            SkillCatalogEntry.status == "active",
-                            UserSkillInstallation.installed_skill_id.in_(account_ids),
+                    allowed_account_ids = set(
+                        (
+                            await scope_db.execute(
+                                select(UserSkillInstallation.installed_skill_id)
+                                .join(
+                                    SkillCatalogEntry,
+                                    UserSkillInstallation.catalog_skill_id == SkillCatalogEntry.id,
+                                )
+                                .where(
+                                    UserSkillInstallation.user_id == response.user_id,
+                                    UserSkillInstallation.tenant_id == response.tenant_id,
+                                    UserSkillInstallation.workspace_id == response.workspace_id,
+                                    UserSkillInstallation.status == "installed",
+                                    SkillCatalogEntry.status == "active",
+                                    UserSkillInstallation.installed_skill_id.in_(account_ids),
+                                )
+                            )
                         )
-                    )).scalars().all())
+                        .scalars()
+                        .all()
+                    )
                 hydrated["enabled_skills"] = [
-                    item for item in candidates
+                    item
+                    for item in candidates
                     if not item.startswith("acct-") or item in allowed_account_ids
                 ]
                 return hydrated, None
 
-            explicit_ids = [str(item) for item in extension.get("data_source_ids") or [] if str(item)]
+            explicit_ids = [
+                str(item) for item in extension.get("data_source_ids") or [] if str(item)
+            ]
             requested_id = str(hydrated.get("data_source_id") or "").strip()
             project_source_ids: list[str] = []
             if project_id:
@@ -1126,11 +1913,16 @@ class AgentLoop:
                 )
                 if project is None:
                     return hydrated, {"error": "project_not_found", "project_id": project_id}
-                project_source_ids = [str(item) for item in project.data_source_ids or [] if str(item)]
+                project_source_ids = [
+                    str(item) for item in project.data_source_ids or [] if str(item)
+                ]
 
             stmt = accessible_data_sources_statement(
                 user_id=response.user_id,
-                tenant_metadata={"tenant_id": response.tenant_id, "workspace_id": response.workspace_id},
+                tenant_metadata={
+                    "tenant_id": response.tenant_id,
+                    "workspace_id": response.workspace_id,
+                },
                 required_permission="query",
                 active_only=True,
             )
@@ -1153,7 +1945,10 @@ class AgentLoop:
             else:
                 return hydrated, {
                     "error": "data_source_selection_required",
-                    "candidates": [{"id": item.id, "name": item.name, "type": item.source_type} for item in sources],
+                    "candidates": [
+                        {"id": item.id, "name": item.name, "type": item.source_type}
+                        for item in sources
+                    ],
                 }
             hydrated["data_source_id"] = selected.id
             hydrated["data_source_name"] = selected.name
@@ -1161,12 +1956,20 @@ class AgentLoop:
 
     @staticmethod
     async def _next_item_sequence(db: AsyncSession, response_id: str) -> int:
-        current = await db.scalar(select(func.max(ResponseItem.sequence_number)).where(ResponseItem.response_id == response_id))
+        current = await db.scalar(
+            select(func.max(ResponseItem.sequence_number)).where(
+                ResponseItem.response_id == response_id
+            )
+        )
         return int(current if current is not None else -1) + 1
 
     @staticmethod
-    def _idempotency_key(response_id: str, call_id: str, name: str, arguments: dict[str, Any]) -> str:
-        digest = hashlib.sha256(json.dumps(arguments, sort_keys=True, default=str).encode()).hexdigest()[:24]
+    def _idempotency_key(
+        response_id: str, call_id: str, name: str, arguments: dict[str, Any]
+    ) -> str:
+        digest = hashlib.sha256(
+            json.dumps(arguments, sort_keys=True, default=str).encode()
+        ).hexdigest()[:24]
         return f"{response_id}:{call_id}:{name}:{digest}"
 
     @staticmethod
@@ -1175,6 +1978,7 @@ class AgentLoop:
         if isinstance(value, str):
             return value.strip()
         if isinstance(value, list):
+            has_multimodal_input = False
             for item in reversed(value):
                 if not isinstance(item, dict) or item.get("role", "user") != "user":
                     continue
@@ -1183,8 +1987,23 @@ class AgentLoop:
                     return content.strip()
                 if isinstance(content, list):
                     for part in reversed(content):
-                        if isinstance(part, dict) and isinstance(part.get("text") or part.get("input_text"), str):
-                            return str(part.get("text") or part.get("input_text")).strip()
+                        if not isinstance(part, dict):
+                            continue
+                        if str(part.get("type") or "") in {
+                            "input_image",
+                            "image_url",
+                            "input_audio",
+                            "audio_url",
+                            "input_video",
+                            "video_url",
+                        }:
+                            has_multimodal_input = True
+                        if isinstance(part.get("text") or part.get("input_text"), str):
+                            text = str(part.get("text") or part.get("input_text")).strip()
+                            if text:
+                                return text
+            if has_multimodal_input:
+                return "请理解并处理用户提供的多模态内容。"
         raise ValueError("response input must contain user text")
 
     @staticmethod
@@ -1192,7 +2011,9 @@ class AgentLoop:
         return {SideEffect.READ: 0, SideEffect.WRITE: 1, SideEffect.DESTRUCTIVE: 2}[value]
 
     @staticmethod
-    def _model_profile(profile: ExecutionProfile, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    def _model_profile(
+        profile: ExecutionProfile, payload: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
         explicit = str(payload.get("model") or "").strip()
         if profile == ExecutionProfile.FAST:
             model = explicit or settings.default_llm_fast_model

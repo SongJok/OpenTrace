@@ -893,6 +893,44 @@ class UserMemory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class UserMemoryRelation(Base):
+    """持久化用户记忆关系图；PostgreSQL 是事实来源，Redis 仅可作投影。"""
+
+    __tablename__ = "user_memory_relations"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "tenant_id",
+            "workspace_id",
+            "source_memory_id",
+            "target_memory_id",
+            "relation_type",
+            name="uq_user_memory_relation_edge",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_memory_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("user_memories.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    target_memory_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("user_memories.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    relation_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="related_to", index=True
+    )
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    evidence_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    relation_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class UserMemorySettings(Base):
     __tablename__ = "user_memory_settings"
 
@@ -1832,11 +1870,14 @@ class Attachment(Base):
     mime_type: Mapped[str] = mapped_column(String(255), nullable=True)
     file_extension: Mapped[str] = mapped_column(String(20), nullable=True)
     content_hash: Mapped[str] = mapped_column(String(128), nullable=True, index=True)
-    content_text: Mapped[str] = mapped_column(Text, nullable=True)
-    content_summary: Mapped[str] = mapped_column(String(512), nullable=True)
+    content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_summary: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
-    image_base64: Mapped[str] = mapped_column(Text, nullable=True)
-    image_mime: Mapped[str] = mapped_column(String(100), nullable=True)
+    image_base64: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_mime: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    media_base64: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_mime: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    media_kind: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
     message_id: Mapped[str] = mapped_column(String(50), nullable=True)
     duplicate_of: Mapped[str] = mapped_column(String(36), nullable=True)
     scope: Mapped[str] = mapped_column(String(20), nullable=False, default="session")

@@ -38,6 +38,33 @@ describe('Responses API stream compatibility', () => {
     expect(finals).toEqual(['已达到步骤上限'])
   })
 
+  it('projects durable execution-plan events into stable reasoning steps', async () => {
+    const steps: Array<{ id: string; status: string; content: string }> = []
+    const thinking: Array<Record<string, unknown>> = []
+    const response = new Response(
+      [
+        'data: {"sequence_number":2,"type":"opentrace.plan.created","data":{"plan":{"steps":[{"id":"step-1","objective":"检索证据"},{"id":"step-2","objective":"综合答案"}]},"statuses":{"step-1":"pending","step-2":"completed"}}}\n\n',
+        'data: {"sequence_number":3,"type":"opentrace.plan.step.started","data":{"step":{"id":"step-1","objective":"检索证据"}}}\n\n',
+        'data: {"sequence_number":4,"type":"opentrace.plan.step.completed","data":{"step":{"id":"step-1","objective":"检索证据"}}}\n\n',
+        'data: {"sequence_number":5,"type":"opentrace.plan.replanned","data":{"reason":"tool_failed","attempt":1}}\n\n',
+      ].join(''),
+      { headers: { 'content-type': 'text/event-stream' } },
+    )
+
+    await streamSseResponse(response, {
+      onReasoningStep: (step) => { steps.push(step) },
+      onThinking: (payload) => { thinking.push(payload) },
+    })
+
+    expect(steps).toEqual([
+      { id: 'step-1', node_id: 'step-1', stage: 'PLAN', content: '检索证据', status: 'pending' },
+      { id: 'step-2', node_id: 'step-2', stage: 'PLAN', content: '综合答案', status: 'done' },
+      { id: 'step-1', node_id: 'step-1', stage: 'PLAN', content: '检索证据', status: 'running' },
+      { id: 'step-1', node_id: 'step-1', stage: 'PLAN', content: '检索证据', status: 'done' },
+    ])
+    expect(thinking).toEqual([{ reason: 'tool_failed', attempt: 1 }])
+  })
+
   it('surfaces JSON policy errors instead of rendering an empty final answer', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
       JSON.stringify({

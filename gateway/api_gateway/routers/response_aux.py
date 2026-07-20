@@ -34,11 +34,39 @@ from infra.storage.models import (
 router = APIRouter()
 
 _TEXT_EXTENSIONS = {
-    ".csv", ".css", ".html", ".js", ".json", ".log", ".md", ".py",
-    ".txt", ".ts", ".xml", ".yaml", ".yml",
+    ".csv",
+    ".css",
+    ".html",
+    ".js",
+    ".json",
+    ".log",
+    ".md",
+    ".py",
+    ".txt",
+    ".ts",
+    ".xml",
+    ".yaml",
+    ".yml",
 }
 _DOCUMENT_EXTENSIONS = {".docx", ".pdf", ".pptx", ".xlsx"}
 _IMAGE_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
+_AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}
+_VIDEO_EXTENSIONS = {".avi", ".flv", ".mkv", ".mov", ".mp4", ".webm", ".wmv"}
+_MEDIA_MIME_BY_EXTENSION = {
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".m4a": "audio/mp4",
+    ".mp3": "audio/mpeg",
+    ".ogg": "audio/ogg",
+    ".wav": "audio/wav",
+    ".avi": "video/x-msvideo",
+    ".flv": "video/x-flv",
+    ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".wmv": "video/x-ms-wmv",
+}
 
 
 async def _extract_attachment_text(raw: bytes, filename: str) -> str:
@@ -91,6 +119,7 @@ def _attachment_out(row: Attachment) -> dict:
         "scope": row.scope,
         "ingest_status": row.ingest_status,
         "promoted_document_id": row.promoted_document_id,
+        "media_kind": row.media_kind,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
@@ -108,7 +137,9 @@ async def _owned_session(
         )
     )
     if row is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation 不存在或无权限")
+        raise AppException(
+            ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation 不存在或无权限"
+        )
     return row
 
 
@@ -133,7 +164,13 @@ async def upload_response_file(
         )
     filename = Path(file.filename or "attachment").name[:512]
     suffix = Path(filename).suffix.lower()
-    supported = _TEXT_EXTENSIONS | _DOCUMENT_EXTENSIONS | _IMAGE_EXTENSIONS
+    supported = (
+        _TEXT_EXTENSIONS
+        | _DOCUMENT_EXTENSIONS
+        | _IMAGE_EXTENSIONS
+        | _AUDIO_EXTENSIONS
+        | _VIDEO_EXTENSIONS
+    )
     if suffix not in supported:
         raise AppException(
             ErrorCodes.PARAM_INVALID.code,
@@ -151,6 +188,8 @@ async def upload_response_file(
 
     mime_type = str(file.content_type or "application/octet-stream")[:255]
     is_image = mime_type.startswith("image/")
+    is_audio = mime_type.startswith("audio/") or suffix in _AUDIO_EXTENSIONS
+    is_video = mime_type.startswith("video/") or suffix in _VIDEO_EXTENSIONS
     if suffix in _IMAGE_EXTENSIONS:
         is_image = True
         mime_type = {
@@ -160,8 +199,20 @@ async def upload_response_file(
             ".png": "image/png",
             ".webp": "image/webp",
         }[suffix]
+    elif suffix in _MEDIA_MIME_BY_EXTENSION:
+        mime_type = _MEDIA_MIME_BY_EXTENSION[suffix]
+    if is_audio or is_video:
+        media_limit = max(1, int(settings.multimodal_inline_max_mb)) * 1024 * 1024
+        if len(raw) > media_limit:
+            raise AppException(
+                ErrorCodes.PARAM_INVALID.code,
+                message=(
+                    f"音视频附件需小于 {settings.multimodal_inline_max_mb}MB，"
+                    "以便作为原生多模态内容安全传入模型"
+                ),
+            )
     content_text = ""
-    if not is_image:
+    if not (is_image or is_audio or is_video):
         try:
             content_text = (await _extract_attachment_text(raw, filename)).strip()
         except Exception as exc:
@@ -169,7 +220,9 @@ async def upload_response_file(
                 ErrorCodes.PARAM_INVALID.code,
                 message="附件无法解析或文件已损坏",
             ) from exc
-    summary = content_text[:512] if content_text else (f"图片附件：{filename}" if is_image else f"附件：{filename}")
+    media_kind = "image" if is_image else "audio" if is_audio else "video" if is_video else None
+    media_label = {"image": "图片", "audio": "音频", "video": "视频"}.get(media_kind or "", "文件")
+    summary = content_text[:512] if content_text else f"{media_label}附件：{filename}"
     row = Attachment(
         id=str(uuid.uuid4()),
         session_id=session_id,
@@ -184,6 +237,9 @@ async def upload_response_file(
         content_summary=summary,
         image_base64=base64.b64encode(raw).decode("ascii") if is_image else None,
         image_mime=mime_type if is_image else None,
+        media_base64=(base64.b64encode(raw).decode("ascii") if is_audio or is_video else None),
+        media_mime=mime_type if is_audio or is_video else None,
+        media_kind=media_kind,
         message_id=message_id,
         status="active",
         scope="session",
@@ -206,17 +262,25 @@ async def list_response_files(
 ) -> dict:
     await _owned_session(db, session_id=session_id, user=current_user, request=request)
     rows = (
-        await db.execute(
-            select(Attachment)
-            .where(
-                Attachment.session_id == session_id,
-                Attachment.user_id == current_user.id,
-                Attachment.status == "active",
+        (
+            await db.execute(
+                select(Attachment)
+                .where(
+                    Attachment.session_id == session_id,
+                    Attachment.user_id == current_user.id,
+                    Attachment.status == "active",
+                )
+                .order_by(Attachment.created_at)
             )
-            .order_by(Attachment.created_at)
         )
-    ).scalars().all()
-    return {"session_id": session_id, "attachments": [_attachment_out(row) for row in rows], "total": len(rows)}
+        .scalars()
+        .all()
+    )
+    return {
+        "session_id": session_id,
+        "attachments": [_attachment_out(row) for row in rows],
+        "total": len(rows),
+    }
 
 
 @router.delete("/files/{attachment_id}")
@@ -227,13 +291,16 @@ async def delete_response_file(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     row = await db.scalar(
-        select(Attachment).where(Attachment.id == attachment_id, Attachment.user_id == current_user.id)
+        select(Attachment).where(
+            Attachment.id == attachment_id, Attachment.user_id == current_user.id
+        )
     )
     if row is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="附件不存在")
     await _owned_session(db, session_id=row.session_id, user=current_user, request=request)
     row.status = "deleted"
     row.image_base64 = None
+    row.media_base64 = None
     row.content_text = None
     await db.commit()
     return {"attachment_id": attachment_id, "status": "deleted"}
@@ -241,7 +308,9 @@ async def delete_response_file(
 
 def _scope(request: Request, user: User) -> tuple[str, str]:
     metadata = build_tenant_metadata(request, user_id=user.id)
-    return str(metadata.get("tenant_id") or "default"), str(metadata.get("workspace_id") or "default")
+    return str(metadata.get("tenant_id") or "default"), str(
+        metadata.get("workspace_id") or "default"
+    )
 
 
 async def _owned_response(
@@ -278,7 +347,9 @@ async def approve_response_tool(
     call_id = str(payload.get("call_id") or "")
     if not call_id:
         return {"approved": False, "error": "call_id is required"}
-    response = await _owned_response(db, response_id=response_id, user=current_user, request=request)
+    response = await _owned_response(
+        db, response_id=response_id, user=current_user, request=request
+    )
     if response is None:
         return {"approved": False, "error": "response not found"}
     approval = await db.scalar(
@@ -291,18 +362,34 @@ async def approve_response_tool(
         return {"approved": False, "error": "tool call not found"}
     approved = bool(payload.get("approved", False))
     if approval.status in {"approved", "rejected"}:
-        return {"approved": approval.status == "approved", "status": approval.status, "call_id": call_id}
+        return {
+            "approved": approval.status == "approved",
+            "status": approval.status,
+            "call_id": call_id,
+        }
     approval.status = "approved" if approved else "rejected"
     approval.reason = None if approved else str(payload.get("reason") or "user rejected tool call")
     approval.resolved_by = current_user.id
     approval.resolved_at = datetime.now(UTC)
-    tool = await db.scalar(select(ResponseToolExecution).where(ResponseToolExecution.response_id == response_id, ResponseToolExecution.call_id == call_id))
+    tool = await db.scalar(
+        select(ResponseToolExecution).where(
+            ResponseToolExecution.response_id == response_id,
+            ResponseToolExecution.call_id == call_id,
+        )
+    )
     if tool:
         tool.status = approval.status
         tool.error_message = approval.reason
     resolved_event = await append_event(
-        db, response_id=response_id, event_type="opentrace.approval.resolved",
-        payload={"approval_id": approval.id, "call_id": call_id, "approved": approved, "status": approval.status},
+        db,
+        response_id=response_id,
+        event_type="opentrace.approval.resolved",
+        payload={
+            "approval_id": approval.id,
+            "call_id": call_id,
+            "approved": approved,
+            "status": approval.status,
+        },
     )
     # Both decisions resume the manager. Rejections become typed tool results,
     # allowing the assistant to explain alternatives instead of cancelling the turn.
@@ -328,7 +415,9 @@ async def resolve_response_approval(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    response = await _owned_response(db, response_id=response_id, user=current_user, request=request)
+    response = await _owned_response(
+        db, response_id=response_id, user=current_user, request=request
+    )
     if response is None:
         return {"approved": False, "error": "response not found"}
     approval = await db.scalar(
@@ -357,22 +446,28 @@ async def message_versions(
 ):
     item = await db.scalar(select(ResponseItem).where(ResponseItem.id == message_id))
     response_id = item.response_id if item else message_id
-    response = await _owned_response(db, response_id=response_id, user=current_user, request=request)
+    response = await _owned_response(
+        db, response_id=response_id, user=current_user, request=request
+    )
     if response is None:
         return []
     siblings = (
-        await db.execute(
-            select(ResponseRecord)
-            .where(
-                ResponseRecord.conversation_id == response.conversation_id,
-                ResponseRecord.parent_response_id == response.parent_response_id,
-                ResponseRecord.user_id == current_user.id,
-                ResponseRecord.tenant_id == response.tenant_id,
-                ResponseRecord.workspace_id == response.workspace_id,
+        (
+            await db.execute(
+                select(ResponseRecord)
+                .where(
+                    ResponseRecord.conversation_id == response.conversation_id,
+                    ResponseRecord.parent_response_id == response.parent_response_id,
+                    ResponseRecord.user_id == current_user.id,
+                    ResponseRecord.tenant_id == response.tenant_id,
+                    ResponseRecord.workspace_id == response.workspace_id,
+                )
+                .order_by(ResponseRecord.created_at)
             )
-            .order_by(ResponseRecord.created_at)
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [
         {
             "id": row.id,
@@ -396,18 +491,28 @@ async def response_feedback(
 ):
     item = await db.scalar(select(ResponseItem).where(ResponseItem.id == response_id))
     canonical_id = item.response_id if item else response_id
-    response = await _owned_response(db, response_id=canonical_id, user=current_user, request=request)
+    response = await _owned_response(
+        db, response_id=canonical_id, user=current_user, request=request
+    )
     if response is None:
         return {"status": "not_found"}
     response_items = (
-        await db.execute(
-            select(ResponseItem)
-            .where(ResponseItem.response_id == response.id)
-            .order_by(ResponseItem.sequence_number)
+        (
+            await db.execute(
+                select(ResponseItem)
+                .where(ResponseItem.response_id == response.id)
+                .order_by(ResponseItem.sequence_number)
+            )
         )
-    ).scalars().all()
-    query = next((row.content or "" for row in response_items if row.item_type == "input_message"), "")
-    answer = next((row.content or "" for row in reversed(response_items) if row.item_type == "message"), "")
+        .scalars()
+        .all()
+    )
+    query = next(
+        (row.content or "" for row in response_items if row.item_type == "input_message"), ""
+    )
+    answer = next(
+        (row.content or "" for row in reversed(response_items) if row.item_type == "message"), ""
+    )
     db.add(
         Feedback(
             id=str(uuid.uuid4()),

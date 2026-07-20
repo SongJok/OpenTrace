@@ -27,12 +27,18 @@ def _should_retry_without_proxy(exc: Exception) -> bool:
     """
     import httpx
 
-    if isinstance(
-        exc, httpx.ConnectError | httpx.ProxyError | httpx.TimeoutException
-    ):
+    if isinstance(exc, httpx.ConnectError | httpx.ProxyError | httpx.TimeoutException):
         return True
     message = str(exc).lower()
-    return any(token in message for token in ("connection error", "connect timeout", "proxy error", "name or service not known"))
+    return any(
+        token in message
+        for token in (
+            "connection error",
+            "connect timeout",
+            "proxy error",
+            "name or service not known",
+        )
+    )
 
 
 class OpenAICompatibleAdapter(BaseLLMAdapter):
@@ -101,9 +107,7 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
         oai_msgs = [self._to_oai(m) for m in messages]
         extra: dict = {}
         if "qwen3" in self.config.model.lower():
-            extra["extra_body"] = {
-                "enable_thinking": self._qwen_thinking_enabled(kwargs)
-            }
+            extra["extra_body"] = {"enable_thinking": self._qwen_thinking_enabled(kwargs)}
         # OpenAI-compatible chat endpoints accept the same function schema as
         # the Responses API.  Only include optional fields when requested so
         # legacy providers keep their exact request shape.
@@ -118,7 +122,9 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                 model=self.config.model,
                 messages=oai_msgs,
                 temperature=kwargs.get("temperature", self.config.temperature),
-                max_tokens=kwargs.get("max_tokens", kwargs.get("max_output_tokens", self.config.max_tokens)),
+                max_tokens=kwargs.get(
+                    "max_tokens", kwargs.get("max_output_tokens", self.config.max_tokens)
+                ),
                 stream=False,
                 **extra,
             )
@@ -131,17 +137,23 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                 ),
                 "",
             )
-            raw_calls = list(getattr(resp.choices[0].message, "tool_calls", None) or []) if resp.choices else []
+            raw_calls = (
+                list(getattr(resp.choices[0].message, "tool_calls", None) or [])
+                if resp.choices
+                else []
+            )
             tool_calls = []
             for call in raw_calls:
                 function = getattr(call, "function", None)
-                tool_calls.append({
-                    "id": str(getattr(call, "id", "") or ""),
-                    "type": "function",
-                    "name": str(getattr(function, "name", "") or ""),
-                    "arguments": str(getattr(function, "arguments", "{}") or "{}"),
-                    "call_id": str(getattr(call, "id", "") or ""),
-                })
+                tool_calls.append(
+                    {
+                        "id": str(getattr(call, "id", "") or ""),
+                        "type": "function",
+                        "name": str(getattr(function, "name", "") or ""),
+                        "arguments": str(getattr(function, "arguments", "{}") or "{}"),
+                        "call_id": str(getattr(call, "id", "") or ""),
+                    }
+                )
             return LLMResponse(
                 content=content,
                 model=resp.model,
@@ -171,7 +183,10 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             return False
         provider = str(self.config.provider or "").lower()
         base_url = str(self.config.base_url or "").lower()
-        return provider in {"openai", "openai api", "openai-compatible"} or "api.openai.com" in base_url
+        return (
+            provider in {"openai", "openai api", "openai-compatible"}
+            or "api.openai.com" in base_url
+        )
 
     @staticmethod
     def _response_input(messages: list[LLMMessage]) -> list[dict[str, Any]]:
@@ -180,21 +195,33 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             if message.role == "tool":
                 # Responses uses typed function_call_output items instead of
                 # the Chat Completions ``role=tool`` envelope.
-                items.append({
-                    "type": "function_call_output",
-                    "call_id": message.tool_call_id or "",
-                    "output": message.content or "",
-                })
+                items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": message.tool_call_id or "",
+                        "output": message.content or "",
+                    }
+                )
                 continue
             if message.tool_calls:
                 for call in message.tool_calls:
                     function = call.get("function") if isinstance(call, dict) else None
-                    items.append({
-                        "type": "function_call",
-                        "call_id": str((call or {}).get("call_id") or (call or {}).get("id") or ""),
-                        "name": str((function or {}).get("name") or (call or {}).get("name") or ""),
-                        "arguments": str((function or {}).get("arguments") or (call or {}).get("arguments") or "{}"),
-                    })
+                    items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": str(
+                                (call or {}).get("call_id") or (call or {}).get("id") or ""
+                            ),
+                            "name": str(
+                                (function or {}).get("name") or (call or {}).get("name") or ""
+                            ),
+                            "arguments": str(
+                                (function or {}).get("arguments")
+                                or (call or {}).get("arguments")
+                                or "{}"
+                            ),
+                        }
+                    )
                 if message.content:
                     items.append({"role": "assistant", "content": message.content})
                 continue
@@ -218,18 +245,23 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             if isinstance(tool.get("function"), dict):
                 normalized.append(tool)
             elif tool.get("type") == "function" and tool.get("name"):
-                normalized.append({
-                    "type": "function",
-                    "function": {
-                        "name": tool.get("name"),
-                        "description": tool.get("description", ""),
-                        "parameters": tool.get("parameters") or {"type": "object", "properties": {}},
-                    },
-                })
+                normalized.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool.get("name"),
+                            "description": tool.get("description", ""),
+                            "parameters": tool.get("parameters")
+                            or {"type": "object", "properties": {}},
+                        },
+                    }
+                )
         return normalized
 
     @staticmethod
-    def _parse_response_output(response: Any) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    def _parse_response_output(
+        response: Any,
+    ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
         content = str(getattr(response, "output_text", "") or "")
         tool_calls: list[dict[str, Any]] = []
         output_items: list[dict[str, Any]] = []
@@ -252,7 +284,12 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                 tool_calls.append(call)
                 output_items.append(call)
             elif item_type:
-                output_items.append({"type": item_type, "raw": item.model_dump() if hasattr(item, "model_dump") else str(item)})
+                output_items.append(
+                    {
+                        "type": item_type,
+                        "raw": item.model_dump() if hasattr(item, "model_dump") else str(item),
+                    }
+                )
         return content, tool_calls, output_items
 
     async def _try_responses_complete(
@@ -283,7 +320,9 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
         params: dict[str, Any] = {
             "model": self.config.model,
             "input": self._response_input(messages),
-            "max_output_tokens": kwargs.get("max_output_tokens", kwargs.get("max_tokens", self.config.max_tokens)),
+            "max_output_tokens": kwargs.get(
+                "max_output_tokens", kwargs.get("max_tokens", self.config.max_tokens)
+            ),
             "store": bool(kwargs.get("store", False)),
         }
         if kwargs.get("tools"):
@@ -310,7 +349,10 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                 tool_calls=tool_calls,
                 output_items=output_items,
                 response_id=str(getattr(response, "id", "") or "") or None,
-                raw={"transport": "responses", "response": response.model_dump() if hasattr(response, "model_dump") else {}},
+                raw={
+                    "transport": "responses",
+                    "response": response.model_dump() if hasattr(response, "model_dump") else {},
+                },
             )
         finally:
             await http_client.aclose()
@@ -352,6 +394,7 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             async for part in self._stream_responses(messages, **kwargs):
                 yield part
             return
+
         async def _stream_once(use_proxy: bool):
             import httpx
             from openai import AsyncOpenAI
@@ -379,21 +422,23 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             oai_msgs = [self._to_oai(m) for m in messages]
             extra: dict = {}
             if "qwen3" in self.config.model.lower():
-                extra["extra_body"] = {
-                    "enable_thinking": self._qwen_thinking_enabled(kwargs)
-                }
+                extra["extra_body"] = {"enable_thinking": self._qwen_thinking_enabled(kwargs)}
             optional = {
                 "tools": self._chat_tools(kwargs.get("tools") or []),
                 "tool_choice": kwargs.get("tool_choice"),
                 "parallel_tool_calls": kwargs.get("parallel_tool_calls"),
             }
-            extra.update({k: v for k, v in optional.items() if v is not None and (k != "tools" or v)})
+            extra.update(
+                {k: v for k, v in optional.items() if v is not None and (k != "tools" or v)}
+            )
             try:
                 stream = await client.chat.completions.create(
                     model=self.config.model,
                     messages=oai_msgs,
                     temperature=kwargs.get("temperature", self.config.temperature),
-                    max_tokens=kwargs.get("max_tokens", kwargs.get("max_output_tokens", self.config.max_tokens)),
+                    max_tokens=kwargs.get(
+                        "max_tokens", kwargs.get("max_output_tokens", self.config.max_tokens)
+                    ),
                     stream=True,
                     **extra,
                 )
@@ -439,7 +484,9 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
         params: dict[str, Any] = {
             "model": self.config.model,
             "input": self._response_input(messages),
-            "max_output_tokens": kwargs.get("max_output_tokens", kwargs.get("max_tokens", self.config.max_tokens)),
+            "max_output_tokens": kwargs.get(
+                "max_output_tokens", kwargs.get("max_tokens", self.config.max_tokens)
+            ),
             "store": bool(kwargs.get("store", False)),
             "stream": True,
         }
@@ -477,11 +524,7 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
     @staticmethod
     def _qwen_thinking_enabled(kwargs: dict[str, Any]) -> bool:
         reasoning = kwargs.get("reasoning")
-        effort = (
-            str(reasoning.get("effort") or "")
-            if isinstance(reasoning, dict)
-            else ""
-        ).lower()
+        effort = (str(reasoning.get("effort") or "") if isinstance(reasoning, dict) else "").lower()
         return effort in {"medium", "high", "xhigh"}
 
     @staticmethod
@@ -496,9 +539,7 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                 continue
             part_type = str(part.get("type") or "")
             if part_type in {"input_text", "output_text"}:
-                normalized.append(
-                    {"type": "text", "text": str(part.get("text") or "")}
-                )
+                normalized.append({"type": "text", "text": str(part.get("text") or "")})
             elif part_type == "input_image":
                 image_url = part.get("image_url") or part.get("url")
                 normalized.append(
@@ -511,6 +552,30 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                         ),
                     }
                 )
+            elif part_type in {"input_audio", "audio_url"}:
+                raw_audio = part.get("input_audio") or part.get("audio_url") or {}
+                if isinstance(raw_audio, str):
+                    raw_audio = {"data": raw_audio, "format": "wav"}
+                normalized.append(
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": str(raw_audio.get("data") or raw_audio.get("url") or ""),
+                            "format": str(raw_audio.get("format") or "wav"),
+                        },
+                    }
+                )
+            elif part_type in {"input_video", "video_url"}:
+                raw_video = part.get("video_url") or part.get("input_video") or {}
+                if isinstance(raw_video, str):
+                    raw_video = {"url": raw_video}
+                video_part: dict[str, Any] = {
+                    "type": "video_url",
+                    "video_url": {"url": str(raw_video.get("url") or "")},
+                }
+                if part.get("fps") is not None:
+                    video_part["fps"] = part["fps"]
+                normalized.append(video_part)
             else:
                 normalized.append(part)
         return normalized
