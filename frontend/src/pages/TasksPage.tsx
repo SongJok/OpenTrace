@@ -5,22 +5,22 @@ import {
   apiCreateScheduledTask,
   apiGetScheduledTask,
   apiListScheduledTasks,
-  apiPreviewScheduledTask,
+  apiPreviewScheduledTaskRule,
   apiRunScheduledTask,
   apiScheduledTaskAction,
   type ScheduledTaskDetail,
   type ScheduledTaskItem,
 } from '../api/client'
+import { createDefaultScheduleWindow, ScheduleTimePicker, type ScheduleWindowValue } from '../components/ScheduleTimePicker'
 
 export default function TasksPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((state) => state.token)!
   const [tasks, setTasks] = useState<ScheduledTaskItem[]>([])
   const [title, setTitle] = useState('')
   const [prompt, setPrompt] = useState('')
-  const [scheduleText, setScheduleText] = useState('每天 09:00')
-  const [rrule, setRrule] = useState('')
-  const [nextRunAt, setNextRunAt] = useState<string | null>(null)
-  const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC')
+  const [scheduleWindow, setScheduleWindow] = useState<ScheduleWindowValue>(() => createDefaultScheduleWindow(Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'))
+  const [upcomingTimes, setUpcomingTimes] = useState<string[]>([])
+  const [previewing, setPreviewing] = useState(false)
   const [saving, setSaving] = useState(false)
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null)
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
@@ -43,18 +43,19 @@ export default function TasksPage({ onBack }: { onBack: () => void }) {
   }, [expandedTaskId, token])
 
   const create = async () => {
-    if (!title.trim() || !prompt.trim() || !rrule) return
+    if (!title.trim() || !prompt.trim() || !scheduleWindow.rrule.trim()) return
     setSaving(true)
     setError('')
     try {
       await apiCreateScheduledTask(token, {
-        title: title.trim(), prompt: prompt.trim(), rrule: rrule.trim(), timezone,
+        title: title.trim(), prompt: prompt.trim(), rrule: scheduleWindow.rrule.trim(), timezone: scheduleWindow.timezone,
+        starts_at: scheduleWindow.startsAt || null, ends_at: scheduleWindow.endsAt,
         enabled: false, requires_confirmation: true,
       })
       setTitle('')
       setPrompt('')
-      setRrule('')
-      setNextRunAt(null)
+      setScheduleWindow(createDefaultScheduleWindow(scheduleWindow.timezone))
+      setUpcomingTimes([])
       setNotice('任务草稿已保存，确认无误后可启用或立即试运行。')
       await load()
     } catch (reason: any) {
@@ -66,13 +67,27 @@ export default function TasksPage({ onBack }: { onBack: () => void }) {
 
   const preview = async () => {
     setError('')
+    setPreviewing(true)
     try {
-      const result = await apiPreviewScheduledTask(token, scheduleText, timezone)
-      setRrule(result.rrule)
-      setNextRunAt(result.next_run_at ?? null)
+      const result = await apiPreviewScheduledTaskRule(token, {
+        rrule: scheduleWindow.rrule.trim(),
+        timezone: scheduleWindow.timezone,
+        starts_at: scheduleWindow.startsAt || null,
+        ends_at: scheduleWindow.endsAt,
+        count: 5,
+      })
+      setUpcomingTimes(result.next_run_times || [])
     } catch (reason: any) {
-      setError(reason?.message || '无法解析运行时间')
+      setUpcomingTimes([])
+      setError(reason?.message || '无法预览执行时间')
+    } finally {
+      setPreviewing(false)
     }
+  }
+
+  const updateScheduleWindow = (value: ScheduleWindowValue) => {
+    setScheduleWindow(value)
+    setUpcomingTimes([])
   }
 
   const action = async (taskId: string, next: 'enable' | 'pause' | 'cancel') => {
@@ -125,23 +140,20 @@ export default function TasksPage({ onBack }: { onBack: () => void }) {
         <button onClick={onBack} className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-[var(--surface)]"><ChevronLeft size={18} /></button>
         <div><h1 className="text-sm font-semibold">定时任务</h1><p className="text-xs text-[var(--text-secondary)]">每次运行都使用完整 Agent Loop，草稿确认后才启用。</p></div>
       </header>
-      <main className="mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 gap-6 overflow-auto p-6 lg:grid-cols-[360px_1fr]">
+      <main className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-6 overflow-auto p-6 xl:grid-cols-[500px_1fr]">
         <section className="h-fit space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
-          <div><h2 className="font-medium">新建任务</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">像 ChatGPT Tasks 一样，用自然语言描述时间和要完成的工作。</p></div>
+          <div><h2 className="font-medium">新建任务</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">描述要完成的工作，再设置明确、可预览的运行时间。</p></div>
           <label className="block text-xs text-[var(--text-secondary)]">名称<input value={title} onChange={(event) => setTitle(event.target.value)} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /></label>
           <label className="block text-xs text-[var(--text-secondary)]">运行提示词<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={5} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /></label>
-          <label className="block text-xs text-[var(--text-secondary)]">运行时间<input value={scheduleText} onChange={(event) => { setScheduleText(event.target.value); setRrule(''); setNextRunAt(null) }} placeholder="例如：每周一 09:30" className="mt-1 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /></label>
-          <div className="flex flex-wrap gap-2">{['每小时', '每天 09:00', '工作日 09:00'].map((value) => <button key={value} type="button" onClick={() => { setScheduleText(value); setRrule(''); setNextRunAt(null) }} className="rounded-full border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--text-secondary)] hover:text-[var(--text)]">{value}</button>)}</div>
-          <label className="block text-xs text-[var(--text-secondary)]">时区<input value={timezone} onChange={(event) => { setTimezone(event.target.value); setRrule(''); setNextRunAt(null) }} className="mt-1 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /></label>
-          {!rrule ? <button onClick={() => void preview()} className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm">预览日程</button> : <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3 text-xs"><div className="font-mono">{rrule}</div><div className="mt-1 text-[var(--text-secondary)]">下次运行：{nextRunAt ? new Date(nextRunAt).toLocaleString() : '—'}</div></div>}
-          <button disabled={saving || !rrule} onClick={() => void create()} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm text-[var(--accent-foreground)] disabled:opacity-50"><Plus size={15} />确认并保存草稿</button>
+          <ScheduleTimePicker value={scheduleWindow} upcomingTimes={upcomingTimes} previewing={previewing} onChange={updateScheduleWindow} onPreview={() => void preview()} />
+          <button disabled={saving || !scheduleWindow.rrule.trim()} onClick={() => void create()} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm text-[var(--accent-foreground)] disabled:opacity-50"><Plus size={15} />确认并保存草稿</button>
           {(error || notice) && <div role="status" aria-live="polite" className={`rounded-xl border p-3 text-xs ${error ? 'border-red-500/30 text-red-500' : 'border-emerald-500/30 text-emerald-500'}`}>{error || notice}</div>}
         </section>
         <section className="space-y-3">
           {tasks.length === 0 ? <div className="rounded-2xl border border-dashed border-[var(--border)] p-10 text-center text-sm text-[var(--text-secondary)]">暂无定时任务</div> : tasks.map((task) => (
             <article key={task.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
               <div className="flex items-start justify-between gap-4"><div><h3 className="font-medium">{task.title}</h3><p className="mt-1 text-sm text-[var(--text-secondary)]">{task.prompt}</p></div><span className="rounded-full border border-[var(--border)] px-2 py-1 text-xs">{statusLabel(task.status)}</span></div>
-              <div className="mt-4 grid gap-1 text-xs text-[var(--text-secondary)]"><span className="inline-flex items-center gap-1"><Clock3 size={12} />{task.rrule}</span><span>{task.timezone} · 下次运行 {task.next_run_at ? new Date(task.next_run_at).toLocaleString() : '—'}</span><span>上次运行 {task.last_run_at ? new Date(task.last_run_at).toLocaleString() : '—'} · 外部写操作逐项请求授权</span></div>
+              <div className="mt-4 grid gap-1 text-xs text-[var(--text-secondary)]"><span className="inline-flex items-center gap-1"><Clock3 size={12} />{task.rrule}</span><span>{task.timezone} · 有效期 {formatTaskWindow(task)}</span><span>下次运行 {task.next_run_at ? new Date(task.next_run_at).toLocaleString() : '—'} · 上次运行 {task.last_run_at ? new Date(task.last_run_at).toLocaleString() : '—'}</span><span>外部写操作逐项请求授权</span></div>
               <div className="mt-4 flex flex-wrap gap-2">
                 <button disabled={busyTaskId === task.id || task.status === 'cancelled'} onClick={() => void runNow(task.id)} className="inline-flex items-center gap-1 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm text-[var(--accent-foreground)] disabled:opacity-50">{busyTaskId === task.id ? <LoaderCircle className="animate-spin" size={13} /> : <Zap size={13} />}立即运行</button>
                 {task.status !== 'active' && task.status !== 'cancelled' && <button disabled={busyTaskId === task.id} onClick={() => void action(task.id, 'enable')} className="inline-flex items-center gap-1 rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm"><Play size={13} />启用</button>}
@@ -159,5 +171,11 @@ export default function TasksPage({ onBack }: { onBack: () => void }) {
 }
 
 function statusLabel(status: string) {
-  return ({ active: '运行中', draft: '草稿', paused: '已暂停', cancelled: '已取消', queued: '排队中', succeeded: '已完成', failed: '失败', incomplete: '未完整完成', requires_action: '等待确认' } as Record<string, string>)[status] || status
+  return ({ active: '运行中', draft: '草稿', paused: '已暂停', cancelled: '已取消', completed: '已结束', queued: '排队中', succeeded: '已完成', failed: '失败', incomplete: '未完整完成', requires_action: '等待确认' } as Record<string, string>)[status] || status
+}
+
+function formatTaskWindow(task: ScheduledTaskItem) {
+  const start = task.starts_at ? new Date(task.starts_at).toLocaleString() : '立即生效'
+  const end = task.ends_at ? new Date(task.ends_at).toLocaleString() : '长期有效'
+  return `${start} → ${end}`
 }

@@ -9,6 +9,16 @@ describe('scheduled tasks and alerts experience', () => {
     expect(tasksSource).toContain('运行记录')
   })
 
+  it('uses a bounded visual schedule picker with upcoming run previews', async () => {
+    const tasksSource = (await import('../TasksPage')).default.toString()
+    const pickerSource = (await import('../../components/ScheduleTimePicker')).ScheduleTimePicker.toString()
+    expect(tasksSource).toContain('ScheduleTimePicker')
+    expect(tasksSource).toContain('apiPreviewScheduledTaskRule')
+    expect(pickerSource).toContain('起止时间')
+    expect(pickerSource).toContain('执行时间')
+    expect(pickerSource).toContain('接下来五次执行时间')
+  })
+
   it('surfaces alert retries and pending acknowledgements', async () => {
     const alertsSource = (await import('../AlertsPage')).default.toString()
     expect(alertsSource).toContain('系统将在“下次”时间自动重试')

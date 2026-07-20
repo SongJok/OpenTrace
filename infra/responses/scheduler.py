@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
 import uuid
 from datetime import UTC, datetime
@@ -96,20 +97,76 @@ def parse_schedule_expression(expression: str) -> str:
 
 
 def next_occurrence(
-    rrule_value: str, timezone_name: str, *, after: datetime | None = None
+    rrule_value: str,
+    timezone_name: str,
+    *,
+    after: datetime | None = None,
+    starts_at: datetime | None = None,
+    ends_at: datetime | None = None,
 ) -> datetime | None:
+    occurrences = next_occurrences(
+        rrule_value,
+        timezone_name,
+        after=after,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        limit=1,
+    )
+    return occurrences[0] if occurrences else None
+
+
+def next_occurrences(
+    rrule_value: str,
+    timezone_name: str,
+    *,
+    after: datetime | None = None,
+    starts_at: datetime | None = None,
+    ends_at: datetime | None = None,
+    limit: int = 5,
+) -> list[datetime]:
+    """计算有界 RRULE 的后续执行时间，统一返回 UTC。"""
     from dateutil.rrule import rrulestr  # type: ignore[import-untyped]
 
     zone = ZoneInfo(timezone_name)
     base = after or datetime.now(UTC)
     local_base = base.astimezone(zone)
-    rule = rrulestr(rrule_value, dtstart=local_base)
-    result = rule.after(local_base, inc=False)
-    if result is None:
-        return None
-    if result.tzinfo is None:
-        result = result.replace(tzinfo=zone)
-    return result.astimezone(UTC)
+    local_start = (starts_at or base).astimezone(zone)
+    local_end = ends_at.astimezone(zone) if ends_at else None
+    rule = rrulestr(rrule_value, dtstart=local_start)
+    results: list[datetime] = []
+    cursor = local_base
+    for _ in range(max(1, min(limit, 20))):
+        result = rule.after(cursor, inc=False)
+        if result is None:
+            break
+        if result.tzinfo is None:
+            result = result.replace(tzinfo=zone)
+        if local_end is not None and result > local_end:
+            break
+        results.append(result.astimezone(UTC))
+        cursor = result
+    return results
+
+
+def task_schedule_bounds(task: TaskDefinition) -> tuple[datetime | None, datetime | None]:
+    """从兼容的 trigger JSON 中读取任务有效期。"""
+    try:
+        config = json.loads(getattr(task, "trigger_config_json", "{}") or "{}")
+    except (TypeError, ValueError):
+        return None, None
+
+    def _parse(value: object) -> datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
+    return _parse(config.get("starts_at")), _parse(config.get("ends_at"))
 
 
 async def enqueue_due_tasks(*, limit: int = 20) -> int:
@@ -139,6 +196,7 @@ async def enqueue_due_tasks(*, limit: int = 20) -> int:
                 continue
             try:
                 async with db.begin_nested():
+                    starts_at, ends_at = task_schedule_bounds(task)
                     run = await queue_task_run(
                         db,
                         task,
@@ -146,10 +204,18 @@ async def enqueue_due_tasks(*, limit: int = 20) -> int:
                         trigger="scheduled",
                     )
                     task.next_run_at = (
-                        next_occurrence(task.rrule or "", task.timezone, after=scheduled_for)
+                        next_occurrence(
+                            task.rrule or "",
+                            task.timezone,
+                            after=scheduled_for,
+                            starts_at=starts_at,
+                            ends_at=ends_at,
+                        )
                         if task.rrule
                         else None
                     )
+                    if task.next_run_at is None and ends_at is not None:
+                        task.status = "completed"
                     if run is not None:
                         count += 1
             except Exception as exc:  # noqa: BLE001

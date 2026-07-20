@@ -72,6 +72,8 @@ class ScheduledTaskPayload(BaseModel):
     prompt: str = Field(min_length=3, max_length=20_000)
     rrule: str = Field(min_length=5, max_length=512)
     timezone: str = Field(default="UTC", max_length=64)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
     project_id: str | None = None
     conversation_id: str | None = None
     enabled: bool = False
@@ -79,8 +81,12 @@ class ScheduledTaskPayload(BaseModel):
 
 
 class SchedulePreviewPayload(BaseModel):
-    expression: str = Field(min_length=2, max_length=500)
+    expression: str | None = Field(default=None, min_length=2, max_length=500)
+    rrule: str | None = Field(default=None, min_length=5, max_length=512)
     timezone: str = Field(default="UTC", max_length=64)
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    count: int = Field(default=5, ge=1, le=10)
 
 
 def _scope(request: Request, user: User) -> tuple[str, str]:
@@ -691,6 +697,29 @@ def _validate_schedule(rrule_value: str, timezone_name: str) -> None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="无效 RRULE") from exc
 
 
+def _normalize_schedule_window(
+    starts_at: datetime | None,
+    ends_at: datetime | None,
+    timezone_name: str,
+) -> tuple[datetime | None, datetime | None]:
+    try:
+        zone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="无效时区") from exc
+
+    def _normalize(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        localized = value.replace(tzinfo=zone) if value.tzinfo is None else value
+        return localized.astimezone(UTC)
+
+    normalized_start = _normalize(starts_at)
+    normalized_end = _normalize(ends_at)
+    if normalized_start and normalized_end and normalized_end <= normalized_start:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="结束时间必须晚于开始时间")
+    return normalized_start, normalized_end
+
+
 @router.get("/scheduled-tasks")
 async def list_scheduled_tasks(
     request: Request,
@@ -721,22 +750,39 @@ async def preview_scheduled_task(
     payload: SchedulePreviewPayload,
     current_user: User = Depends(get_current_user),
 ):
-    from infra.responses.scheduler import next_occurrence, parse_schedule_expression
+    from infra.responses.scheduler import next_occurrences, parse_schedule_expression
 
     try:
-        rrule_value = parse_schedule_expression(payload.expression)
+        if payload.rrule:
+            rrule_value = payload.rrule.strip()
+        elif payload.expression:
+            rrule_value = parse_schedule_expression(payload.expression)
+        else:
+            raise ValueError("missing schedule")
         _validate_schedule(rrule_value, payload.timezone)
     except (ValueError, ZoneInfoNotFoundError) as exc:
         raise AppException(
             ErrorCodes.PARAM_INVALID.code,
             message="无法可靠解析该时间表达，请明确写出例如“每天 09:00”或“每周一 10:30”。",
         ) from exc
-    next_run = next_occurrence(rrule_value, payload.timezone)
+    starts_at, ends_at = _normalize_schedule_window(
+        payload.starts_at, payload.ends_at, payload.timezone
+    )
+    upcoming = next_occurrences(
+        rrule_value,
+        payload.timezone,
+        starts_at=starts_at,
+        ends_at=ends_at,
+        limit=payload.count,
+    )
     return {
         "expression": payload.expression,
         "rrule": rrule_value,
         "timezone": payload.timezone,
-        "next_run_at": next_run.isoformat() if next_run else None,
+        "starts_at": starts_at.isoformat() if starts_at else None,
+        "ends_at": ends_at.isoformat() if ends_at else None,
+        "next_run_at": upcoming[0].isoformat() if upcoming else None,
+        "next_run_times": [item.isoformat() for item in upcoming],
         "requires_confirmation": True,
     }
 
@@ -749,6 +795,9 @@ async def create_scheduled_task(
     db: AsyncSession = Depends(get_db),
 ):
     _validate_schedule(payload.rrule, payload.timezone)
+    starts_at, ends_at = _normalize_schedule_window(
+        payload.starts_at, payload.ends_at, payload.timezone
+    )
     tenant_id, workspace_id = _scope(request, current_user)
     if payload.project_id:
         project = await db.scalar(
@@ -787,14 +836,30 @@ async def create_scheduled_task(
         title=payload.title,
         description=payload.prompt,
         trigger_type="rrule",
-        trigger_config_json=json.dumps({"rrule": payload.rrule, "timezone": payload.timezone}),
+        trigger_config_json=json.dumps(
+            {
+                "rrule": payload.rrule,
+                "timezone": payload.timezone,
+                "starts_at": starts_at.isoformat() if starts_at else None,
+                "ends_at": ends_at.isoformat() if ends_at else None,
+            }
+        ),
         rrule=payload.rrule,
         timezone=payload.timezone,
         project_id=payload.project_id,
         conversation_id=payload.conversation_id,
         requires_confirmation=payload.requires_confirmation,
         status="active" if payload.enabled else "draft",
-        next_run_at=next_occurrence(payload.rrule, payload.timezone) if payload.enabled else None,
+        next_run_at=(
+            next_occurrence(
+                payload.rrule,
+                payload.timezone,
+                starts_at=starts_at,
+                ends_at=ends_at,
+            )
+            if payload.enabled
+            else None
+        ),
     )
     db.add(row)
     await db.commit()
@@ -855,7 +920,7 @@ async def scheduled_task_action(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    from infra.responses.scheduler import next_occurrence
+    from infra.responses.scheduler import next_occurrence, task_schedule_bounds
 
     if action not in {"enable", "pause", "cancel"}:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="定时任务操作不受支持")
@@ -870,10 +935,20 @@ async def scheduled_task_action(
     )
     if row is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="定时任务不存在")
+    starts_at, ends_at = task_schedule_bounds(row)
     row.status = {"enable": "active", "pause": "paused", "cancel": "cancelled"}[action]
     row.next_run_at = (
-        next_occurrence(row.rrule or "", row.timezone) if action == "enable" and row.rrule else None
+        next_occurrence(
+            row.rrule or "",
+            row.timezone,
+            starts_at=starts_at,
+            ends_at=ends_at,
+        )
+        if action == "enable" and row.rrule
+        else None
     )
+    if action == "enable" and row.next_run_at is None:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="任务有效期内没有可执行时间")
     await db.commit()
     return _scheduled_task(row)
 
@@ -920,12 +995,18 @@ async def run_scheduled_task(
 
 
 def _scheduled_task(row: TaskDefinition) -> dict[str, Any]:
+    try:
+        trigger_config = json.loads(getattr(row, "trigger_config_json", "{}") or "{}")
+    except (TypeError, ValueError):
+        trigger_config = {}
     return {
         "id": row.id,
         "title": row.title,
         "prompt": row.description,
         "rrule": row.rrule,
         "timezone": row.timezone,
+        "starts_at": trigger_config.get("starts_at"),
+        "ends_at": trigger_config.get("ends_at"),
         "status": row.status,
         "project_id": row.project_id,
         "conversation_id": row.conversation_id,

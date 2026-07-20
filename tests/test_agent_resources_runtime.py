@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -6,7 +6,9 @@ import pytest
 from starlette.requests import Request
 
 from gateway.api_gateway.routers.agent_resources import (
+    SchedulePreviewPayload,
     _validate_project_bindings,
+    preview_scheduled_task,
     run_scheduled_task,
     scheduled_task_action,
 )
@@ -57,6 +59,26 @@ async def test_enable_scheduled_task_calculates_next_run() -> None:
     assert result["status"] == "active"
     assert result["next_run_at"]
     db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_preview_scheduled_task_returns_five_bounded_runs() -> None:
+    starts_at = datetime.now(UTC) + timedelta(days=1)
+    ends_at = starts_at + timedelta(days=10)
+    result = await preview_scheduled_task(
+        SchedulePreviewPayload(
+            rrule="FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0",
+            timezone="Asia/Shanghai",
+            starts_at=starts_at,
+            ends_at=ends_at,
+            count=5,
+        ),
+        User(id="user-1", email="test@example.com"),
+    )
+
+    assert len(result["next_run_times"]) == 5
+    assert result["next_run_at"] == result["next_run_times"][0]
+    assert result["starts_at"] == starts_at.isoformat()
 
 
 @pytest.mark.asyncio

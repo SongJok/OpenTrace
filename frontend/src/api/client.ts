@@ -929,6 +929,8 @@ export interface ScheduledTaskItem {
   prompt: string
   rrule: string
   timezone: string
+  starts_at?: string | null
+  ends_at?: string | null
   status: string
   next_run_at?: string | null
   last_run_at?: string | null
@@ -965,6 +967,26 @@ export async function apiPreviewScheduledTask(token: string, expression: string,
     method: 'POST', headers: authHeaders(token), body: JSON.stringify({ expression, timezone }),
   })
   if (!res.ok) throw new Error(await readApiError(res, '无法解析运行时间'))
+  return res.json()
+}
+
+export interface ScheduledTaskPreview {
+  rrule: string
+  timezone: string
+  starts_at?: string | null
+  ends_at?: string | null
+  next_run_at?: string | null
+  next_run_times: string[]
+}
+
+export async function apiPreviewScheduledTaskRule(
+  token: string,
+  payload: { rrule: string; timezone: string; starts_at?: string | null; ends_at?: string | null; count?: number },
+): Promise<ScheduledTaskPreview> {
+  const res = await apiFetchResponses('/scheduled-tasks/preview', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '无法预览执行时间'))
   return res.json()
 }
 
