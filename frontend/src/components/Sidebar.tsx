@@ -24,6 +24,7 @@ import {
   Network,
   FolderKanban,
   Activity,
+  CheckCheck,
   X,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -35,9 +36,13 @@ import {
   apiCreateConversation,
   apiDeleteConversation,
   apiGetMessages,
+  apiListNotifications,
+  apiReadAllNotifications,
+  apiReadNotification,
   apiResumeResponse,
   apiRenameConversation,
   apiArchiveConversation,
+  type NotificationItem,
 } from '../api/client'
 
 interface SidebarProps {
@@ -53,6 +58,9 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
   const [showTools, setShowTools] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingTitle, setEditingTitle] = useState('')
+  const [notifications, setNotifications] = useState<NotificationItem[]>([])
+  const [unreadCount, setUnreadCount] = useState(0)
+  const [showNotifications, setShowNotifications] = useState(false)
 
   const token = useAuthStore((s) => s.token)!
   const displayName = useAuthStore((s) => s.displayName)
@@ -81,6 +89,35 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
   useEffect(() => {
     void refreshConversations().catch(console.error)
   }, [showArchived])
+
+  useEffect(() => {
+    const refreshNotifications = () => {
+      void apiListNotifications(token, 30).then((result) => {
+        setNotifications(result.items)
+        setUnreadCount(result.unread_count)
+      }).catch(() => undefined)
+    }
+    refreshNotifications()
+    const timer = window.setInterval(refreshNotifications, 20_000)
+    return () => window.clearInterval(timer)
+  }, [token])
+
+  async function openNotification(notification: NotificationItem) {
+    if (!notification.read) {
+      await apiReadNotification(token, notification.id)
+      setNotifications((items) => items.map((item) => item.id === notification.id ? { ...item, read: true } : item))
+      setUnreadCount((count) => Math.max(0, count - 1))
+    }
+    setShowNotifications(false)
+    navigate(notification.kind === 'alert' ? '/alerts' : '/tasks')
+    onMobileClose?.()
+  }
+
+  async function readAllNotifications() {
+    await apiReadAllNotifications(token)
+    setNotifications((items) => items.map((item) => ({ ...item, read: true })))
+    setUnreadCount(0)
+  }
 
   async function selectConversation(conv: Conversation) {
     try {
@@ -298,7 +335,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           mobileOpen ? 'max-md:flex' : 'max-md:hidden',
         )}
       >
-      <div className="px-3 pb-3 pt-3">
+      <div className="relative px-3 pb-3 pt-3">
         <div className="px-2 py-1">
           <div className="flex items-center justify-between">
             <button
@@ -317,12 +354,23 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
               <X size={16} />
             </button>
             <button
+              type="button"
+              onClick={() => setShowNotifications((value) => !value)}
+              aria-label={`通知${unreadCount ? `，${unreadCount} 条未读` : ''}`}
+              aria-expanded={showNotifications}
+              className="relative flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+            >
+              <Bell size={16} />
+              {unreadCount > 0 && <span className="absolute -right-1 -top-1 min-w-4 rounded-full bg-red-500 px-1 text-center text-[10px] leading-4 text-white">{unreadCount > 99 ? '99+' : unreadCount}</span>}
+            </button>
+            <button
               onClick={newChat}
               className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
             >
               <Plus size={16} />
             </button>
           </div>
+          {showNotifications && <div className="absolute left-3 right-3 top-14 z-30 max-h-[420px] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg)] shadow-2xl"><div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3"><div><div className="text-sm font-medium">通知</div><div className="text-[11px] text-[var(--text-secondary)]">任务完成与主动预警会显示在这里</div></div>{unreadCount > 0 && <button onClick={() => void readAllNotifications()} className="inline-flex items-center gap-1 text-xs text-[var(--accent)]"><CheckCheck size={13} />全部已读</button>}</div><div className="max-h-[340px] overflow-y-auto p-2">{notifications.length === 0 ? <div className="p-8 text-center text-xs text-[var(--text-secondary)]">暂无通知</div> : notifications.map((notification) => <button key={notification.id} onClick={() => void openNotification(notification)} className={clsx('mb-1 w-full rounded-xl px-3 py-2.5 text-left hover:bg-[var(--surface)]', !notification.read && 'bg-[var(--accent-dim)]')}><div className="flex items-start gap-2"><span className={clsx('mt-1.5 h-2 w-2 flex-none rounded-full', notification.level === 'error' ? 'bg-red-500' : notification.level === 'warning' ? 'bg-amber-500' : notification.level === 'success' ? 'bg-emerald-500' : 'bg-blue-500')} /><div className="min-w-0"><div className="truncate text-xs font-medium">{notification.title}</div>{notification.body && <div className="mt-1 line-clamp-2 text-[11px] text-[var(--text-secondary)]">{notification.body}</div>}<div className="mt-1 text-[10px] text-[var(--text-secondary)]">{notification.created_at ? new Date(notification.created_at).toLocaleString() : ''}</div></div></div></button>)}</div></div>}
           <div className="mt-3">
             <div className="text-sm font-semibold text-[var(--text)]">OpenTrace</div>
             <div className="mt-0.5 text-xs text-[var(--text-secondary)]">你的对话</div>

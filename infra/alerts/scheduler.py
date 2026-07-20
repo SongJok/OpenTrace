@@ -19,6 +19,36 @@ from infra.storage.models import AlertEvent, AlertRule, DataSource, Project, Tas
 logger = get_logger(__name__)
 
 
+def _mark_rule_error(rule: AlertRule, error: str) -> str:
+    """记录失败并安排短周期重试，同时保留原有下一次计划。"""
+    message = error[:2000]
+    rule.last_error = message
+    if rule.status == "active":
+        retry_seconds = max(10, int(getattr(settings, "alert_scheduler_retry_seconds", 60)))
+        retry_at = datetime.now(UTC) + timedelta(seconds=retry_seconds)
+        if rule.next_run_at is None or retry_at < rule.next_run_at:
+            rule.next_run_at = retry_at
+    return message
+
+
+async def _record_rule_error(db, rule: AlertRule, error: str) -> str:
+    """记录可重试错误；同一连续错误只通知一次，避免重试风暴。"""
+    previous_error = rule.last_error
+    message = _mark_rule_error(rule, error)
+    if previous_error != message:
+        db.add(
+            TaskNotification(
+                id=str(uuid.uuid4()),
+                user_id=rule.user_id,
+                task_id=rule.id,
+                level="error",
+                title=f"{rule.name} 检查失败",
+                body=f"{message}。系统将自动重试。",
+            )
+        )
+    return message
+
+
 def _numeric(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
@@ -29,7 +59,9 @@ def _numeric(value: Any) -> float | None:
         return None
 
 
-def extract_alert_value(rows: list[dict[str, Any]], metric_column: str | None, aggregation: str) -> float | None:
+def extract_alert_value(
+    rows: list[dict[str, Any]], metric_column: str | None, aggregation: str
+) -> float | None:
     if aggregation == "count":
         return float(len(rows))
     values: list[float] = []
@@ -37,7 +69,9 @@ def extract_alert_value(rows: list[dict[str, Any]], metric_column: str | None, a
         if metric_column:
             value = _numeric(row.get(metric_column))
         else:
-            value = next((_numeric(item) for item in row.values() if _numeric(item) is not None), None)
+            value = next(
+                (_numeric(item) for item in row.values() if _numeric(item) is not None), None
+            )
         if value is not None:
             values.append(value)
     if not values:
@@ -53,7 +87,9 @@ def extract_alert_value(rows: list[dict[str, Any]], metric_column: str | None, a
     return values[0]
 
 
-def evaluate_condition(operator: str, value: float, threshold: float, previous: float | None) -> tuple[bool, float]:
+def evaluate_condition(
+    operator: str, value: float, threshold: float, previous: float | None
+) -> tuple[bool, float]:
     evaluated = value
     if operator in {"change_pct_gt", "change_pct_lt"}:
         if previous is None or previous == 0:
@@ -88,7 +124,9 @@ async def claim_due_alerts(*, limit: int = 10) -> list[str]:
                     .with_for_update(skip_locked=True)
                     .limit(max(1, min(limit, 50)))
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         for rule in rules:
             scheduled_for = rule.next_run_at or now
@@ -113,7 +151,7 @@ async def evaluate_alert_rule(rule_id: str) -> dict[str, Any]:
             )
         )
         if source is None:
-            rule.last_error = "data_source_not_authorized"
+            await _record_rule_error(db, rule, "data_source_not_authorized")
             await db.commit()
             return {"status": "error", "rule_id": rule_id, "error": rule.last_error}
         if rule.project_id:
@@ -127,7 +165,7 @@ async def evaluate_alert_rule(rule_id: str) -> dict[str, Any]:
                 )
             )
             if project is None or rule.data_source_id not in set(project.data_source_ids or []):
-                rule.last_error = "project_data_source_not_authorized"
+                await _record_rule_error(db, rule, "project_data_source_not_authorized")
                 await db.commit()
                 return {"status": "error", "rule_id": rule_id, "error": rule.last_error}
         snapshot = {
@@ -137,26 +175,40 @@ async def evaluate_alert_rule(rule_id: str) -> dict[str, Any]:
             "project_id": rule.project_id,
         }
 
-    result = await DataAgent().execute(
-        TaskMessage(
-            task_id=f"alert:{rule_id}:{uuid.uuid4().hex[:10]}",
-            agent_type="data",
-            query=snapshot["question"],
-            user_id=snapshot["user_id"],
-            params={
-                "data_source_id": snapshot["data_source_id"],
-                "project_id": snapshot["project_id"],
-                "alert_mode": True,
-            },
+    try:
+        result = await DataAgent().execute(
+            TaskMessage(
+                task_id=f"alert:{rule_id}:{uuid.uuid4().hex[:10]}",
+                agent_type="data",
+                query=snapshot["question"],
+                user_id=snapshot["user_id"],
+                params={
+                    "data_source_id": snapshot["data_source_id"],
+                    "project_id": snapshot["project_id"],
+                    "alert_mode": True,
+                },
+            )
         )
-    )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        async with AsyncSessionLocal() as db:
+            rule = await db.get(AlertRule, rule_id, with_for_update=True)
+            if rule is None:
+                return {"status": "skipped", "rule_id": rule_id}
+            error = await _record_rule_error(db, rule, f"data_query_exception:{exc}")
+            await db.commit()
+        logger.warning("alert_rule_evaluation_failed", rule_id=rule_id, error=str(exc))
+        return {"status": "error", "rule_id": rule_id, "error": error}
 
     async with AsyncSessionLocal() as db:
         rule = await db.get(AlertRule, rule_id, with_for_update=True)
         if rule is None:
             return {"status": "skipped", "rule_id": rule_id}
         if result.status != "success":
-            rule.last_error = str(result.error or result.content or "data_query_failed")[:2000]
+            await _record_rule_error(
+                db, rule, str(result.error or result.content or "data_query_failed")
+            )
             await db.commit()
             return {"status": "error", "rule_id": rule_id, "error": rule.last_error}
 
@@ -164,12 +216,14 @@ async def evaluate_alert_rule(rule_id: str) -> dict[str, Any]:
         rows = rows if isinstance(rows, list) else []
         value = extract_alert_value(rows, rule.metric_column, rule.aggregation)
         if value is None:
-            rule.last_error = "alert_metric_value_not_found"
+            await _record_rule_error(db, rule, "alert_metric_value_not_found")
             await db.commit()
             return {"status": "error", "rule_id": rule_id, "error": rule.last_error}
 
         previous_value = rule.last_value
-        triggered, evaluated_value = evaluate_condition(rule.operator, value, rule.threshold, previous_value)
+        triggered, evaluated_value = evaluate_condition(
+            rule.operator, value, rule.threshold, previous_value
+        )
         previous_state = rule.last_state
         next_state = "triggered" if triggered else "normal"
         now = datetime.now(UTC)

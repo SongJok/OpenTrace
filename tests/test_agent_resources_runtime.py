@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -6,6 +7,7 @@ from starlette.requests import Request
 
 from gateway.api_gateway.routers.agent_resources import (
     _validate_project_bindings,
+    run_scheduled_task,
     scheduled_task_action,
 )
 from infra.errors import AppException
@@ -54,4 +56,40 @@ async def test_enable_scheduled_task_calculates_next_run() -> None:
 
     assert result["status"] == "active"
     assert result["next_run_at"]
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_manual_run_queues_response_without_changing_schedule() -> None:
+    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+    user = User(id="user-1", email="test@example.com")
+    next_run_at = SimpleNamespace(isoformat=lambda: "2026-07-21T01:00:00+00:00")
+    row = SimpleNamespace(
+        id="task-1",
+        user_id="user-1",
+        tenant_id="default",
+        workspace_id="default",
+        status="paused",
+        next_run_at=next_run_at,
+    )
+    run = SimpleNamespace(
+        id="run-1",
+        task_id="task-1",
+        status="queued",
+        response_id="resp-1",
+        scheduled_for=datetime.now(UTC),
+    )
+    db = AsyncMock()
+    db.scalar.return_value = row
+
+    with patch(
+        "infra.responses.scheduler.queue_task_run",
+        new=AsyncMock(return_value=run),
+    ) as queue:
+        result = await run_scheduled_task("task-1", request, user, db)
+
+    assert result["status"] == "queued"
+    assert row.status == "paused"
+    assert row.next_run_at is next_run_at
+    assert queue.await_args.kwargs["trigger"] == "manual"
     db.commit.assert_awaited_once()

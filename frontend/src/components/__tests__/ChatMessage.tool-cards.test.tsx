@@ -11,6 +11,24 @@ const baseAssistant = {
 }
 
 describe('ChatMessage tool cards', () => {
+  it('survives a translator wrapping the streaming placeholder text', () => {
+    const streaming = {
+      ...baseAssistant,
+      status: 'streaming' as const,
+    }
+    const { rerender } = render(<ChatMessage message={streaming as any} />)
+    const placeholder = screen.getByText('正在生成…')
+    const text = placeholder.firstChild
+    const translated = document.createElement('font')
+    if (text) {
+      placeholder.appendChild(translated)
+      translated.appendChild(text)
+    }
+
+    expect(() => rerender(<ChatMessage message={{ ...baseAssistant, finalText: '测试完成' } as any} />)).not.toThrow()
+    expect(screen.getByText('测试完成')).toBeInTheDocument()
+  })
+
   it('renders time card from JSON content', () => {
     const message = {
       ...baseAssistant,

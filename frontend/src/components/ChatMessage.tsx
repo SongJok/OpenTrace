@@ -234,7 +234,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
   }
 
   useEffect(() => {
-    if (resolvedStreaming && contentRef.current) contentRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    if (resolvedStreaming && contentRef.current?.scrollIntoView) contentRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [resolvedContent, resolvedStreaming])
 
   return (
@@ -259,13 +259,14 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
             {isUser && messageAttachments.length > 0 && <div className="mb-2 flex flex-wrap justify-end gap-2">{messageAttachments.map((attachment) => <div key={attachment.id} className="flex max-w-64 items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><FileText size={14} className="shrink-0" /><span className="truncate">{attachment.filename}</span></div>)}</div>}
             <div
               ref={contentRef}
+              translate="no"
               className={`prose max-w-none text-[15px] leading-7 ${
                 isUser
                   ? 'rounded-2xl rounded-tr-md bg-[var(--user-bubble)] px-4 py-2.5 text-[var(--text)] break-words whitespace-pre-wrap [&_.prose_p]:m-0'
                   : 'text-[var(--text)]'
               }`}
             >
-              {visibleContent ? <MarkdownMessage content={visibleContent} /> : (resolvedStreaming && !isUser ? '正在生成…' : '')}
+              {visibleContent ? <MarkdownMessage content={visibleContent} /> : (resolvedStreaming && !isUser ? <span>正在生成…</span> : null)}
               {resolvedStreaming && !isUser && <span className="ml-1 inline-block h-4 w-1.5 animate-pulse bg-[var(--accent)] align-middle" />}
             </div>
             {!isUser && toolCard && <ToolCardView toolCard={toolCard} />}

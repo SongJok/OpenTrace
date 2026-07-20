@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, Ban, Check, ChevronLeft, Pause, Play, Plus, TestTube } from 'lucide-react'
+import { Activity, Ban, Check, ChevronLeft, Pause, Play, Plus, RefreshCw, TestTube } from 'lucide-react'
 import {
   apiAcknowledgeAlertEvent,
   apiAlertRuleAction,
@@ -37,7 +37,9 @@ export default function AlertsPage({ onBack }: { onBack: () => void }) {
   const [rrule, setRrule] = useState('')
   const [nextRunAt, setNextRunAt] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
+  const [eventFilter, setEventFilter] = useState<'all' | 'unread'>('unread')
 
   const allowedSources = useMemo(() => {
     if (!projectId) return sources
@@ -45,6 +47,10 @@ export default function AlertsPage({ onBack }: { onBack: () => void }) {
     const allowed = new Set(project?.data_source_ids ?? [])
     return sources.filter((source) => allowed.has(source.id))
   }, [projectId, projects, sources])
+  const visibleEvents = useMemo(
+    () => eventFilter === 'unread' ? events.filter((event) => !event.acknowledged_at) : events,
+    [eventFilter, events],
+  )
 
   const load = async () => {
     const [nextRules, nextEvents, nextSources, nextProjects] = await Promise.all([
@@ -56,13 +62,18 @@ export default function AlertsPage({ onBack }: { onBack: () => void }) {
     setProjects(nextProjects)
   }
 
-  useEffect(() => { void load().catch((reason) => setError(String(reason?.message || reason))) }, [])
+  useEffect(() => {
+    void load().catch((reason) => setError(String(reason?.message || reason)))
+    const timer = window.setInterval(() => void load().catch(() => undefined), 15_000)
+    return () => window.clearInterval(timer)
+  }, [token])
   useEffect(() => {
     if (sourceId && !allowedSources.some((source) => source.id === sourceId)) setSourceId('')
   }, [allowedSources, sourceId])
 
   const preview = async () => {
     setError('')
+    setNotice('')
     try {
       const result = await apiPreviewScheduledTask(token, scheduleText, timezone)
       setRrule(result.rrule)
@@ -76,6 +87,7 @@ export default function AlertsPage({ onBack }: { onBack: () => void }) {
     if (!name.trim() || !question.trim() || !sourceId || !rrule || threshold.trim() === '') return
     setBusy(true)
     setError('')
+    setNotice('')
     try {
       await apiCreateAlertRule(token, {
         name: name.trim(), question: question.trim(), data_source_id: sourceId,
@@ -89,6 +101,7 @@ export default function AlertsPage({ onBack }: { onBack: () => void }) {
       setThreshold('')
       setRrule('')
       setNextRunAt(null)
+      setNotice('预警草稿已保存。建议先测试取数结果，再正式启用。')
       await load()
     } catch (reason: any) {
       setError(reason?.message || '创建失败')
@@ -98,23 +111,28 @@ export default function AlertsPage({ onBack }: { onBack: () => void }) {
   }
 
   const action = async (ruleId: string, next: 'enable' | 'pause' | 'cancel') => {
+    setBusy(true)
     setError('')
+    setNotice('')
     try {
       await apiAlertRuleAction(token, ruleId, next)
       await load()
     } catch (reason: any) {
       setError(reason?.message || '更新失败')
+    } finally {
+      setBusy(false)
     }
   }
 
   const test = async (ruleId: string) => {
     setBusy(true)
     setError('')
+    setNotice('')
     try {
       const result = await apiTestAlertRule(token, ruleId)
       const status = String(result.status || 'completed')
       const value = result.value === undefined ? '' : `，当前值 ${String(result.value)}`
-      setError(`测试完成：${status}${value}`)
+      setNotice(`测试完成：${status}${value}`)
       await load()
     } catch (reason: any) {
       setError(reason?.message || '测试失败')
@@ -124,15 +142,21 @@ export default function AlertsPage({ onBack }: { onBack: () => void }) {
   }
 
   const acknowledge = async (eventId: string) => {
-    await apiAcknowledgeAlertEvent(token, eventId)
-    await load()
+    setError('')
+    try {
+      await apiAcknowledgeAlertEvent(token, eventId)
+      await load()
+    } catch (reason: any) {
+      setError(reason?.message || '确认事件失败')
+    }
   }
 
   return <div className="flex h-screen flex-col bg-[var(--bg)] text-[var(--text)]">
     <header className="flex h-14 items-center gap-3 border-b border-[var(--border)] px-6">
       <button onClick={onBack} className="flex h-8 w-8 items-center justify-center rounded-lg hover:bg-[var(--surface)]"><ChevronLeft size={18} /></button>
       <Activity size={17} />
-      <div><h1 className="text-sm font-semibold">主动预警</h1><p className="text-xs text-[var(--text-secondary)]">用自然语言取数，以确定性条件判断；规则确认后才启用。</p></div>
+      <div className="flex-1"><h1 className="text-sm font-semibold">主动预警</h1><p className="text-xs text-[var(--text-secondary)]">用自然语言取数，以确定性条件判断；失败会自动重试并通过通知中心告知。</p></div>
+      <button disabled={busy} onClick={() => void load()} className="action"><RefreshCw size={13} className={busy ? 'animate-spin' : ''} />刷新</button>
     </header>
     <main className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-6 overflow-auto p-6 xl:grid-cols-[380px_1fr]">
       <section className="h-fit space-y-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
@@ -151,15 +175,15 @@ export default function AlertsPage({ onBack }: { onBack: () => void }) {
         </div>
         {!rrule ? <button onClick={() => void preview()} className="rounded-xl border border-[var(--border)] px-3 py-2 text-sm">预览日程</button> : <div className="rounded-xl bg-[var(--bg)] p-3 text-xs"><div className="font-mono">{rrule}</div><div className="mt-1 text-[var(--text-secondary)]">下次：{nextRunAt ? new Date(nextRunAt).toLocaleString() : '—'}</div></div>}
         <button disabled={busy || !rrule || !sourceId || threshold === ''} onClick={() => void create()} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm text-[var(--accent-foreground)] disabled:opacity-50"><Plus size={14} />保存为草稿</button>
-        {error && <div className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3 text-xs">{error}</div>}
+        {(error || notice) && <div role="status" aria-live="polite" className={`rounded-xl border bg-[var(--bg)] p-3 text-xs ${error ? 'border-red-500/30 text-red-500' : 'border-emerald-500/30 text-emerald-500'}`}>{error || notice}</div>}
       </section>
       <div className="space-y-6">
         <section className="space-y-3"><h2 className="font-medium">规则</h2>{rules.length === 0 ? <Empty text="暂无预警规则" /> : rules.map((rule) => <article key={rule.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
           <div className="flex items-start justify-between gap-3"><div><h3 className="font-medium">{rule.name}</h3><p className="mt-1 text-sm text-[var(--text-secondary)]">{rule.question}</p></div><span className="rounded-full border border-[var(--border)] px-2 py-1 text-xs">{rule.status} · {rule.last_state}</span></div>
-          <div className="mt-3 grid gap-1 text-xs text-[var(--text-secondary)]"><span>{rule.aggregation}({rule.metric_column || '首个数值'}) {rule.operator} {rule.threshold} · {rule.severity}</span><span>当前值：{rule.last_value ?? '—'} · 下次：{rule.next_run_at ? new Date(rule.next_run_at).toLocaleString() : '—'}</span>{rule.last_error && <span className="text-red-500">{rule.last_error}</span>}</div>
+          <div className="mt-3 grid gap-1 text-xs text-[var(--text-secondary)]"><span>{rule.aggregation}({rule.metric_column || '首个数值'}) {rule.operator} {rule.threshold} · {rule.severity}</span><span>当前值：{rule.last_value ?? '—'} · 下次：{rule.next_run_at ? new Date(rule.next_run_at).toLocaleString() : '—'}</span>{rule.last_error && <span className="rounded-lg bg-red-500/10 px-2 py-1.5 text-red-500">上次检查失败：{rule.last_error}。系统将在“下次”时间自动重试。</span>}</div>
           <div className="mt-4 flex flex-wrap gap-2"><button disabled={busy} onClick={() => void test(rule.id)} className="action"><TestTube size={13} />测试</button>{rule.status !== 'active' && rule.status !== 'cancelled' && <button onClick={() => void action(rule.id, 'enable')} className="action"><Play size={13} />启用</button>}{rule.status === 'active' && <button onClick={() => void action(rule.id, 'pause')} className="action"><Pause size={13} />暂停</button>}{rule.status !== 'cancelled' && <button onClick={() => void action(rule.id, 'cancel')} className="action text-red-500"><Ban size={13} />取消</button>}</div>
         </article>)}</section>
-        <section className="space-y-3"><h2 className="font-medium">预警事件</h2>{events.length === 0 ? <Empty text="暂无触发或恢复事件" /> : events.map((event) => <article key={event.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-start justify-between gap-3"><div><div className="text-sm font-medium">{event.severity} · {event.state}</div><p className="mt-1 text-sm text-[var(--text-secondary)]">{event.summary}</p><div className="mt-2 text-xs text-[var(--text-secondary)]">{event.created_at ? new Date(event.created_at).toLocaleString() : ''}</div></div>{event.acknowledged_at ? <span className="inline-flex items-center gap-1 text-xs text-emerald-500"><Check size={12} />已确认</span> : <button onClick={() => void acknowledge(event.id)} className="action"><Check size={13} />确认</button>}</div></article>)}</section>
+        <section className="space-y-3"><div className="flex items-center justify-between gap-3"><h2 className="font-medium">预警事件</h2><div className="flex rounded-lg border border-[var(--border)] p-0.5 text-xs"><button onClick={() => setEventFilter('unread')} className={`rounded-md px-2 py-1 ${eventFilter === 'unread' ? 'bg-[var(--surface)] text-[var(--text)]' : 'text-[var(--text-secondary)]'}`}>待确认 {events.filter((event) => !event.acknowledged_at).length}</button><button onClick={() => setEventFilter('all')} className={`rounded-md px-2 py-1 ${eventFilter === 'all' ? 'bg-[var(--surface)] text-[var(--text)]' : 'text-[var(--text-secondary)]'}`}>全部</button></div></div>{visibleEvents.length === 0 ? <Empty text={eventFilter === 'unread' ? '没有待确认预警' : '暂无触发或恢复事件'} /> : visibleEvents.map((event) => <article key={event.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-start justify-between gap-3"><div><div className="text-sm font-medium">{event.severity} · {event.state}</div><p className="mt-1 text-sm text-[var(--text-secondary)]">{event.summary}</p><div className="mt-2 text-xs text-[var(--text-secondary)]">{event.created_at ? new Date(event.created_at).toLocaleString() : ''}</div></div>{event.acknowledged_at ? <span className="inline-flex items-center gap-1 text-xs text-emerald-500"><Check size={12} />已确认</span> : <button disabled={busy} onClick={() => void acknowledge(event.id)} className="action"><Check size={13} />确认</button>}</div></article>)}</section>
       </div>
     </main>
   </div>

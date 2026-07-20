@@ -809,6 +809,19 @@ export interface ScheduledTaskItem {
   requires_confirmation: boolean
 }
 
+export interface ScheduledTaskRunItem {
+  id: string
+  status: string
+  response_id?: string | null
+  scheduled_for?: string | null
+  output?: string | null
+  error?: string | null
+}
+
+export interface ScheduledTaskDetail extends ScheduledTaskItem {
+  runs: ScheduledTaskRunItem[]
+}
+
 export async function apiListScheduledTasks(token: string): Promise<ScheduledTaskItem[]> {
   const res = await apiFetchResponses('/scheduled-tasks', { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取定时任务失败'))
@@ -833,6 +846,53 @@ export async function apiScheduledTaskAction(token: string, taskId: string, acti
   const res = await apiFetchResponses(`/scheduled-tasks/${encodeURIComponent(taskId)}/actions/${action}`, { method: 'POST', headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '更新定时任务失败'))
   return res.json()
+}
+
+export async function apiGetScheduledTask(token: string, taskId: string): Promise<ScheduledTaskDetail> {
+  const res = await apiFetchResponses(`/scheduled-tasks/${encodeURIComponent(taskId)}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取任务运行历史失败'))
+  return res.json()
+}
+
+export async function apiRunScheduledTask(token: string, taskId: string): Promise<ScheduledTaskRunItem> {
+  const res = await apiFetchResponses(`/scheduled-tasks/${encodeURIComponent(taskId)}/run`, {
+    method: 'POST', headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '立即运行任务失败'))
+  return res.json()
+}
+
+export interface NotificationItem {
+  id: string
+  task_id: string
+  run_id?: string | null
+  kind: 'scheduled_task' | 'alert'
+  level: 'info' | 'success' | 'warning' | 'error' | string
+  title: string
+  body?: string | null
+  read: boolean
+  created_at?: string | null
+}
+
+export async function apiListNotifications(token: string, limit = 50): Promise<{ items: NotificationItem[]; unread_count: number }> {
+  const res = await apiFetchResponses(`/notifications?limit=${limit}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取通知失败'))
+  return res.json()
+}
+
+export async function apiReadNotification(token: string, notificationId: string): Promise<void> {
+  const res = await apiFetchResponses(`/notifications/${encodeURIComponent(notificationId)}/read`, {
+    method: 'POST', headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '更新通知失败'))
+}
+
+export async function apiReadAllNotifications(token: string): Promise<number> {
+  const res = await apiFetchResponses('/notifications/read-all', {
+    method: 'POST', headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '更新通知失败'))
+  return Number((await res.json()).updated || 0)
 }
 
 export interface AlertRuleItem {

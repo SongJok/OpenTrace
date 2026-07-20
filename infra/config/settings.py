@@ -404,6 +404,7 @@ class AppSettings(BaseSettings):
     response_worker_poll_seconds: float = 2.0
     response_worker_batch_size: int = 20
     alert_scheduler_poll_seconds: int = 10
+    alert_scheduler_retry_seconds: int = 60
     # When True, tenant daily turn/cost quotas use Redis counters (multi-replica safe)
     enterprise_quota_redis_enabled: bool = False
     enterprise_usage_redis_enabled: bool = False
