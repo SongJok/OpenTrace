@@ -10,6 +10,7 @@ import {
   apiListUsers,
   apiPreviewMemoryConstitution,
   apiRestoreMemoryConstitution,
+  apiResetUserPassword,
   apiUpdateMemoryConstitution,
   type MemoryConstitutionAuditItem,
   type MemoryConstitutionData,
@@ -77,6 +78,9 @@ export default function PermissionsPage() {
   const [constitutionPreview, setConstitutionPreview] = useState<MemoryConstitutionPreview | null>(null)
   const [constitutionHistory, setConstitutionHistory] = useState<MemoryConstitutionHistoryItem[]>([])
   const [restoringVersion, setRestoringVersion] = useState<number | null>(null)
+  const [resetTarget, setResetTarget] = useState<UserItem | null>(null)
+  const [resetPassword, setResetPassword] = useState('')
+  const [resetLoading, setResetLoading] = useState(false)
 
   async function loadUsers(status?: string) {
     if (!token) return
@@ -255,6 +259,22 @@ export default function PermissionsPage() {
       setMessage(err.message)
     } finally {
       setActionLoading(null)
+    }
+  }
+
+  async function handleResetPassword() {
+    if (!token || !resetTarget || resetPassword.length < 8) return
+    setResetLoading(true)
+    setMessage('')
+    try {
+      const result = await apiResetUserPassword(token, resetTarget.id, resetPassword)
+      setMessage(result.message)
+      setResetTarget(null)
+      setResetPassword('')
+    } catch (err: any) {
+      setMessage(err.message)
+    } finally {
+      setResetLoading(false)
     }
   }
 
@@ -471,6 +491,7 @@ export default function PermissionsPage() {
                         {u.status === 'pending' && <button onClick={() => handleApprove(u.id)} disabled={actionLoading === u.id} className="px-3 py-1 text-xs bg-green-600 hover:bg-green-700 text-white rounded-md disabled:opacity-50">{actionLoading === u.id ? '...' : t('permissions.approve')}</button>}
                         {u.status === 'active' && u.role !== 'admin' && <button onClick={() => handleDisable(u.id)} disabled={actionLoading === u.id} className="px-3 py-1 text-xs bg-red-600 hover:bg-red-700 text-white rounded-md disabled:opacity-50">{actionLoading === u.id ? '...' : t('permissions.disable')}</button>}
                         {u.status === 'disabled' && <button onClick={() => handleEnable(u.id)} disabled={actionLoading === u.id} className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded-md disabled:opacity-50">{actionLoading === u.id ? '...' : t('permissions.enable')}</button>}
+                        {u.status !== 'pending' && <button onClick={() => { setResetTarget(u); setResetPassword(''); setMessage('') }} className="px-3 py-1 text-xs border border-[#555] hover:border-[#10a37f] text-[#dedee3] rounded-md">重置密码</button>}
                       </div></td>
                     </tr>
                   ))}</tbody>
@@ -480,6 +501,32 @@ export default function PermissionsPage() {
           </>
         )}
       </div>
+      {resetTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 px-4" role="dialog" aria-modal="true" aria-labelledby="reset-password-title">
+          <div className="w-full max-w-md rounded-2xl border border-[#454545] bg-[#292929] p-5 shadow-2xl">
+            <h2 id="reset-password-title" className="text-lg font-semibold text-white">重置用户密码</h2>
+            <p className="mt-1 text-sm text-[#a7a7b0]">为 {resetTarget.email} 直接设置新密码。</p>
+            <label className="mt-5 block text-xs text-[#b4b4bd]">
+              新密码（至少 8 位）
+              <input
+                autoFocus
+                type="password"
+                autoComplete="new-password"
+                minLength={8}
+                maxLength={72}
+                value={resetPassword}
+                onChange={(event) => setResetPassword(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter') void handleResetPassword() }}
+                className="mt-2 w-full rounded-xl border border-[#4a4a4a] bg-[#202020] px-3 py-2.5 text-sm text-white outline-none focus:border-[#10a37f]"
+              />
+            </label>
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => { setResetTarget(null); setResetPassword('') }} disabled={resetLoading} className="rounded-lg border border-[#525252] px-4 py-2 text-sm text-[#d4d4d8] disabled:opacity-50">取消</button>
+              <button onClick={() => void handleResetPassword()} disabled={resetLoading || resetPassword.length < 8} className="rounded-lg bg-[#10a37f] px-4 py-2 text-sm font-medium text-white disabled:opacity-50">{resetLoading ? '重置中…' : '确认重置'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

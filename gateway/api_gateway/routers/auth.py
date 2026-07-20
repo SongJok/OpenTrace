@@ -1,19 +1,19 @@
 """
 Auth router — login, register, me, logout.
 """
+
 from __future__ import annotations
 
 import random
 import string
 import uuid
 from datetime import datetime, timedelta
-from typing import Optional
 
 from fastapi import APIRouter, Depends
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,8 +39,8 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 # ---------------------------------------------------------------------------
 class RegisterRequest(BaseModel):
     email: str
-    password: Optional[str] = None
-    display_name: Optional[str] = None
+    password: str | None = None
+    display_name: str | None = None
 
 
 class RegisterResponse(BaseModel):
@@ -53,18 +53,30 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     user_id: str
     email: str
-    display_name: Optional[str] = None
-    role: Optional[str] = None
+    display_name: str | None = None
+    role: str | None = None
 
 
 class UserMe(BaseModel):
     user_id: str
     email: str
-    display_name: Optional[str] = None
+    display_name: str | None = None
     is_superuser: bool = False
     role: str = "user"
     status: str = "active"
     created_at: str
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str = Field(min_length=1, max_length=72)
+    new_password: str = Field(min_length=8, max_length=72)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_bcrypt_length(cls, password: str) -> str:
+        if len(password.encode("utf-8")) > 72:
+            raise ValueError("新密码不能超过 72 个字节")
+        return password
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +217,10 @@ async def login(
     token = _create_token(user.id, user.email)
     logger.info("User logged in", email=user.email)
     return LoginResponse(
-        access_token=token, user_id=user.id,
-        email=user.email, display_name=user.display_name,
+        access_token=token,
+        user_id=user.id,
+        email=user.email,
+        display_name=user.display_name,
         role=user.role,
     )
 
@@ -227,8 +241,10 @@ async def login_json(
         raise AppException(ErrorCodes.AUTH_INTERNAL_ERROR.code, message="Invalid credentials")
     token = _create_token(user.id, user.email)
     return LoginResponse(
-        access_token=token, user_id=user.id,
-        email=user.email, display_name=user.display_name,
+        access_token=token,
+        user_id=user.id,
+        email=user.email,
+        display_name=user.display_name,
         role=user.role,
     )
 
@@ -244,3 +260,26 @@ async def me(current_user: User = Depends(get_current_user)) -> UserMe:
         status=current_user.status,
         created_at=current_user.created_at.isoformat(),
     )
+
+
+@router.post("/auth/change-password")
+async def change_password(
+    req: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    if not _verify(req.old_password, current_user.hashed_password):
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message="原密码不正确",
+        )
+    if _verify(req.new_password, current_user.hashed_password):
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message="新密码不能与原密码相同",
+        )
+
+    current_user.hashed_password = _hash(req.new_password)
+    await db.commit()
+    logger.info("User password changed", user_id=current_user.id)
+    return {"message": "密码修改成功"}

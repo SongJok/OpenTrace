@@ -387,6 +387,16 @@ export async function apiGetCurrentUser(token: string): Promise<any> {
   return res.json()
 }
 
+export async function apiChangePassword(token: string, oldPassword: string, newPassword: string): Promise<{ message: string }> {
+  const res = await apiFetch('/auth/change-password', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '修改密码失败'))
+  return res.json()
+}
+
 export async function apiListUsers(token: string, status?: string): Promise<any> {
   const qs = status ? `?status=${encodeURIComponent(status)}` : ''
   const res = await apiFetch(`/admin/users${qs}`, { headers: authHeaders(token) })
@@ -418,6 +428,16 @@ export async function apiEnableUser(token: string, userId: string): Promise<any>
     headers: authHeaders(token),
   })
   if (!res.ok) throw new Error('Failed to enable user')
+  return res.json()
+}
+
+export async function apiResetUserPassword(token: string, userId: string, newPassword: string): Promise<{ message: string }> {
+  const res = await apiFetch(`/admin/users/${encodeURIComponent(userId)}/reset-password`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ new_password: newPassword }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '重置用户密码失败'))
   return res.json()
 }
 

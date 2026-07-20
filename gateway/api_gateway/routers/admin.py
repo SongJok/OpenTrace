@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,6 +61,17 @@ class MemoryConstitutionUpdateRequest(BaseModel):
 
 class MemoryConstitutionRestoreRequest(BaseModel):
     expected_version: int = Field(ge=0)
+
+
+class ResetPasswordRequest(BaseModel):
+    new_password: str = Field(min_length=8, max_length=72)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_bcrypt_length(cls, password: str) -> str:
+        if len(password.encode("utf-8")) > 72:
+            raise ValueError("新密码不能超过 72 个字节")
+        return password
 
 
 def _admin_scope(request: Request, user: User) -> tuple[str, str]:
@@ -316,6 +327,29 @@ async def enable_user(
     await db.commit()
     logger.info("User enabled", user_id=user.id, by=current_user.email)
     return {"message": "用户已启用"}
+
+
+@router.post("/admin/users/{user_id}/reset-password")
+async def reset_user_password(
+    user_id: str,
+    req: ResetPasswordRequest,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="User not found")
+    if user.status == "pending":
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message="待审核用户尚未激活，请先完成审核",
+        )
+
+    user.hashed_password = _hash(req.new_password)
+    await db.commit()
+    logger.info("User password reset", user_id=user.id, by=current_user.email)
+    return {"message": "用户密码已重置"}
 
 
 @router.get("/admin/tools")

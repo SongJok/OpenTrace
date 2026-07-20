@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { ChevronLeft, Check, LogOut, Moon, Monitor, Palette, Sun } from 'lucide-react'
+import { ChevronLeft, Check, KeyRound, LogOut, Moon, Monitor, Palette, Sun } from 'lucide-react'
 import clsx from 'clsx'
 import { useThemeStore, type AccentMode, type ThemeMode } from '../store/theme'
 import { useAuthStore } from '../store/auth'
-import { apiGetCustomInstructions, apiGetUiSettings, apiPatchUiSettings, apiSetCustomInstructions } from '../api/client'
+import { apiChangePassword, apiGetCustomInstructions, apiGetUiSettings, apiPatchUiSettings, apiSetCustomInstructions } from '../api/client'
 import { CardShell } from '../components/CardShell'
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; description: string; icon: ReactNode }[] = [
@@ -107,6 +107,11 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
   const [aboutUser, setAboutUser] = useState('')
   const [responseStyle, setResponseStyle] = useState('')
   const [savingCustomInstructions, setSavingCustomInstructions] = useState(false)
+  const [oldPassword, setOldPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [passwordSaving, setPasswordSaving] = useState(false)
+  const [passwordMessage, setPasswordMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
   const effectiveModeLabel = useMemo(() => (mode === 'system' ? 'System' : mode === 'light' ? 'Light' : 'Dark'), [mode])
 
@@ -182,6 +187,30 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
     }
   }
 
+  const changePassword = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setPasswordMessage(null)
+    if (newPassword !== confirmPassword) {
+      setPasswordMessage({ type: 'error', text: '两次输入的新密码不一致' })
+      return
+    }
+    setPasswordSaving(true)
+    try {
+      const result = await apiChangePassword(token, oldPassword, newPassword)
+      setOldPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+      setPasswordMessage({ type: 'success', text: result.message })
+    } catch (error) {
+      setPasswordMessage({
+        type: 'error',
+        text: error instanceof Error ? error.message : '修改密码失败',
+      })
+    } finally {
+      setPasswordSaving(false)
+    }
+  }
+
   return (
     <div className="flex h-screen flex-col bg-[var(--bg)] text-[var(--text)]">
       <header className="flex h-16 items-center justify-between border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg)_90%,transparent)] px-6 backdrop-blur-xl">
@@ -222,6 +251,61 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
                 <LogOut size={13} /> Sign out
               </button>
             </div>
+            <form onSubmit={changePassword} className="mt-5 border-t border-[var(--border)] pt-5">
+              <div className="mb-3 flex items-center gap-2">
+                <KeyRound size={15} className="text-[var(--accent)]" />
+                <div>
+                  <p className="text-sm font-medium text-[var(--text)]">修改密码</p>
+                  <p className="text-xs text-[var(--text-secondary)]">输入原密码，并设置至少 8 位的新密码</p>
+                </div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-3">
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  value={oldPassword}
+                  onChange={(event) => setOldPassword(event.target.value)}
+                  placeholder="原密码"
+                  required
+                  maxLength={72}
+                  className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2.5 text-sm text-[var(--text)] outline-none transition-colors focus:border-[var(--accent)]"
+                />
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  placeholder="新密码（至少 8 位）"
+                  required
+                  minLength={8}
+                  maxLength={72}
+                  className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2.5 text-sm text-[var(--text)] outline-none transition-colors focus:border-[var(--accent)]"
+                />
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  placeholder="再次输入新密码"
+                  required
+                  minLength={8}
+                  maxLength={72}
+                  className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2.5 text-sm text-[var(--text)] outline-none transition-colors focus:border-[var(--accent)]"
+                />
+              </div>
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <p className={`text-xs ${passwordMessage?.type === 'success' ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {passwordMessage?.text || ''}
+                </p>
+                <button
+                  type="submit"
+                  disabled={passwordSaving || !oldPassword || newPassword.length < 8 || !confirmPassword}
+                  className="rounded-full bg-[var(--accent)] px-4 py-2 text-xs font-medium text-[var(--accent-foreground)] transition-opacity disabled:opacity-50"
+                >
+                  {passwordSaving ? '修改中…' : '确认修改'}
+                </button>
+              </div>
+            </form>
           </SectionCard>
 
           <SectionCard eyebrow="Appearance" title="Theme" meta="统一前端颜色：白色 / 黑色 / 暖色">
