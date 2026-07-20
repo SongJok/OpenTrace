@@ -238,6 +238,8 @@ async def _verify_runtime_schema(conn) -> None:
         "memory_evidence",
         "memory_constitutions",
         "memory_constitution_audits",
+        "chat_constitutions",
+        "chat_constitution_audits",
         "alert_rules",
         "alert_events",
         "skill_catalog_entries",
@@ -258,9 +260,7 @@ async def _verify_runtime_schema(conn) -> None:
         missing.append(table)
 
     if missing:
-        raise RuntimeError(
-            "runtime schema is not migration-ready; missing: " + ", ".join(missing)
-        )
+        raise RuntimeError("runtime schema is not migration-ready; missing: " + ", ".join(missing))
 
 
 async def _ensure_responses_columns(conn) -> None:

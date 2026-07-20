@@ -563,6 +563,132 @@ export async function apiListMemoryConstitutionAudits(
   return ((await res.json()).items ?? []) as MemoryConstitutionAuditItem[]
 }
 
+export interface ChatConstitutionRules {
+  enabled: boolean
+  prohibited_categories: string[]
+  custom_blocked_terms: string[]
+  custom_allowed_terms: string[]
+  block_message: string
+  max_input_chars: number
+}
+
+export interface ChatConstitutionData {
+  id: string | null
+  version: number
+  content: string
+  rules: ChatConstitutionRules
+  created_by?: string | null
+  created_at?: string | null
+  immutable_categories: string[]
+  immutable_category_labels: Record<string, string>
+  editable_categories: Record<string, string>
+  effective_immediately?: boolean
+  unchanged?: boolean
+}
+
+export interface ChatConstitutionPreview {
+  current_version: number
+  proposed_version: number
+  decision: 'allow' | 'block'
+  reason_code: string
+  categories: string[]
+  block_message: string
+}
+
+export interface ChatConstitutionHistoryItem {
+  id: string
+  version: number
+  is_active: boolean
+  created_by: string
+  created_at?: string | null
+  summary: string
+}
+
+export interface ChatConstitutionAuditItem {
+  id: string
+  subject_user_id?: string | null
+  request_id?: string | null
+  constitution_version: number
+  decision: 'allow' | 'block'
+  reason_code: string
+  categories: string[]
+  content_length: number
+  source: string
+  created_at?: string | null
+}
+
+export async function apiGetChatConstitution(token: string): Promise<ChatConstitutionData> {
+  const res = await apiFetch('/admin/chat/constitution', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取聊天宪法失败'))
+  return res.json()
+}
+
+export async function apiUpdateChatConstitution(
+  token: string,
+  payload: { content: string; rules: ChatConstitutionRules; expected_version?: number },
+): Promise<ChatConstitutionData> {
+  const res = await apiFetch('/admin/chat/constitution', {
+    method: 'PUT',
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '发布聊天宪法失败'))
+  return res.json()
+}
+
+export async function apiPreviewChatConstitution(
+  token: string,
+  payload: {
+    content: string
+    rules: ChatConstitutionRules
+    expected_version?: number
+    sample_input: string
+  },
+): Promise<ChatConstitutionPreview> {
+  const res = await apiFetch('/admin/chat/constitution/preview', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '测试聊天宪法判定失败'))
+  return res.json()
+}
+
+export async function apiListChatConstitutionHistory(
+  token: string,
+): Promise<ChatConstitutionHistoryItem[]> {
+  const res = await apiFetch('/admin/chat/constitution/history', {
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '读取聊天宪法版本失败'))
+  return ((await res.json()).items ?? []) as ChatConstitutionHistoryItem[]
+}
+
+export async function apiRestoreChatConstitution(
+  token: string,
+  version: number,
+  expectedVersion: number,
+): Promise<ChatConstitutionData> {
+  const res = await apiFetch(`/admin/chat/constitution/history/${version}/restore`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ expected_version: expectedVersion }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '恢复聊天宪法版本失败'))
+  return res.json()
+}
+
+export async function apiListChatConstitutionAudits(
+  token: string,
+  limit = 30,
+): Promise<ChatConstitutionAuditItem[]> {
+  const res = await apiFetch(`/admin/chat/constitution/audits?limit=${limit}`, {
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '读取聊天宪法审计失败'))
+  return ((await res.json()).items ?? []) as ChatConstitutionAuditItem[]
+}
+
 export async function apiCreateConversation(token: string, title?: string, temporary = false): Promise<any> {
   const res = await apiFetchResponses('/conversations', {
     method: 'POST',
@@ -1133,6 +1259,9 @@ export async function apiChatStream(
       signal,
     })
 
+    // 错误响应也通常是 JSON；必须先走统一错误解析，不能把它误当成空的最终回答。
+    if (!res.ok) throw new Error(await readApiError(res, 'Responses stream failed'))
+
     if (res.headers.get('content-type')?.includes('application/json') && !res.headers.get('content-type')?.includes('text/event-stream')) {
       const response = (await res.json().catch(() => null)) as any
       if (!response) throw new Error('Invalid Responses response')
@@ -1151,7 +1280,6 @@ export async function apiChatStream(
       return
     }
 
-    if (!res.ok) throw new Error(await readApiError(res, 'Responses stream failed'))
     const contentType = res.headers.get('content-type') || ''
     if (!contentType.includes('text/event-stream')) {
       const sync = (await res.json().catch(() => null)) as any

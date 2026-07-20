@@ -4,14 +4,25 @@ import {
   apiApproveUser,
   apiDisableUser,
   apiEnableUser,
+  apiGetChatConstitution,
   apiGetMemoryConstitution,
+  apiListChatConstitutionAudits,
+  apiListChatConstitutionHistory,
   apiListMemoryConstitutionAudits,
   apiListMemoryConstitutionHistory,
   apiListUsers,
+  apiPreviewChatConstitution,
   apiPreviewMemoryConstitution,
+  apiRestoreChatConstitution,
   apiRestoreMemoryConstitution,
   apiResetUserPassword,
+  apiUpdateChatConstitution,
   apiUpdateMemoryConstitution,
+  type ChatConstitutionAuditItem,
+  type ChatConstitutionData,
+  type ChatConstitutionHistoryItem,
+  type ChatConstitutionPreview,
+  type ChatConstitutionRules,
   type MemoryConstitutionAuditItem,
   type MemoryConstitutionData,
   type MemoryConstitutionHistoryItem,
@@ -58,6 +69,203 @@ function formatDate(iso: string): string {
   })
 }
 
+export function ChatConstitutionPanel({ token, setMessage }: { token: string; setMessage: (value: string) => void }) {
+  const [constitution, setConstitution] = useState<ChatConstitutionData | null>(null)
+  const [content, setContent] = useState('')
+  const [rules, setRules] = useState<ChatConstitutionRules | null>(null)
+  const [history, setHistory] = useState<ChatConstitutionHistoryItem[]>([])
+  const [audits, setAudits] = useState<ChatConstitutionAuditItem[]>([])
+  const [sampleInput, setSampleInput] = useState('')
+  const [preview, setPreview] = useState<ChatConstitutionPreview | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [previewing, setPreviewing] = useState(false)
+  const [restoring, setRestoring] = useState<number | null>(null)
+
+  async function load() {
+    setLoading(true)
+    try {
+      const [data, nextHistory, nextAudits] = await Promise.all([
+        apiGetChatConstitution(token),
+        apiListChatConstitutionHistory(token),
+        apiListChatConstitutionAudits(token),
+      ])
+      setConstitution(data)
+      setContent(data.content)
+      setRules(data.rules)
+      setHistory(nextHistory)
+      setAudits(nextAudits)
+      setPreview(null)
+    } catch (err: any) {
+      setMessage(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { load() }, [token])
+
+  function updateRules(next: ChatConstitutionRules) {
+    setRules(next)
+    setPreview(null)
+  }
+
+  function toggleCategory(category: string) {
+    if (!rules || constitution?.immutable_categories.includes(category)) return
+    const selected = rules.prohibited_categories.includes(category)
+    updateRules({
+      ...rules,
+      prohibited_categories: selected
+        ? rules.prohibited_categories.filter((item) => item !== category)
+        : [...rules.prohibited_categories, category],
+    })
+  }
+
+  async function save() {
+    if (!rules) return
+    setSaving(true)
+    setMessage('')
+    try {
+      const data = await apiUpdateChatConstitution(token, {
+        content,
+        rules,
+        expected_version: constitution?.version ?? 0,
+      })
+      setMessage(data.unchanged
+        ? `聊天宪法 v${data.version} 内容未变化，无需生成新版本`
+        : `聊天宪法 v${data.version} 已立即生效`)
+      await load()
+    } catch (err: any) {
+      setMessage(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function testDecision() {
+    if (!rules || !sampleInput.trim()) return
+    setPreviewing(true)
+    setMessage('')
+    try {
+      setPreview(await apiPreviewChatConstitution(token, {
+        content,
+        rules,
+        expected_version: constitution?.version ?? 0,
+        sample_input: sampleInput,
+      }))
+    } catch (err: any) {
+      setMessage(err.message)
+    } finally {
+      setPreviewing(false)
+    }
+  }
+
+  async function restore(version: number) {
+    if (!constitution || !confirm(`确认以聊天宪法 v${version} 的内容创建新的生效版本？`)) return
+    setRestoring(version)
+    setMessage('')
+    try {
+      const data = await apiRestoreChatConstitution(token, version, constitution.version)
+      setMessage(data.unchanged
+        ? `v${version} 与当前聊天宪法一致，无需恢复`
+        : `已从 v${version} 恢复为新的 v${data.version}，并立即生效`)
+      await load()
+    } catch (err: any) {
+      setMessage(err.message)
+    } finally {
+      setRestoring(null)
+    }
+  }
+
+  if (loading || !constitution || !rules) {
+    return <p className="text-sm text-[#8e8ea0]">{t('common.loading')}</p>
+  }
+
+  const categories = [...constitution.immutable_categories, ...Object.keys(constitution.editable_categories)]
+  const labels = { ...constitution.immutable_category_labels, ...constitution.editable_categories }
+
+  return (
+    <div className="space-y-5">
+      <section className="rounded-2xl border border-[#3d3d3d] bg-[#292929] p-5">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold text-white">当前生效聊天宪法</h2>
+              <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">v{constitution.version || '默认'}</span>
+            </div>
+            <p className="mt-1 text-xs text-[#a7a7b0]">新问题会先经过确定性判定；命中后不创建 Response、不调用模型与工具。</p>
+          </div>
+          <button onClick={save} disabled={saving || content.trim().length < 80} className="rounded-lg bg-[#10a37f] px-4 py-2 text-sm font-medium text-white hover:bg-[#0d8c6d] disabled:opacity-50">
+            {saving ? '发布中…' : '发布新版本'}
+          </button>
+        </div>
+        <textarea value={content} onChange={(event) => { setContent(event.target.value); setPreview(null) }} rows={12} aria-label="聊天宪法内容" className="w-full resize-y rounded-xl border border-[#454545] bg-[#202020] px-4 py-3 text-sm leading-6 text-white outline-none focus:border-[#10a37f]" />
+        <p className="mt-2 text-xs text-[#8e8ea0]">可在正文加入“禁止问答词：词语A、词语B”或“允许问答词：词语C”；规则发布后按工作区立即生效。</p>
+      </section>
+
+      <section className="grid gap-5 md:grid-cols-2">
+        <div className="rounded-2xl border border-[#3d3d3d] bg-[#292929] p-5">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div><h3 className="font-medium text-white">拦截类别</h3><p className="mt-1 text-xs text-[#a7a7b0]">锁定项属于安全底线；政治敏感等工作区项可由管理员调整。</p></div>
+            <label className="flex items-center gap-2 text-xs text-[#d4d4d8]">工作区策略<input type="checkbox" checked={rules.enabled} onChange={(event) => updateRules({ ...rules, enabled: event.target.checked })} className="accent-[#10a37f]" /></label>
+          </div>
+          <div className="space-y-2">
+            {categories.map((category) => {
+              const locked = constitution.immutable_categories.includes(category)
+              return (
+                <label key={category} className="flex items-center justify-between gap-3 rounded-lg bg-[#222] px-3 py-2 text-sm text-[#e4e4e7]">
+                  <span>{labels[category] || category}</span>
+                  <span className="flex items-center gap-2 text-xs text-[#8e8ea0]">{locked && '锁定'}<input type="checkbox" checked={rules.prohibited_categories.includes(category)} disabled={locked} onChange={() => toggleCategory(category)} className="accent-[#10a37f]" /></span>
+                </label>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-[#3d3d3d] bg-[#292929] p-5">
+          <h3 className="font-medium text-white">判定与提示</h3>
+          <label className="mt-4 block text-xs text-[#a7a7b0]">用户提示语
+            <textarea value={rules.block_message} onChange={(event) => updateRules({ ...rules, block_message: event.target.value })} rows={3} className="mt-1 w-full rounded-lg border border-[#454545] bg-[#202020] px-3 py-2 text-sm text-white" />
+          </label>
+          <label className="mt-3 block text-xs text-[#a7a7b0]">单次输入最大字符数
+            <input type="number" min="500" max="100000" value={rules.max_input_chars} onChange={(event) => updateRules({ ...rules, max_input_chars: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-[#454545] bg-[#202020] px-3 py-2 text-sm text-white" />
+          </label>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label className="block text-xs text-[#a7a7b0]">自定义禁止词（每行一个）
+              <textarea value={rules.custom_blocked_terms.join('\n')} onChange={(event) => updateRules({ ...rules, custom_blocked_terms: event.target.value.split('\n').map((item) => item.trim()).filter(Boolean) })} rows={5} className="mt-1 w-full rounded-lg border border-[#454545] bg-[#202020] px-3 py-2 text-sm text-white" />
+            </label>
+            <label className="block text-xs text-[#a7a7b0]">允许例外词（每行一个）
+              <textarea value={rules.custom_allowed_terms.join('\n')} onChange={(event) => updateRules({ ...rules, custom_allowed_terms: event.target.value.split('\n').map((item) => item.trim()).filter(Boolean) })} rows={5} className="mt-1 w-full rounded-lg border border-[#454545] bg-[#202020] px-3 py-2 text-sm text-white" />
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-sky-500/30 bg-sky-500/5 p-5">
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="min-w-[260px] flex-1 text-xs text-[#a7a7b0]">发布前样例判定（不会写入审计）
+            <textarea value={sampleInput} onChange={(event) => { setSampleInput(event.target.value); setPreview(null) }} rows={3} placeholder="输入一条测试问题" className="mt-1 w-full rounded-lg border border-[#454545] bg-[#202020] px-3 py-2 text-sm text-white" />
+          </label>
+          <button onClick={testDecision} disabled={previewing || !sampleInput.trim() || content.trim().length < 80} className="rounded-lg border border-sky-500/50 px-4 py-2 text-sm text-sky-200 hover:bg-sky-500/10 disabled:opacity-50">{previewing ? '判定中…' : '测试判定'}</button>
+        </div>
+        {preview && <div className="mt-3 flex flex-wrap items-center gap-2 text-xs"><span className={`rounded-full px-2 py-0.5 ${preview.decision === 'block' ? 'bg-red-500/15 text-red-300' : 'bg-emerald-500/15 text-emerald-300'}`}>{preview.decision === 'block' ? '将拦截' : '可问答'}</span><span className="text-[#d4d4d8]">{preview.reason_code}</span>{preview.categories.length > 0 && <span className="text-[#8e8ea0]">分类：{preview.categories.join('、')}</span>}<span className="text-[#777780]">v{preview.current_version} → v{preview.proposed_version}</span></div>}
+      </section>
+
+      <section className="rounded-2xl border border-[#3d3d3d] bg-[#292929] p-5">
+        <h3 className="font-medium text-white">版本历史</h3>
+        <p className="mb-3 mt-1 text-xs text-[#a7a7b0]">恢复历史内容时会创建新版本，不改写不可变历史。</p>
+        {history.length === 0 ? <p className="text-sm text-[#8e8ea0]">当前使用内置默认宪法，尚无发布历史</p> : <div className="divide-y divide-[#3d3d3d]">{history.slice(0, 10).map((item) => <div key={item.id} className="flex flex-wrap items-center gap-3 py-2.5 text-xs"><span className={`rounded-full px-2 py-0.5 ${item.is_active ? 'bg-emerald-500/15 text-emerald-300' : 'bg-[#3a3a3a] text-[#b4b4bd]'}`}>v{item.version}{item.is_active ? ' · 当前' : ''}</span><span className="min-w-0 flex-1 truncate text-[#d4d4d8]">{item.summary}</span><span className="text-[#777780]">{item.created_at ? formatDate(item.created_at) : '-'}</span>{!item.is_active && <button onClick={() => restore(item.version)} disabled={restoring !== null} className="rounded-md border border-[#525252] px-2.5 py-1 text-[#d4d4d8] hover:border-[#10a37f] disabled:opacity-50">{restoring === item.version ? '恢复中…' : '恢复此版本'}</button>}</div>)}</div>}
+      </section>
+
+      <section className="rounded-2xl border border-[#3d3d3d] bg-[#292929] p-5">
+        <h3 className="font-medium text-white">最近聊天宪法决策</h3>
+        <p className="mb-3 mt-1 text-xs text-[#a7a7b0]">仅展示原因、分类与输入长度；原始问题不写入审计。</p>
+        {audits.length === 0 ? <p className="text-sm text-[#8e8ea0]">暂无审计记录</p> : <div className="divide-y divide-[#3d3d3d]">{audits.slice(0, 12).map((audit) => <div key={audit.id} className="flex flex-wrap items-center gap-2 py-2 text-xs"><span className={`rounded-full px-2 py-0.5 ${audit.decision === 'block' ? 'bg-red-500/15 text-red-300' : 'bg-emerald-500/15 text-emerald-300'}`}>{audit.decision === 'block' ? '已拦截' : '已发布'}</span><span className="text-[#d4d4d8]">{audit.reason_code}</span>{audit.categories.length > 0 && <span className="text-[#8e8ea0]">{audit.categories.join('、')}</span>}<span className="text-[#777780]">{audit.source} · v{audit.constitution_version} · {audit.content_length} 字符</span><span className="ml-auto text-[#777780]">{audit.created_at ? formatDate(audit.created_at) : '-'}</span></div>)}</div>}
+      </section>
+    </div>
+  )
+}
+
 export default function PermissionsPage() {
   const token = useAuthStore((s) => s.token)
   const role = useAuthStore((s) => s.role)
@@ -67,7 +275,7 @@ export default function PermissionsPage() {
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [message, setMessage] = useState('')
-  const [section, setSection] = useState<'users' | 'constitution'>('users')
+  const [section, setSection] = useState<'users' | 'constitution' | 'chat_constitution'>('users')
   const [constitution, setConstitution] = useState<MemoryConstitutionData | null>(null)
   const [constitutionContent, setConstitutionContent] = useState('')
   const [constitutionRules, setConstitutionRules] = useState<MemoryConstitutionRules | null>(null)
@@ -298,12 +506,13 @@ export default function PermissionsPage() {
     <div className="min-h-screen bg-[#212121] px-6 py-8">
       <div className="max-w-5xl mx-auto animate-fade-in">
         <h1 className="text-2xl font-semibold text-white mb-2">{t('permissions.title')}</h1>
-        <p className="mb-6 text-sm text-[#8e8ea0]">管理用户准入，以及工作区记忆可学习、保留和召回的边界。</p>
+        <p className="mb-6 text-sm text-[#8e8ea0]">管理用户准入，以及工作区聊天和记忆的治理边界。</p>
 
         <div className="mb-6 inline-flex rounded-xl bg-[#2f2f2f] p-1">
           {([
             ['users', '用户权限'],
             ['constitution', '记忆宪法'],
+            ['chat_constitution', '聊天宪法'],
           ] as const).map(([key, label]) => (
             <button
               key={key}
@@ -323,7 +532,9 @@ export default function PermissionsPage() {
           </p>
         )}
 
-        {section === 'constitution' ? constitutionLoading || !constitutionRules || !constitution ? (
+        {section === 'chat_constitution' ? (
+          <ChatConstitutionPanel token={token || ''} setMessage={setMessage} />
+        ) : section === 'constitution' ? constitutionLoading || !constitutionRules || !constitution ? (
           <p className="text-[#8e8ea0] text-sm">{t('common.loading')}</p>
         ) : (
           <div className="space-y-5">

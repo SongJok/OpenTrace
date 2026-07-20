@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest'
-import { streamSseResponse } from '../../api/client'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { apiChatStream, streamSseResponse } from '../../api/client'
 
 describe('Responses API stream compatibility', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
   it('renders typed text deltas and completes from a response.completed event', async () => {
     const deltas: string[] = []
     const finals: string[] = []
@@ -34,5 +36,25 @@ describe('Responses API stream compatibility', () => {
     })
 
     expect(finals).toEqual(['已达到步骤上限'])
+  })
+
+  it('surfaces JSON policy errors instead of rendering an empty final answer', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({
+        code: 208001,
+        message: '该内容有悖聊天宪法，无法进行问答。请调整问题后重试。',
+      }),
+      { status: 400, headers: { 'content-type': 'application/json' } },
+    )))
+    const errors: string[] = []
+    const finals: string[] = []
+
+    await expect(apiChatStream('token', 'conversation-1', '政治问题', {
+      onError: (error) => { errors.push(error.message) },
+      onFinalAnswer: (answer) => { finals.push(answer.content) },
+    })).rejects.toThrow('该内容有悖聊天宪法')
+
+    expect(errors).toEqual(['该内容有悖聊天宪法，无法进行问答。请调整问题后重试。'])
+    expect(finals).toEqual([])
   })
 })

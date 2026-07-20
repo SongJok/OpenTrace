@@ -21,11 +21,34 @@ from gateway.api_gateway.routers.auth import (
     get_current_user,
 )
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
+from governance.chat_constitution import (
+    EDITABLE_CATEGORY_LABELS as CHAT_EDITABLE_CATEGORY_LABELS,
+)
+from governance.chat_constitution import (
+    IMMUTABLE_CATEGORY_LABELS as CHAT_IMMUTABLE_CATEGORY_LABELS,
+)
+from governance.chat_constitution import (
+    IMMUTABLE_PROHIBITED_CATEGORIES as CHAT_IMMUTABLE_PROHIBITED_CATEGORIES,
+)
+from governance.chat_constitution import (
+    ChatConstitutionDecision,
+    EffectiveChatConstitution,
+    add_chat_constitution_audit,
+    evaluate_chat_constitution,
+    load_effective_chat_constitution,
+    normalize_chat_rules,
+)
 from infra.errors import AppException, ErrorCodes
 from infra.notifications.mailer import notify_user_approved, schedule_email_notification
 from infra.observability.logger import get_logger
 from infra.storage.database import db_session_dependency as get_db
-from infra.storage.models import MemoryConstitution, MemoryConstitutionAudit, User
+from infra.storage.models import (
+    ChatConstitution,
+    ChatConstitutionAudit,
+    MemoryConstitution,
+    MemoryConstitutionAudit,
+    User,
+)
 from memory.constitution import (
     EDITABLE_CATEGORY_LABELS,
     IMMUTABLE_PROHIBITED_CATEGORIES,
@@ -60,6 +83,29 @@ class MemoryConstitutionUpdateRequest(BaseModel):
 
 
 class MemoryConstitutionRestoreRequest(BaseModel):
+    expected_version: int = Field(ge=0)
+
+
+class ChatConstitutionRulesRequest(BaseModel):
+    enabled: bool = True
+    prohibited_categories: list[str] = Field(default_factory=list, max_length=20)
+    custom_blocked_terms: list[str] = Field(default_factory=list, max_length=200)
+    custom_allowed_terms: list[str] = Field(default_factory=list, max_length=100)
+    block_message: str = Field(min_length=10, max_length=300)
+    max_input_chars: int = Field(default=50000, ge=500, le=100000)
+
+
+class ChatConstitutionUpdateRequest(BaseModel):
+    content: str = Field(min_length=80, max_length=12000)
+    rules: ChatConstitutionRulesRequest
+    expected_version: int | None = Field(default=None, ge=0)
+
+
+class ChatConstitutionPreviewRequest(ChatConstitutionUpdateRequest):
+    sample_input: str = Field(min_length=1, max_length=100000)
+
+
+class ChatConstitutionRestoreRequest(BaseModel):
     expected_version: int = Field(ge=0)
 
 
@@ -217,6 +263,125 @@ async def _publish_memory_constitution(
             "unchanged": False,
         }
     )
+    return response
+
+
+def _chat_constitution_payload(
+    constitution: EffectiveChatConstitution,
+) -> dict[str, Any]:
+    return {
+        "id": constitution.id,
+        "version": constitution.version,
+        "content": constitution.content,
+        "rules": constitution.rules,
+        "created_by": constitution.created_by,
+        "created_at": (constitution.created_at.isoformat() if constitution.created_at else None),
+        "immutable_categories": sorted(CHAT_IMMUTABLE_PROHIBITED_CATEGORIES),
+        "immutable_category_labels": CHAT_IMMUTABLE_CATEGORY_LABELS,
+        "editable_categories": CHAT_EDITABLE_CATEGORY_LABELS,
+    }
+
+
+async def _lock_chat_constitution_scope(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+) -> None:
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:scope_key))"),
+        {"scope_key": f"chat_constitution:{tenant_id}:{workspace_id}"},
+    )
+
+
+async def _publish_chat_constitution(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    actor_user_id: str,
+    content: str,
+    rules: dict[str, Any],
+    expected_version: int | None,
+    reason_code: str,
+    source: str,
+) -> dict[str, Any]:
+    await _lock_chat_constitution_scope(
+        db,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    current = await load_effective_chat_constitution(
+        db,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    if expected_version is not None and expected_version != current.version:
+        raise AppException(
+            ErrorCodes.RESOURCE_EXISTS.code,
+            message=(
+                f"聊天宪法已由其他管理员更新：当前 v{current.version}，"
+                f"提交基于 v{expected_version}，请刷新后重试"
+            ),
+        )
+    normalized_content = content.strip()
+    normalized_rules = normalize_chat_rules(rules)
+    if normalized_content == current.content.strip() and normalized_rules == current.rules:
+        response = _chat_constitution_payload(current)
+        response.update({"effective_immediately": True, "unchanged": True})
+        return response
+
+    current_version = int(
+        await db.scalar(
+            select(func.max(ChatConstitution.version)).where(
+                ChatConstitution.tenant_id == tenant_id,
+                ChatConstitution.workspace_id == workspace_id,
+            )
+        )
+        or 0
+    )
+    await db.execute(
+        update(ChatConstitution)
+        .where(
+            ChatConstitution.tenant_id == tenant_id,
+            ChatConstitution.workspace_id == workspace_id,
+            ChatConstitution.is_active.is_(True),
+        )
+        .values(is_active=False)
+    )
+    row = ChatConstitution(
+        id=str(uuid.uuid4()),
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        version=current_version + 1,
+        content=normalized_content,
+        rules_json=json.dumps(normalized_rules, ensure_ascii=False),
+        is_active=True,
+        created_by=actor_user_id,
+    )
+    db.add(row)
+    await db.flush()
+    effective = EffectiveChatConstitution(
+        id=row.id,
+        version=row.version,
+        content=row.content,
+        rules=normalized_rules,
+        created_by=row.created_by,
+        created_at=row.created_at,
+    )
+    add_chat_constitution_audit(
+        db,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        constitution_version=row.version,
+        decision=ChatConstitutionDecision("allow", reason_code),
+        content=row.content,
+        source=source,
+        actor_user_id=actor_user_id,
+    )
+    await db.commit()
+    response = _chat_constitution_payload(effective)
+    response.update({"effective_immediately": True, "unchanged": False})
     return response
 
 
@@ -623,6 +788,199 @@ async def list_memory_constitution_audits(
                 "decision": row.decision,
                 "reason_code": row.reason_code,
                 "categories": json.loads(row.categories_json or "[]"),
+                "source": row.source,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.get("/admin/chat/constitution")
+async def get_chat_constitution(
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """读取当前工作区实时生效的聊天宪法。"""
+
+    tenant_id, workspace_id = _admin_scope(request, current_user)
+    constitution = await load_effective_chat_constitution(
+        db,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    return _chat_constitution_payload(constitution)
+
+
+@router.put("/admin/chat/constitution")
+async def update_chat_constitution(
+    request: Request,
+    payload: ChatConstitutionUpdateRequest,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """创建立即生效的新聊天宪法版本。"""
+
+    tenant_id, workspace_id = _admin_scope(request, current_user)
+    return await _publish_chat_constitution(
+        db,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        actor_user_id=current_user.id,
+        content=payload.content,
+        rules=payload.rules.model_dump(),
+        expected_version=payload.expected_version,
+        reason_code="chat_constitution_published",
+        source="constitution_update",
+    )
+
+
+@router.post("/admin/chat/constitution/preview")
+async def preview_chat_constitution(
+    request: Request,
+    payload: ChatConstitutionPreviewRequest,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """用样例输入只读测试待发布规则，不记录样例原文。"""
+
+    tenant_id, workspace_id = _admin_scope(request, current_user)
+    current = await load_effective_chat_constitution(
+        db,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    proposed = EffectiveChatConstitution(
+        id=None,
+        version=current.version + 1,
+        content=payload.content.strip(),
+        rules=normalize_chat_rules(payload.rules.model_dump()),
+        created_by=current_user.id,
+    )
+    decision = evaluate_chat_constitution(
+        payload.sample_input,
+        constitution=proposed,
+    )
+    return {
+        "current_version": current.version,
+        "proposed_version": proposed.version,
+        "decision": decision.decision,
+        "reason_code": decision.reason_code,
+        "categories": list(decision.categories),
+        "block_message": proposed.rules["block_message"],
+    }
+
+
+@router.get("/admin/chat/constitution/history")
+async def list_chat_constitution_history(
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = _admin_scope(request, current_user)
+    rows = list(
+        (
+            await db.execute(
+                select(ChatConstitution)
+                .where(
+                    ChatConstitution.tenant_id == tenant_id,
+                    ChatConstitution.workspace_id == workspace_id,
+                )
+                .order_by(ChatConstitution.version.desc())
+                .limit(20)
+            )
+        ).scalars()
+    )
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "version": row.version,
+                "is_active": row.is_active,
+                "created_by": row.created_by,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "summary": next(
+                    (line.strip("# ") for line in row.content.splitlines() if line.strip()),
+                    "聊天宪法",
+                )[:100],
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.post("/admin/chat/constitution/history/{version}/restore")
+async def restore_chat_constitution(
+    version: int,
+    request: Request,
+    payload: ChatConstitutionRestoreRequest,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """以历史内容创建新版本，保留不可变历史。"""
+
+    tenant_id, workspace_id = _admin_scope(request, current_user)
+    target = await db.scalar(
+        select(ChatConstitution).where(
+            ChatConstitution.tenant_id == tenant_id,
+            ChatConstitution.workspace_id == workspace_id,
+            ChatConstitution.version == version,
+        )
+    )
+    if target is None:
+        raise AppException(
+            ErrorCodes.RESOURCE_NOT_FOUND.code,
+            message=f"聊天宪法历史版本 v{version} 不存在",
+        )
+    try:
+        target_rules = json.loads(target.rules_json or "{}")
+    except (TypeError, ValueError):
+        target_rules = {}
+    return await _publish_chat_constitution(
+        db,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        actor_user_id=current_user.id,
+        content=target.content,
+        rules=target_rules,
+        expected_version=payload.expected_version,
+        reason_code="chat_constitution_restored",
+        source="constitution_restore",
+    )
+
+
+@router.get("/admin/chat/constitution/audits")
+async def list_chat_constitution_audits(
+    request: Request,
+    decision: str | None = Query(default=None, pattern="^(allow|block)$"),
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = _admin_scope(request, current_user)
+    query = select(ChatConstitutionAudit).where(
+        ChatConstitutionAudit.tenant_id == tenant_id,
+        ChatConstitutionAudit.workspace_id == workspace_id,
+    )
+    if decision:
+        query = query.where(ChatConstitutionAudit.decision == decision)
+    rows = list(
+        (
+            await db.execute(query.order_by(ChatConstitutionAudit.created_at.desc()).limit(limit))
+        ).scalars()
+    )
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "subject_user_id": row.subject_user_id,
+                "request_id": row.request_id,
+                "constitution_version": row.constitution_version,
+                "decision": row.decision,
+                "reason_code": row.reason_code,
+                "categories": json.loads(row.categories_json or "[]"),
+                "content_length": row.content_length,
                 "source": row.source,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
             }

@@ -53,9 +53,7 @@ class User(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="pending"
     )  # pending | active | disabled
-    role: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="user"
-    )  # admin | user
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="user")  # admin | user
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -91,7 +89,9 @@ class ChatSession(Base):
     archived_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     org_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     enabled_skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
@@ -99,9 +99,13 @@ class ChatSession(Base):
     # Active response and branch root make conversation continuation explicit;
     # the UI no longer needs to infer lineage from legacy TraceLog rows.
     active_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    branch_root_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    branch_root_response_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     is_temporary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     assistant_profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     conversation_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -210,8 +214,12 @@ class ResponseRecord(Base):
     conversation_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     parent_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     request_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -224,7 +232,9 @@ class ResponseRecord(Base):
     response_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     request_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
@@ -252,7 +262,9 @@ class ConversationShare(Base):
     public_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -324,9 +336,7 @@ class ResponseModelCall(Base):
     """Auditable provider invocation belonging to a canonical Response."""
 
     __tablename__ = "response_model_calls"
-    __table_args__ = (
-        UniqueConstraint("response_id", "call_id", name="uq_response_model_call"),
-    )
+    __table_args__ = (UniqueConstraint("response_id", "call_id", name="uq_response_model_call"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     response_id: Mapped[str] = mapped_column(
@@ -348,7 +358,9 @@ class Document(Base):
     owner_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -448,14 +460,20 @@ class DocumentLLMWiki(Base):
 class KnowledgeSource(Base):
     __tablename__ = "knowledge_sources"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "workspace_id", "document_id", name="uq_knowledge_source_document_scope"),
+        UniqueConstraint(
+            "tenant_id", "workspace_id", "document_id", name="uq_knowledge_source_document_scope"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     document_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     source_type: Mapped[str] = mapped_column(String(64), nullable=False, default="document")
     external_ref: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
@@ -479,7 +497,10 @@ class KnowledgeSourceVersion(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     source_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("knowledge_sources.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36),
+        ForeignKey("knowledge_sources.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -498,17 +519,28 @@ class KnowledgePage(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     source_version_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("knowledge_source_versions.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36),
+        ForeignKey("knowledge_source_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    page_type: Mapped[str] = mapped_column(String(32), nullable=False, default="overview", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    page_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="overview", index=True
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(255), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    schema_name: Mapped[str] = mapped_column(String(128), nullable=False, default="knowledge_page_v1")
+    schema_name: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="knowledge_page_v1"
+    )
     authority: Mapped[str] = mapped_column(String(32), nullable=False, default="contextual")
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
@@ -527,14 +559,21 @@ class KnowledgeClaim(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     source_version_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("knowledge_source_versions.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36),
+        ForeignKey("knowledge_source_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     page_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("knowledge_pages.id", ondelete="CASCADE"), nullable=False, index=True
     )
     owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     claim_type: Mapped[str] = mapped_column(String(32), nullable=False, default="fact", index=True)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     normalized_text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -557,16 +596,25 @@ class KnowledgeClaim(Base):
 class KnowledgeRelation(Base):
     __tablename__ = "knowledge_relations"
     __table_args__ = (
-        UniqueConstraint("source_page_id", "target_page_id", "relation_type", name="uq_knowledge_relation"),
+        UniqueConstraint(
+            "source_page_id", "target_page_id", "relation_type", name="uq_knowledge_relation"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     source_version_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("knowledge_source_versions.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36),
+        ForeignKey("knowledge_source_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     source_page_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("knowledge_pages.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -588,8 +636,12 @@ class KnowledgeCompilationJob(Base):
     source_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     source_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
     compiler_version: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -603,13 +655,19 @@ class KnowledgeCompilationJob(Base):
 class KnowledgeLintIssue(Base):
     __tablename__ = "knowledge_lint_issues"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "workspace_id", "issue_key", name="uq_knowledge_lint_issue_scope"),
+        UniqueConstraint(
+            "tenant_id", "workspace_id", "issue_key", name="uq_knowledge_lint_issue_scope"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     issue_key: Mapped[str] = mapped_column(String(128), nullable=False)
     severity: Mapped[str] = mapped_column(String(16), nullable=False, default="warning", index=True)
     code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -618,7 +676,9 @@ class KnowledgeLintIssue(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="open", index=True)
     details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -628,8 +688,12 @@ class KnowledgeFeedback(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     session_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     target_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     target_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     feedback_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
@@ -645,13 +709,19 @@ class KnowledgeRule(Base):
 
     __tablename__ = "knowledge_rules"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "workspace_id", "rule_key", "version", name="uq_knowledge_rule_version"),
+        UniqueConstraint(
+            "tenant_id", "workspace_id", "rule_key", "version", name="uq_knowledge_rule_version"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     rule_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -676,13 +746,19 @@ class KnowledgeObservation(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     metric: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     value: Mapped[float] = mapped_column(Float, nullable=False)
     dimensions: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     trigger: Mapped[str] = mapped_column(String(64), nullable=False, default="scheduled")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
 
 
 class KnowledgeMergeCase(Base):
@@ -692,10 +768,16 @@ class KnowledgeMergeCase(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     entity_key: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    conflict_type: Mapped[str] = mapped_column(String(64), nullable=False, default="duplicate_claim")
+    conflict_type: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="duplicate_claim"
+    )
     candidate_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="open", index=True)
     resolution: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
@@ -777,8 +859,12 @@ class UserMemory(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     memory_type: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
     kind: Mapped[str] = mapped_column(String(30), nullable=False, default="fact")
     memory_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
@@ -798,7 +884,9 @@ class UserMemory(Base):
     salience: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     source_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     supersedes_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -872,6 +960,59 @@ class MemoryConstitutionAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ChatConstitution(Base):
+    """工作区聊天宪法的不可变版本。"""
+
+    __tablename__ = "chat_constitutions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "workspace_id",
+            "version",
+            name="uq_chat_constitution_scope_version",
+        ),
+        Index(
+            "uq_chat_constitution_active_scope",
+            "tenant_id",
+            "workspace_id",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+            sqlite_where=text("is_active = 1"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    rules_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_by: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ChatConstitutionAudit(Base):
+    """聊天宪法判定审计；不保存原始用户输入。"""
+
+    __tablename__ = "chat_constitution_audits"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    actor_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    subject_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    constitution_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    decision: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    categories_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_length: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class UserCustomInstruction(Base):
     """Explicit user instructions, kept separate from learned memory."""
 
@@ -884,8 +1025,12 @@ class UserCustomInstruction(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
-    tenant_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False, default="default")
-    workspace_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False, default="default")
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), index=True, nullable=False, default="default"
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), index=True, nullable=False, default="default"
+    )
     about_user: Mapped[str] = mapped_column(Text, nullable=False, default="")
     response_style: Mapped[str] = mapped_column(Text, nullable=False, default="")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -905,8 +1050,12 @@ class AssistantProfile(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     personality: Mapped[str] = mapped_column(String(20), nullable=False, default="none")
@@ -917,7 +1066,9 @@ class AssistantProfile(Base):
     built_in: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class Project(Base):
@@ -926,8 +1077,12 @@ class Project(Base):
     __tablename__ = "projects"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -935,21 +1090,25 @@ class Project(Base):
     memory_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="default")
     assistant_profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     data_source_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class ResponseApproval(Base):
     """Durable pause point for a side-effecting tool call."""
 
     __tablename__ = "response_approvals"
-    __table_args__ = (
-        UniqueConstraint("response_id", "call_id", name="uq_response_approval_call"),
-    )
+    __table_args__ = (UniqueConstraint("response_id", "call_id", name="uq_response_approval_call"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
-    response_id: Mapped[str] = mapped_column(String(64), ForeignKey("responses.id", ondelete="CASCADE"), nullable=False, index=True)
+    response_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("responses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     call_id: Mapped[str] = mapped_column(String(128), nullable=False)
     tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
     side_effect_level: Mapped[str] = mapped_column(String(20), nullable=False, default="write")
@@ -965,9 +1124,7 @@ class ResponseOutbox(Base):
     """Transactional hand-off from PostgreSQL to Redis Streams."""
 
     __tablename__ = "response_outbox"
-    __table_args__ = (
-        UniqueConstraint("event_key", name="uq_response_outbox_event_key"),
-    )
+    __table_args__ = (UniqueConstraint("event_key", name="uq_response_outbox_event_key"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     event_key: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -977,7 +1134,9 @@ class ResponseOutbox(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -987,8 +1146,12 @@ class GoalRun(Base):
     __tablename__ = "goal_runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
@@ -999,18 +1162,20 @@ class GoalRun(Base):
     current_step: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class GoalCheckpoint(Base):
     __tablename__ = "goal_checkpoints"
-    __table_args__ = (
-        UniqueConstraint("goal_id", "step_number", name="uq_goal_checkpoint_step"),
-    )
+    __table_args__ = (UniqueConstraint("goal_id", "step_number", name="uq_goal_checkpoint_step"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    goal_id: Mapped[str] = mapped_column(String(36), ForeignKey("goal_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    goal_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("goal_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     step_number: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed")
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -1023,9 +1188,15 @@ class MemoryCandidate(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    response_id: Mapped[str] = mapped_column(String(64), ForeignKey("responses.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    response_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("responses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     scope_type: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
     scope_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     kind: Mapped[str] = mapped_column(String(30), nullable=False, default="fact")
@@ -1049,7 +1220,12 @@ class MemoryEvidence(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     memory_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    candidate_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("memory_candidates.id", ondelete="CASCADE"), nullable=True, index=True)
+    candidate_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("memory_candidates.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     response_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     item_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     excerpt: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -1087,7 +1263,9 @@ class TaskDefinition(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     last_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
@@ -1102,9 +1280,7 @@ class TaskDefinition(Base):
 
 class TaskRun(Base):
     __tablename__ = "task_runs"
-    __table_args__ = (
-        UniqueConstraint("task_id", "scheduled_for", name="uq_task_run_schedule"),
-    )
+    __table_args__ = (UniqueConstraint("task_id", "scheduled_for", name="uq_task_run_schedule"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     task_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
@@ -1139,8 +1315,12 @@ class AlertRule(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     data_source_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -1158,10 +1338,16 @@ class AlertRule(Base):
     last_state: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class AlertEvent(Base):
@@ -1178,7 +1364,9 @@ class AlertEvent(Base):
     evidence: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     acknowledged_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
 
 
 class SkillCatalogEntry(Base):
@@ -1187,7 +1375,9 @@ class SkillCatalogEntry(Base):
     __tablename__ = "skill_catalog_entries"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    provider: Mapped[str] = mapped_column(String(64), nullable=False, default="skillhub", index=True)
+    provider: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="skillhub", index=True
+    )
     external_id: Mapped[str] = mapped_column(String(512), nullable=False, unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -1199,7 +1389,9 @@ class SkillCatalogEntry(Base):
     github_stars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     download_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     security_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    security_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown", index=True)
+    security_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unknown", index=True
+    )
     ai_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -1207,9 +1399,13 @@ class SkillCatalogEntry(Base):
     rank_recent: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active", index=True)
     source_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class UserSkillInstallation(Base):
@@ -1218,24 +1414,44 @@ class UserSkillInstallation(Base):
     __tablename__ = "user_skill_installations"
     __table_args__ = (
         UniqueConstraint(
-            "user_id", "tenant_id", "workspace_id", "catalog_skill_id",
+            "user_id",
+            "tenant_id",
+            "workspace_id",
+            "catalog_skill_id",
             name="uq_user_skill_installation_scope",
         ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    catalog_skill_id: Mapped[str] = mapped_column(String(36), ForeignKey("skill_catalog_entries.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    catalog_skill_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("skill_catalog_entries.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     installed_skill_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="installed", index=True)
-    install_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="instruction_only")
+    install_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="instruction_only"
+    )
     source_revision: Mapped[str | None] = mapped_column(String(128), nullable=True)
     manifest_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    installed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class ResourcePermission(Base):
@@ -1244,22 +1460,36 @@ class ResourcePermission(Base):
     __tablename__ = "resource_permissions"
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "workspace_id", "subject_user_id", "resource_type", "resource_id",
+            "tenant_id",
+            "workspace_id",
+            "subject_user_id",
+            "resource_type",
+            "resource_id",
             name="uq_resource_permission_subject",
         ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
-    subject_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    subject_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     resource_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     resource_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     permission: Mapped[str] = mapped_column(String(20), nullable=False, default="view", index=True)
-    granted_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    granted_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class ConversationState(Base):
@@ -1316,7 +1546,9 @@ class DataSource(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     source_type: Mapped[str] = mapped_column(
@@ -1345,7 +1577,9 @@ class DataSourceSchema(Base):
     # DataAgent V2 enhanced fields
     auto_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     relationship_hints: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    last_analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_analyzed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -1366,7 +1600,9 @@ class ConnectorCredential(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default", index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
     provider: Mapped[str] = mapped_column(String(64), nullable=False)
     account_id: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -1429,7 +1665,9 @@ class MetricDefinition(Base):
     )
 
     lineage: Mapped[list[MetricLineage]] = relationship(
-        back_populates="metric", foreign_keys="MetricLineage.metric_id", cascade="all, delete-orphan"
+        back_populates="metric",
+        foreign_keys="MetricLineage.metric_id",
+        cascade="all, delete-orphan",
     )
 
 
@@ -1438,7 +1676,9 @@ class SchemaMetadata(Base):
 
     __tablename__ = "schema_metadata"
     __table_args__ = (
-        UniqueConstraint("data_source_id", "table_name", "column_name", name="uq_schema_meta_ds_table_col"),
+        UniqueConstraint(
+            "data_source_id", "table_name", "column_name", name="uq_schema_meta_ds_table_col"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
@@ -1475,7 +1715,11 @@ class TableRelationship(Base):
     __tablename__ = "table_relationships"
     __table_args__ = (
         UniqueConstraint(
-            "data_source_id", "left_table", "left_column", "right_table", "right_column",
+            "data_source_id",
+            "left_table",
+            "left_column",
+            "right_table",
+            "right_column",
             name="uq_table_rel_ds_lr",
         ),
     )
@@ -1508,7 +1752,9 @@ class AnalyticalSkill(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     skill_type: Mapped[str] = mapped_column(String(50), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    required_intent_types: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    required_intent_types: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list
+    )
     required_metric_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     required_dimension_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     plan_template: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
@@ -1548,7 +1794,10 @@ class MetricLineage(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     metric_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("metric_definitions.id", ondelete="CASCADE"), nullable=False, index=True
+        String(36),
+        ForeignKey("metric_definitions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     depends_on_metric_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("metric_definitions.id", ondelete="SET NULL"), nullable=True
@@ -1591,7 +1840,9 @@ class Attachment(Base):
     message_id: Mapped[str] = mapped_column(String(50), nullable=True)
     duplicate_of: Mapped[str] = mapped_column(String(36), nullable=True)
     scope: Mapped[str] = mapped_column(String(20), nullable=False, default="session")
-    ingest_status: Mapped[str] = mapped_column(String(32), nullable=False, default="temporary", index=True)
+    ingest_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="temporary", index=True
+    )
     promoted_document_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     asset_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -1609,6 +1860,7 @@ class Attachment(Base):
 
 class CognitiveEvent(Base):
     """DataAgent V2 pipeline step audit trail."""
+
     __tablename__ = "cognitive_events"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)

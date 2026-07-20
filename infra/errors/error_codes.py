@@ -37,6 +37,7 @@ class ErrorCodes:
     LLM_CALL_FAILED = ErrorSpec(204002, 500, "LLM 调用失败")
     LLM_TIMEOUT = ErrorSpec(206001, 504, "LLM 请求超时")
     RATE_LIMITED = ErrorSpec(207001, 429, "请求限流，请稍后重试")
+    CHAT_CONSTITUTION_BLOCKED = ErrorSpec(208001, 400, "内容有悖聊天宪法")
 
     # Document (03)
     VECTOR_DB_UNAVAILABLE = ErrorSpec(304001, 503, "向量数据库不可用")
@@ -47,9 +48,7 @@ class ErrorCodes:
 
 
 _ERROR_INDEX = {
-    spec.code: spec
-    for spec in ErrorCodes.__dict__.values()
-    if isinstance(spec, ErrorSpec)
+    spec.code: spec for spec in ErrorCodes.__dict__.values() if isinstance(spec, ErrorSpec)
 }
 
 
