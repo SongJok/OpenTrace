@@ -16,9 +16,35 @@ class WebIntelligenceAgent(CognitiveAgent):
     def __init__(self) -> None:
         super().__init__("web_intelligence")
 
+    @staticmethod
+    def _upstream_error(raw: str) -> str | None:
+        normalized = (raw or "").strip()
+        lowered = normalized.lower()
+        error_prefixes = (
+            "error:",
+            "tool error (",
+            "web fetch error:",
+            "web fetch unavailable:",
+            "web search error:",
+            "web search unavailable:",
+        )
+        if any(lowered.startswith(prefix) for prefix in error_prefixes):
+            return normalized
+        try:
+            payload = json.loads(normalized)
+        except (TypeError, ValueError):
+            return None
+        if isinstance(payload, dict) and str(payload.get("status") or "").lower() in {
+            "error",
+            "failed",
+            "timeout",
+        }:
+            return str(payload.get("error") or payload.get("message") or "web search failed")
+        return None
+
     def _items_from_raw(self, raw: str) -> list[dict]:
         s = (raw or "").strip()
-        if not s:
+        if not s or self._upstream_error(s):
             return []
         try:
             obj = json.loads(s)
@@ -36,7 +62,9 @@ class WebIntelligenceAgent(CognitiveAgent):
                 out.append(
                     {
                         "id": f"w{i}",
-                        "content": str(it.get("snippet") or it.get("summary") or it.get("title") or ""),
+                        "content": str(
+                            it.get("snippet") or it.get("summary") or it.get("title") or ""
+                        ),
                         "snippet": str(it.get("snippet") or ""),
                         "title": str(it.get("title") or ""),
                         "url": str(it.get("url") or ""),
@@ -76,6 +104,7 @@ class WebIntelligenceAgent(CognitiveAgent):
                 name="web_search", query=search_q, session_id=task.session_id or ""
             )
         raw = str(out or "").strip()
+        upstream_error = self._upstream_error(raw)
         items = self._items_from_raw(raw)
         if not items:
             return AgentResult(
@@ -84,7 +113,7 @@ class WebIntelligenceAgent(CognitiveAgent):
                 status="error",
                 content="",
                 confidence=0.0,
-                error=raw or "empty web results",
+                error=upstream_error or raw or "empty web results",
             )
         coverage_meta: dict = {}
         ranked = rank_evidence(items)
@@ -108,7 +137,9 @@ class WebIntelligenceAgent(CognitiveAgent):
                     if extra_items:
                         items.extend(extra_items)
                         ranked = rank_evidence(items)
-                        intel = enrich_evidence_intelligence(items, query=search_q, source_kind="web")
+                        intel = enrich_evidence_intelligence(
+                            items, query=search_q, source_kind="web"
+                        )
                         ranked = intel.get("ranked_chunks") or ranked
                     round_idx += 1
                     report = evaluate_coverage(search_q, ranked, round_index=round_idx)

@@ -77,6 +77,12 @@
 每轮实际上下文用量、裁剪数、摘要命中、媒体数量和工具 schema 估算会写入
 `opentrace.context.ready.manifest` 及最终 Response metadata。
 
+Agent Loop 会把重复工具参数、重复有效结果、连续失败和无结果识别为“无进展”。连续两轮
+无进展时写入 `opentrace.loop.no_progress`，停止继续调用工具，并执行一次禁用工具的最终
+合成；终止原因和成功/失败工具计数写入 `loop_termination`。只有持续产生新结果仍未完成的
+请求才会触发 `max_tool_rounds`。两轮熔断值是防止成本失控和错误自激的运行时安全约束，
+不通过环境变量放宽。
+
 ## 密钥
 
 - 所有 `*_API_KEY`、`SMTP_PASS`、`APP_SECRET_KEY` 仅放在 `.env` 或密钥管理系统。

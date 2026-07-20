@@ -6,6 +6,7 @@ import json
 import re
 import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -47,6 +48,22 @@ _SENSITIVE_KEYS = {
     "authorization",
     "cookie",
 }
+_TRANSIENT_RESULT_KEYS = {
+    "agent_trace",
+    "call_id",
+    "execution_time_ms",
+    "task_id",
+    "timestamp",
+}
+_FAILED_TOOL_STATUSES = {"error", "failed", "incomplete", "rejected", "timeout"}
+_TOOL_ERROR_PREFIXES = (
+    "error:",
+    "tool error (",
+    "web fetch error:",
+    "web fetch unavailable:",
+    "web search error:",
+    "web search unavailable:",
+)
 
 
 def _tool_name(call: dict[str, Any]) -> str:
@@ -94,6 +111,107 @@ def _redact_sensitive(value: Any, *, key: str = "") -> Any:
 
 def _has_sensitive_arguments(arguments: dict[str, Any]) -> bool:
     return _redact_sensitive(arguments) != arguments
+
+
+def _stable_digest(value: Any) -> str:
+    serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _tool_call_signature(call: dict[str, Any]) -> str:
+    return _stable_digest({"name": _tool_name(call), "arguments": _tool_args(call)})
+
+
+def _semantic_tool_result(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _semantic_tool_result(item)
+            for key, item in value.items()
+            if str(key) not in _TRANSIENT_RESULT_KEYS
+        }
+    if isinstance(value, list):
+        return [_semantic_tool_result(item) for item in value]
+    return value
+
+
+def _tool_result_signature(result: dict[str, Any]) -> str:
+    return _stable_digest(_semantic_tool_result(result))
+
+
+def _normalize_direct_tool_result(result: dict[str, Any]) -> dict[str, Any]:
+    """把工具函数藏在 completed 包装层内的失败提升为真实失败。"""
+
+    if str(result.get("status") or "").lower() not in {"completed", "success"}:
+        return result
+    embedded = result.get("result")
+    if isinstance(embedded, dict):
+        embedded_status = str(embedded.get("status") or "").lower()
+        if embedded_status in _FAILED_TOOL_STATUSES:
+            return {
+                **result,
+                "status": "failed",
+                "error": str(embedded.get("error") or embedded.get("reason") or embedded_status),
+            }
+    if isinstance(embedded, str):
+        normalized = embedded.strip().lower()
+        if any(normalized.startswith(prefix) for prefix in _TOOL_ERROR_PREFIXES):
+            return {**result, "status": "failed", "error": embedded.strip()}
+    return result
+
+
+def _tool_result_succeeded(result: dict[str, Any]) -> bool:
+    return str(result.get("status") or "").lower() in {"completed", "success"}
+
+
+@dataclass
+class _LoopProgressTracker:
+    """识别工具循环是否持续产生新的有效证据。"""
+
+    max_consecutive_stalls: int = 2
+    seen_call_signatures: set[str] = field(default_factory=set)
+    seen_result_signatures: set[str] = field(default_factory=set)
+    consecutive_stalls: int = 0
+    successful_results: int = 0
+    failed_results: int = 0
+    last_reason: str | None = None
+
+    def observe(
+        self,
+        calls: list[dict[str, Any]],
+        results: list[dict[str, Any]],
+    ) -> str | None:
+        call_signatures = {_tool_call_signature(call) for call in calls}
+        repeated_calls = bool(call_signatures) and call_signatures.issubset(
+            self.seen_call_signatures
+        )
+        successful = [result for result in results if _tool_result_succeeded(result)]
+        failed_count = len(results) - len(successful)
+        result_signatures = {_tool_result_signature(result) for result in successful}
+        has_new_result = bool(result_signatures - self.seen_result_signatures)
+
+        self.successful_results += len(successful)
+        self.failed_results += failed_count
+        self.seen_call_signatures.update(call_signatures)
+        self.seen_result_signatures.update(result_signatures)
+
+        reason: str | None = None
+        if repeated_calls:
+            reason = "repeated_tool_calls"
+        elif not successful:
+            reason = "tool_failures" if results else "no_tool_results"
+        elif not has_new_result:
+            reason = "repeated_tool_results"
+
+        if reason:
+            self.consecutive_stalls += 1
+        else:
+            self.consecutive_stalls = 0
+        self.last_reason = reason
+        return reason
+
+    @property
+    def should_stop(self) -> bool:
+        return self.consecutive_stalls >= self.max_consecutive_stalls
 
 
 class AgentLoop:
@@ -387,7 +505,11 @@ class AgentLoop:
                 },
             )
 
+        progress = _LoopProgressTracker()
+        stalled_details: dict[str, Any] | None = None
+        rounds_executed = 0
         for round_number in range(1, round_limit + 1):
+            rounds_executed = round_number
             await db.refresh(response)
             if response.status == "cancelled":
                 return AgentLoopResult(status="cancelled", intent=intent)
@@ -517,18 +639,21 @@ class AgentLoop:
 
             approvals: list[ResponseApproval] = []
             executable: list[tuple[dict[str, Any], ToolSpec]] = []
+            round_results: list[dict[str, Any]] = []
             for call in calls:
                 name = _tool_name(call)
                 spec = spec_by_name.get(name)
                 if spec is None:
+                    failure = {"status": "failed", "error": "tool_not_available"}
                     messages.append(
                         LLMMessage(
                             role="tool",
                             name=name or "unknown",
                             tool_call_id=_call_id(call),
-                            content=json.dumps({"status": "failed", "error": "tool_not_available"}),
+                            content=json.dumps(failure),
                         )
                     )
+                    round_results.append(failure)
                     continue
                 step = self._plan_step_for_capability(execution_plan, plan_statuses, name)
                 if step:
@@ -538,21 +663,23 @@ class AgentLoop:
                         if plan_statuses.get(dependency) not in {"completed", "failed"}
                     ]
                     if unmet_dependencies:
+                        deferred = {
+                            "status": "deferred",
+                            "reason": "plan_dependency_not_ready",
+                            "unmet_dependencies": unmet_dependencies,
+                        }
                         messages.append(
                             LLMMessage(
                                 role="tool",
                                 name=name,
                                 tool_call_id=_call_id(call),
                                 content=json.dumps(
-                                    {
-                                        "status": "deferred",
-                                        "reason": "plan_dependency_not_ready",
-                                        "unmet_dependencies": unmet_dependencies,
-                                    },
+                                    deferred,
                                     ensure_ascii=False,
                                 ),
                             )
                         )
+                        round_results.append(deferred)
                         await emit(
                             "opentrace.plan.step.deferred",
                             {
@@ -577,6 +704,7 @@ class AgentLoop:
                             content=json.dumps(failure),
                         )
                     )
+                    round_results.append(failure)
                     await emit(
                         "opentrace.tool.failed",
                         {"call_id": _call_id(call), "name": name, **failure},
@@ -612,20 +740,22 @@ class AgentLoop:
                     elif approval.status == "approved":
                         executable.append((call, spec))
                     else:
+                        rejected = {
+                            "status": "rejected",
+                            "reason": approval.reason or "user_rejected",
+                        }
                         messages.append(
                             LLMMessage(
                                 role="tool",
                                 name=name,
                                 tool_call_id=_call_id(call),
                                 content=json.dumps(
-                                    {
-                                        "status": "rejected",
-                                        "reason": approval.reason or "user_rejected",
-                                    },
+                                    rejected,
                                     ensure_ascii=False,
                                 ),
                             )
                         )
+                        round_results.append(rejected)
                         if step:
                             plan_statuses[step.id] = "failed"
                             await emit(
@@ -664,6 +794,7 @@ class AgentLoop:
                 )
                 executed.append((call, spec, result))
             for call, spec, result in executed:
+                round_results.append(result)
                 messages.append(
                     LLMMessage(
                         role="tool",
@@ -758,9 +889,126 @@ class AgentLoop:
                     },
                 )
 
-        content = (
-            "这项请求已达到当前单轮可执行步骤上限。已保留执行记录，你可以让我继续或缩小任务范围。"
-        )
+            stalled_reason = progress.observe(calls, round_results)
+            if stalled_reason:
+                await emit(
+                    "opentrace.loop.no_progress",
+                    {
+                        "round": round_number,
+                        "reason": stalled_reason,
+                        "consecutive_rounds": progress.consecutive_stalls,
+                        "successful_tool_results": progress.successful_results,
+                        "failed_tool_results": progress.failed_results,
+                    },
+                )
+                if progress.should_stop:
+                    stalled_details = {
+                        "reason": "tool_loop_no_progress",
+                        "stalled_reason": stalled_reason,
+                        "round": round_number,
+                        "consecutive_rounds": progress.consecutive_stalls,
+                    }
+                    break
+                messages.append(
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "上一轮工具调用没有产生新的有效证据。请重新评估：不要重复相同调用；"
+                            "若现有工具或数据源不可用，应直接基于已有结果作答并明确说明限制。"
+                        ),
+                    )
+                )
+
+        if stalled_details is not None:
+            messages.append(
+                LLMMessage(
+                    role="system",
+                    content=(
+                        "工具执行已连续多轮没有产生新的有效证据。现在禁止继续调用工具。"
+                        "请基于已有可靠结果直接回答用户；若实时或外部数据不可用，明确说明无法"
+                        "可靠获取，并指出缺少的数据源、配置或必要澄清。不要编造数据，也不要"
+                        "向用户展示内部工具轮次。"
+                    ),
+                )
+            )
+            final_round = rounds_executed + 1
+            await emit(
+                "opentrace.model.started",
+                {"round": final_round, "model": model_name, "phase": "no_progress_fallback"},
+            )
+            with capture_model_calls() as calls:
+                final_response = await get_model_gateway().complete(
+                    messages,
+                    role=LLMRole.QUERY,
+                    fallback_roles=[LLMRole.KNOWLEDGE],
+                    tools=[],
+                    tool_choice="none",
+                    parallel_tool_calls=False,
+                    max_output_tokens=payload.get("max_output_tokens"),
+                    model_override=model_name,
+                    reasoning=reasoning,
+                    store=bool(payload.get("store", False)),
+                )
+            model_calls.extend(calls)
+            content = str(final_response.content or "").strip()
+            if not content:
+                content = (
+                    "当前可用工具未能取得完成请求所需的可靠数据。请检查外部数据源配置或"
+                    "补充更明确的数据口径后重试；我不会用未经验证的信息代替结果。"
+                )
+            await emit(
+                "opentrace.model.completed",
+                {
+                    "round": final_round,
+                    "model": final_response.model or model_name,
+                    "tool_call_count": 0,
+                    "phase": "no_progress_fallback",
+                },
+            )
+            await self._emit_text(emit, content)
+            await self._persist_execution_plan_runtime(
+                db,
+                response=response,
+                statuses=plan_statuses,
+                replan_count=replan_count,
+            )
+            return AgentLoopResult(
+                status="completed",
+                content=content,
+                model=str(final_response.model or model_name),
+                intent=intent,
+                metadata={
+                    "model_calls": model_calls,
+                    "model_call_count": len(model_calls),
+                    "loop_termination": {
+                        **stalled_details,
+                        "successful_tool_results": progress.successful_results,
+                        "failed_tool_results": progress.failed_results,
+                    },
+                    "memory_ids": context.memory_ids,
+                    "attachment_ids": context.attachment_ids,
+                    "execution_profile": profile.value,
+                    "provider_response_id": final_response.response_id,
+                    "prompt_tokens": final_response.prompt_tokens,
+                    "completion_tokens": final_response.completion_tokens,
+                    "execution_plan": execution_plan.to_dict(),
+                    "execution_plan_status": dict(plan_statuses),
+                    "execution_plan_replan_count": replan_count,
+                    "context_manifest": context.context_manifest,
+                    "capability_discovery": [match.to_dict() for match in discovery.matches[:12]],
+                },
+            )
+
+        if progress.successful_results:
+            content = (
+                "本轮工具调用已达到安全轮次上限，过程中仍有新的有效结果产生。执行记录已经"
+                "保留，你可以让我继续，或缩小任务范围。"
+            )
+        else:
+            content = (
+                "本轮工具调用已达到安全轮次上限，但可用工具尚未返回有效结果。执行记录已经"
+                "保留，请检查相关数据源后重试。"
+            )
         await self._emit_text(emit, content)
         await self._persist_execution_plan_runtime(
             db,
@@ -779,6 +1027,9 @@ class AgentLoop:
                 "incomplete_details": {
                     "reason": "max_tool_rounds",
                     "round_limit": round_limit,
+                    "rounds_executed": rounds_executed,
+                    "successful_tool_results": progress.successful_results,
+                    "failed_tool_results": progress.failed_results,
                 },
                 "memory_ids": context.memory_ids,
                 "attachment_ids": context.attachment_ids,
@@ -964,7 +1215,7 @@ class AgentLoop:
 
     @staticmethod
     def _tool_result_succeeded(result: dict[str, Any]) -> bool:
-        return str(result.get("status") or "") in {"completed", "success"}
+        return _tool_result_succeeded(result)
 
     @staticmethod
     async def _complete_remaining_plan(
@@ -1764,7 +2015,7 @@ class AgentLoop:
             # Trusted scope is execution-only context and must not be echoed
             # back into model-visible tool results or client events.
             tool_result["parameters"] = _tool_args(call)
-            return tool_result
+            return _normalize_direct_tool_result(tool_result)
 
         last_error = "tool_execution_failed"
         max_retries = spec.max_retries if spec.side_effect == SideEffect.READ else 0
