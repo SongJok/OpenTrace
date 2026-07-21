@@ -8,8 +8,9 @@
   },
   "scripts": {
     "dev": "vite --port 14108 --host",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/check-first-load-budget.mjs",
     "preview": "vite preview",
+    "test:first-load": "node scripts/check-first-load-budget.mjs",
     "test": "vitest run"
   },
   "dependencies": {
@@ -26,7 +27,6 @@
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.0",
     "remark-math": "^6.0.0",
-    "shiki": "^1.12.1",
     "zustand": "^4.5.2"
   },
   "devDependencies": {

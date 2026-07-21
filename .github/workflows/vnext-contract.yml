@@ -99,6 +99,8 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Frontend contract tests
+      - name: Frontend tests and first-load budget
         working-directory: frontend
-        run: npm test -- --run
+        run: |
+          npm test -- --run
+          npm run build

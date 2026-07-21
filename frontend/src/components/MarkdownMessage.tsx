@@ -124,7 +124,7 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
         codeTagProps={{
           className: 'markdown-code-source',
           style: {
-            fontFamily: "'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace",
+            fontFamily: "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
           },
         }}
         wrapLongLines={false}

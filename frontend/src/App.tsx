@@ -1,24 +1,38 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import { useAuthStore } from './store/auth'
 import { applyTheme, useThemeStore } from './store/theme'
-import ChatPage from './pages/ChatPage'
-import DocumentsPage from './pages/DocumentsPage'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
-import PermissionsPage from './pages/PermissionsPage'
-import SettingsPage from './pages/SettingsPage'
-import TasksPage from './pages/TasksPage'
-import AuditPage from './pages/AuditPage'
-import MemoryPage from './pages/MemoryPage'
-import IntegrationsPage from './pages/IntegrationsPage'
-import DatabasesPage from './pages/DatabasesPage'
-import SkillsPage from './pages/SkillsPage'
-import RulesPage from './pages/RulesPage'
-import KnowledgeCenterPage from './pages/KnowledgeCenterPage'
-import SharedConversationPage from './pages/SharedConversationPage'
-import WorkPage from './pages/WorkPage'
-import AlertsPage from './pages/AlertsPage'
+
+// 登录和注册页保持同步加载，业务页面按路由拆包，避免新用户首访下载整套工作台。
+const ChatPage = lazy(() => import('./pages/ChatPage'))
+const DocumentsPage = lazy(() => import('./pages/DocumentsPage'))
+const PermissionsPage = lazy(() => import('./pages/PermissionsPage'))
+const SettingsPage = lazy(() => import('./pages/SettingsPage'))
+const TasksPage = lazy(() => import('./pages/TasksPage'))
+const AuditPage = lazy(() => import('./pages/AuditPage'))
+const MemoryPage = lazy(() => import('./pages/MemoryPage'))
+const IntegrationsPage = lazy(() => import('./pages/IntegrationsPage'))
+const DatabasesPage = lazy(() => import('./pages/DatabasesPage'))
+const SkillsPage = lazy(() => import('./pages/SkillsPage'))
+const RulesPage = lazy(() => import('./pages/RulesPage'))
+const KnowledgeCenterPage = lazy(() => import('./pages/KnowledgeCenterPage'))
+const SharedConversationPage = lazy(() => import('./pages/SharedConversationPage'))
+const WorkPage = lazy(() => import('./pages/WorkPage'))
+const AlertsPage = lazy(() => import('./pages/AlertsPage'))
+
+function RouteLoading() {
+  return (
+    <div
+      className="grid min-h-screen place-items-center bg-[var(--bg)] text-sm text-[var(--text-secondary)]"
+      role="status"
+      aria-live="polite"
+    >
+      正在加载…
+    </div>
+  )
+}
 
 function Protected({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token)
@@ -102,28 +116,30 @@ export default function App() {
   }, [mode, accent])
 
   return (
-    <Routes>
-      <Route path="/login" element={token ? <Navigate to="/chat" replace /> : <LoginPage />} />
-      <Route path="/register" element={token ? <Navigate to="/chat" replace /> : <RegisterPage />} />
+    <Suspense fallback={<RouteLoading />}>
+      <Routes>
+        <Route path="/login" element={token ? <Navigate to="/chat" replace /> : <LoginPage />} />
+        <Route path="/register" element={token ? <Navigate to="/chat" replace /> : <RegisterPage />} />
 
-      <Route path="/" element={<Navigate to="/chat" replace />} />
-      <Route path="/chat" element={<Protected><ChatPage /></Protected>} />
-      <Route path="/share/:publicId/:token" element={<SharedConversationPage />} />
-      <Route path="/documents" element={<Protected><DocumentsRoute /></Protected>} />
-      <Route path="/settings" element={<Protected><SettingsRoute /></Protected>} />
-      <Route path="/tasks" element={<Protected><TasksRoute /></Protected>} />
-      <Route path="/work" element={<Protected><WorkRoute /></Protected>} />
-      <Route path="/audit" element={<Protected><AuditRoute /></Protected>} />
-      <Route path="/memories" element={<Protected><MemoryRoute /></Protected>} />
-      <Route path="/integrations" element={<Protected><IntegrationsRoute /></Protected>} />
-      <Route path="/databases" element={<Protected><DatabasesRoute /></Protected>} />
-      <Route path="/skills" element={<Protected><SkillsRoute /></Protected>} />
-      <Route path="/rules" element={<Protected><RulesRoute /></Protected>} />
-      <Route path="/knowledge" element={<Protected><KnowledgeRoute /></Protected>} />
-      <Route path="/alerts" element={<Protected><AlertsRoute /></Protected>} />
-      <Route path="/permissions" element={<Protected><PermissionsPage /></Protected>} />
+        <Route path="/" element={<Navigate to="/chat" replace />} />
+        <Route path="/chat" element={<Protected><ChatPage /></Protected>} />
+        <Route path="/share/:publicId/:token" element={<SharedConversationPage />} />
+        <Route path="/documents" element={<Protected><DocumentsRoute /></Protected>} />
+        <Route path="/settings" element={<Protected><SettingsRoute /></Protected>} />
+        <Route path="/tasks" element={<Protected><TasksRoute /></Protected>} />
+        <Route path="/work" element={<Protected><WorkRoute /></Protected>} />
+        <Route path="/audit" element={<Protected><AuditRoute /></Protected>} />
+        <Route path="/memories" element={<Protected><MemoryRoute /></Protected>} />
+        <Route path="/integrations" element={<Protected><IntegrationsRoute /></Protected>} />
+        <Route path="/databases" element={<Protected><DatabasesRoute /></Protected>} />
+        <Route path="/skills" element={<Protected><SkillsRoute /></Protected>} />
+        <Route path="/rules" element={<Protected><RulesRoute /></Protected>} />
+        <Route path="/knowledge" element={<Protected><KnowledgeRoute /></Protected>} />
+        <Route path="/alerts" element={<Protected><AlertsRoute /></Protected>} />
+        <Route path="/permissions" element={<Protected><PermissionsPage /></Protected>} />
 
-      <Route path="*" element={<Navigate to={token ? '/chat' : '/login'} replace />} />
-    </Routes>
+        <Route path="*" element={<Navigate to={token ? '/chat' : '/login'} replace />} />
+      </Routes>
+    </Suspense>
   )
 }

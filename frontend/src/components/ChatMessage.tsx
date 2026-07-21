@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronDown, Copy, FileText, GitBranch, RefreshCw, ThumbsDown, ThumbsUp } from 'lucide-react'
 import type { Message } from '../store/chat'
 import { useChatStore } from '../store/chat'
 import { useAuthStore } from '../store/auth'
 import { apiBranchConversation, apiGetMessages, apiListConversations, apiListResponseSiblings, apiResolveResponseApproval, apiResumeResponse, apiSetActiveResponse, apiSubmitFeedback } from '../api/client'
 import { useChatCommands } from '../store/chatCommands'
-import MarkdownMessage from './MarkdownMessage'
+
+const MarkdownMessage = lazy(() => import('./MarkdownMessage'))
 
 interface Citation {
   source?: string
@@ -266,7 +267,11 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
                   : 'text-[var(--text)]'
               }`}
             >
-              {visibleContent ? <MarkdownMessage content={visibleContent} /> : (resolvedStreaming && !isUser ? <span>正在生成…</span> : null)}
+              {visibleContent ? (
+                <Suspense fallback={<div className="whitespace-pre-wrap">{visibleContent}</div>}>
+                  <MarkdownMessage content={visibleContent} />
+                </Suspense>
+              ) : (resolvedStreaming && !isUser ? <span>正在生成…</span> : null)}
               {resolvedStreaming && !isUser && <span className="ml-1 inline-block h-4 w-1.5 animate-pulse bg-[var(--accent)] align-middle" />}
             </div>
             {!isUser && toolCard && <ToolCardView toolCard={toolCard} />}
