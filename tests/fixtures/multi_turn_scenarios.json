@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "description": "Multi-turn regression scenarios (aligned with test_multi_turn_resolution_contract).",
+  "scenarios": [
+    {
+      "id": "dst_follow_up_from_plan",
+      "kind": "dst_track",
+      "query": "按地区拆分呢？",
+      "previous_plan": { "user_goal": "查看上月销售额", "domain": "data_query" },
+      "previous_results": [{ "source_agent": "data", "type": "data_table" }],
+      "expect_turn_type": "follow_up",
+      "expect_substring": "上月销售额"
+    },
+    {
+      "id": "force_mode_skip",
+      "kind": "resolve",
+      "query": "继续",
+      "force_mode": "rag",
+      "expect_applied": false
+    },
+    {
+      "id": "empty_query",
+      "kind": "resolve",
+      "query": "",
+      "expect_applied": false
+    },
+    {
+      "id": "reference_short_follow_up",
+      "kind": "reference",
+      "query": "那华东呢？",
+      "conv": {
+        "session_id": "s-fix",
+        "last_user_goal": "各区域 GMV 排名",
+        "active_domain": "data_query"
+      },
+      "min_confidence": 0.5
+    }
+  ]
+}

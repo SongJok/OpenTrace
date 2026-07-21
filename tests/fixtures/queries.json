@@ -1,0 +1,502 @@
+[
+  {
+    "id": "q001",
+    "query": "最近7天的GMV是多少",
+    "expected_intent": "aggregation",
+    "expected_metrics": ["GMV"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "last_7_days",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "SUM(paid_amount)"
+  },
+  {
+    "id": "q002",
+    "query": "上个月付费用户有多少",
+    "expected_intent": "aggregation",
+    "expected_metrics": ["付费用户数"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "last_month",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "COUNT(DISTINCT user_id)"
+  },
+  {
+    "id": "q003",
+    "query": "对比今年和去年的营收",
+    "expected_intent": "comparison",
+    "expected_metrics": ["GMV"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "year_over_year",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "SUM"
+  },
+  {
+    "id": "q004",
+    "query": "最近30天GMV的每日趋势",
+    "expected_intent": "trend",
+    "expected_metrics": ["GMV"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "last_30_days",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "GROUP BY date"
+  },
+  {
+    "id": "q005",
+    "query": "销售额最高的10个产品是什么",
+    "expected_intent": "ranking",
+    "expected_metrics": ["GMV"],
+    "expected_entities": ["orders", "products"],
+    "expected_time_window": null,
+    "expected_tables": ["orders", "order_items", "products"],
+    "expected_sql_hint": "ORDER BY SUM DESC LIMIT 10"
+  },
+  {
+    "id": "q006",
+    "query": "各个用户等级的GMV分布",
+    "expected_intent": "distribution",
+    "expected_metrics": ["GMV"],
+    "expected_entities": ["users", "orders"],
+    "expected_time_window": null,
+    "expected_tables": ["users", "orders"],
+    "expected_sql_hint": "GROUP BY level"
+  },
+  {
+    "id": "q007",
+    "query": "最近一个月的新注册用户数",
+    "expected_intent": "aggregation",
+    "expected_metrics": ["新注册用户数"],
+    "expected_entities": ["users"],
+    "expected_time_window": "last_30_days",
+    "expected_tables": ["users"],
+    "expected_sql_hint": "COUNT"
+  },
+  {
+    "id": "q008",
+    "query": "今天有多少活跃用户",
+    "expected_intent": "aggregation",
+    "expected_metrics": ["DAU"],
+    "expected_entities": ["sessions"],
+    "expected_time_window": "today",
+    "expected_tables": ["sessions"],
+    "expected_sql_hint": "COUNT(DISTINCT user_id)"
+  },
+  {
+    "id": "q009",
+    "query": "从这个月1号到现在上传了多少文档",
+    "expected_intent": "aggregation",
+    "expected_metrics": ["文档上传数"],
+    "expected_entities": ["documents"],
+    "expected_time_window": "month_to_date",
+    "expected_tables": ["documents"],
+    "expected_sql_hint": "COUNT"
+  },
+  {
+    "id": "q010",
+    "query": "用户的次日留存率是多少",
+    "expected_intent": "aggregation",
+    "expected_metrics": ["次日留存率"],
+    "expected_entities": ["users"],
+    "expected_time_window": null,
+    "expected_tables": ["users"],
+    "expected_sql_hint": "retention"
+  },
+  {
+    "id": "q011",
+    "query": "各产品分类的销售额占比",
+    "expected_intent": "composition",
+    "expected_metrics": ["GMV"],
+    "expected_entities": ["products", "order_items", "orders"],
+    "expected_time_window": null,
+    "expected_tables": ["products", "order_items", "orders"],
+    "expected_sql_hint": "GROUP BY category"
+  },
+  {
+    "id": "q012",
+    "query": "对比VIP用户和普通用户的客单价",
+    "expected_intent": "comparison",
+    "expected_metrics": ["ARPU"],
+    "expected_entities": ["users", "orders"],
+    "expected_time_window": null,
+    "expected_tables": ["users", "orders"],
+    "expected_sql_hint": "GROUP BY level"
+  },
+  {
+    "id": "q013",
+    "query": "退款率最近变化趋势",
+    "expected_intent": "trend",
+    "expected_metrics": ["退款率"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "last_30_days",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "status = 'refunded'"
+  },
+  {
+    "id": "q014",
+    "query": "各订单状态的数量统计",
+    "expected_intent": "distribution",
+    "expected_metrics": ["订单数"],
+    "expected_entities": ["orders"],
+    "expected_time_window": null,
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "GROUP BY status"
+  },
+  {
+    "id": "q015",
+    "query": "上季度GMV环比增长了多少",
+    "expected_intent": "comparison",
+    "expected_metrics": ["GMV", "周环比增长率"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "last_quarter",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "growth"
+  },
+  {
+    "id": "q016",
+    "query": "过去6个月每月的MAU变化",
+    "expected_intent": "trend",
+    "expected_metrics": ["MAU"],
+    "expected_entities": ["sessions"],
+    "expected_time_window": "last_6_months",
+    "expected_tables": ["sessions"],
+    "expected_sql_hint": "GROUP BY month"
+  },
+  {
+    "id": "q017",
+    "query": "毛利率最高的5个产品",
+    "expected_intent": "ranking",
+    "expected_metrics": ["毛利率"],
+    "expected_entities": ["products", "order_items"],
+    "expected_time_window": null,
+    "expected_tables": ["products", "order_items", "orders"],
+    "expected_sql_hint": "ORDER BY DESC LIMIT 5"
+  },
+  {
+    "id": "q018",
+    "query": "最近新增的用户有多少转化为付费了",
+    "expected_intent": "aggregation",
+    "expected_metrics": ["转化率"],
+    "expected_entities": ["users", "orders"],
+    "expected_time_window": "last_30_days",
+    "expected_tables": ["users", "orders"],
+    "expected_sql_hint": "COUNT(DISTINCT)"
+  },
+  {
+    "id": "q019",
+    "query": "这个数据库有哪些表",
+    "expected_intent": "metadata",
+    "expected_metrics": [],
+    "expected_entities": [],
+    "expected_time_window": null,
+    "expected_tables": [],
+    "expected_sql_hint": "information_schema.tables"
+  },
+  {
+    "id": "q020",
+    "query": "orders表有哪些字段",
+    "expected_intent": "metadata",
+    "expected_metrics": [],
+    "expected_entities": ["orders"],
+    "expected_time_window": null,
+    "expected_tables": [],
+    "expected_sql_hint": "information_schema.columns"
+  },
+  {
+    "id": "q021",
+    "query": "上周每天的订单量",
+    "expected_intent": "trend",
+    "expected_metrics": ["订单数"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "last_week",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "GROUP BY date"
+  },
+  {
+    "id": "q022",
+    "query": "什么产品卖得最好",
+    "expected_intent": "ranking",
+    "expected_metrics": ["GMV"],
+    "expected_entities": ["products", "order_items"],
+    "expected_time_window": null,
+    "expected_tables": ["products", "order_items", "orders"],
+    "expected_sql_hint": "ORDER BY SUM DESC"
+  },
+  {
+    "id": "q023",
+    "query": "查找用户张三的订单",
+    "expected_intent": "raw_lookup",
+    "expected_metrics": [],
+    "expected_entities": ["users", "orders"],
+    "expected_time_window": null,
+    "expected_tables": ["users", "orders"],
+    "expected_sql_hint": "WHERE name = '张三'"
+  },
+  {
+    "id": "q024",
+    "query": "哪个等级的用户的复购率最高",
+    "expected_intent": "ranking",
+    "expected_metrics": ["复购率"],
+    "expected_entities": ["users", "orders"],
+    "expected_time_window": null,
+    "expected_tables": ["users", "orders"],
+    "expected_sql_hint": "GROUP BY level"
+  },
+  {
+    "id": "q025",
+    "query": "今年至今的营收同比去年增长了多少",
+    "expected_intent": "comparison",
+    "expected_metrics": ["GMV", "同比增长率"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "year_to_date",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "SUM"
+  },
+  {
+    "id": "q026",
+    "query": "本月用户平均发起了多少次会话",
+    "expected_intent": "aggregation",
+    "expected_metrics": ["平均会话轮次"],
+    "expected_entities": ["sessions"],
+    "expected_time_window": "month_to_date",
+    "expected_tables": ["sessions"],
+    "expected_sql_hint": "AVG(turn_count)"
+  },
+  {
+    "id": "q027",
+    "query": "文档上传量的周趋势",
+    "expected_intent": "trend",
+    "expected_metrics": ["文档上传数"],
+    "expected_entities": ["documents"],
+    "expected_time_window": "last_7_days",
+    "expected_tables": ["documents"],
+    "expected_sql_hint": "GROUP BY date"
+  },
+  {
+    "id": "q028",
+    "query": "最近有异常的指标有哪些",
+    "expected_intent": "anomaly_detection",
+    "expected_metrics": ["GMV", "DAU", "订单数"],
+    "expected_entities": ["orders", "sessions"],
+    "expected_time_window": "last_30_days",
+    "expected_tables": ["orders", "sessions"],
+    "expected_sql_hint": null
+  },
+  {
+    "id": "q029",
+    "query": "分析用户从注册到付费的转化漏斗",
+    "expected_intent": "funnel",
+    "expected_metrics": ["转化率"],
+    "expected_entities": ["users", "orders"],
+    "expected_time_window": null,
+    "expected_tables": ["users", "orders"],
+    "expected_sql_hint": null
+  },
+  {
+    "id": "q030",
+    "query": "按月份看新增用户的留存情况",
+    "expected_intent": "cohort",
+    "expected_metrics": ["次日留存率", "留存率(7日)"],
+    "expected_entities": ["users"],
+    "expected_time_window": "last_6_months",
+    "expected_tables": ["users"],
+    "expected_sql_hint": "cohort"
+  },
+  {
+    "id": "q031",
+    "query": "VIP等级的用户有多少人",
+    "expected_intent": "aggregation",
+    "expected_metrics": ["VIP用户GMV"],
+    "expected_entities": ["users"],
+    "expected_time_window": null,
+    "expected_tables": ["users"],
+    "expected_sql_hint": "WHERE level = 'VIP'"
+  },
+  {
+    "id": "q032",
+    "query": "过去30天平均每人消费多少",
+    "expected_intent": "aggregation",
+    "expected_metrics": ["ARPU"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "last_30_days",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "SUM / COUNT(DISTINCT user_id)"
+  },
+  {
+    "id": "q033",
+    "query": "总共有多少注册用户",
+    "expected_intent": "aggregation",
+    "expected_metrics": [],
+    "expected_entities": ["users"],
+    "expected_time_window": null,
+    "expected_tables": ["users"],
+    "expected_sql_hint": "COUNT"
+  },
+  {
+    "id": "q034",
+    "query": "有哪些用户等级",
+    "expected_intent": "raw_lookup",
+    "expected_metrics": [],
+    "expected_entities": ["users"],
+    "expected_time_window": null,
+    "expected_tables": ["users"],
+    "expected_sql_hint": "DISTINCT level"
+  },
+  {
+    "id": "q035",
+    "query": "最近一周订单量最多的那一天",
+    "expected_intent": "ranking",
+    "expected_metrics": ["订单数"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "last_7_days",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "ORDER BY COUNT DESC LIMIT 1"
+  },
+  {
+    "id": "q036",
+    "query": "今年和去年的订单量对比",
+    "expected_intent": "comparison",
+    "expected_metrics": ["订单数"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "year_over_year",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "COUNT"
+  },
+  {
+    "id": "q037",
+    "query": "上个季度哪个产品分类销售最好",
+    "expected_intent": "ranking",
+    "expected_metrics": ["GMV"],
+    "expected_entities": ["products", "order_items", "orders"],
+    "expected_time_window": "last_quarter",
+    "expected_tables": ["products", "order_items", "orders"],
+    "expected_sql_hint": "GROUP BY category ORDER BY SUM DESC"
+  },
+  {
+    "id": "q038",
+    "query": "各个产品的销量排行",
+    "expected_intent": "ranking",
+    "expected_metrics": [],
+    "expected_entities": ["products", "order_items"],
+    "expected_time_window": null,
+    "expected_tables": ["products", "order_items"],
+    "expected_sql_hint": "SUM(quantity)"
+  },
+  {
+    "id": "q039",
+    "query": "最近30天文档上传量最大的用户前十",
+    "expected_intent": "ranking",
+    "expected_metrics": ["文档上传数"],
+    "expected_entities": ["documents", "users"],
+    "expected_time_window": "last_30_days",
+    "expected_tables": ["documents", "users"],
+    "expected_sql_hint": "GROUP BY user_id ORDER BY COUNT DESC LIMIT 10"
+  },
+  {
+    "id": "q040",
+    "query": "已完成订单和退款订单的比例",
+    "expected_intent": "composition",
+    "expected_metrics": ["订单数"],
+    "expected_entities": ["orders"],
+    "expected_time_window": null,
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "GROUP BY status"
+  },
+  {
+    "id": "q041",
+    "query": "今天上午10点到12点的销售数据",
+    "expected_intent": "aggregation",
+    "expected_metrics": ["GMV"],
+    "expected_entities": ["orders"],
+    "expected_time_window": null,
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "WHERE created_at BETWEEN"
+  },
+  {
+    "id": "q042",
+    "query": "查看订单表里金额最大的5笔订单",
+    "expected_intent": "ranking",
+    "expected_metrics": [],
+    "expected_entities": ["orders"],
+    "expected_time_window": null,
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "ORDER BY paid_amount DESC LIMIT 5"
+  },
+  {
+    "id": "q043",
+    "query": "今年1月到现在的营收是多少",
+    "expected_intent": "aggregation",
+    "expected_metrics": ["GMV"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "year_to_date",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "SUM"
+  },
+  {
+    "id": "q044",
+    "query": "用户平均会话数是多少",
+    "expected_intent": "aggregation",
+    "expected_metrics": [],
+    "expected_entities": ["sessions", "users"],
+    "expected_time_window": null,
+    "expected_tables": ["sessions", "users"],
+    "expected_sql_hint": "COUNT(sessions) / COUNT(users)"
+  },
+  {
+    "id": "q045",
+    "query": "查询哪些产品库存不足10件",
+    "expected_intent": "filtering",
+    "expected_metrics": [],
+    "expected_entities": ["products"],
+    "expected_time_window": null,
+    "expected_tables": ["products"],
+    "expected_sql_hint": "WHERE stock < 10"
+  },
+  {
+    "id": "q046",
+    "query": "上周每天DAU的变化情况",
+    "expected_intent": "trend",
+    "expected_metrics": ["DAU"],
+    "expected_entities": ["sessions"],
+    "expected_time_window": "last_week",
+    "expected_tables": ["sessions"],
+    "expected_sql_hint": "GROUP BY date"
+  },
+  {
+    "id": "q047",
+    "query": "总营收在过去一年有没有增长",
+    "expected_intent": "trend",
+    "expected_metrics": ["GMV"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "last_year",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "GROUP BY month"
+  },
+  {
+    "id": "q048",
+    "query": "各用户等级的付费转化率对比",
+    "expected_intent": "comparison",
+    "expected_metrics": ["转化率"],
+    "expected_entities": ["users", "orders"],
+    "expected_time_window": null,
+    "expected_tables": ["users", "orders"],
+    "expected_sql_hint": "GROUP BY level"
+  },
+  {
+    "id": "q049",
+    "query": "找出最近没有下单的用户",
+    "expected_intent": "filtering",
+    "expected_metrics": [],
+    "expected_entities": ["users", "orders"],
+    "expected_time_window": "last_30_days",
+    "expected_tables": ["users", "orders"],
+    "expected_sql_hint": "NOT IN / LEFT JOIN NULL"
+  },
+  {
+    "id": "q050",
+    "query": "今年哪些月份的GMV超过了100万",
+    "expected_intent": "filtering",
+    "expected_metrics": ["GMV"],
+    "expected_entities": ["orders"],
+    "expected_time_window": "year_to_date",
+    "expected_tables": ["orders"],
+    "expected_sql_hint": "GROUP BY month HAVING SUM > 1000000"
+  }
+]

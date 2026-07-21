@@ -1,0 +1,71 @@
+name: opentrace-ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install alembic sqlalchemy psycopg2-binary
+
+      - name: Prepare development configuration
+        run: cp .env.example .env
+
+      - name: Public release safety check
+        run: python scripts/check_public_release.py
+
+      - name: Start services (Docker)
+        run: bash start.sh
+
+      - name: Wait for API health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:14100/api/v1/health >/dev/null 2>&1; then
+              echo "API ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API not ready"
+          exit 1
+
+      - name: Run DB migrations
+        run: alembic upgrade head
+
+      - name: Run docker-only full verification
+        run: bash scripts/verify_all_docker.sh
+
+      - name: Verify agent cluster (V4)
+        run: bash scripts/verify_agent_cluster.sh
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          docker compose ps || true
+          docker compose logs --tail=200 api || true
+          docker compose logs --tail=200 postgres || true
+          docker compose logs --tail=200 redis || true
+
+      - name: Stop and cleanup
+        if: always()
+        run: bash stop.sh --volumes

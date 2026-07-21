@@ -1,0 +1,167 @@
+x-opentrace-build: &opentrace-build
+  context: .
+  dockerfile: deploy/docker/Dockerfile
+  args:
+    PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
+    OPENTRACE_BUILD_FINGERPRINT: ${OPENTRACE_BUILD_FINGERPRINT:-unknown}
+    PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
+    PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
+
+services:
+  # -------------------------------------------------------------------------
+  # PostgreSQL
+  # -------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: opentrace_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: opentrace_v2
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -------------------------------------------------------------------------
+  # Redis
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: opentrace_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6380}:6379"
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # -------------------------------------------------------------------------
+  # OpenTrace API Gateway — port 14100
+  # -------------------------------------------------------------------------
+  api:
+    image: ${OPENTRACE_IMAGE:-opentrace-app:local}
+    build: *opentrace-build
+    container_name: opentrace_api
+    restart: unless-stopped
+    ports:
+      - "14100:14100"
+    env_file:
+      - .env
+    volumes:
+      - skills_data:/app/skills/installed
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/opentrace_v2
+      TOKEN_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/opentrace_v2
+      REDIS_URL: redis://redis:6379/10
+      TRACE_ENABLED: ${TRACE_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1,host.docker.internal,.aliyuncs.com,dashscope.aliyuncs.com}
+      no_proxy: ${no_proxy:-localhost,127.0.0.1,::1,host.docker.internal,.aliyuncs.com,dashscope.aliyuncs.com}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+      http_proxy: ${http_proxy:-}
+      https_proxy: ${https_proxy:-}
+      all_proxy: ${all_proxy:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:14100/api/v1/health', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # -------------------------------------------------------------------------
+  # Agent Worker
+  # -------------------------------------------------------------------------
+  agent-worker:
+    image: ${OPENTRACE_IMAGE:-opentrace-app:local}
+    build: *opentrace-build
+    container_name: opentrace_agent_worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - skills_data:/app/skills/installed
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/opentrace_v2
+      TOKEN_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/opentrace_v2
+      REDIS_URL: redis://redis:6379/10
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1,host.docker.internal,.aliyuncs.com,dashscope.aliyuncs.com}
+      no_proxy: ${no_proxy:-localhost,127.0.0.1,::1,host.docker.internal,.aliyuncs.com,dashscope.aliyuncs.com}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+      http_proxy: ${http_proxy:-}
+      https_proxy: ${https_proxy:-}
+      all_proxy: ${all_proxy:-}
+    command: ["python", "-m", "agents.worker"]
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import sys; data=open('/proc/1/cmdline','rb').read(); sys.exit(0 if b'agents.worker' in data else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: opentrace_prometheus
+    restart: unless-stopped
+    ports:
+      - "14190:9090"
+    volumes:
+      - ./deploy/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    profiles:
+      - observability
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: opentrace_jaeger
+    restart: unless-stopped
+    ports:
+      - "14186:16686"
+      - "4317:4317"
+    profiles:
+      - observability
+
+volumes:
+  postgres_data:
+  redis_data:
+  skills_data:

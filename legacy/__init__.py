@@ -1,0 +1,1 @@
+"""Legacy compatibility packages — isolated from production cognitive path."""

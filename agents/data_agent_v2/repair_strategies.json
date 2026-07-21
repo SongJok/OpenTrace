@@ -1,0 +1,123 @@
+{
+  "_comment": "DataAgent V2 repair strategy overrides. Keys are ErrorCategory enum values. Only include strategies you want to override or add; defaults are built into error_classifier.py (DEFAULT_REPAIR_STRATEGIES). Changes take effect on next process restart.",
+  "sql_syntax": {
+    "strategy": "fix_syntax",
+    "guidance": "Check SQL syntax: parentheses matching, keyword spelling, quote usage, comma placement. Rewrite with correct syntax.",
+    "repairable": "true"
+  },
+  "sql_column_not_found": {
+    "strategy": "replace_column",
+    "guidance": "Replace invalid column name with the closest match from available schema. Use fuzzy matching on column names. If no match found, remove the column from the query.",
+    "repairable": "true"
+  },
+  "sql_table_not_found": {
+    "strategy": "replace_table",
+    "guidance": "Replace invalid table name with the closest match from available schema. Check plural/singular forms and abbreviations.",
+    "repairable": "true"
+  },
+  "sql_permission": {
+    "strategy": "cannot_repair",
+    "guidance": "Permission denied. Cannot repair automatically — user must contact admin.",
+    "repairable": "false"
+  },
+  "sql_connection": {
+    "strategy": "retry_with_backoff",
+    "guidance": "Connection error. Retry with exponential backoff (1s, 2s, 4s).",
+    "repairable": "true"
+  },
+  "join_amplification": {
+    "strategy": "add_distinct_or_fix_join",
+    "guidance": "Detected cartesian product or join amplification. 1) Check if any join creates N:M without dedup. 2) Add DISTINCT or pre-aggregate the many-side before joining. 3) Verify join keys match actual foreign key relationships.",
+    "repairable": "true"
+  },
+  "missing_join": {
+    "strategy": "add_join",
+    "guidance": "Query references columns from multiple tables but JOIN is missing. Add the necessary JOIN condition using verified foreign key relationships.",
+    "repairable": "true"
+  },
+  "wrong_join_key": {
+    "strategy": "fix_join_key",
+    "guidance": "JOIN condition references wrong column pair. Use verified foreign key from table_relationships. Common fix: replace plural table.column → singular table.column (e.g., orders.user_id vs order.user_id).",
+    "repairable": "true"
+  },
+  "time_too_restrictive": {
+    "strategy": "widen_time_window",
+    "guidance": "Time filter may be too restrictive causing 0 results. Try widening the time range: remove end date, use a broader range (e.g., last 90 days instead of last 7 days), or remove the time filter entirely for diagnostic purposes.",
+    "repairable": "true"
+  },
+  "time_too_broad": {
+    "strategy": "narrow_time_window",
+    "guidance": "Time filter is too broad — query may be slow or return too much data. Add a reasonable default range (e.g., last 30 days) or apply LIMIT.",
+    "repairable": "true"
+  },
+  "time_format_error": {
+    "strategy": "fix_time_format",
+    "guidance": "Time filter format is incorrect. Check: 1) Date string format matches column type (e.g., 'YYYY-MM-DD' for DATE). 2) Timestamp comparisons use correct cast. 3) Relative date expressions match dialect syntax.",
+    "repairable": "true"
+  },
+  "metric_wrong_formula": {
+    "strategy": "fix_metric_formula",
+    "guidance": "Metric formula does not match authoritative definition in metric_definitions. Replace with the exact formula from metric_definitions.formula. Pay attention to FILTER clauses, CASE WHEN conditions, and NULL handling.",
+    "repairable": "true"
+  },
+  "metric_missing_agg": {
+    "strategy": "add_aggregation",
+    "guidance": "Metric column is used without aggregation function. Add the appropriate aggregate (SUM/COUNT/AVG/MAX/MIN) and ensure GROUP BY includes all non-aggregated columns.",
+    "repairable": "true"
+  },
+  "metric_wrong_column": {
+    "strategy": "replace_metric_column",
+    "guidance": "Metric references wrong column. Replace with the correct underlying column from metric_definitions. Check column aliases and formula column references.",
+    "repairable": "true"
+  },
+  "filter_over_restrictive": {
+    "strategy": "relax_filters",
+    "guidance": "Filters are too restrictive — query returns 0 rows. Try: removing optional filters, using OR instead of AND, expanding value ranges, or removing entity-specific filters.",
+    "repairable": "true"
+  },
+  "filter_contradictory": {
+    "strategy": "resolve_contradiction",
+    "guidance": "Filters contain contradictory conditions (e.g., status='active' AND status='inactive'). Remove the contradictory condition or use OR.",
+    "repairable": "true"
+  },
+  "filter_missing": {
+    "strategy": "add_filter",
+    "guidance": "Query is missing a filter that would make results more relevant. Add entity-specific filter, status filter (exclude deleted/cancelled), or date range filter.",
+    "repairable": "true"
+  },
+  "empty_result": {
+    "strategy": "diagnose_then_relax",
+    "guidance": "Query returned 0 rows. Step-by-step diagnosis: 1) Check if time window eliminates all data — try without time filter. 2) Check if entity filters are too narrow — try removing one filter at a time. 3) Check if metric references non-existent combinations. 4) Consider adding 'OR <column> IS NULL' for optional filters.",
+    "repairable": "true"
+  },
+  "null_heavy": {
+    "strategy": "add_null_handling",
+    "guidance": "Many NULL values in results. Consider: 1) COALESCE(column, default_value) for display. 2) LEFT JOIN → INNER JOIN if NULLs are unwanted. 3) Add 'WHERE column IS NOT NULL' if appropriate.",
+    "repairable": "true"
+  },
+  "negative_metrics": {
+    "strategy": "fix_metric_grounding",
+    "guidance": "Metric returned negative values where positive expected. 1) Check if metric formula handles refunds/returns correctly. 2) Verify JOIN direction (are we counting from the right table?). 3) Consider ABS() or CASE WHEN value < 0 THEN 0 ELSE value END.",
+    "repairable": "true"
+  },
+  "outlier_values": {
+    "strategy": "add_validation_filter",
+    "guidance": "Result contains outlier values (extremely large/small). 1) Check for cartesian product (see join_amplification). 2) Add WHERE value < threshold for known outliers. 3) Use PERCENTILE or IQR-based filtering for robust analysis.",
+    "repairable": "true"
+  },
+  "ambiguous_entity": {
+    "strategy": "disambiguate_entity",
+    "guidance": "Entity reference is ambiguous — multiple tables match. Use the most specific match based on metric context. Prefer verified relationships and higher usage_count tables.",
+    "repairable": "true"
+  },
+  "unresolved_alias": {
+    "strategy": "resolve_alias",
+    "guidance": "Column alias or metric name could not be resolved to a physical column. Check schema_metadata.business_name for matches. Use available schema columns only.",
+    "repairable": "true"
+  },
+  "schema_drift": {
+    "strategy": "notify_drift",
+    "guidance": "Schema has changed since knowledge was last indexed. Trigger schema re-sync and use fallback heuristic path.",
+    "repairable": "false"
+  }
+}

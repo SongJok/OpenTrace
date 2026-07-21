@@ -1,0 +1,64 @@
+# Dependencies and build outputs
+node_modules/
+
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+.venv/
+venv/
+env/
+
+.env
+.env.*
+!.env.example
+!**/.env.example
+CLAUDE.md
+
+# macOS / editor
+.DS_Store
+**/.DS_Store
+
+# Local attachments (not source)
+/tmp/
+
+.idea/
+.vscode/
+.claude/
+.trae/
+*.swp
+*.swo
+
+.pytest_cache/
+.coverage
+htmlcov/
+
+*.log
+logs/
+
+.mypy_cache/
+.ruff_cache/
+.runtime/
+.tmp/
+
+# Local databases, dumps and credentials
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.sql.gz
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local uploads and generated runtime data
+data/
+uploads/
+opentrace_attachments/
+
+# Alembic migrations are application source and must always be versioned.

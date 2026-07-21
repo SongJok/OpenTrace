@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class SQLPlan:
+    tables: list[str] = field(default_factory=list)
+    metrics: list[str] = field(default_factory=list)
+    filters: list[str] = field(default_factory=list)
+    sql: str = ""
+
+
+@dataclass
+class DataQueryResult:
+    sql: str
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    summary: str = ""
+    confidence: float = 0.0
+    db_id: str = "default"
+
+
+@dataclass
+class SemanticContext:
+    """查询的已解析语义映射。"""
+
+    dimension_mappings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    metric_defs: dict[str, str] = field(default_factory=dict)
+    time_macros: list[dict[str, Any]] = field(default_factory=list)
+    resolved_sql_fragments: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CandidateSQL:
+    """带排序元数据的候选 SQL 语句。"""
+
+    sql: str
+    score: float = 0.0
+    features: dict[str, Any] = field(default_factory=dict)
+    source_template: str = ""
+
+
+@dataclass
+class LogicalPlan:
+    """逻辑查询计划 — 意图与 SQL 之间的中间表示。"""
+    tables: list[str] = field(default_factory=list)
+    columns: list[str] = field(default_factory=list)
+    conditions: list[str] = field(default_factory=list)
+    group_by: list[str] = field(default_factory=list)
+    order_by: list[str] = field(default_factory=list)
+    limit: int | None = None
+    joins: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class ValidationResult:
+    """执行后验证结果。"""
+
+    passed: bool
+    issues: list[str] = field(default_factory=list)
+    severity: str = "info"  # info | warning | critical
+
+
+@dataclass
+class EntityMapping:
+    """自然语言提及映射到数据库表。
+
+    当 mapped_column 和 mapped_value 被设置时，该实体同时充当
+    分类过滤条件（例如 "队长" → dim_user.role = 'captain'）。
+    """
+
+    mention: str = ""
+    mapped_table: str = ""
+    mapped_column: str = ""       # 分类过滤的列（例如 "role"）
+    mapped_value: str = ""        # 过滤的数据库值（例如 "captain"）
+    mapped_value_label: str = ""  # 可读标签（例如 "队长"）
+    confidence: float = 0.0
+
+
+@dataclass
+class MetricMapping:
+    """自然语言指标映射到列 + 聚合函数。"""
+
+    mention: str = ""
+    mapped_column: str = ""
+    agg: str = ""  # SUM, COUNT, AVG, MAX, MIN，或空表示原始列
+
+
+@dataclass
+class ParsedFilter:
+    """解析后的过滤条件。"""
+
+    field: str = ""
+    operator: str = "="  # =, !=, >, <, >=, <=, LIKE, IN, >=
+    value: str = ""
+    value_type: str = "string"  # string, number, date, boolean
+
+
+@dataclass
+class SemanticParseResult:
+    """SemanticParser 的结构化语义解析输出。"""
+
+    entities: list[EntityMapping] = field(default_factory=list)
+    metrics: list[MetricMapping] = field(default_factory=list)
+    filters: list[ParsedFilter] = field(default_factory=list)
+    group_by: list[str] = field(default_factory=list)
+    order_by: list[dict[str, str]] = field(default_factory=list)  # [{field, direction}]
+    limit: int = 0
+    time_window: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Explanation:
+    """查询的可读说明。"""
+
+    understood_query: str = ""
+    tables_used: list[str] = field(default_factory=list)
+    filters_applied: list[str] = field(default_factory=list)
+    sql: str = ""
+    row_count: int = 0
+    warnings: list[str] = field(default_factory=list)

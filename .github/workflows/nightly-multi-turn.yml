@@ -1,0 +1,45 @@
+name: nightly-multi-turn
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  multi-turn-scenarios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - name: Multi-turn fixture + contract scenarios
+        run: |
+          python -m pytest \
+            tests/test_multi_turn_scenarios_fixture.py \
+            tests/test_multi_turn_scenarios_contract.py \
+            tests/test_multi_turn_resolution_contract.py \
+            tests/test_force_mode_multi_turn_contract.py \
+            -q --tb=short
+
+  optional-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - name: Optional RAG / document retrieval E2E contracts
+        run: |
+          python -m pytest \
+            tests/test_rag_retrieval_e2e_contract.py \
+            tests/test_document_upload_search_contract.py \
+            -q --tb=short || echo "E2E optional step failed (non-blocking)"
