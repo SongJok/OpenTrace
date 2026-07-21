@@ -1,3 +1,4 @@
+# Dependencies and build outputs
 node_modules/
 
 __pycache__/
@@ -13,7 +14,9 @@ venv/
 env/
 
 .env
+.env.*
 !.env.example
+!**/.env.example
 CLAUDE.md
 
 # macOS / editor
@@ -25,6 +28,8 @@ CLAUDE.md
 
 .idea/
 .vscode/
+.claude/
+.trae/
 *.swp
 *.swo
 
@@ -37,5 +42,23 @@ logs/
 
 .mypy_cache/
 .ruff_cache/
+.runtime/
+.tmp/
+
+# Local databases, dumps and credentials
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.sql.gz
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local uploads and generated runtime data
+data/
+uploads/
+opentrace_attachments/
 
 # Alembic migrations are application source and must always be versioned.

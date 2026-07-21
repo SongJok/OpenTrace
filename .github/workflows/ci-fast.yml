@@ -4,6 +4,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   fast-check:
     runs-on: ubuntu-latest
@@ -12,6 +15,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Prepare development configuration
+        run: cp .env.example .env
 
       - name: Start services (Docker)
         run: bash start.sh
@@ -42,6 +53,9 @@ jobs:
 
       - name: Import boundaries
         run: bash scripts/check_import_boundaries.sh
+
+      - name: Public release safety check
+        run: python scripts/check_public_release.py
 
       - name: Import linter (importlinter)
         run: lint-imports --config importlinter.ini

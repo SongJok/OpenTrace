@@ -5,12 +5,19 @@ build-backend = "setuptools.build_meta:__legacy__"
 [project]
 name = "opentrace"
 version = "0.1.0"
-description = "OpenTrace — Distributed Cognitive Operating System"
+description = "Self-hosted enterprise AgentOS for governed data, knowledge, and automation"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = {file = "LICENSE"}
 authors = [
     {name = "OpenTrace Team"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 dependencies = [
@@ -38,11 +45,10 @@ dependencies = [
 
     # Redis
     "redis[hiredis]>=5.0.4",
-    "aioredis>=2.0.1",
 
     # LLM / AI
     "openai>=1.30.0",
-    "dashscope>=1.20.10",
+    "dashscope>=1.22.1",
     "tiktoken>=0.7.0",
     "tenacity>=8.3.0",
 
@@ -71,10 +77,6 @@ dependencies = [
     "aiosmtplib>=3.0.1",
     "jinja2>=3.1.4",
 
-    # Task queue
-    "celery[redis]>=5.4.0",
-    "aio-pika>=9.4.1",
-
     # Utilities
     "anyio>=4.4.0",
     "python-dateutil>=2.9.0",
@@ -87,7 +89,6 @@ dependencies = [
     "scipy>=1.13.0",
     "sqlglot>=25.0.0",
     "matplotlib>=3.8.0",
-    "pandas>=2.2.0",
     "plotly>=5.22.0",
 ]
 
@@ -106,6 +107,11 @@ dev = [
 
 [project.scripts]
 opentrace = "gateway.api_gateway.main:cli"
+
+[project.urls]
+Homepage = "https://github.com/SongJok/OpenTrace"
+Repository = "https://github.com/SongJok/OpenTrace"
+Issues = "https://github.com/SongJok/OpenTrace/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

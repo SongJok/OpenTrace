@@ -1,6 +1,6 @@
 # ==============================================================================
 # OpenTrace Production Dependencies
-# Generated from pyproject.toml — pin versions for reproducible builds
+# Kept in sync with the runtime dependencies in pyproject.toml.
 # ==============================================================================
 
 # Web framework
@@ -27,7 +27,6 @@ asynch>=0.2.5,<0.4
 
 # Redis
 redis[hiredis]>=5.0.4
-aioredis>=2.0.1
 
 # LLM / AI
 openai>=1.30.0
@@ -61,10 +60,6 @@ prometheus-client>=0.20.0
 aiosmtplib>=3.0.1
 jinja2>=3.1.4
 
-# Task queue
-celery[redis]>=5.4.0
-aio-pika>=9.4.1
-
 # Utilities
 anyio>=4.4.0
 structlog>=24.2.0
@@ -75,3 +70,5 @@ networkx>=3.3
 numpy>=1.26.4
 scipy>=1.13.0
 sqlglot>=25.0.0
+matplotlib>=3.8.0
+plotly>=5.22.0

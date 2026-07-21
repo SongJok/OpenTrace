@@ -5,6 +5,9 @@ on:
     branches: ["**"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -24,6 +27,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install alembic sqlalchemy psycopg2-binary
+
+      - name: Prepare development configuration
+        run: cp .env.example .env
+
+      - name: Public release safety check
+        run: python scripts/check_public_release.py
 
       - name: Start services (Docker)
         run: bash start.sh
