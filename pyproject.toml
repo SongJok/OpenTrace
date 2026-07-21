@@ -89,7 +89,7 @@ dependencies = [
     "scipy>=1.13.0",
     "sqlglot>=25.0.0",
     "matplotlib>=3.8.0",
-    "plotly>=5.22.0",
+    "plotly>=6.9.0",
 ]
 
 [project.optional-dependencies]
