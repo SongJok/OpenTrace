@@ -868,6 +868,12 @@ export async function apiCreateProject(token: string, payload: Omit<ProjectItem,
   return res.json()
 }
 
+export async function apiUpdateProject(token: string, projectId: string, payload: Omit<ProjectItem, 'id'>): Promise<ProjectItem> {
+  const res = await apiFetchResponses(`/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '更新 Project 失败'))
+  return res.json()
+}
+
 export interface AssistantProfileItem {
   id: string
   name: string
@@ -1306,6 +1312,7 @@ export async function apiChatStream(
             memory_mode: payload?.memory_mode === 'temporary' ? 'temporary' : 'enabled',
             ...(Array.isArray(payload?.enabled_skills) ? { enabled_skills: payload.enabled_skills } : {}),
             project_id: typeof payload?.project_id === 'string' ? payload.project_id : undefined,
+            data_source_ids: Array.isArray(payload?.data_source_ids) ? payload.data_source_ids : [],
             assistant_profile_id: typeof payload?.assistant_profile_id === 'string' ? payload.assistant_profile_id : undefined,
             attachment_ids: Array.isArray(payload?.attachment_ids) ? payload.attachment_ids : [],
           },

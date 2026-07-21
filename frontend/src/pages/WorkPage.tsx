@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react'
 import { Ban, ChevronLeft, FolderKanban, Pause, Play, Plus, Target } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
-import { apiCreateAssistantProfile, apiCreateGoal, apiCreateProject, apiGoalAction, apiListAssistantProfiles, apiListGoals, apiListProjects, type AssistantProfileItem, type GoalItem, type ProjectItem } from '../api/client'
+import { apiCreateAssistantProfile, apiCreateGoal, apiCreateProject, apiGoalAction, apiListAssistantProfiles, apiListDatabases, apiListGoals, apiListProjects, apiUpdateProject, type AssistantProfileItem, type DataSourceItem, type GoalItem, type ProjectItem } from '../api/client'
 
 export default function WorkPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((state) => state.token)!
   const [projects, setProjects] = useState<ProjectItem[]>([])
   const [goals, setGoals] = useState<GoalItem[]>([])
   const [profiles, setProfiles] = useState<AssistantProfileItem[]>([])
+  const [dataSources, setDataSources] = useState<DataSourceItem[]>([])
   const [projectName, setProjectName] = useState('')
   const [projectInstructions, setProjectInstructions] = useState('')
   const [projectMemoryMode, setProjectMemoryMode] = useState<'default' | 'project_only'>('default')
+  const [projectDataSourceIds, setProjectDataSourceIds] = useState<string[]>([])
   const [objective, setObjective] = useState('')
   const [successCriteria, setSuccessCriteria] = useState('')
   const [projectId, setProjectId] = useState<string>('')
@@ -19,15 +21,35 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
   const [personality, setPersonality] = useState<'none' | 'friendly' | 'pragmatic'>('none')
 
   const load = async () => {
-    const [nextProjects, nextGoals, nextProfiles] = await Promise.all([apiListProjects(token), apiListGoals(token), apiListAssistantProfiles(token)])
+    const [nextProjects, nextGoals, nextProfiles, nextDataSources] = await Promise.all([apiListProjects(token), apiListGoals(token), apiListAssistantProfiles(token), apiListDatabases(token)])
     setProjects(nextProjects)
     setGoals(nextGoals)
     setProfiles(nextProfiles)
+    setDataSources(nextDataSources.filter((item) => !item.status || item.status === 'active'))
   }
   useEffect(() => { void load() }, [])
 
   const goalAction = async (goalId: string, action: 'pause' | 'resume' | 'cancel') => {
     await apiGoalAction(token, goalId, action)
+    await load()
+  }
+
+  const toggleProjectDataSource = (dataSourceId: string) => {
+    setProjectDataSourceIds((items) => items.includes(dataSourceId) ? items.filter((item) => item !== dataSourceId) : [...items, dataSourceId])
+  }
+
+  const updateProjectDataSource = async (project: ProjectItem, dataSourceId: string) => {
+    const nextIds = project.data_source_ids.includes(dataSourceId)
+      ? project.data_source_ids.filter((item) => item !== dataSourceId)
+      : [...project.data_source_ids, dataSourceId]
+    await apiUpdateProject(token, project.id, {
+      name: project.name,
+      description: project.description,
+      instructions: project.instructions,
+      memory_mode: project.memory_mode,
+      assistant_profile_id: project.assistant_profile_id,
+      data_source_ids: nextIds,
+    })
     await load()
   }
 
@@ -40,8 +62,8 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
       <main className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-6 overflow-auto p-6 xl:grid-cols-3">
         <section>
           <div className="mb-3 flex items-center gap-2"><FolderKanban size={17} /><h2 className="font-medium">Projects</h2></div>
-          <div className="mb-4 space-y-2"><input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="Project 名称" className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /><textarea value={projectInstructions} onChange={(event) => setProjectInstructions(event.target.value)} rows={3} placeholder="Project 指令（可选）" className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /><select value={projectMemoryMode} onChange={(event) => setProjectMemoryMode(event.target.value as 'default' | 'project_only')} className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm"><option value="default">使用个人记忆与 Project 记忆</option><option value="project_only">仅使用 Project 记忆</option></select><button onClick={() => void apiCreateProject(token, { name: projectName, description: '', instructions: projectInstructions, memory_mode: projectMemoryMode, data_source_ids: [] }).then(() => { setProjectName(''); setProjectInstructions(''); setProjectMemoryMode('default'); return load() })} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-3 py-2 text-sm text-[var(--accent-foreground)]"><Plus size={15} />新建 Project</button></div>
-          <div className="space-y-3">{projects.map((project) => <article key={project.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-center justify-between gap-3"><h3 className="font-medium">{project.name}</h3><span className="rounded-full bg-[var(--surface-hover)] px-2 py-1 text-[11px] text-[var(--text-secondary)]">{project.memory_mode === 'project_only' ? '仅 Project 记忆' : '个人 + Project 记忆'}</span></div><p className="mt-1 text-sm text-[var(--text-secondary)]">{project.description || '独立指令、会话和记忆空间'}</p></article>)}</div>
+          <div className="mb-4 space-y-2"><input value={projectName} onChange={(event) => setProjectName(event.target.value)} placeholder="Project 名称" className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /><textarea value={projectInstructions} onChange={(event) => setProjectInstructions(event.target.value)} rows={3} placeholder="Project 指令（可选）" className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /><select value={projectMemoryMode} onChange={(event) => setProjectMemoryMode(event.target.value as 'default' | 'project_only')} className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-sm"><option value="default">使用个人记忆与 Project 记忆</option><option value="project_only">仅使用 Project 记忆</option></select><div className="rounded-xl border border-[var(--border)] p-3"><p className="mb-2 text-xs text-[var(--text-secondary)]">绑定企业数据源（知识库、审批和预警将复用此 Project 边界）</p>{dataSources.length ? <div className="space-y-1">{dataSources.map((source) => <label key={source.id} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={projectDataSourceIds.includes(source.id)} onChange={() => toggleProjectDataSource(source.id)} /><span>{source.name} · {source.type}</span></label>)}</div> : <p className="text-xs text-[var(--text-secondary)]">请先连接并验证 MySQL、Doris 或 ClickHouse 数据源</p>}</div><button disabled={!projectName.trim()} onClick={() => void apiCreateProject(token, { name: projectName, description: '', instructions: projectInstructions, memory_mode: projectMemoryMode, data_source_ids: projectDataSourceIds }).then(() => { setProjectName(''); setProjectInstructions(''); setProjectMemoryMode('default'); setProjectDataSourceIds([]); return load() })} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-3 py-2 text-sm text-[var(--accent-foreground)] disabled:opacity-50"><Plus size={15} />新建 Project</button></div>
+          <div className="space-y-3">{projects.map((project) => <article key={project.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-center justify-between gap-3"><h3 className="font-medium">{project.name}</h3><span className="rounded-full bg-[var(--surface-hover)] px-2 py-1 text-[11px] text-[var(--text-secondary)]">{project.memory_mode === 'project_only' ? '仅 Project 记忆' : '个人 + Project 记忆'}</span></div><p className="mt-1 text-sm text-[var(--text-secondary)]">{project.description || '独立指令、会话、知识与数据治理空间'}</p><div className="mt-3 border-t border-[var(--border)] pt-3"><p className="mb-2 text-xs text-[var(--text-secondary)]">授权数据源</p>{dataSources.map((source) => <label key={source.id} className="mb-1 flex items-center gap-2 text-xs"><input type="checkbox" checked={project.data_source_ids.includes(source.id)} onChange={() => void updateProjectDataSource(project, source.id)} /><span>{source.name} · {source.type}</span></label>)}</div></article>)}</div>
         </section>
         <section>
           <div className="mb-3 flex items-center gap-2"><h2 className="font-medium">Assistant Profiles</h2></div>

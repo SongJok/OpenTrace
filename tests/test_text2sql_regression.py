@@ -11,7 +11,18 @@ def _make_schema_mock():
 
 
 def _make_data_source_mock():
-    source = Mock(spec=["id", "user_id", "source_type", "host", "port", "database", "username", "password_encrypted"])
+    source = Mock(
+        spec=[
+            "id",
+            "user_id",
+            "source_type",
+            "host",
+            "port",
+            "database",
+            "username",
+            "password_encrypted",
+        ]
+    )
     source.id = "ds1"
     source.user_id = "u1"
     source.source_type = "mysql"
@@ -43,23 +54,34 @@ class Text2SqlRegressionTests(unittest.TestCase):
             current_user.id = "u1"
             db = _make_db_mock()
 
-            with patch("gateway.api_gateway.routers.data.get_settings") as settings_mock, \
-                 patch("gateway.api_gateway.routers.data.decrypt_data_source_secret", return_value="secret"), \
-                 patch("gateway.api_gateway.routers.data.SQLPlanner") as planner_cls, \
-                 patch("gateway.api_gateway.routers.data.SQLValidator") as validator_cls, \
-                 patch("gateway.api_gateway.routers.data.normalize_sql_for_dialect") as normalize_mock, \
-                 patch("gateway.api_gateway.routers.data.DBRouter") as router_cls, \
-                 patch("gateway.api_gateway.routers.data.SQLExecutor") as exec_cls:
+            with (
+                patch("gateway.api_gateway.routers.data.get_settings") as settings_mock,
+                patch(
+                    "gateway.api_gateway.routers.data.decrypt_data_source_secret",
+                    return_value="secret",
+                ),
+                patch("gateway.api_gateway.routers.data.SQLPlanner") as planner_cls,
+                patch("gateway.api_gateway.routers.data.SQLValidator") as validator_cls,
+                patch(
+                    "gateway.api_gateway.routers.data.normalize_sql_for_dialect"
+                ) as normalize_mock,
+                patch("gateway.api_gateway.routers.data.DBRouter") as router_cls,
+                patch("gateway.api_gateway.routers.data.SQLExecutor") as exec_cls,
+            ):
                 settings_mock.return_value = Mock(
                     text2sql_default_limit=100,
                     text2sql_max_retry=0,
                     data_agent_v2_enabled=False,
                 )
                 planner = AsyncMock()
-                planner.plan.return_value = "SELECT count(*) AS table_count FROM information_schema.tables"
+                planner.plan.return_value = (
+                    "SELECT count(*) AS table_count FROM information_schema.tables"
+                )
                 planner_cls.return_value = planner
                 validator = Mock()
-                validator.validate.return_value = "SELECT count(*) AS table_count FROM information_schema.tables LIMIT 100"
+                validator.validate.return_value = (
+                    "SELECT count(*) AS table_count FROM information_schema.tables LIMIT 100"
+                )
                 validator_cls.return_value = validator
                 normalize_mock.side_effect = lambda sql, dialect: sql
                 router = Mock()
@@ -70,7 +92,12 @@ class Text2SqlRegressionTests(unittest.TestCase):
                 exec_cls.return_value = executor
 
                 resp = await data_query(
-                    DataQueryRequest(question="test_db库下有几张表", data_source_id="ds1", dry_run=False, sql=None),
+                    DataQueryRequest(
+                        question="test_db库下有几张表",
+                        data_source_id="ds1",
+                        dry_run=False,
+                        sql=None,
+                    ),
                     current_user=current_user,
                     db=db,
                 )
@@ -91,13 +118,20 @@ class Text2SqlRegressionTests(unittest.TestCase):
             current_user.id = "u1"
             db = _make_db_mock()
 
-            with patch("gateway.api_gateway.routers.data.get_settings") as settings_mock, \
-                 patch("gateway.api_gateway.routers.data.decrypt_data_source_secret", return_value="secret"), \
-                 patch("gateway.api_gateway.routers.data.SQLPlanner") as planner_cls, \
-                 patch("gateway.api_gateway.routers.data.SQLValidator") as validator_cls, \
-                 patch("gateway.api_gateway.routers.data.normalize_sql_for_dialect") as normalize_mock, \
-                 patch("gateway.api_gateway.routers.data.DBRouter") as router_cls, \
-                 patch("gateway.api_gateway.routers.data.SQLExecutor") as exec_cls:
+            with (
+                patch("gateway.api_gateway.routers.data.get_settings") as settings_mock,
+                patch(
+                    "gateway.api_gateway.routers.data.decrypt_data_source_secret",
+                    return_value="secret",
+                ),
+                patch("gateway.api_gateway.routers.data.SQLPlanner") as planner_cls,
+                patch("gateway.api_gateway.routers.data.SQLValidator") as validator_cls,
+                patch(
+                    "gateway.api_gateway.routers.data.normalize_sql_for_dialect"
+                ) as normalize_mock,
+                patch("gateway.api_gateway.routers.data.DBRouter") as router_cls,
+                patch("gateway.api_gateway.routers.data.SQLExecutor") as exec_cls,
+            ):
                 settings_mock.return_value = Mock(
                     text2sql_default_limit=100,
                     text2sql_max_retry=0,
@@ -114,11 +148,19 @@ class Text2SqlRegressionTests(unittest.TestCase):
                 router.build_dsn.return_value = "dsn"
                 router_cls.return_value = router
                 executor = AsyncMock()
-                executor.run_on_dsn.return_value = [{"table_name": "orders"}, {"table_name": "users"}]
+                executor.run_on_dsn.return_value = [
+                    {"table_name": "orders"},
+                    {"table_name": "users"},
+                ]
                 exec_cls.return_value = executor
 
                 resp = await data_query(
-                    DataQueryRequest(question="test_db下面有哪些表", data_source_id="ds1", dry_run=False, sql=None),
+                    DataQueryRequest(
+                        question="test_db下面有哪些表",
+                        data_source_id="ds1",
+                        dry_run=False,
+                        sql=None,
+                    ),
                     current_user=current_user,
                     db=db,
                 )
@@ -133,15 +175,19 @@ class Text2SqlRegressionTests(unittest.TestCase):
         """When a natural-language query (no SQL) is submitted, the pipeline
         should understand the intent via semantic parsing and produce valid SQL
         deterministically — no planner.plan() call required."""
-        from agents.data_agent import DataAgent
         from agents.base import TaskMessage
+        from agents.data_agent import DataAgent
         from infra.storage.models import DataSource, DataSourceSchema
         from kernel.data_cognition.logical_plan import LogicalPlan, Projection
 
         async def _run():
-            task = TaskMessage(task_id="t1", agent_type="data",
-                               query="test_db库下有几张表",
-                               params={"data_source_id": "ds1"})
+            task = TaskMessage(
+                task_id="t1",
+                agent_type="data",
+                query="test_db库下有几张表",
+                user_id="user-1",
+                params={"data_source_id": "ds1", "tenant_id": "default", "workspace_id": "default"},
+            )
             ds = Mock(spec=DataSource)
             ds.source_type = "mysql"
             ds.host = "localhost"
@@ -161,18 +207,23 @@ class Text2SqlRegressionTests(unittest.TestCase):
                 Mock(scalar_one_or_none=Mock(return_value=schema_row)),
             ]
 
-            with patch("agents.data_agent.settings.data_agent_v2_enabled", False), \
-                 patch("agents.data_agent.AsyncSessionLocal") as session_mock, \
-                 patch("agents.data_agent.decrypt_data_source_secret", return_value="secret"), \
-                 patch("agents.data_agent.DBRouter") as router_cls, \
-                 patch("agents.data_agent.SQLExecutor_from_executor") as exec_fn, \
-                 patch("agents.data_agent.SemanticParser") as sp_cls, \
-                 patch("agents.data_agent.QueryPlanner") as qp_cls, \
-                 patch("agents.data_agent.SQLBuilder") as sb_cls, \
-                 patch("agents.data_agent.QueryExecutor") as qe_cls:
+            with (
+                patch("agents.data_agent.settings.data_agent_v2_enabled", False),
+                patch("agents.data_agent.AsyncSessionLocal") as session_mock,
+                patch("agents.data_agent.decrypt_data_source_secret", return_value="secret"),
+                patch("agents.data_agent.DBRouter") as router_cls,
+                patch("agents.data_agent.SQLExecutor_from_executor") as exec_fn,
+                patch("agents.data_agent.SemanticParser") as sp_cls,
+                patch("agents.data_agent.QueryPlanner") as qp_cls,
+                patch("agents.data_agent.SQLBuilder") as sb_cls,
+                patch("agents.data_agent.QueryExecutor") as qe_cls,
+            ):
                 session_mock.side_effect = [
-                    AsyncMock(__aenter__=AsyncMock(return_value=db1),
-                              __aexit__=AsyncMock(return_value=None))]
+                    AsyncMock(
+                        __aenter__=AsyncMock(return_value=db1),
+                        __aexit__=AsyncMock(return_value=None),
+                    )
+                ]
 
                 router = Mock()
                 router.build_dsn.return_value = "dsn"
@@ -184,8 +235,9 @@ class Text2SqlRegressionTests(unittest.TestCase):
 
                 # SemanticParser: check_structured_intent returns SQL for meta-queries
                 semantic_parser = Mock()
-                semantic_parser.check_structured_intent.return_value = \
+                semantic_parser.check_structured_intent.return_value = (
                     "SELECT count(*) AS table_count FROM information_schema.tables"
+                )
                 sp_cls.return_value = semantic_parser
 
                 # QueryPlanner fallback
@@ -199,8 +251,9 @@ class Text2SqlRegressionTests(unittest.TestCase):
 
                 # SQLBuilder
                 sql_builder = Mock()
-                sql_builder.build.return_value = \
+                sql_builder.build.return_value = (
                     "SELECT count(*) AS table_count FROM `information_schema`.`tables`"
+                )
                 sb_cls.return_value = sql_builder
 
                 # QueryExecutor

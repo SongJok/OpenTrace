@@ -244,9 +244,14 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
       await load()
       try {
         const test = await apiTestDatabaseConnection(token, id)
-        alert(test.ok ? '保存成功，连接测试通过' : `保存成功，但连接失败：${test.error || 'unknown'}`)
+        if (test.ok) {
+          await apiSyncDatabaseSchema(token, id)
+          alert('保存成功，连接测试通过并已同步 Schema，可直接绑定 Project 使用')
+        } else {
+          alert(`保存成功，但连接失败：${test.error || 'unknown'}`)
+        }
       } catch (e: any) {
-        alert(`保存成功，但连接测试失败: ${e?.message || 'unknown'}`)
+        alert(`保存成功，但连接测试或 Schema 同步失败: ${e?.message || 'unknown'}`)
       }
       await load() // Refresh status
     } catch (e: any) {

@@ -14,7 +14,7 @@ from kernel.data_cognition.sql_validator import SQLValidator
 
 def _make_json_safe(val: Any) -> Any:
     """Convert database-native types to JSON-serializable equivalents."""
-    if isinstance(val, (datetime, date, time)):
+    if isinstance(val, datetime | date | time):
         return val.isoformat()
     if isinstance(val, Decimal):
         return float(val)
@@ -46,13 +46,20 @@ class SQLExecutor:
         )
         return self._serialize_rows(result)
 
-    async def run_on_dsn(self, dsn: str, sql: str) -> list[dict[str, Any]]:
+    async def run_on_dsn(
+        self,
+        dsn: str,
+        sql: str,
+        *,
+        source_type: str | None = None,
+    ) -> list[dict[str, Any]]:
         safe_sql = self._validated_sql(sql)
         engine = create_async_engine(dsn, pool_pre_ping=True, future=True)
         try:
+
             async def _execute() -> list[dict[str, Any]]:
                 async with engine.begin() as conn:
-                    for setup_sql in self._read_only_setup_statements(dsn):
+                    for setup_sql in self._read_only_setup_statements(dsn, source_type=source_type):
                         await conn.execute(text(setup_sql))
                     result = await conn.execute(text(safe_sql))
                     return self._serialize_rows(result)
@@ -61,14 +68,21 @@ class SQLExecutor:
         finally:
             await engine.dispose()
 
-    def _read_only_setup_statements(self, dsn: str) -> tuple[str, ...]:
+    def _read_only_setup_statements(
+        self, dsn: str, *, source_type: str | None = None
+    ) -> tuple[str, ...]:
+        source = str(source_type or "").strip().lower()
+        # Doris 使用 MySQL 协议驱动，但并不完整支持 MySQL 的事务级只读语句。
+        # 查询只读性仍由 AST 白名单、LIMIT、超时以及数据库只读账号共同保证。
+        if source in {"doris", "clickhouse"}:
+            return ()
         normalized = dsn.lower()
         if normalized.startswith("postgresql"):
             return (
                 "SET TRANSACTION READ ONLY",
                 f"SET LOCAL statement_timeout = {self.timeout_ms}",
             )
-        if normalized.startswith("mysql"):
+        if source == "mysql" or (not source and normalized.startswith("mysql")):
             return (
                 "SET TRANSACTION READ ONLY",
                 f"SET SESSION MAX_EXECUTION_TIME = {self.timeout_ms}",

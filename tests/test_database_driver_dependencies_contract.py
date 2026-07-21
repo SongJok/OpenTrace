@@ -19,3 +19,16 @@ def test_doris_reuses_the_installed_async_mysql_driver():
     router = (ROOT / "execution/data/db_router.py").read_text(encoding="utf-8")
     assert 'if t in {"doris"}' in router
     assert "mysql+asyncmy" in router
+
+
+def test_doris_does_not_receive_mysql_transaction_setup():
+    from execution.data.sql_executor import SQLExecutor
+
+    executor = SQLExecutor(timeout_ms=1000)
+    dsn = "mysql+asyncmy://user:password@doris.example:9030/warehouse"
+
+    assert executor._read_only_setup_statements(dsn, source_type="doris") == ()
+    assert executor._read_only_setup_statements(dsn, source_type="mysql") == (
+        "SET TRANSACTION READ ONLY",
+        "SET SESSION MAX_EXECUTION_TIME = 1000",
+    )

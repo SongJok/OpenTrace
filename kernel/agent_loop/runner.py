@@ -2036,7 +2036,7 @@ class AgentLoop:
         params: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Resolve trusted scope server-side; never trust model-supplied ids."""
-        from gateway.api_gateway.resource_scope import accessible_data_sources_statement
+        from infra.security.resource_scope import accessible_data_sources_statement
         from infra.storage.database import AsyncSessionLocal
         from infra.storage.models import (
             AssistantProfile,
@@ -2177,6 +2177,13 @@ class AgentLoop:
                 required_permission="query",
                 active_only=True,
             )
+            if project_id and explicit_ids:
+                outside_project = sorted(set(explicit_ids) - set(project_source_ids))
+                if outside_project:
+                    return hydrated, {
+                        "error": "project_data_source_not_authorized",
+                        "data_source_ids": outside_project,
+                    }
             allowlist = explicit_ids or project_source_ids
             if allowlist:
                 stmt = stmt.where(DataSource.id.in_(allowlist))

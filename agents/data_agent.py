@@ -4,16 +4,17 @@ import os
 import time
 from typing import Any
 
-from execution.data.database_hosts import format_database_connection_error
-from execution.data.db_router import DBConnectionInfo, DBRouter
-from infra.security.data_source_secrets import decrypt_data_source_secret
-from infra.config.settings import settings
-from infra.metadata.schema_inspector import build_schema_hint, load_schema_inspection
-from infra.storage.database import AsyncSessionLocal
-from infra.storage.models import DataSource, DataSourceSchema
 from sqlalchemy import select
 
 from agents.base import AgentResult, BaseAgent, TaskMessage
+from execution.data.database_hosts import format_database_connection_error
+from execution.data.db_router import DBConnectionInfo, DBRouter
+from infra.config.settings import settings
+from infra.metadata.schema_inspector import build_schema_hint, load_schema_inspection
+from infra.security.data_source_secrets import decrypt_data_source_secret
+from infra.security.resource_scope import get_accessible_data_source
+from infra.storage.database import AsyncSessionLocal
+from infra.storage.models import DataSource, DataSourceSchema
 from kernel.data_cognition.explanation import build_explanation, format_explanation
 from kernel.data_cognition.query_executor import QueryExecutor
 from kernel.data_cognition.query_planner import QueryPlanner
@@ -25,8 +26,8 @@ from kernel.data_cognition.sql_reflector import SQLReflector
 from kernel.data_cognition.sql_validator import SQLValidationError, SQLValidator
 from kernel.data_cognition.types import CandidateSQL, SemanticContext
 
-
 # ── DataAgent V2 包装 ──────────────────────────────────────────────────
+
 
 class DataAgent(BaseAgent):
     """DataAgent：通过特性开关支持 V2。
@@ -47,6 +48,7 @@ class DataAgent(BaseAgent):
 
         try:
             from agents.data_agent_v2.supervisor import DataAgentV2Supervisor
+
             supervisor = DataAgentV2Supervisor()
             result = await supervisor.execute(task)
             return result
@@ -91,6 +93,7 @@ class DataAgent(BaseAgent):
 
 # ── DataAgent V1（原实现，完整保留）──────────────
 
+
 class DataAgentV1(BaseAgent):
     def __init__(self) -> None:
         super().__init__("data")
@@ -112,27 +115,58 @@ class DataAgentV1(BaseAgent):
             sql = str(task.params.get("sql", "")).strip() or task.query.strip()
             if not data_source_id:
                 return AgentResult(
-                    task_id=task.task_id, agent_type=self.agent_type, status="error", content="",
+                    task_id=task.task_id,
+                    agent_type=self.agent_type,
+                    status="error",
+                    content="",
                     error="data_source_id is required",
                 )
 
-            async with AsyncSessionLocal() as db:
-                r = await db.execute(select(DataSource).where(DataSource.id == data_source_id))
-                ds = r.scalar_one_or_none()
-                inspection = await load_schema_inspection(db, data_source_id)
-                schema_r = await db.execute(
-                    select(DataSourceSchema).where(DataSourceSchema.data_source_id == data_source_id)
+            user_id = str(task.user_id or "").strip()
+            tenant_id = str(task.params.get("tenant_id") or "").strip()
+            workspace_id = str(task.params.get("workspace_id") or "").strip()
+            if not user_id or not tenant_id or not workspace_id:
+                return AgentResult(
+                    task_id=task.task_id,
+                    agent_type=self.agent_type,
+                    status="error",
+                    content="",
+                    error="trusted data source scope is required",
                 )
-                schema_row = schema_r.scalar_one_or_none()
-                semantic_config = schema_row.semantic_mappings if schema_row else {}
+
+            async with AsyncSessionLocal() as db:
+                ds = await get_accessible_data_source(
+                    db,
+                    user_id=user_id,
+                    tenant_metadata={"tenant_id": tenant_id, "workspace_id": workspace_id},
+                    data_source_id=data_source_id,
+                    required_permission="query",
+                    active_only=True,
+                )
+                if ds is not None:
+                    inspection = await load_schema_inspection(db, data_source_id)
+                    schema_r = await db.execute(
+                        select(DataSourceSchema).where(
+                            DataSourceSchema.data_source_id == data_source_id
+                        )
+                    )
+                    schema_row = schema_r.scalar_one_or_none()
+                    semantic_config = schema_row.semantic_mappings if schema_row else {}
+                else:
+                    inspection = None
+                    semantic_config = {}
 
             if ds is None:
                 return AgentResult(
-                    task_id=task.task_id, agent_type=self.agent_type, status="error", content="",
-                    error="data source not found",
+                    task_id=task.task_id,
+                    agent_type=self.agent_type,
+                    status="error",
+                    content="",
+                    error="data source not found or not authorized",
                 )
 
             dialect = detect_sql_dialect(ds.source_type)
+            assert inspection is not None
             schema_hint = build_schema_hint(inspection.schema_payload)
             table_names = inspection.table_names
             table_columns = inspection.column_map if hasattr(inspection, "column_map") else {}
@@ -140,19 +174,34 @@ class DataAgentV1(BaseAgent):
             # 流水线模式
             if self._mode == "pipeline":
                 return await self._execute_pipeline(
-                    task, ds, dialect, data_source_id, schema_hint,
-                    table_names, table_columns, semantic_config,
+                    task,
+                    ds,
+                    dialect,
+                    data_source_id,
+                    schema_hint,
+                    table_names,
+                    table_columns,
+                    semantic_config,
                 )
 
             # LLM 直连模式（遗留回退）
             return await self._execute_llm_direct(
-                task, ds, dialect, data_source_id, sql, schema_hint,
-                semantic_config, start_ts,
+                task,
+                ds,
+                dialect,
+                data_source_id,
+                sql,
+                schema_hint,
+                semantic_config,
+                start_ts,
             )
 
         except SQLValidationError as exc:
             return AgentResult(
-                task_id=task.task_id, agent_type=self.agent_type, status="error", content="",
+                task_id=task.task_id,
+                agent_type=self.agent_type,
+                status="error",
+                content="",
                 error=f"invalid sql: {exc}",
             )
         except Exception as exc:  # noqa: BLE001
@@ -169,7 +218,10 @@ class DataAgentV1(BaseAgent):
                 database=database,
             )
             return AgentResult(
-                task_id=task.task_id, agent_type=self.agent_type, status="error", content="",
+                task_id=task.task_id,
+                agent_type=self.agent_type,
+                status="error",
+                content="",
                 error=error_msg,
             )
 
@@ -197,7 +249,8 @@ class DataAgentV1(BaseAgent):
                 table_columns=table_columns,
             )
             self._query_planner = QueryPlanner(
-                table_names=table_names, schema_summary=schema_hint,
+                table_names=table_names,
+                schema_summary=schema_hint,
             )
             self._sql_builder = SQLBuilder(default_limit=100)
             self._query_executor = QueryExecutor(
@@ -209,12 +262,19 @@ class DataAgentV1(BaseAgent):
 
         # 步骤 1：检查结构化意图（table_count、table_list、table_schema）
         structured_sql = self._semantic_parser.check_structured_intent(
-            task.query, table_names, ds.database, dialect,
+            task.query,
+            table_names,
+            ds.database,
+            dialect,
         )
         if structured_sql:
             safe_sql = self.validator.validate(structured_sql)
             return await self._execute_and_return(
-                task, safe_sql, ds, dialect, data_source_id,
+                task,
+                safe_sql,
+                ds,
+                dialect,
+                data_source_id,
                 meta={"mode": "pipeline_structured"},
             )
 
@@ -224,8 +284,14 @@ class DataAgentV1(BaseAgent):
         except Exception as exc:
             # 解析失败时回退 llm_direct
             return await self._execute_llm_direct(
-                task, ds, dialect, data_source_id, task.query, schema_hint,
-                semantic_config, start_ts,
+                task,
+                ds,
+                dialect,
+                data_source_id,
+                task.query,
+                schema_hint,
+                semantic_config,
+                start_ts,
                 fallback_reason=f"semantic_parse_failed: {exc}",
             )
 
@@ -241,8 +307,14 @@ class DataAgentV1(BaseAgent):
             )
         except Exception as exc:
             return await self._execute_llm_direct(
-                task, ds, dialect, data_source_id, task.query, schema_hint,
-                semantic_config, start_ts,
+                task,
+                ds,
+                dialect,
+                data_source_id,
+                task.query,
+                schema_hint,
+                semantic_config,
+                start_ts,
                 fallback_reason=f"query_plan_failed: {exc}",
             )
 
@@ -257,7 +329,10 @@ class DataAgentV1(BaseAgent):
             )
         except Exception as exc:
             return AgentResult(
-                task_id=task.task_id, agent_type=self.agent_type, status="error", content="",
+                task_id=task.task_id,
+                agent_type=self.agent_type,
+                status="error",
+                content="",
                 error=f"query execution failed: {exc}",
             )
 
@@ -270,26 +345,28 @@ class DataAgentV1(BaseAgent):
         row_count = len(rows)
         from kernel.result_reference import ResultRef, serialize_refs
 
-        result_refs = serialize_refs([
-            ResultRef(
-                ref_id=f"sql:{task.task_id}",
-                type="sql",
-                title=f"SQL: {task.query[:60]}",
-                summary=f"Generated SQL ({len(final_sql)} chars, {row_count} rows)",
-                payload={"sql": final_sql, "dialect": str(dialect), "row_count": row_count},
-                source_agent="data",
-                message_id=task.task_id,
-            ),
-            ResultRef(
-                ref_id=f"table:{task.task_id}",
-                type="table",
-                title=f"Results: {task.query[:60]}",
-                summary=f"{row_count} rows returned",
-                payload={"rows_preview": rows[:5], "row_count": row_count},
-                source_agent="data",
-                message_id=task.task_id,
-            ),
-        ])
+        result_refs = serialize_refs(
+            [
+                ResultRef(
+                    ref_id=f"sql:{task.task_id}",
+                    type="sql",
+                    title=f"SQL: {task.query[:60]}",
+                    summary=f"Generated SQL ({len(final_sql)} chars, {row_count} rows)",
+                    payload={"sql": final_sql, "dialect": str(dialect), "row_count": row_count},
+                    source_agent="data",
+                    message_id=task.task_id,
+                ),
+                ResultRef(
+                    ref_id=f"table:{task.task_id}",
+                    type="table",
+                    title=f"Results: {task.query[:60]}",
+                    summary=f"{row_count} rows returned",
+                    payload={"rows_preview": rows[:5], "row_count": row_count},
+                    source_agent="data",
+                    message_id=task.task_id,
+                ),
+            ]
+        )
         meta = {
             "sql": final_sql,
             "rows": rows[:20],
@@ -338,7 +415,11 @@ class DataAgentV1(BaseAgent):
                 self._make_evidence(
                     source=f"sql:{data_source_id}",
                     source_type="sql",
-                    payload={"sql": final_sql, "row_count": len(rows), "tables": explanation.tables_used},
+                    payload={
+                        "sql": final_sql,
+                        "row_count": len(rows),
+                        "tables": explanation.tables_used,
+                    },
                     credibility=confidence,
                     relevance=0.9,
                     cost=round(elapsed_ms, 1),
@@ -359,9 +440,9 @@ class DataAgentV1(BaseAgent):
         fallback_reason: str = "",
     ) -> AgentResult:
         """遗留 LLM 直连 SQL 生成模式。"""
-        from kernel.data_cognition.sql_postprocess import normalize_sql_for_dialect
-        from kernel.data_cognition.sql_planner import SQLPlanner
         from kernel.data_cognition.semantic_layer import SemanticLayer
+        from kernel.data_cognition.sql_planner import SQLPlanner
+        from kernel.data_cognition.sql_postprocess import normalize_sql_for_dialect
 
         planner = SQLPlanner()
         semantic_layer = SemanticLayer(semantic_config)
@@ -384,9 +465,14 @@ class DataAgentV1(BaseAgent):
             sql = planned.sql
 
         # 多候选 SQL 生成
-        semantic_fragments = semantic_ctx.resolved_sql_fragments if semantic_ctx.resolved_sql_fragments else None
+        semantic_fragments = (
+            semantic_ctx.resolved_sql_fragments if semantic_ctx.resolved_sql_fragments else None
+        )
         candidates = await planner.generate_candidates(
-            task.query, schema_hint=schema_hint, dialect=dialect, n=4,
+            task.query,
+            schema_hint=schema_hint,
+            dialect=dialect,
+            n=4,
             semantic_fragments=semantic_fragments,
         )
 
@@ -397,13 +483,21 @@ class DataAgentV1(BaseAgent):
         best_sql = self._select_valid_sql(ranked, semantic_ctx, task.query)
         if not best_sql:
             return AgentResult(
-                task_id=task.task_id, agent_type=self.agent_type, status="error", content="",
+                task_id=task.task_id,
+                agent_type=self.agent_type,
+                status="error",
+                content="",
                 error="no valid SQL candidate found after ranking and validation",
             )
 
         safe_sql = self.validator.validate(normalize_sql_for_dialect(best_sql, dialect))
         rows, final_sql = await self._execute_with_reflection(
-            safe_sql, ds, dialect, task.query, schema_hint, semantic_ctx,
+            safe_sql,
+            ds,
+            dialect,
+            task.query,
+            schema_hint,
+            semantic_ctx,
         )
 
         elapsed_ms = (time.monotonic() - start_ts) * 1000
@@ -411,26 +505,28 @@ class DataAgentV1(BaseAgent):
 
         from kernel.result_reference import ResultRef, serialize_refs
 
-        result_refs = serialize_refs([
-            ResultRef(
-                ref_id=f"sql:{task.task_id}",
-                type="sql",
-                title=f"SQL: {task.query[:60]}",
-                summary=f"Generated SQL ({len(final_sql)} chars, {len(rows)} rows)",
-                payload={"sql": final_sql, "dialect": str(dialect), "row_count": len(rows)},
-                source_agent="data",
-                message_id=task.task_id,
-            ),
-            ResultRef(
-                ref_id=f"table:{task.task_id}",
-                type="table",
-                title=f"Results: {task.query[:60]}",
-                summary=f"{len(rows)} rows returned",
-                payload={"rows_preview": rows[:5], "row_count": len(rows)},
-                source_agent="data",
-                message_id=task.task_id,
-            ),
-        ])
+        result_refs = serialize_refs(
+            [
+                ResultRef(
+                    ref_id=f"sql:{task.task_id}",
+                    type="sql",
+                    title=f"SQL: {task.query[:60]}",
+                    summary=f"Generated SQL ({len(final_sql)} chars, {len(rows)} rows)",
+                    payload={"sql": final_sql, "dialect": str(dialect), "row_count": len(rows)},
+                    source_agent="data",
+                    message_id=task.task_id,
+                ),
+                ResultRef(
+                    ref_id=f"table:{task.task_id}",
+                    type="table",
+                    title=f"Results: {task.query[:60]}",
+                    summary=f"{len(rows)} rows returned",
+                    payload={"rows_preview": rows[:5], "row_count": len(rows)},
+                    source_agent="data",
+                    message_id=task.task_id,
+                ),
+            ]
+        )
         meta: dict[str, Any] = {
             "sql": final_sql,
             "rows": rows[:20],
@@ -473,7 +569,9 @@ class DataAgentV1(BaseAgent):
             ],
         )
 
-    def _select_valid_sql(self, ranked: list[CandidateSQL], semantic_ctx: SemanticContext | None, query: str) -> str | None:
+    def _select_valid_sql(
+        self, ranked: list[CandidateSQL], semantic_ctx: SemanticContext | None, query: str
+    ) -> str | None:
         """从排序后的候选中选取最优合法 SQL。"""
         for c in ranked:
             time_issues = self.validator.validate_time_filter(c.sql, query)
@@ -484,21 +582,32 @@ class DataAgentV1(BaseAgent):
         return ranked[0].sql if ranked else None
 
     async def _execute_with_reflection(
-        self, safe_sql: str, ds: DataSource, dialect: SQLDialectSpec, query: str, schema_hint: str, semantic_ctx: SemanticContext | None,
+        self,
+        safe_sql: str,
+        ds: DataSource,
+        dialect: SQLDialectSpec,
+        query: str,
+        schema_hint: str,
+        semantic_ctx: SemanticContext | None,
     ) -> tuple[list, str]:
         dsn = self._build_dsn(ds)
         max_rounds = self.reflector.MAX_REFLECTION_ROUNDS
         current_sql = safe_sql
         from kernel.data_cognition.sql_rewriter import SQLRewriter
+
         rewriter = SQLRewriter()
 
         for attempt in range(max_rounds + 1):
             try:
-                rows = await SQLExecutor_from_executor().run_on_dsn(dsn, current_sql)
+                rows = await SQLExecutor_from_executor().run_on_dsn(  # noqa: N802
+                    dsn, current_sql, source_type=ds.source_type
+                )
                 validation = self.reflector.validate_result(current_sql, rows, query, semantic_ctx)
                 if validation.passed or attempt >= max_rounds:
                     return rows, current_sql
-                fixed_sql = await rewriter.rewrite(current_sql, "; ".join(validation.issues), schema_hint, dialect)
+                fixed_sql = await rewriter.rewrite(
+                    current_sql, "; ".join(validation.issues), schema_hint, dialect
+                )
                 if not fixed_sql:
                     break
                 try:
@@ -518,7 +627,9 @@ class DataAgentV1(BaseAgent):
 
         return [], current_sql
 
-    def _compute_confidence(self, rows: list, semantic_ctx: SemanticContext | None, mode: str = "pipeline") -> float:
+    def _compute_confidence(
+        self, rows: list, semantic_ctx: SemanticContext | None, mode: str = "pipeline"
+    ) -> float:
         """根据实际结果特征计算置信度。"""
         confidence = 0.60  # 基线
 
@@ -556,33 +667,43 @@ class DataAgentV1(BaseAgent):
         )
 
     async def _execute_and_return(
-        self, task: TaskMessage, safe_sql: str, ds: DataSource, dialect: SQLDialectSpec, data_source_id: str, meta: dict,
+        self,
+        task: TaskMessage,
+        safe_sql: str,
+        ds: DataSource,
+        dialect: SQLDialectSpec,
+        data_source_id: str,
+        meta: dict,
     ) -> AgentResult:
         dsn = self._build_dsn(ds)
-        rows = await SQLExecutor_from_executor().run_on_dsn(dsn, safe_sql)
+        rows = await SQLExecutor_from_executor().run_on_dsn(  # noqa: N802
+            dsn, safe_sql, source_type=ds.source_type
+        )
         row_count = len(rows)
         from kernel.result_reference import ResultRef, serialize_refs
 
-        result_refs = serialize_refs([
-            ResultRef(
-                ref_id=f"sql:{task.task_id}",
-                type="sql",
-                title=f"SQL: {task.query[:60]}",
-                summary=f"Generated SQL ({len(safe_sql)} chars, {row_count} rows)",
-                payload={"sql": safe_sql, "dialect": str(dialect), "row_count": row_count},
-                source_agent="data",
-                message_id=task.task_id,
-            ),
-            ResultRef(
-                ref_id=f"table:{task.task_id}",
-                type="table",
-                title=f"Results: {task.query[:60]}",
-                summary=f"{row_count} rows returned",
-                payload={"rows_preview": rows[:5], "row_count": row_count},
-                source_agent="data",
-                message_id=task.task_id,
-            ),
-        ])
+        result_refs = serialize_refs(
+            [
+                ResultRef(
+                    ref_id=f"sql:{task.task_id}",
+                    type="sql",
+                    title=f"SQL: {task.query[:60]}",
+                    summary=f"Generated SQL ({len(safe_sql)} chars, {row_count} rows)",
+                    payload={"sql": safe_sql, "dialect": str(dialect), "row_count": row_count},
+                    source_agent="data",
+                    message_id=task.task_id,
+                ),
+                ResultRef(
+                    ref_id=f"table:{task.task_id}",
+                    type="table",
+                    title=f"Results: {task.query[:60]}",
+                    summary=f"{row_count} rows returned",
+                    payload={"rows_preview": rows[:5], "row_count": row_count},
+                    source_agent="data",
+                    message_id=task.task_id,
+                ),
+            ]
+        )
         sql_summary = f"SQL ({row_count} rows): {safe_sql[:500]}"
         return AgentResult(
             task_id=task.task_id,
@@ -590,7 +711,14 @@ class DataAgentV1(BaseAgent):
             status="success",
             content=f"data rows={row_count}",
             confidence=0.95,
-            metadata={"sql": safe_sql, "rows": rows[:20], "row_count": row_count, "data_source_id": data_source_id, "result_refs": result_refs, **meta},
+            metadata={
+                "sql": safe_sql,
+                "rows": rows[:20],
+                "row_count": row_count,
+                "data_source_id": data_source_id,
+                "result_refs": result_refs,
+                **meta,
+            },
             evidence=[
                 self._make_evidence(
                     source=f"sql:{data_source_id}",
@@ -613,6 +741,7 @@ class DataAgentV1(BaseAgent):
         )
 
 
-def SQLExecutor_from_executor():
+def SQLExecutor_from_executor():  # noqa: N802
     from execution.data.sql_executor import SQLExecutor
+
     return SQLExecutor()

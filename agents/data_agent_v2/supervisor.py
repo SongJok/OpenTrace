@@ -16,6 +16,7 @@ DataAgentV2Supervisor — 编排认知流水线的薄协调器。
 
 Supervisor 本身不含业务逻辑，仅做协调。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -25,16 +26,15 @@ import uuid
 from dataclasses import asdict
 from typing import Any
 
-from agents.base import AgentResult, BaseAgent, TaskMessage
-from agents.data_agent_v2.types import CognitiveContext, LowConfidenceError
-from infra.observability.logger import get_logger
-
+from agents.base import AgentResult, TaskMessage
 from agents.data_agent_v2.dag_builder import (
     DagNodeSpec,
     DagPlanSpec,
     build_cognitive_dag,
     get_enabled_agents,
 )
+from agents.data_agent_v2.types import CognitiveContext, LowConfidenceError
+from infra.observability.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -50,6 +50,7 @@ class DataAgentV2Supervisor:
 
     async def execute(self, task: TaskMessage) -> AgentResult:
         from infra.config.settings import settings
+
         self._max_retries = int(getattr(settings, "data_agent_v2_supervisor_max_retries", 2))
 
         t0 = time.monotonic()
@@ -62,13 +63,19 @@ class DataAgentV2Supervisor:
         await self._load_datasource_metadata(task, ctx)
 
         # 3. 知识层
-        knowledge_enabled = bool(getattr(settings, "data_agent_v2_knowledge_retriever_enabled", True))
+        knowledge_enabled = bool(
+            getattr(settings, "data_agent_v2_knowledge_retriever_enabled", True)
+        )
         if knowledge_enabled:
             t_kb = time.monotonic()
             ctx = await self._run_knowledge_layer(task, ctx)
-            await self._record_event(self._trace_id, task, "knowledge_layer",
-                                     {"duration_ms": int((time.monotonic() - t_kb) * 1000)},
-                                     status="success")
+            await self._record_event(
+                self._trace_id,
+                task,
+                "knowledge_layer",
+                {"duration_ms": int((time.monotonic() - t_kb) * 1000)},
+                status="success",
+            )
 
         # 4. 检查直接 SQL / 模式命中（快速路径：跳过推理 DAG）
         if ctx.compiled_sql:
@@ -77,20 +84,30 @@ class DataAgentV2Supervisor:
                 "issues": [],
                 "source": "direct_sql",
             }
-            await self._record_event(self._trace_id, task, "dag_execute",
-                                     {"nodes": 0, "direct_sql": True},
-                                     status="success")
+            await self._record_event(
+                self._trace_id,
+                task,
+                "dag_execute",
+                {"nodes": 0, "direct_sql": True},
+                status="success",
+            )
         elif ctx.pattern_hit and ctx.pattern_hit.get("successful_sql"):
             ctx.compiled_sql = ctx.pattern_hit["successful_sql"]
-            await self._record_event(self._trace_id, task, "dag_execute",
-                                     {"nodes": 1, "pattern_hit": True},
-                                     status="success")
+            await self._record_event(
+                self._trace_id,
+                task,
+                "dag_execute",
+                {"nodes": 1, "pattern_hit": True},
+                status="success",
+            )
         else:
             # 5. 构建并执行认知 DAG
             enabled_agents = get_enabled_agents()
             is_metadata = (
-                ctx.intent and ctx.intent.get("intent_type") == "metadata"
-            ) if ctx.intent else False
+                (ctx.intent and ctx.intent.get("intent_type") == "metadata")
+                if ctx.intent
+                else False
+            )
 
             dag = build_cognitive_dag(
                 query=ctx.query,
@@ -106,11 +123,17 @@ class DataAgentV2Supervisor:
 
             t_dag = time.monotonic()
             ctx = await self._execute_dag(task, ctx, dag)
-            await self._record_event(self._trace_id, task, "dag_execute",
-                                     {"nodes": len(dag.nodes), "duration_ms": int((time.monotonic() - t_dag) * 1000)},
-                                     status="success")
+            await self._record_event(
+                self._trace_id,
+                task,
+                "dag_execute",
+                {"nodes": len(dag.nodes), "duration_ms": int((time.monotonic() - t_dag) * 1000)},
+                status="success",
+            )
 
-            ctx = await self._maybe_replan_after_verification_fail(task, ctx, enabled_agents, is_metadata)
+            ctx = await self._maybe_replan_after_verification_fail(
+                task, ctx, enabled_agents, is_metadata
+            )
 
         # 5c. 澄清门控：在 SQL 执行前检测模糊查询。
         # 若用户正在回复之前的澄清（clarify_context 非空）则跳过，
@@ -122,10 +145,18 @@ class DataAgentV2Supervisor:
             if clarification_question:
                 ctx.needs_clarification = True
                 ctx.clarification = clarification_question
-                await self._record_event(self._trace_id, task, "clarification",
-                                         {"reason": "query too vague",
-                                          "suggested_options": len(clarification_question.get("suggested_options", []))},
-                                         status="success")
+                await self._record_event(
+                    self._trace_id,
+                    task,
+                    "clarification",
+                    {
+                        "reason": "query too vague",
+                        "suggested_options": len(
+                            clarification_question.get("suggested_options", [])
+                        ),
+                    },
+                    status="success",
+                )
                 return self._build_clarification_result(task, ctx, t0)
 
         # 6. 若校验通过则执行 SQL
@@ -137,12 +168,18 @@ class DataAgentV2Supervisor:
             result_ctx.execution_error = None
         else:
             result_ctx = await self._execute_sql(task, ctx)
-        await self._record_event(self._trace_id, task, "sql_execute",
-                                 {"row_count": result_ctx.execution_row_count,
-                                  "sql_len": len(result_ctx.compiled_sql or ""),
-                                  "error": result_ctx.execution_error or "",
-                                  "duration_ms": int((time.monotonic() - t_sql) * 1000)},
-                                 status="error" if result_ctx.execution_error else "success")
+        await self._record_event(
+            self._trace_id,
+            task,
+            "sql_execute",
+            {
+                "row_count": result_ctx.execution_row_count,
+                "sql_len": len(result_ctx.compiled_sql or ""),
+                "error": result_ctx.execution_error or "",
+                "duration_ms": int((time.monotonic() - t_sql) * 1000),
+            },
+            status="error" if result_ctx.execution_error else "success",
+        )
 
         # 7. 反思：观察结果、诊断、修复（Phase 2.1）
         reflection_enabled = bool(getattr(settings, "data_agent_v2_reflection_enabled", True))
@@ -154,9 +191,13 @@ class DataAgentV2Supervisor:
                 result_ctx.execution_rows = None
                 result_ctx.execution_row_count = 0
                 result_ctx = await self._execute_sql(task, result_ctx)
-            await self._record_event(self._trace_id, task, "reflection",
-                                     {"rounds": result_ctx.reflection_rounds},
-                                     status="success")
+            await self._record_event(
+                self._trace_id,
+                task,
+                "reflection",
+                {"rounds": result_ctx.reflection_rounds},
+                status="success",
+            )
 
         # 7b. 高级分析（Phase 4）
         if result_ctx.execution_rows and not result_ctx.execution_error:
@@ -168,7 +209,9 @@ class DataAgentV2Supervisor:
         # 8b. 置信度熔断：若 V2 结果质量过低，
         # 通知 DataAgent 包装器回退到 V1 流水线。
         threshold = float(getattr(settings, "data_agent_v2_confidence_threshold", 0.40))
-        if result.confidence < threshold and bool(getattr(settings, "data_agent_v2_fallback_to_v1", False)):
+        if result.confidence < threshold and bool(
+            getattr(settings, "data_agent_v2_fallback_to_v1", False)
+        ):
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             await self._record_event(
                 self._trace_id,
@@ -182,7 +225,9 @@ class DataAgentV2Supervisor:
                 status="error",
             )
             try:
-                from kernel.agent_runtime.data_v2_failure_memory import record_data_v2_circuit_breaker
+                from kernel.agent_runtime.data_v2_failure_memory import (
+                    record_data_v2_circuit_breaker,
+                )
 
                 record_data_v2_circuit_breaker(
                     query=task.query,
@@ -247,11 +292,17 @@ class DataAgentV2Supervisor:
             except Exception as exc:
                 logger.debug("data_supervisor_learning_hook_skipped", error=str(exc))
 
-        await self._record_event(self._trace_id, task, "complete",
-                                 {"total_ms": int((time.monotonic() - t0) * 1000),
-                                  "confidence": result.confidence,
-                                  "status": result.status},
-                                 status=result.status)
+        await self._record_event(
+            self._trace_id,
+            task,
+            "complete",
+            {
+                "total_ms": int((time.monotonic() - t0) * 1000),
+                "confidence": result.confidence,
+                "status": result.status,
+            },
+            status=result.status,
+        )
         return result
 
     # ── 步骤执行 ────────────────────────────────────────────────
@@ -264,6 +315,7 @@ class DataAgentV2Supervisor:
         try:
             if not task.params.get("_db_session"):
                 from infra.storage.database import AsyncSessionLocal
+
                 own_session = AsyncSessionLocal()
 
             agent = self._tier2.get_agent("data_knowledge")
@@ -295,7 +347,10 @@ class DataAgentV2Supervisor:
                     logger.warning("Supervisor operation failed", error=str(exc))
 
     async def _execute_dag(
-        self, task: TaskMessage, ctx: CognitiveContext, dag: DagPlanSpec,
+        self,
+        task: TaskMessage,
+        ctx: CognitiveContext,
+        dag: DagPlanSpec,
     ) -> CognitiveContext:
         """执行认知 DAG 并传递合并后的 CognitiveContext。
 
@@ -310,14 +365,13 @@ class DataAgentV2Supervisor:
         completed: set[str] = set()
 
         while pending:
-            ready = [
-                n for n in pending.values()
-                if all(dep in completed for dep in n.depends_on)
-            ]
+            ready = [n for n in pending.values() if all(dep in completed for dep in n.depends_on)]
             if not ready:
                 unresolved = sorted(pending)
                 await self._record_event(
-                    self._trace_id, task, "dag_execute_error",
+                    self._trace_id,
+                    task,
+                    "dag_execute_error",
                     {"error": "unresolved_dependencies", "nodes": unresolved},
                     status="error",
                 )
@@ -333,7 +387,9 @@ class DataAgentV2Supervisor:
                 completed.add(node.node_id)
                 if isinstance(result, Exception):
                     await self._record_event(
-                        self._trace_id, task, "dag_node_error",
+                        self._trace_id,
+                        task,
+                        "dag_node_error",
                         {"node_id": node.node_id, "error": str(result)},
                         node_id=node.node_id,
                         status="error",
@@ -343,7 +399,9 @@ class DataAgentV2Supervisor:
                 if result_ctx_dict:
                     ctx = self._merge_context(ctx, CognitiveContext.from_dict(result_ctx_dict))
                 await self._record_event(
-                    self._trace_id, task, "dag_node_complete",
+                    self._trace_id,
+                    task,
+                    "dag_node_complete",
                     {
                         "node_id": node.node_id,
                         "agent_type": result.agent_type,
@@ -355,14 +413,12 @@ class DataAgentV2Supervisor:
                     status=result.status,
                 )
 
-            if (
-                ctx.intent
-                and ctx.intent.get("intent_type") == "metadata"
-                and ctx.compiled_sql
-            ):
+            if ctx.intent and ctx.intent.get("intent_type") == "metadata" and ctx.compiled_sql:
                 pending.clear()
                 await self._record_event(
-                    self._trace_id, task, "dag_fast_path",
+                    self._trace_id,
+                    task,
+                    "dag_fast_path",
                     {"fast_path": "metadata"},
                     status="success",
                 )
@@ -407,7 +463,9 @@ class DataAgentV2Supervisor:
             ctx.metadata_extra["verification_replan"] = {
                 "round": replan_round + 1,
                 "diagnosis_count": len(diagnoses),
-                "categories": [getattr(d.category, "value", str(d.category)) for d in diagnoses[:6]],
+                "categories": [
+                    getattr(d.category, "value", str(d.category)) for d in diagnoses[:6]
+                ],
             }
             if repair_prompt:
                 ctx.metadata_extra["verification_repair_guidance"] = repair_prompt[:2000]
@@ -489,9 +547,7 @@ class DataAgentV2Supervisor:
         result = await asyncio.wait_for(agent.execute(msg), timeout=timeout_sec)
         return self._coerce_agent_result(result)
 
-    async def _execute_sql(
-        self, task: TaskMessage, ctx: CognitiveContext
-    ) -> CognitiveContext:
+    async def _execute_sql(self, task: TaskMessage, ctx: CognitiveContext) -> CognitiveContext:
         """若校验通过则执行编译后的 SQL。"""
         if not ctx.compiled_sql:
             ctx.execution_error = "no compiled SQL generated by DataAgent V2"
@@ -503,7 +559,9 @@ class DataAgentV2Supervisor:
 
             ctx.execution_error = "SQL verification failed"
             ctx.metadata_extra = dict(ctx.metadata_extra or {})
-            ctx.metadata_extra.update(build_error_diagnosis_metadata(ctx, error=ctx.execution_error))
+            ctx.metadata_extra.update(
+                build_error_diagnosis_metadata(ctx, error=ctx.execution_error)
+            )
             from agents.data_agent_v2.turn_metadata import verification_turn_metadata
 
             ctx.metadata_extra.update(verification_turn_metadata(report))
@@ -522,7 +580,11 @@ class DataAgentV2Supervisor:
             from kernel.data_cognition.sql_validator import SQLValidator
 
             safe_sql = SQLValidator(default_limit=100).validate(ctx.compiled_sql)
-            rows = await SQLExecutor().run_on_dsn(dsn, safe_sql)
+            rows = await SQLExecutor().run_on_dsn(
+                dsn,
+                safe_sql,
+                source_type=str(task.params.get("_data_source_type") or ctx.dialect),
+            )
 
             ctx.execution_rows = rows
             ctx.execution_row_count = len(rows)
@@ -530,9 +592,8 @@ class DataAgentV2Supervisor:
             ctx.reflection_rounds = 0  # 将由 ReflectionAgent 按需设置
 
         except Exception as exc:
-            from execution.data.database_hosts import format_database_connection_error
-
             from agents.data_agent_v2.turn_metadata import build_error_diagnosis_metadata
+            from execution.data.database_hosts import format_database_connection_error
 
             ctx.execution_error = format_database_connection_error(
                 exc,
@@ -549,9 +610,7 @@ class DataAgentV2Supervisor:
 
     # ── 辅助方法 ────────────────────────────────────────────────────────
 
-    async def _run_reflection(
-        self, task: TaskMessage, ctx: CognitiveContext
-    ) -> CognitiveContext:
+    async def _run_reflection(self, task: TaskMessage, ctx: CognitiveContext) -> CognitiveContext:
         """运行 ReflectionAgent 观察结果并尝试修复。"""
         try:
             from agents.data_agent_v2.reflection_agent import ReflectionAgent
@@ -654,29 +713,40 @@ class DataAgentV2Supervisor:
             statistical_enabled, insight_enabled, viz_enabled = self._resolve_auto_analytics(ctx)
         else:
             # "manual" 模式 — 使用各独立开关
-            statistical_enabled = bool(getattr(settings, "data_agent_v2_statistical_enabled", False))
+            statistical_enabled = bool(
+                getattr(settings, "data_agent_v2_statistical_enabled", False)
+            )
             insight_enabled = bool(getattr(settings, "data_agent_v2_insight_enabled", False))
             viz_enabled = bool(getattr(settings, "data_agent_v2_visualization_enabled", False))
 
         # 统计分析（Phase 4.1）
         if statistical_enabled:
             ctx = await self._run_agent(
-                task, ctx, "data_statistical",
-                "agents.data_agent_v2.statistical_agent", "StatisticalAgent",
+                task,
+                ctx,
+                "data_statistical",
+                "agents.data_agent_v2.statistical_agent",
+                "StatisticalAgent",
             )
 
         # 洞察生成（Phase 4.2）
         if insight_enabled:
             ctx = await self._run_agent(
-                task, ctx, "data_insight",
-                "agents.data_agent_v2.insight_agent", "InsightAgent",
+                task,
+                ctx,
+                "data_insight",
+                "agents.data_agent_v2.insight_agent",
+                "InsightAgent",
             )
 
         # 可视化推荐（Phase 4.3）
         if viz_enabled:
             ctx = await self._run_agent(
-                task, ctx, "data_visualization",
-                "agents.data_agent_v2.visualization_agent", "VisualizationAgent",
+                task,
+                ctx,
+                "data_visualization",
+                "agents.data_agent_v2.visualization_agent",
+                "VisualizationAgent",
             )
 
         ctx.metadata_extra = dict(ctx.metadata_extra or {})
@@ -688,9 +758,8 @@ class DataAgentV2Supervisor:
             "statistical_requested": statistical_enabled,
             "insight_requested": insight_enabled,
             "visualization_requested": viz_enabled,
-            "degraded": mode == "auto" and not any(
-                [statistical_enabled, insight_enabled, viz_enabled]
-            ),
+            "degraded": mode == "auto"
+            and not any([statistical_enabled, insight_enabled, viz_enabled]),
         }
         return ctx
 
@@ -705,8 +774,12 @@ class DataAgentV2Supervisor:
 
         # 适合统计分析和洞察的意图类型
         analytical_intents = {
-            "trend", "comparison", "anomaly_detection",
-            "ranking", "composition", "distribution",
+            "trend",
+            "comparison",
+            "anomaly_detection",
+            "ranking",
+            "composition",
+            "distribution",
             "aggregation",  # COUNT/SUM by group also benefits from stats & insights
         }
 
@@ -727,10 +800,14 @@ class DataAgentV2Supervisor:
             or any(kw in query_lower for kw in trend_keywords)
             or any(kw in query_lower for kw in agg_keywords)
         )
-        need_viz = (
-            intent_type in {"trend", "comparison", "composition", "distribution", "ranking", "aggregation"}
-            or any(kw in query_lower for kw in chart_keywords)
-        )
+        need_viz = intent_type in {
+            "trend",
+            "comparison",
+            "composition",
+            "distribution",
+            "ranking",
+            "aggregation",
+        } or any(kw in query_lower for kw in chart_keywords)
 
         return need_statistical, need_insight, need_viz
 
@@ -745,6 +822,7 @@ class DataAgentV2Supervisor:
         """通过模块路径和类名运行单个 Agent。"""
         try:
             import importlib
+
             mod = importlib.import_module(module_path)
             agent_cls = getattr(mod, class_name)
             agent = agent_cls()
@@ -782,6 +860,7 @@ class DataAgentV2Supervisor:
         if not task.params.get("_db_session"):
             try:
                 from infra.storage.database import AsyncSessionLocal
+
                 _own_session = AsyncSessionLocal()
                 task.params["_db_session"] = _own_session
             except Exception as exc:
@@ -792,7 +871,12 @@ class DataAgentV2Supervisor:
             feedback = task.params.get("feedback")
             if feedback:
                 ctx = await self._run_feedback_collector(task, ctx, feedback)
-            elif auto_mode and result.status == "success" and ctx.compiled_sql and not ctx.execution_error:
+            elif (
+                auto_mode
+                and result.status == "success"
+                and ctx.compiled_sql
+                and not ctx.execution_error
+            ):
                 ctx = await self._run_feedback_collector(
                     task,
                     ctx,
@@ -937,6 +1021,7 @@ class DataAgentV2Supervisor:
         """
         try:
             from infra.config.settings import settings
+
             if not bool(getattr(settings, "data_agent_v2_cognitive_events_enabled", False)):
                 return
         except Exception as exc:
@@ -1015,9 +1100,7 @@ class DataAgentV2Supervisor:
             setattr(ctx, "clarification_enrichment_block", block)
         return ctx
 
-    async def _load_datasource_metadata(
-        self, task: TaskMessage, ctx: CognitiveContext
-    ) -> None:
+    async def _load_datasource_metadata(self, task: TaskMessage, ctx: CognitiveContext) -> None:
         """若尚未提供则加载数据源元数据。"""
         if ctx.table_names and ctx.table_columns and not ctx.data_source_id:
             return
@@ -1026,34 +1109,48 @@ class DataAgentV2Supervisor:
             return
 
         try:
+            from sqlalchemy import select
+
             from execution.data.db_router import DBConnectionInfo, DBRouter
             from infra.security.data_source_secrets import decrypt_data_source_secret
-            from sqlalchemy import select
+            from infra.security.resource_scope import get_accessible_data_source
             from infra.storage.database import AsyncSessionLocal
-            from infra.storage.models import DataSource, DataSourceSchema
+            from infra.storage.models import DataSourceSchema
             from kernel.data_cognition.sql_dialect import detect_sql_dialect
 
+            user_id = str(task.user_id or "").strip()
+            tenant_id = str(task.params.get("tenant_id") or "").strip()
+            workspace_id = str(task.params.get("workspace_id") or "").strip()
+            if not user_id or not tenant_id or not workspace_id:
+                raise PermissionError("trusted data source scope is required")
+
             async with AsyncSessionLocal() as db:
-                ds_result = await db.execute(
-                    select(DataSource).where(DataSource.id == ctx.data_source_id)
+                ds = await get_accessible_data_source(
+                    db,
+                    user_id=user_id,
+                    tenant_metadata={"tenant_id": tenant_id, "workspace_id": workspace_id},
+                    data_source_id=ctx.data_source_id,
+                    required_permission="query",
+                    active_only=True,
                 )
-                ds = ds_result.scalar_one_or_none()
-                if ds:
-                    dialect = detect_sql_dialect(ds.source_type)
-                    ctx.dialect = dialect.name
-                    task.params["_db_host"] = ds.host
-                    task.params["_db_port"] = ds.port
-                    task.params["_db_database"] = ds.database
-                    task.params["_dsn"] = DBRouter().build_dsn(
-                        DBConnectionInfo(
-                            source_type=ds.source_type,
-                            host=ds.host,
-                            port=ds.port,
-                            database=ds.database,
-                            username=ds.username,
-                            password=decrypt_data_source_secret(ds.password_encrypted),
-                        )
+                if ds is None:
+                    raise PermissionError("data source not found or not authorized")
+                dialect = detect_sql_dialect(ds.source_type)
+                ctx.dialect = dialect.name
+                task.params["_db_host"] = ds.host
+                task.params["_db_port"] = ds.port
+                task.params["_db_database"] = ds.database
+                task.params["_data_source_type"] = ds.source_type
+                task.params["_dsn"] = DBRouter().build_dsn(
+                    DBConnectionInfo(
+                        source_type=ds.source_type,
+                        host=ds.host,
+                        port=ds.port,
+                        database=ds.database,
+                        username=ds.username,
+                        password=decrypt_data_source_secret(ds.password_encrypted),
                     )
+                )
 
                 result = await db.execute(
                     select(DataSourceSchema).where(
@@ -1079,15 +1176,13 @@ class DataAgentV2Supervisor:
         except Exception as exc:
             logger.warning("Supervisor operation failed", error=str(exc))
 
-    def _merge_context(
-        self, base: CognitiveContext, update: CognitiveContext
-    ) -> CognitiveContext:
+    def _merge_context(self, base: CognitiveContext, update: CognitiveContext) -> CognitiveContext:
         """合并子 Agent 上下文而不覆盖先前 Agent 的输出。"""
         merged = base.to_dict()
         for key, value in update.to_dict().items():
             if value is None:
                 continue
-            if isinstance(value, (list, dict, str)) and not value:
+            if isinstance(value, list | dict | str) and not value:
                 continue
             merged[key] = value
         return CognitiveContext.from_dict(merged)
@@ -1110,26 +1205,28 @@ class DataAgentV2Supervisor:
             from kernel.result_reference import ResultRef, serialize_refs
 
             row_count = len(rows)
-            return serialize_refs([
-                ResultRef(
-                    ref_id=f"sql:{task.task_id}",
-                    type="sql",
-                    title=f"SQL: {task.query[:60]}",
-                    summary=f"Generated SQL ({len(sql)} chars, {row_count} rows)",
-                    payload={"sql": sql, "dialect": ctx.dialect, "row_count": row_count},
-                    source_agent="data",
-                    message_id=task.task_id,
-                ),
-                ResultRef(
-                    ref_id=f"table:{task.task_id}",
-                    type="table",
-                    title=f"Results: {task.query[:60]}",
-                    summary=f"{row_count} rows returned",
-                    payload={"rows_preview": rows[:5], "row_count": row_count},
-                    source_agent="data",
-                    message_id=task.task_id,
-                ),
-            ])
+            return serialize_refs(
+                [
+                    ResultRef(
+                        ref_id=f"sql:{task.task_id}",
+                        type="sql",
+                        title=f"SQL: {task.query[:60]}",
+                        summary=f"Generated SQL ({len(sql)} chars, {row_count} rows)",
+                        payload={"sql": sql, "dialect": ctx.dialect, "row_count": row_count},
+                        source_agent="data",
+                        message_id=task.task_id,
+                    ),
+                    ResultRef(
+                        ref_id=f"table:{task.task_id}",
+                        type="table",
+                        title=f"Results: {task.query[:60]}",
+                        summary=f"{row_count} rows returned",
+                        payload={"rows_preview": rows[:5], "row_count": row_count},
+                        source_agent="data",
+                        message_id=task.task_id,
+                    ),
+                ]
+            )
         except Exception as exc:
             logger.warning("Supervisor operation failed", error=str(exc))
             return []
@@ -1200,46 +1297,56 @@ class DataAgentV2Supervisor:
         confidence = self._compute_confidence(ctx, rows, sql)
 
         # 收集高级分析的证据
-        evidence = [{
-            "source": "data_query",
-            "source_type": "sql",
-            "payload": {
-                "sql": sql,
-                "row_count": len(rows),
-                "verification": ctx.verification_report,
-            },
-            "credibility_score": 0.90,
-            "relevance_score": 1.0,
-            "acquisition_cost": elapsed_ms / 1000.0,
-            "provenance": "data_agent_v2",
-        }]
+        evidence = [
+            {
+                "source": "data_query",
+                "source_type": "sql",
+                "payload": {
+                    "sql": sql,
+                    "row_count": len(rows),
+                    "verification": ctx.verification_report,
+                },
+                "credibility_score": 0.90,
+                "relevance_score": 1.0,
+                "acquisition_cost": elapsed_ms / 1000.0,
+                "provenance": "data_agent_v2",
+            }
+        ]
 
         if ctx.statistical_report:
-            evidence.append({
-                "source": "statistical_analysis",
-                "source_type": "analysis",
-                "payload": {"numeric_cols": len(ctx.statistical_report.get("numeric_columns", []))},
-                "credibility_score": 0.95,
-                "relevance_score": 0.85,
-            })
+            evidence.append(
+                {
+                    "source": "statistical_analysis",
+                    "source_type": "analysis",
+                    "payload": {
+                        "numeric_cols": len(ctx.statistical_report.get("numeric_columns", []))
+                    },
+                    "credibility_score": 0.95,
+                    "relevance_score": 0.85,
+                }
+            )
 
         if ctx.insights:
-            evidence.append({
-                "source": "data_insights",
-                "source_type": "analysis",
-                "payload": {"observation_count": len(ctx.insights.get("observations", []))},
-                "credibility_score": 0.80,
-                "relevance_score": 0.90,
-            })
+            evidence.append(
+                {
+                    "source": "data_insights",
+                    "source_type": "analysis",
+                    "payload": {"observation_count": len(ctx.insights.get("observations", []))},
+                    "credibility_score": 0.80,
+                    "relevance_score": 0.90,
+                }
+            )
 
         if ctx.visualization_config:
-            evidence.append({
-                "source": "visualization",
-                "source_type": "analysis",
-                "payload": {"chart_type": ctx.visualization_config.get("chart_type", "")},
-                "credibility_score": 0.90,
-                "relevance_score": 0.85,
-            })
+            evidence.append(
+                {
+                    "source": "visualization",
+                    "source_type": "analysis",
+                    "payload": {"chart_type": ctx.visualization_config.get("chart_type", "")},
+                    "credibility_score": 0.90,
+                    "relevance_score": 0.85,
+                }
+            )
 
         from agents.data_agent_v2.turn_metadata import verification_turn_metadata
 
@@ -1276,7 +1383,9 @@ class DataAgentV2Supervisor:
                 query=task.query,
                 sql=sql or "",
                 row_count=len(rows),
-                metric_names=[m.get("mention", "") for m in (ctx.metrics or []) if m.get("mention")],
+                metric_names=[
+                    m.get("mention", "") for m in (ctx.metrics or []) if m.get("mention")
+                ],
             )
         except Exception as exc:
             logger.warning("data_intelligence_attach_skipped", error=str(exc))
@@ -1306,7 +1415,9 @@ class DataAgentV2Supervisor:
                 "intent_type": ctx.intent.get("intent_type", "") if ctx.intent else "",
                 "metric_count": len(ctx.metrics or []),
                 "entity_count": len(ctx.entities or []),
-                "verification_status": ctx.verification_report.get("status", "") if ctx.verification_report else "",
+                "verification_status": (
+                    ctx.verification_report.get("status", "") if ctx.verification_report else ""
+                ),
                 "pattern_hit": ctx.pattern_hit is not None,
                 "has_statistics": ctx.statistical_report is not None,
                 "has_insights": ctx.insights is not None,
@@ -1314,9 +1425,7 @@ class DataAgentV2Supervisor:
             },
         )
 
-    def _compute_confidence(
-        self, ctx: CognitiveContext, rows: list, sql: str
-    ) -> float:
+    def _compute_confidence(self, ctx: CognitiveContext, rows: list, sql: str) -> float:
         """从所有流水线信号计算总体置信度。"""
         confidence = 0.60
 
@@ -1337,7 +1446,7 @@ class DataAgentV2Supervisor:
             confidence += 0.03
         if ctx.insights:
             ic = ctx.insights.get("confidence", 0)
-            if isinstance(ic, (int, float)) and ic > 0.7:
+            if isinstance(ic, int | float) and ic > 0.7:
                 confidence += 0.03
         if ctx.visualization_config:
             confidence += 0.02
@@ -1345,7 +1454,9 @@ class DataAgentV2Supervisor:
         # 校验警告惩罚
         if ctx.verification_report:
             issues = ctx.verification_report.get("issues", [])
-            confidence -= 0.02 * len([i for i in issues if i.get("severity") in ("high", "critical")])
+            confidence -= 0.02 * len(
+                [i for i in issues if i.get("severity") in ("high", "critical")]
+            )
 
         return max(0.1, min(0.99, confidence))
 
@@ -1396,9 +1507,7 @@ class DataAgentV2Supervisor:
 
         return "\n\n".join(parts)
 
-    def _build_fallback_description(
-        self, ctx: CognitiveContext, rows: list[dict]
-    ) -> str:
+    def _build_fallback_description(self, ctx: CognitiveContext, rows: list[dict]) -> str:
         """在高级分析不可用时构建有用的描述。"""
         fallback_parts = []
 
@@ -1456,9 +1565,22 @@ class DataAgentV2Supervisor:
     def _detect_time_columns(self, ctx: CognitiveContext) -> list[str]:
         """从 schema 和查询上下文检测可能的时间列。"""
         time_keywords = [
-            "time", "date", "timestamp", "created", "updated", "modified",
-            "时间", "日期", "创建", "更新", "修改",
-            "at", "day", "month", "year", "week",
+            "time",
+            "date",
+            "timestamp",
+            "created",
+            "updated",
+            "modified",
+            "时间",
+            "日期",
+            "创建",
+            "更新",
+            "修改",
+            "at",
+            "day",
+            "month",
+            "year",
+            "week",
         ]
         time_cols = []
         for col_list in (ctx.table_columns or {}).values():
@@ -1487,9 +1609,7 @@ class DataAgentV2Supervisor:
             if not detect_result.get("needs_clarification"):
                 return None
 
-            question = await gate.generate_question(
-                ctx.query, detect_result, ctx
-            )
+            question = await gate.generate_question(ctx.query, detect_result, ctx)
 
             return asdict(question)
         except Exception as exc:
@@ -1510,9 +1630,10 @@ class DataAgentV2Supervisor:
 
         content_parts = [question_text]
         if suggested:
-            content_parts.append("\n\n你可以尝试以下方向：\n" + "\n".join(
-                f"{i}. {opt}" for i, opt in enumerate(suggested, 1)
-            ))
+            content_parts.append(
+                "\n\n你可以尝试以下方向：\n"
+                + "\n".join(f"{i}. {opt}" for i, opt in enumerate(suggested, 1))
+            )
         content = "\n".join(content_parts)
 
         elapsed_ms = int((time.monotonic() - t0) * 1000)
@@ -1536,17 +1657,19 @@ class DataAgentV2Supervisor:
             content=content,
             confidence=0.15,
             metadata=clar_meta,
-            evidence=[{
-                "source": "clarification_gate",
-                "source_type": "clarification",
-                "payload": {
-                    "reason": "query too vague, asking for clarification",
-                    "missing_entities": clarification.get("missing_entities", []),
-                    "suggested_count": len(suggested),
-                },
-                "credibility_score": 1.0,
-                "relevance_score": 1.0,
-            }],
+            evidence=[
+                {
+                    "source": "clarification_gate",
+                    "source_type": "clarification",
+                    "payload": {
+                        "reason": "query too vague, asking for clarification",
+                        "missing_entities": clarification.get("missing_entities", []),
+                        "suggested_count": len(suggested),
+                    },
+                    "credibility_score": 1.0,
+                    "relevance_score": 1.0,
+                }
+            ],
             agent_trace={
                 "elapsed_ms": elapsed_ms,
                 "pipeline": "data_agent_v2",

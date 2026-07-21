@@ -9,13 +9,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.api_gateway.resource_scope import get_owned_data_source, normalized_tenant_scope
+from gateway.api_gateway.resource_scope import normalized_tenant_scope
 from gateway.api_gateway.routers.agent_resources import _validate_schedule
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.alerts.scheduler import evaluate_alert_rule
 from infra.errors import AppException, ErrorCodes
 from infra.responses.scheduler import next_occurrence
+from infra.security.resource_scope import get_accessible_data_source
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import AlertEvent, AlertRule, Project, User
 
@@ -29,7 +30,9 @@ class AlertRulePayload(BaseModel):
     project_id: str | None = None
     metric_column: str | None = Field(default=None, max_length=255)
     aggregation: str = Field(default="first", pattern="^(first|sum|avg|min|max|count)$")
-    operator: str = Field(default="gt", pattern="^(gt|gte|lt|lte|eq|neq|change_pct_gt|change_pct_lt)$")
+    operator: str = Field(
+        default="gt", pattern="^(gt|gte|lt|lte|eq|neq|change_pct_gt|change_pct_lt)$"
+    )
     threshold: float = Field(allow_inf_nan=False)
     severity: str = Field(default="warning", pattern="^(info|warning|critical)$")
     rrule: str = Field(min_length=5, max_length=512)
@@ -64,7 +67,9 @@ def _rule(row: AlertRule) -> dict[str, Any]:
 
 
 async def _owned_rule(db: AsyncSession, request: Request, user: User, rule_id: str) -> AlertRule:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(request, user_id=user.id))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(request, user_id=user.id)
+    )
     row = await db.scalar(
         select(AlertRule).where(
             AlertRule.id == rule_id,
@@ -85,7 +90,9 @@ async def list_alert_rules(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(request, user_id=current_user.id))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(request, user_id=current_user.id)
+    )
     stmt = select(AlertRule).where(
         AlertRule.user_id == current_user.id,
         AlertRule.tenant_id == tenant_id,
@@ -107,13 +114,15 @@ async def create_alert_rule(
     _validate_schedule(payload.rrule, payload.timezone)
     tenant_md = build_tenant_metadata(request, user_id=current_user.id)
     tenant_id, workspace_id = normalized_tenant_scope(tenant_md)
-    source = await get_owned_data_source(
+    source = await get_accessible_data_source(
         db,
         user_id=current_user.id,
         tenant_metadata=tenant_md,
         data_source_id=payload.data_source_id,
+        required_permission="query",
+        active_only=True,
     )
-    if source is None or source.status != "active":
+    if source is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="数据源不存在或不可用")
     if payload.project_id:
         project = await db.scalar(
@@ -191,28 +200,45 @@ async def list_alert_events(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(request, user_id=current_user.id))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(request, user_id=current_user.id)
+    )
     rule_ids = select(AlertRule.id).where(
         AlertRule.user_id == current_user.id,
         AlertRule.tenant_id == tenant_id,
         AlertRule.workspace_id == workspace_id,
     )
-    stmt = select(AlertEvent).where(AlertEvent.user_id == current_user.id, AlertEvent.rule_id.in_(rule_ids))
+    stmt = select(AlertEvent).where(
+        AlertEvent.user_id == current_user.id, AlertEvent.rule_id.in_(rule_ids)
+    )
     if rule_id:
         stmt = stmt.where(AlertEvent.rule_id == rule_id)
-    rows = (await db.execute(stmt.order_by(AlertEvent.created_at.desc()).limit(max(1, min(limit, 500))))).scalars().all()
-    return {"items": [{
-        "id": row.id,
-        "rule_id": row.rule_id,
-        "state": row.state,
-        "severity": row.severity,
-        "value": row.value,
-        "threshold": row.threshold,
-        "summary": row.summary,
-        "evidence": row.evidence,
-        "acknowledged_at": row.acknowledged_at.isoformat() if row.acknowledged_at else None,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-    } for row in rows]}
+    rows = (
+        (
+            await db.execute(
+                stmt.order_by(AlertEvent.created_at.desc()).limit(max(1, min(limit, 500)))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "id": row.id,
+                "rule_id": row.rule_id,
+                "state": row.state,
+                "severity": row.severity,
+                "value": row.value,
+                "threshold": row.threshold,
+                "summary": row.summary,
+                "evidence": row.evidence,
+                "acknowledged_at": row.acknowledged_at.isoformat() if row.acknowledged_at else None,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ]
+    }
 
 
 @router.post("/alerts/events/{event_id}/acknowledge")
@@ -222,7 +248,9 @@ async def acknowledge_alert_event(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(request, user_id=current_user.id))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(request, user_id=current_user.id)
+    )
     event = await db.scalar(
         select(AlertEvent)
         .join(AlertRule, AlertEvent.rule_id == AlertRule.id)

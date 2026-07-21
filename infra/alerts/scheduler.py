@@ -13,8 +13,9 @@ from agents.data_agent import DataAgent
 from infra.config.settings import settings
 from infra.observability.logger import get_logger
 from infra.responses.scheduler import next_occurrence
+from infra.security.resource_scope import get_accessible_data_source
 from infra.storage.database import AsyncSessionLocal
-from infra.storage.models import AlertEvent, AlertRule, DataSource, Project, TaskNotification
+from infra.storage.models import AlertEvent, AlertRule, Project, TaskNotification
 
 logger = get_logger(__name__)
 
@@ -141,14 +142,13 @@ async def evaluate_alert_rule(rule_id: str) -> dict[str, Any]:
         rule = await db.get(AlertRule, rule_id)
         if rule is None or rule.status != "active":
             return {"status": "skipped", "rule_id": rule_id}
-        source = await db.scalar(
-            select(DataSource).where(
-                DataSource.id == rule.data_source_id,
-                DataSource.user_id == rule.user_id,
-                DataSource.tenant_id == rule.tenant_id,
-                DataSource.workspace_id == rule.workspace_id,
-                DataSource.status == "active",
-            )
+        source = await get_accessible_data_source(
+            db,
+            user_id=rule.user_id,
+            tenant_metadata={"tenant_id": rule.tenant_id, "workspace_id": rule.workspace_id},
+            data_source_id=rule.data_source_id,
+            required_permission="query",
+            active_only=True,
         )
         if source is None:
             await _record_rule_error(db, rule, "data_source_not_authorized")
@@ -173,6 +173,10 @@ async def evaluate_alert_rule(rule_id: str) -> dict[str, Any]:
             "data_source_id": rule.data_source_id,
             "user_id": rule.user_id,
             "project_id": rule.project_id,
+            "tenant_id": rule.tenant_id,
+            "workspace_id": rule.workspace_id,
+            "data_source_name": source.name,
+            "data_source_type": source.source_type,
         }
 
     try:
@@ -185,6 +189,9 @@ async def evaluate_alert_rule(rule_id: str) -> dict[str, Any]:
                 params={
                     "data_source_id": snapshot["data_source_id"],
                     "project_id": snapshot["project_id"],
+                    "tenant_id": snapshot["tenant_id"],
+                    "workspace_id": snapshot["workspace_id"],
+                    "_data_source_type": snapshot["data_source_type"],
                     "alert_mode": True,
                 },
             )
@@ -255,6 +262,10 @@ async def evaluate_alert_rule(rule_id: str) -> dict[str, Any]:
                 threshold=rule.threshold,
                 summary=summary,
                 evidence={
+                    "project_id": rule.project_id,
+                    "data_source_id": rule.data_source_id,
+                    "data_source_name": snapshot["data_source_name"],
+                    "data_source_type": snapshot["data_source_type"],
                     "raw_value": value,
                     "previous_value": previous_value,
                     "operator": rule.operator,

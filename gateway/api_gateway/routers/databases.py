@@ -9,31 +9,33 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from execution.data.db_router import DBConnectionInfo, DBRouter
 from execution.data.database_hosts import (
     is_allowed_database_host,
     is_docker_internal_database_host,
     normalize_database_host,
 )
+from execution.data.db_router import DBConnectionInfo, DBRouter
 from execution.data.sql_executor import SQLExecutor
-from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.resource_scope import (
     accessible_data_sources_statement,
     get_accessible_data_source,
-    get_owned_data_source,
     normalized_tenant_scope,
-    owned_data_sources_statement,
 )
+from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
+from infra.errors import AppException, ErrorCodes
 from infra.security.data_source_secrets import (
     decrypt_data_source_secret,
     encrypt_data_source_secret,
 )
-from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
-    DataQueryLog, DataSource, DataSourceSchema, MetricDefinition,
-    TableRelationship, User,
+    DataQueryLog,
+    DataSource,
+    DataSourceSchema,
+    MetricDefinition,
+    TableRelationship,
+    User,
 )
 
 router = APIRouter()
@@ -172,12 +174,24 @@ def _validate_database_host(host: str) -> str:
 
 async def _check_connection(source: DataSource) -> tuple[bool, str | None]:
     try:
-        dsn = DBRouter().build_dsn(DBConnectionInfo(
-            source_type=source.source_type, host=source.host, port=source.port,
-            database=source.database, username=source.username,
-            password=decrypt_data_source_secret(source.password_encrypted),
-        ))
-        return bool(await SQLExecutor().run_on_dsn(dsn, "SELECT 1 AS ok")), None
+        dsn = DBRouter().build_dsn(
+            DBConnectionInfo(
+                source_type=source.source_type,
+                host=source.host,
+                port=source.port,
+                database=source.database,
+                username=source.username,
+                password=decrypt_data_source_secret(source.password_encrypted),
+            )
+        )
+        return (
+            bool(
+                await SQLExecutor().run_on_dsn(
+                    dsn, "SELECT 1 AS ok", source_type=source.source_type
+                )
+            ),
+            None,
+        )
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
 
@@ -253,7 +267,9 @@ async def list_databases(
     for x in items:
         schema_row = None
         try:
-            schema_row = await db.scalar(select(DataSourceSchema).where(DataSourceSchema.data_source_id == x.id))
+            schema_row = await db.scalar(
+                select(DataSourceSchema).where(DataSourceSchema.data_source_id == x.id)
+            )
         except Exception:
             schema_row = None
         schema_payload = {}
@@ -277,7 +293,11 @@ async def list_databases(
                 "synced_at": schema_payload.get("synced_at"),
                 "table_count": schema_payload.get("table_count", 0),
                 "owned": x.user_id == current_user.id,
-                "last_schema_sync_at": schema_row.updated_at.isoformat() if schema_row and getattr(schema_row, 'updated_at', None) else None,
+                "last_schema_sync_at": (
+                    schema_row.updated_at.isoformat()
+                    if schema_row and getattr(schema_row, "updated_at", None)
+                    else None
+                ),
             }
         )
     return {"items": payloads}
@@ -351,23 +371,62 @@ async def database_workbench(
     source = await _owned_data_source(db, http_request, current_user, database_id, "view")
     if source is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="database not found")
-    schema_row = await db.scalar(select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id))
+    schema_row = await db.scalar(
+        select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id)
+    )
     try:
         schema = json.loads(schema_row.schema_json or "{}") if schema_row else {}
     except (TypeError, json.JSONDecodeError):
         schema = {}
-    relationships = int(await db.scalar(select(func.count(TableRelationship.id)).where(TableRelationship.data_source_id == database_id)) or 0)
-    verified_relationships = int(await db.scalar(select(func.count(TableRelationship.id)).where(
-        TableRelationship.data_source_id == database_id, TableRelationship.is_verified.is_(True),
-    )) or 0)
-    metrics = int(await db.scalar(select(func.count(MetricDefinition.id)).where(MetricDefinition.data_source_id == database_id)) or 0)
-    published_metrics = int(await db.scalar(select(func.count(MetricDefinition.id)).where(
-        MetricDefinition.data_source_id == database_id, MetricDefinition.status == "published",
-    )) or 0)
-    queries = int(await db.scalar(select(func.count(DataQueryLog.id)).where(DataQueryLog.data_source_id == database_id)) or 0)
-    successful = int(await db.scalar(select(func.count(DataQueryLog.id)).where(
-        DataQueryLog.data_source_id == database_id, DataQueryLog.success.is_(True),
-    )) or 0)
+    relationships = int(
+        await db.scalar(
+            select(func.count(TableRelationship.id)).where(
+                TableRelationship.data_source_id == database_id
+            )
+        )
+        or 0
+    )
+    verified_relationships = int(
+        await db.scalar(
+            select(func.count(TableRelationship.id)).where(
+                TableRelationship.data_source_id == database_id,
+                TableRelationship.is_verified.is_(True),
+            )
+        )
+        or 0
+    )
+    metrics = int(
+        await db.scalar(
+            select(func.count(MetricDefinition.id)).where(
+                MetricDefinition.data_source_id == database_id
+            )
+        )
+        or 0
+    )
+    published_metrics = int(
+        await db.scalar(
+            select(func.count(MetricDefinition.id)).where(
+                MetricDefinition.data_source_id == database_id,
+                MetricDefinition.status == "published",
+            )
+        )
+        or 0
+    )
+    queries = int(
+        await db.scalar(
+            select(func.count(DataQueryLog.id)).where(DataQueryLog.data_source_id == database_id)
+        )
+        or 0
+    )
+    successful = int(
+        await db.scalar(
+            select(func.count(DataQueryLog.id)).where(
+                DataQueryLog.data_source_id == database_id,
+                DataQueryLog.success.is_(True),
+            )
+        )
+        or 0
+    )
     checks = {
         "connection": source.status == "active",
         "schema": bool(schema.get("tables")),
@@ -375,13 +434,25 @@ async def database_workbench(
         "metrics": metrics > 0 and published_metrics > 0,
     }
     return {
-        "source": {"id": source.id, "name": source.name, "status": source.status, "owned": source.user_id == current_user.id},
+        "source": {
+            "id": source.id,
+            "name": source.name,
+            "status": source.status,
+            "owned": source.user_id == current_user.id,
+        },
         "health_score": round(sum(25 for ok in checks.values() if ok)),
         "checks": checks,
-        "schema": {"table_count": int(schema.get("table_count") or len(schema.get("tables") or [])), "synced_at": schema.get("synced_at")},
+        "schema": {
+            "table_count": int(schema.get("table_count") or len(schema.get("tables") or [])),
+            "synced_at": schema.get("synced_at"),
+        },
         "relationships": {"total": relationships, "verified": verified_relationships},
         "metrics": {"total": metrics, "published": published_metrics},
-        "queries": {"total": queries, "successful": successful, "success_rate": round(successful / queries, 4) if queries else None},
+        "queries": {
+            "total": queries,
+            "successful": successful,
+            "success_rate": round(successful / queries, 4) if queries else None,
+        },
     }
 
 
@@ -429,8 +500,8 @@ async def sync_schema(
     schema_name = _schema_name(x.source_type, x.database)
     tables_sql, cols_sql = _schema_sql(x.source_type, schema_name)
 
-    tables_rows = await SQLExecutor().run_on_dsn(dsn, tables_sql)
-    cols_rows = await SQLExecutor().run_on_dsn(dsn, cols_sql)
+    tables_rows = await SQLExecutor().run_on_dsn(dsn, tables_sql, source_type=x.source_type)
+    cols_rows = await SQLExecutor().run_on_dsn(dsn, cols_sql, source_type=x.source_type)
 
     table_columns: dict[str, list[dict]] = {}
     for c in cols_rows:
@@ -459,10 +530,16 @@ async def sync_schema(
         "synced_at": int(time.time()),
     }
 
-    rs = await db.execute(select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id))
+    rs = await db.execute(
+        select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id)
+    )
     s = rs.scalar_one_or_none()
     if s is None:
-        s = DataSourceSchema(id=str(uuid.uuid4()), data_source_id=database_id, schema_json=json.dumps(payload, ensure_ascii=False))
+        s = DataSourceSchema(
+            id=str(uuid.uuid4()),
+            data_source_id=database_id,
+            schema_json=json.dumps(payload, ensure_ascii=False),
+        )
         db.add(s)
     else:
         s.schema_json = json.dumps(payload, ensure_ascii=False)
@@ -474,11 +551,19 @@ async def sync_schema(
         s.semantic_mappings = {
             "dimensions": extracted["dimensions"],
             "metrics": extracted["metrics"],
-            "time_macros": s.semantic_mappings.get("time_macros", []) if s.semantic_mappings else [],
+            "time_macros": (
+                s.semantic_mappings.get("time_macros", []) if s.semantic_mappings else []
+            ),
         }
         await db.commit()
 
-    return {"synced": True, "data_source_id": database_id, "table_count": len(tables_rows), "auto_extracted_dimensions": len(extracted["dimensions"]), "auto_extracted_metrics": len(extracted["metrics"])}
+    return {
+        "synced": True,
+        "data_source_id": database_id,
+        "table_count": len(tables_rows),
+        "auto_extracted_dimensions": len(extracted["dimensions"]),
+        "auto_extracted_metrics": len(extracted["metrics"]),
+    }
 
 
 class DatabaseQueryRequest(BaseModel):
@@ -521,7 +606,9 @@ async def query_database(
     out = None
     try:
         out = await data_query(
-            DataQueryRequest(question=req.question, data_source_id=database_id, dry_run=False, sql=req.sql),
+            DataQueryRequest(
+                question=req.question, data_source_id=database_id, dry_run=False, sql=req.sql
+            ),
             current_user=current_user,
             db=db,
             http_request=http_request,
@@ -566,7 +653,9 @@ async def get_database_schema(
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
 
-    rs = await db.execute(select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id))
+    rs = await db.execute(
+        select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id)
+    )
     s = rs.scalar_one_or_none()
     if s is None:
         return {"data_source_id": database_id, "schema": {"tables": []}}
@@ -589,7 +678,9 @@ async def analyze_database(
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
 
-    rs = await db.execute(select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id))
+    rs = await db.execute(
+        select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id)
+    )
     s = rs.scalar_one_or_none()
     schema_payload = json.loads(s.schema_json or "{}") if s else {"tables": []}
     tables = schema_payload.get("tables") or []
@@ -612,8 +703,22 @@ async def analyze_database(
             break
 
     col_names = [str(c.get("name", "")) for c in columns]
-    date_col = req.date_column or next((c for c in col_names if any(k in c.lower() for k in ["date", "time", "created", "updated"])), None)
-    value_col = req.value_column or next((c for c in col_names if any(k in c.lower() for k in ["amount", "total", "price", "revenue", "value"])), None)
+    date_col = req.date_column or next(
+        (
+            c
+            for c in col_names
+            if any(k in c.lower() for k in ["date", "time", "created", "updated"])
+        ),
+        None,
+    )
+    value_col = req.value_column or next(
+        (
+            c
+            for c in col_names
+            if any(k in c.lower() for k in ["amount", "total", "price", "revenue", "value"])
+        ),
+        None,
+    )
 
     metric_expr = "COUNT(*)"
     if req.metric in {"sum", "avg"} and value_col:
@@ -635,7 +740,7 @@ async def analyze_database(
             password=decrypt_data_source_secret(x.password_encrypted),
         )
     )
-    rows = await SQLExecutor().run_on_dsn(dsn, trend_sql)
+    rows = await SQLExecutor().run_on_dsn(dsn, trend_sql, source_type=x.source_type)
 
     value = rows[0].get("metric_value") if rows else 0
     summary = f"近 {req.period_days} 天 {table_name} 的 {req.metric} 结果为 {value}"
@@ -685,7 +790,9 @@ async def get_semantic_config(
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
 
-    rs = await db.execute(select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id))
+    rs = await db.execute(
+        select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id)
+    )
     s = rs.scalar_one_or_none()
     semantic = s.semantic_mappings if s else {}
     return {
@@ -707,10 +814,14 @@ async def update_semantic_config(
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
 
-    rs = await db.execute(select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id))
+    rs = await db.execute(
+        select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id)
+    )
     s = rs.scalar_one_or_none()
     if s is None:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="schema not synced yet, please sync schema first")
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code, message="schema not synced yet, please sync schema first"
+        )
 
     s.semantic_mappings = {
         "dimensions": req.dimensions,
@@ -728,21 +839,44 @@ def _auto_extract_semantics_from_schema(schema_payload: dict) -> dict:
 
     # Keywords that suggest a dimension (categorical attribute)
     dimension_keywords = {
-        "等级": "tier", "状态": "status", "类型": "type", "分类": "category",
-        "渠道": "channel", "来源": "source", "平台": "platform",
-        "性别": "gender", "地区": "region", "城市": "city",
-        "角色": "role", "级别": "level", "标签": "tag",
-        "level": "level", "status": "status", "type": "type",
-        "category": "category", "tier": "tier", "role": "role",
+        "等级": "tier",
+        "状态": "status",
+        "类型": "type",
+        "分类": "category",
+        "渠道": "channel",
+        "来源": "source",
+        "平台": "platform",
+        "性别": "gender",
+        "地区": "region",
+        "城市": "city",
+        "角色": "role",
+        "级别": "level",
+        "标签": "tag",
+        "level": "level",
+        "status": "status",
+        "type": "type",
+        "category": "category",
+        "tier": "tier",
+        "role": "role",
     }
 
     # Keywords that suggest a metric (aggregatable value)
     metric_keywords = {
-        "数量": "COUNT(*)", "总数": "COUNT(*)", "用户数": "COUNT(DISTINCT user_id)",
-        "订单数": "COUNT(*)", "金额": "SUM(amount)", "收入": "SUM(revenue)",
-        "成本": "SUM(cost)", "利润": "SUM(profit)", "平均值": "AVG(value)",
-        "count": "COUNT(*)", "amount": "SUM(amount)", "revenue": "SUM(revenue)",
-        "cost": "SUM(cost)", "total": "COUNT(*)", "average": "AVG(value)",
+        "数量": "COUNT(*)",
+        "总数": "COUNT(*)",
+        "用户数": "COUNT(DISTINCT user_id)",
+        "订单数": "COUNT(*)",
+        "金额": "SUM(amount)",
+        "收入": "SUM(revenue)",
+        "成本": "SUM(cost)",
+        "利润": "SUM(profit)",
+        "平均值": "AVG(value)",
+        "count": "COUNT(*)",
+        "amount": "SUM(amount)",
+        "revenue": "SUM(revenue)",
+        "cost": "SUM(cost)",
+        "total": "COUNT(*)",
+        "average": "AVG(value)",
     }
 
     # Keywords for date/time columns
@@ -772,8 +906,15 @@ def _auto_extract_semantics_from_schema(schema_payload: dict) -> dict:
             # Metric extraction
             for kw, expr in metric_keywords.items():
                 if kw in col_comment and col_name:
-                    metric_key = col_comment.replace("字段", "").replace("列", "").strip() or col_name
-                    metrics[metric_key] = expr.replace("amount", col_name).replace("value", col_name).replace("revenue", col_name).replace("cost", col_name)
+                    metric_key = (
+                        col_comment.replace("字段", "").replace("列", "").strip() or col_name
+                    )
+                    metrics[metric_key] = (
+                        expr.replace("amount", col_name)
+                        .replace("value", col_name)
+                        .replace("revenue", col_name)
+                        .replace("cost", col_name)
+                    )
 
             # Date column hint in time_macros
             if any(kw in col_comment for kw in date_keywords):
@@ -794,10 +935,14 @@ async def auto_extract_semantic(
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
 
-    rs = await db.execute(select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id))
+    rs = await db.execute(
+        select(DataSourceSchema).where(DataSourceSchema.data_source_id == database_id)
+    )
     s = rs.scalar_one_or_none()
     if s is None:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="schema not synced yet, please sync schema first")
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code, message="schema not synced yet, please sync schema first"
+        )
 
     schema_payload = json.loads(s.schema_json or "{}") if s else {}
     extracted = _auto_extract_semantics_from_schema(schema_payload)

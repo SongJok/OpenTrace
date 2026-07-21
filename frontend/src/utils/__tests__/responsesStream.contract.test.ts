@@ -84,4 +84,23 @@ describe('Responses API stream compatibility', () => {
     expect(errors).toEqual(['该内容有悖聊天宪法，无法进行问答。请调整问题后重试。'])
     expect(finals).toEqual([])
   })
+
+  it('sends the governed Project and enterprise data-source scope', async () => {
+    let body: any
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_url, init) => {
+      body = JSON.parse(String(init?.body || '{}'))
+      return Promise.resolve(new Response(
+        'data: {"sequence_number":1,"type":"response.completed","data":{"content":"完成"}}\n\n',
+        { headers: { 'content-type': 'text/event-stream' } },
+      ))
+    }))
+
+    await apiChatStream('token', 'conversation-1', '结合数据库和知识库分析风险', {}, false, undefined, 'deep', {
+      project_id: 'project-1',
+      data_source_ids: ['doris-1'],
+    })
+
+    expect(body.opentrace.project_id).toBe('project-1')
+    expect(body.opentrace.data_source_ids).toEqual(['doris-1'])
+  })
 })

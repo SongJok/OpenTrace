@@ -11,8 +11,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
 
 from infra.responses.scheduler import next_occurrence, parse_schedule_expression
+from infra.security.resource_scope import get_accessible_data_source
 from infra.storage.database import AsyncSessionLocal
-from infra.storage.models import AlertRule, ChatSession, DataSource, Project, TaskDefinition
+from infra.storage.models import AlertRule, ChatSession, Project, TaskDefinition
 from tools.registry.registry import registry
 
 
@@ -78,7 +79,9 @@ async def list_scheduled_tasks(
                     .order_by(TaskDefinition.created_at.desc())
                     .limit(50)
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         return {
             "status": "success",
@@ -109,7 +112,10 @@ async def list_scheduled_tasks(
         "properties": {
             "title": {"type": "string"},
             "prompt": {"type": "string", "description": "每次运行时交给主 Agent Loop 的完整任务"},
-            "schedule": {"type": "string", "description": "如 每天 09:00、每周一 10:30 或 FREQ=..."},
+            "schedule": {
+                "type": "string",
+                "description": "如 每天 09:00、每周一 10:30 或 FREQ=...",
+            },
             "timezone": {"type": "string", "default": "Asia/Shanghai"},
             "enabled": {"type": "boolean", "default": False},
         },
@@ -206,7 +212,9 @@ async def list_data_alerts(
                     .order_by(AlertRule.created_at.desc())
                     .limit(50)
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         return {
             "status": "success",
@@ -239,8 +247,14 @@ async def list_data_alerts(
             "question": {"type": "string", "description": "返回待判断数值的数据问题"},
             "data_source_id": {"type": "string"},
             "metric_column": {"type": "string"},
-            "aggregation": {"type": "string", "enum": ["first", "sum", "avg", "min", "max", "count"]},
-            "operator": {"type": "string", "enum": ["gt", "gte", "lt", "lte", "eq", "neq", "change_pct_gt", "change_pct_lt"]},
+            "aggregation": {
+                "type": "string",
+                "enum": ["first", "sum", "avg", "min", "max", "count"],
+            },
+            "operator": {
+                "type": "string",
+                "enum": ["gt", "gte", "lt", "lte", "eq", "neq", "change_pct_gt", "change_pct_lt"],
+            },
             "threshold": {"type": "number"},
             "severity": {"type": "string", "enum": ["info", "warning", "critical"]},
             "schedule": {"type": "string"},
@@ -285,14 +299,13 @@ async def create_data_alert(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
         )
-        source = await db.scalar(
-            select(DataSource).where(
-                DataSource.id == data_source_id,
-                DataSource.user_id == user_id,
-                DataSource.tenant_id == tenant_id,
-                DataSource.workspace_id == workspace_id,
-                DataSource.status == "active",
-            )
+        source = await get_accessible_data_source(
+            db,
+            user_id=user_id,
+            tenant_metadata={"tenant_id": tenant_id, "workspace_id": workspace_id},
+            data_source_id=data_source_id,
+            required_permission="query",
+            active_only=True,
         )
         if source is None:
             raise ValueError("data_source_not_authorized")

@@ -4,7 +4,7 @@ import Sidebar from '../components/Sidebar'
 import MessageList, { type MessageListHandle } from '../components/MessageList'
 import ChatInput from '../components/ChatInput'
 import WelcomeScreen from '../components/WelcomeScreen'
-import { apiCreateConversationShare, apiDeleteConversation, apiListAssistantProfiles, apiListConversations, apiListProjects, apiUpdateConversation, type AssistantProfileItem, type ProjectItem } from '../api/client'
+import { apiCreateConversationShare, apiDeleteConversation, apiListAssistantProfiles, apiListConversations, apiListDatabases, apiListProjects, apiUpdateConversation, type AssistantProfileItem, type DataSourceItem, type ProjectItem } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import { useChatStore } from '../store/chat'
 import { getShowAvatars, setShowAvatars } from '../store/theme'
@@ -59,7 +59,10 @@ export default function ChatPage() {
   const [assistantProfiles, setAssistantProfiles] = useState<AssistantProfileItem[]>([])
   const projectId = useChatPreferences((state) => state.projectId)
   const setProjectId = useChatPreferences((state) => state.setProjectId)
+  const dataSourceId = useChatPreferences((state) => state.dataSourceId)
+  const setDataSourceId = useChatPreferences((state) => state.setDataSourceId)
   const [projects, setProjects] = useState<ProjectItem[]>([])
+  const [dataSources, setDataSources] = useState<DataSourceItem[]>([])
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [showMoreMenu, setShowMoreMenu] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
@@ -79,6 +82,41 @@ export default function ChatPage() {
   useEffect(() => {
     void apiListProjects(token).then(setProjects)
   }, [token])
+
+  useEffect(() => {
+    void apiListDatabases(token).then((items) => {
+      const active = items.filter((item) => !item.status || item.status === 'active')
+      setDataSources(active)
+      if (dataSourceId && active.some((item) => item.id === dataSourceId)) return
+      try {
+        const saved = JSON.parse(localStorage.getItem('opentrace:selected_data_source') || 'null')
+        setDataSourceId(active.some((item) => item.id === saved?.id) ? String(saved.id) : null)
+      } catch {
+        setDataSourceId(null)
+      }
+    }).catch(() => setDataSources([]))
+  }, [token])
+
+  const selectedProject = projects.find((item) => item.id === projectId)
+  const availableDataSources = selectedProject
+    ? dataSources.filter((item) => selectedProject.data_source_ids.includes(item.id))
+    : dataSources
+
+  useEffect(() => {
+    if (dataSourceId && !availableDataSources.some((item) => item.id === dataSourceId)) {
+      setDataSourceId(availableDataSources.length === 1 ? availableDataSources[0].id : null)
+    } else if (!dataSourceId && availableDataSources.length === 1 && selectedProject) {
+      setDataSourceId(availableDataSources[0].id)
+    }
+  }, [projectId, projects, dataSources])
+
+  const selectProject = (nextProjectId: string | null) => {
+    setProjectId(nextProjectId)
+    const project = projects.find((item) => item.id === nextProjectId)
+    const bound = project ? dataSources.filter((item) => project.data_source_ids.includes(item.id)) : dataSources
+    if (dataSourceId && bound.some((item) => item.id === dataSourceId)) return
+    setDataSourceId(bound.length === 1 ? bound[0].id : null)
+  }
 
   const refreshConversations = async () => setConversations(await apiListConversations(token))
 
@@ -139,6 +177,10 @@ export default function ChatPage() {
             </div>
             <div className="relative mx-auto flex w-full max-w-[960px] -translate-y-4 flex-col items-center">
               <WelcomeScreen />
+              <div className="mb-3 flex w-full max-w-3xl flex-wrap justify-center gap-2 px-3">
+                <select aria-label="Project" value={projectId ?? ''} onChange={(event) => selectProject(event.target.value || null)} className="max-w-48 rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] px-3 py-2 text-xs text-[var(--text-secondary)]"><option value="">无 Project</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+                <select aria-label="企业数据源" value={dataSourceId ?? ''} onChange={(event) => setDataSourceId(event.target.value || null)} className="max-w-56 rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] px-3 py-2 text-xs text-[var(--text-secondary)]"><option value="">自动选择数据源</option>{availableDataSources.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.type}</option>)}</select>
+              </div>
               <ChatInput variant="welcome" />
             </div>
             <QuickTags />
@@ -166,7 +208,8 @@ export default function ChatPage() {
               </div>
               </div>
               <div className="flex items-center gap-1.5">
-                <select aria-label="Project" value={projectId ?? ''} onChange={(event) => setProjectId(event.target.value || null)} className="hidden max-w-36 rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text-secondary)] sm:block"><option value="">无 Project</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+                <select aria-label="Project" value={projectId ?? ''} onChange={(event) => selectProject(event.target.value || null)} className="hidden max-w-36 rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text-secondary)] sm:block"><option value="">无 Project</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+                <select aria-label="企业数据源" value={dataSourceId ?? ''} onChange={(event) => setDataSourceId(event.target.value || null)} className="hidden max-w-40 rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text-secondary)] lg:block"><option value="">自动数据源</option>{availableDataSources.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.type}</option>)}</select>
                 <select aria-label="助手角色" value={assistantProfileId ?? ''} onChange={(event) => setAssistantProfileId(event.target.value || null)} className="hidden rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text-secondary)] sm:block">
                   {assistantProfiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select>

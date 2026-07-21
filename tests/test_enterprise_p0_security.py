@@ -113,12 +113,12 @@ def test_control_plane_routes_require_admin_dependency():
     protected_routes.extend(
         route
         for route in skills.router.routes
-        if isinstance(route, APIRoute)
-        and "/skills/session/" not in route.path
+        if isinstance(route, APIRoute) and "/skills/session/" not in route.path
         # Catalog browsing and account-scoped installs are intentionally
         # end-user data-plane APIs. Catalog synchronization and legacy
         # executable-skill administration remain admin-only.
-        and route.path not in {
+        and route.path
+        not in {
             "/skills/catalog",
             "/skills/catalog/install",
             "/skills/installed/me",
@@ -209,7 +209,10 @@ def test_stream_errors_are_redacted_outside_development_debug(monkeypatch):
 
     worker = (Path(__file__).resolve().parents[1] / "infra/responses/worker.py").read_text()
     assert 'response.error_message = "响应执行失败，请稍后重试。"' in worker
-    assert 'payload={"status": "failed", "code": response.error_code, "message": response.error_message}' in worker
+    assert 'event_type="response.failed"' in worker
+    assert '"status": "failed"' in worker
+    assert '"code": response.error_code' in worker
+    assert '"message": response.error_message' in worker
 
 
 @pytest.mark.parametrize(
@@ -267,7 +270,10 @@ def test_dynamic_skill_install_and_create_are_disabled_by_default(monkeypatch):
 def test_data_source_tenant_migration_is_chained_and_idempotent():
     from pathlib import Path
 
-    path = Path(__file__).resolve().parents[1] / "alembic/versions/20260710_data_sources_tenant_workspace.py"
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/20260710_data_sources_tenant_workspace.py"
+    )
     source = path.read_text(encoding="utf-8")
     assert 'down_revision = "20260613_documents_tenant"' in source
     assert 'if "tenant_id" not in columns' in source

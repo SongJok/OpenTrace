@@ -10,10 +10,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.config.settings import settings
+from infra.security.resource_scope import accessible_data_sources_statement
 from infra.storage.models import (
     AssistantProfile,
     Attachment,
     ChatSession,
+    DataSource,
+    DataSourceSchema,
     Project,
     ResponseItem,
     ResponseRecord,
@@ -135,9 +138,41 @@ class ContextAssembler:
             if project and project.instructions.strip():
                 system_blocks.append("Project 指令：\n" + project.instructions.strip())
             if project and project.data_source_ids:
+                source_stmt = accessible_data_sources_statement(
+                    user_id=response.user_id,
+                    tenant_metadata={
+                        "tenant_id": response.tenant_id,
+                        "workspace_id": response.workspace_id,
+                    },
+                    required_permission="query",
+                    active_only=True,
+                ).where(DataSource.id.in_(project.data_source_ids))
+                project_sources = list(
+                    (await db.execute(source_stmt.order_by(DataSource.name))).scalars().all()
+                )
+                synced_ids = set(
+                    (
+                        await db.execute(
+                            select(DataSourceSchema.data_source_id).where(
+                                DataSourceSchema.data_source_id.in_(
+                                    [source.id for source in project_sources]
+                                )
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
                 system_blocks.append(
-                    "Project 已授权数据源：\n"
-                    + "\n".join(f"- {source_id}" for source_id in project.data_source_ids)
+                    "Project 企业上下文：\n"
+                    + "\n".join(
+                        f"- 数据源 {source.name}（{source.source_type}，ID={source.id}，"
+                        f"Schema={'已同步' if source.id in synced_ids else '未同步'}）"
+                        for source in project_sources
+                    )
+                    + "\n- 知识范围：仅检索当前 Project 下已授权、已发布的知识。"
+                    "\n当问题要求结合企业数据与知识制度时，应同时调用 data 与 rag，"
+                    "以数据库结果作为指标证据、知识库作为口径或治理依据，并保留引用。"
                 )
             if project and not profile_id:
                 profile_id = project.assistant_profile_id

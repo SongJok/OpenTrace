@@ -30,13 +30,13 @@ from governance.chat_constitution import (
 )
 from infra.errors import AppException, ErrorCodes
 from infra.responses.repository import TERMINAL_STATUSES, add_outbox, append_event
+from infra.security.resource_scope import get_accessible_data_source
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
     AssistantProfile,
     Attachment,
     ChatSession,
-    DataSource,
     GoalRun,
     Project,
     ResponseEvent,
@@ -407,9 +407,10 @@ async def _validate_opentrace_scope(
         raise AppException(
             ErrorCodes.PARAM_INVALID.code, message="临时对话不能加入 Project 或 Goal"
         )
+    project: Project | None = None
     if extension.project_id:
-        owned = await db.scalar(
-            select(Project.id).where(
+        project = await db.scalar(
+            select(Project).where(
                 Project.id == extension.project_id,
                 Project.user_id == user.id,
                 Project.tenant_id == tenant_id,
@@ -417,7 +418,7 @@ async def _validate_opentrace_scope(
                 Project.archived_at.is_(None),
             )
         )
-        if owned is None:
+        if project is None:
             raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project 不存在或无权限")
     if extension.assistant_profile_id:
         owned = await db.scalar(
@@ -442,16 +443,18 @@ async def _validate_opentrace_scope(
         if owned is None:
             raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Goal 不存在或无权限")
     for source_id in extension.data_source_ids:
-        owned = await db.scalar(
-            select(DataSource.id).where(
-                DataSource.id == source_id,
-                DataSource.user_id == user.id,
-                DataSource.tenant_id == tenant_id,
-                DataSource.workspace_id == workspace_id,
-            )
+        source = await get_accessible_data_source(
+            db,
+            user_id=user.id,
+            tenant_metadata={"tenant_id": tenant_id, "workspace_id": workspace_id},
+            data_source_id=source_id,
+            required_permission="query",
+            active_only=True,
         )
-        if owned is None:
+        if source is None:
             raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="数据源不存在或无权限")
+        if project is not None and source_id not in set(project.data_source_ids or []):
+            raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="Project 未授权该数据源")
 
 
 async def _resolve_parent(

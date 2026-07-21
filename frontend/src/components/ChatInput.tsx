@@ -21,6 +21,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   const executionProfile = useChatPreferences((state) => state.executionProfile)
   const assistantProfileId = useChatPreferences((state) => state.assistantProfileId)
   const projectId = useChatPreferences((state) => state.projectId)
+  const dataSourceId = useChatPreferences((state) => state.dataSourceId)
   const prefillText = useChatPreferences((state) => state.prefillText)
   const consumePrefill = useChatPreferences((state) => state.consumePrefill)
   const regenerate = useChatCommands((state) => state.regenerate)
@@ -103,6 +104,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
         retry_response_id: retryResponseId,
         assistant_profile_id: assistantProfileId ?? undefined,
         project_id: projectId ?? undefined,
+        data_source_ids: dataSourceId ? [dataSourceId] : [],
         attachment_ids: attachmentIds,
       },
     )
