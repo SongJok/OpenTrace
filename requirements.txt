@@ -49,7 +49,7 @@ orjson>=3.10.3
 # Observability / Tracing (OpenTelemetry)
 opentelemetry-api>=1.24.0
 opentelemetry-sdk>=1.24.0
-opentelemetry-instrumentation-fastapi>=0.45b0
+opentelemetry-instrumentation-fastapi>=0.65b0
 opentelemetry-instrumentation-sqlalchemy>=0.45b0
 opentelemetry-instrumentation-redis>=0.45b0
 opentelemetry-instrumentation-httpx>=0.45b0
