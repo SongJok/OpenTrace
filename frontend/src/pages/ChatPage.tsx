@@ -177,10 +177,6 @@ export default function ChatPage() {
             </div>
             <div className="relative mx-auto flex w-full max-w-[960px] -translate-y-4 flex-col items-center">
               <WelcomeScreen />
-              <div className="mb-3 flex w-full max-w-3xl flex-wrap justify-center gap-2 px-3">
-                <select aria-label="Project" value={projectId ?? ''} onChange={(event) => selectProject(event.target.value || null)} className="max-w-48 rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] px-3 py-2 text-xs text-[var(--text-secondary)]"><option value="">无 Project</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-                <select aria-label="企业数据源" value={dataSourceId ?? ''} onChange={(event) => setDataSourceId(event.target.value || null)} className="max-w-56 rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] px-3 py-2 text-xs text-[var(--text-secondary)]"><option value="">自动选择数据源</option>{availableDataSources.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.type}</option>)}</select>
-              </div>
               <ChatInput variant="welcome" />
             </div>
             <QuickTags />
