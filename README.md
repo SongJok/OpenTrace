@@ -159,9 +159,13 @@ curl http://127.0.0.1:14100/api/v1/health
 curl http://127.0.0.1:14100/api/v1/health/deps
 ```
 
-### 3. Start the frontend
+### 3. Open the production frontend
 
-Docker Compose does not include the frontend by default:
+`bash start.sh` builds the React app and starts the Nginx frontend container automatically.
+Open <http://localhost:14108>. API requests and SSE streams are reverse-proxied through the same
+origin; Swagger is available at <http://localhost:14100/docs>.
+
+For local HMR development only, stop the Compose `frontend` service first, then run:
 
 ```bash
 cd frontend
@@ -169,14 +173,12 @@ npm ci
 npm run dev
 ```
 
-Open <http://localhost:14108>. Swagger is available at <http://localhost:14100/docs>.
-
 ## Service Ports
 
 | Service | Host port | Container port |
 | --- | ---: | ---: |
 | API / Swagger | `14100` | `14100` |
-| Vite frontend | `14108` | - |
+| Production frontend (Nginx) | `14108` | `14108` |
 | PostgreSQL | `5432` | `5432` |
 | Redis | `6380` | `6379` |
 | Prometheus, optional | `14190` | `9090` |

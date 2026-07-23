@@ -78,7 +78,10 @@ source_fingerprint() {
   find . -type f \
     ! -path './.git/*' \
     ! -path './.venv/*' \
-    ! -path './frontend/*' \
+    ! -path './frontend/node_modules/*' \
+    ! -path './frontend/dist/*' \
+    ! -path './frontend/.env' \
+    ! -path './frontend/.env.*' \
     ! -path './tests/*' \
     ! -path './docs/*' \
     ! -path './.mypy_cache/*' \
@@ -87,8 +90,19 @@ source_fingerprint() {
     -exec cksum {} + | cksum | awk '{print $1}'
 }
 
+frontend_base_url() {
+  local frontend_port="${FRONTEND_PORT:-}"
+  if [ -z "$frontend_port" ] && [ -f "$PROJECT_DIR/.env" ]; then
+    frontend_port="$(sed -n 's/^FRONTEND_PORT=//p' "$PROJECT_DIR/.env" | tail -n 1)"
+  fi
+  frontend_port="${frontend_port:-14108}"
+  printf 'http://127.0.0.1:%s' "$frontend_port"
+}
+
 verify_after_boot() {
   local base_url="${BASE_URL:-http://127.0.0.1:14100}"
+  local frontend_url="${FRONTEND_URL:-$(frontend_base_url)}"
+  local frontend_html
 
   echo "▸ 等待 API 健康检查..."
   for i in $(seq 1 50); do
@@ -111,6 +125,33 @@ verify_after_boot() {
 
   echo "✓ API 已就绪: $base_url"
   echo "✓ Swagger: $base_url/docs"
+
+  echo "▸ 等待生产前端健康检查..."
+  for i in $(seq 1 20); do
+    frontend_html="$(curl -fsS --max-time 5 "$frontend_url/chat" 2>/dev/null || true)"
+    if [ -n "$frontend_html" ]; then
+      break
+    fi
+    sleep 1
+    if [[ "$i" == "20" ]]; then
+      echo "✗ 前端健康检查失败: $frontend_url/chat"
+      echo "  建议排障: bash scripts/docker_logs.sh frontend"
+      exit 1
+    fi
+  done
+
+  if [[ "$frontend_html" == *"/@vite/client"* || "$frontend_html" == *"/src/main.tsx"* ]]; then
+    echo "✗ 前端仍在提供 Vite 开发资源，未使用生产构建产物"
+    exit 1
+  fi
+
+  if ! curl -sf --max-time 10 "$frontend_url/api/v1/health" >/dev/null 2>&1; then
+    echo "✗ 前端 API 反向代理检查失败: $frontend_url/api/v1/health"
+    echo "  建议排障: bash scripts/docker_logs.sh frontend"
+    exit 1
+  fi
+
+  echo "✓ 生产前端已就绪: $frontend_url"
 }
 
 preflight
@@ -145,10 +186,13 @@ if [ -z "${PYTHON_BASE_IMAGE:-}" ]; then
 fi
 REMOTE_APP_IMAGE="${OPENTRACE_IMAGE:-}"
 export OPENTRACE_IMAGE="${OPENTRACE_IMAGE:-opentrace-app:local}"
+export OPENTRACE_FRONTEND_IMAGE="${OPENTRACE_FRONTEND_IMAGE:-opentrace-frontend:local}"
 export OPENTRACE_BUILD_FINGERPRINT="$(source_fingerprint)"
+export OPENTRACE_FRONTEND_BUILD_FINGERPRINT="$OPENTRACE_BUILD_FINGERPRINT"
 
 echo "▸ 使用 Python 基础镜像: $PYTHON_BASE_IMAGE"
 echo "▸ 使用 OpenTrace 应用镜像: $OPENTRACE_IMAGE"
+echo "▸ 使用 OpenTrace 前端镜像: $OPENTRACE_FRONTEND_IMAGE"
 echo "▸ 当前源码指纹: ${OPENTRACE_BUILD_FINGERPRINT:0:12}"
 echo "▸ 使用 docker compose 内 PostgreSQL 服务 (postgres:5432)"
 
@@ -156,6 +200,8 @@ if [ "$PULL_IMAGES" -eq 1 ]; then
   echo "▸ 更新所需镜像..."
   pull_with_retry "redis:7-alpine"
   pull_with_retry "pgvector/pgvector:pg16"
+  pull_with_retry "node:20-alpine"
+  pull_with_retry "nginx:alpine"
   if [ -n "$REMOTE_APP_IMAGE" ]; then
     pull_with_retry "$OPENTRACE_IMAGE"
   else
@@ -168,13 +214,20 @@ if [ "$PULL_IMAGES" -eq 1 ]; then
 fi
 
 if [ "$BUILD_MODE" == "auto" ]; then
-  if docker image inspect "$OPENTRACE_IMAGE" >/dev/null 2>&1; then
+  if docker image inspect "$OPENTRACE_IMAGE" >/dev/null 2>&1 \
+    && docker image inspect "$OPENTRACE_FRONTEND_IMAGE" >/dev/null 2>&1; then
     IMAGE_FINGERPRINT="$(
       docker image inspect \
         --format '{{ index .Config.Labels "org.opentrace.build-fingerprint" }}' \
         "$OPENTRACE_IMAGE" 2>/dev/null || true
     )"
-    if [ "$IMAGE_FINGERPRINT" == "$OPENTRACE_BUILD_FINGERPRINT" ]; then
+    FRONTEND_IMAGE_FINGERPRINT="$(
+      docker image inspect \
+        --format '{{ index .Config.Labels "org.opentrace.build-fingerprint" }}' \
+        "$OPENTRACE_FRONTEND_IMAGE" 2>/dev/null || true
+    )"
+    if [ "$IMAGE_FINGERPRINT" == "$OPENTRACE_BUILD_FINGERPRINT" ] \
+      && [ "$FRONTEND_IMAGE_FINGERPRINT" == "$OPENTRACE_FRONTEND_BUILD_FINGERPRINT" ]; then
       BUILD_MODE="none"
     else
       BUILD_MODE="build"
@@ -194,12 +247,13 @@ if [ "$BUILD_MODE" == "build" ] || [ "$BUILD_MODE" == "rebuild" ]; then
   if [ "$PULL_IMAGES" -eq 1 ]; then
     BUILD_ARGS+=(--pull)
   fi
-  BUILD_ARGS+=(api)
-  echo "▸ 构建统一应用镜像（API 与 Worker 共用）..."
+  BUILD_ARGS+=(api frontend)
+  echo "▸ 构建应用镜像（API 与 Worker 共用）和生产前端镜像..."
   DOCKER_BUILDKIT=1 docker compose "${BUILD_ARGS[@]}"
 else
-  if ! docker image inspect "$OPENTRACE_IMAGE" >/dev/null 2>&1; then
-    echo "✗ 应用镜像不存在: $OPENTRACE_IMAGE"
+  if ! docker image inspect "$OPENTRACE_IMAGE" >/dev/null 2>&1 \
+    || ! docker image inspect "$OPENTRACE_FRONTEND_IMAGE" >/dev/null 2>&1; then
+    echo "✗ 应用或前端镜像不存在: $OPENTRACE_IMAGE / $OPENTRACE_FRONTEND_IMAGE"
     echo "  请执行: bash start.sh --build"
     exit 1
   fi

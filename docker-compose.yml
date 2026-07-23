@@ -7,6 +7,12 @@ x-opentrace-build: &opentrace-build
     PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
     PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
 
+x-opentrace-frontend-build: &opentrace-frontend-build
+  context: ./frontend
+  dockerfile: Dockerfile
+  args:
+    OPENTRACE_FRONTEND_BUILD_FINGERPRINT: ${OPENTRACE_FRONTEND_BUILD_FINGERPRINT:-unknown}
+
 services:
   # -------------------------------------------------------------------------
   # PostgreSQL
@@ -97,6 +103,26 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
+
+  # -------------------------------------------------------------------------
+  # React production frontend — Nginx static hosting and API reverse proxy
+  # -------------------------------------------------------------------------
+  frontend:
+    image: ${OPENTRACE_FRONTEND_IMAGE:-opentrace-frontend:local}
+    build: *opentrace-frontend-build
+    container_name: opentrace_frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-14108}:14108"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:14108/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # -------------------------------------------------------------------------
   # Agent Worker

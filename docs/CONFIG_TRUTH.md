@@ -8,8 +8,9 @@
 |----|--------|------|
 | API 监听端口 | **14100** | `APP_PORT`、`docker-compose` api 映射、`start.sh` 健康检查 |
 | Swagger | `http://localhost:14100/docs` | |
-| 前端 dev | **14108** | `FRONTEND_PORT` / Vite |
-| `VITE_API_URL` | `http://localhost:14100` | 浏览器访问宿主机 API |
+| 生产前端 | **14108** | `FRONTEND_PORT` / Compose `frontend`（Nginx） |
+| 前端 dev | **14108** | 仅本地 HMR；需先停止 Compose `frontend`，由 Vite 占用端口 |
+| `VITE_API_URL` | `http://localhost:14100` | 仅本地 Vite 开发模式的直连回退；生产环境优先同源 `/api` Nginx 反代 |
 
 **已废弃/易混淆**：`.env` 中的 `GATEWAY_PORT=14101` 若存在，**不参与**当前 Dockerfile/Compose/健康检查；请勿将 `preflight` 或前端指向 14101，除非全栈已同步改端口。`development` 会给出 warning；`staging` / `production` 中 `GATEWAY_PORT != APP_PORT` 会启动失败。
 

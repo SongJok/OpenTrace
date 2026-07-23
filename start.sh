@@ -14,6 +14,16 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+frontend_port="${FRONTEND_PORT:-}"
+if [[ -z "$frontend_port" && -f "$PROJECT_DIR/.env" ]]; then
+  frontend_port="$(sed -n 's/^FRONTEND_PORT=//p' "$PROJECT_DIR/.env" | tail -n 1)"
+fi
+frontend_port="${frontend_port:-14108}"
+if ! [[ "$frontend_port" =~ ^[0-9]+$ ]]; then
+  echo "✗ FRONTEND_PORT 必须是端口号，当前值: $frontend_port"
+  exit 1
+fi
+
 VERIFY="0"
 DOCKER_ARGS=()
 for arg in "$@"; do
@@ -45,6 +55,16 @@ if lsof -iTCP:14100 -sTCP:LISTEN >/dev/null 2>&1; then
   fi
 fi
 
+# Ensure target production frontend port is available before startup.
+if lsof -iTCP:"$frontend_port" -sTCP:LISTEN >/dev/null 2>&1; then
+  if (cd "$PROJECT_DIR" && docker compose ps --status running -q frontend | grep -q .); then
+    echo "▸ 当前项目生产前端已运行，将复用现有容器"
+  else
+    echo "✗ 端口 $frontend_port 已被占用，请停止 Vite 或释放端口后再启动"
+    exit 1
+  fi
+fi
+
 # bash 3.2 + set -u: empty "${arr[@]}" is treated as unbound
 bash "$PROJECT_DIR/scripts/docker_up.sh" ${DOCKER_ARGS+"${DOCKER_ARGS[@]}"}
 
@@ -55,6 +75,10 @@ if ! curl -sf "http://127.0.0.1:14100/api/v1/health" >/dev/null 2>&1; then
 fi
 if ! curl -sf "http://127.0.0.1:14100/api/v1/health/deps" >/dev/null 2>&1; then
   echo "✗ health/deps 检查失败"
+  exit 1
+fi
+if ! curl -sf "http://127.0.0.1:${frontend_port}/chat" >/dev/null 2>&1; then
+  echo "✗ 生产前端健康检查失败"
   exit 1
 fi
 
