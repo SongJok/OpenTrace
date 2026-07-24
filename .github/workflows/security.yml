@@ -71,7 +71,7 @@ jobs:
       - name: Build release image from lock
         run: docker build -f deploy/docker/Dockerfile -t opentrace:security .
       - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: opentrace:security
           format: table
