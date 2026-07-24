@@ -17,8 +17,7 @@ pypdf>=5.0.0
 # Database
 sqlalchemy[asyncio]>=2.0.30
 asyncpg>=0.29.0
-asyncmy==0.2.9; platform_system == "Linux" and platform_machine == "aarch64"
-asyncmy>=0.2.10; platform_system != "Linux" or platform_machine != "aarch64"
+aiomysql>=0.2.0
 alembic>=1.13.1
 psycopg2-binary>=2.9.9
 pgvector>=0.2.5
@@ -36,7 +35,7 @@ tiktoken>=0.7.0
 tenacity>=8.3.0
 
 # Auth / Security
-python-jose[cryptography]>=3.3.0
+PyJWT[crypto]>=2.9.0
 passlib[bcrypt]>=1.7.4
 bcrypt>=3.2.0,<4.0.0
 python-dotenv>=1.0.1

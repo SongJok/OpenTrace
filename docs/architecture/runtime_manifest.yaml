@@ -1,0 +1,70 @@
+schema_version: 1
+product:
+  name: OpenTrace
+  maturity: Alpha
+  maturity_scale: [Alpha, Beta, GA]
+  current_as_of: "2026-07-24"
+  positioning: 可治理的企业数据与知识 Agent 执行平台
+
+online_runtime:
+  name: responses-agent-loop
+  api:
+    application: gateway.api_gateway.main:app
+    command_route:
+      method: POST
+      path: /api/v2/responses
+      handler_module: gateway.api_gateway.routers.responses
+    event_route:
+      method: GET
+      path: /api/v2/responses/{response_id}/events
+    retired_routes:
+      - {method: POST, path: /api/v1/chat, status_code: 410}
+      - {method: GET, path: /api/v1/tasks, status_code: 410}
+  worker:
+    process_entrypoint: agents.worker:main
+    execution_module: infra.responses.worker
+    required_callables: [dispatch_outbox, execute_response]
+    manager_loop: kernel.agent_loop.runner:AgentLoop
+  persistence:
+    source_of_truth: PostgreSQL
+    delivery_layer: Redis Streams
+    models_module: infra.storage.models
+    required_models:
+      - ResponseRecord
+      - ResponseItem
+      - ResponseEvent
+      - ResponseOutbox
+      - ResponseApproval
+      - ResponseToolExecution
+      - ResponseModelCall
+    required_events:
+      - response.created
+      - response.in_progress
+      - response.output_item.done
+      - response.failed
+      - response.cancelled
+  model_gateway:
+    entrypoint: model.model_gateway.gateway:get_model_gateway
+    gateway_class: model.model_gateway.gateway:ModelGateway
+    business_modules_must_not_import_provider_clients: true
+  configuration:
+    settings_class: infra.config.settings:Settings
+    environment_profiles: [development, staging, production]
+    capability_profiles: [core, data, knowledge, data_knowledge]
+    feature_flag_registry: infra.config.flag_registry:KERNEL_FLAG_REGISTRY
+
+compatibility_runtime:
+  maturity: Alpha
+  product_capability: false
+  status: compatibility-experimental
+  modules:
+    - kernel.cognitive_supervisor
+    - kernel.runtime_gateway
+  modification_rule: 仅在明确的兼容性任务中修改，不得作为 Responses 请求入口
+
+governance:
+  architecture_checker: scripts/check_architecture_manifest.py
+  migration_policy: alembic/migration_policy.json
+  dependency_lock:
+    python: [uv.lock, requirements.lock, requirements-dev.lock]
+    frontend: frontend/package-lock.json

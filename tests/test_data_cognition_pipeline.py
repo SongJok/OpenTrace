@@ -266,7 +266,7 @@ class TestQueryExecutor(unittest.TestCase):
                 exec_cls.return_value = mock_exec
                 rows, sql, warnings = await executor.run_with_retry(
                     plan=LogicalPlan(tables=["test"]),
-                    dsn="mysql+asyncmy://test",
+                    dsn="mysql+aiomysql://test",
                     dialect=detect_sql_dialect("mysql"),
                 )
                 return rows, sql, warnings
@@ -317,7 +317,7 @@ class TestQueryExecutor(unittest.TestCase):
 
                 rows, sql, warnings = await executor.run_with_retry(
                     plan=LogicalPlan(tables=["test"]),
-                    dsn="mysql+asyncmy://test",
+                    dsn="mysql+aiomysql://test",
                     dialect=detect_sql_dialect("mysql"),
                 )
                 return rows, sql, warnings

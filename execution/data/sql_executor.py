@@ -46,6 +46,11 @@ class SQLExecutor:
         )
         return self._serialize_rows(result)
 
+    @staticmethod
+    def _runtime_dsn(dsn: str) -> str:
+        """兼容历史 asyncmy DSN，并统一切换到已通过漏洞门禁的 aiomysql。"""
+        return dsn.replace("mysql+asyncmy://", "mysql+aiomysql://", 1)
+
     async def run_on_dsn(
         self,
         dsn: str,
@@ -54,7 +59,8 @@ class SQLExecutor:
         source_type: str | None = None,
     ) -> list[dict[str, Any]]:
         safe_sql = self._validated_sql(sql)
-        engine = create_async_engine(dsn, pool_pre_ping=True, future=True)
+        runtime_dsn = self._runtime_dsn(dsn)
+        engine = create_async_engine(runtime_dsn, pool_pre_ping=True, future=True)
         try:
 
             async def _execute() -> list[dict[str, Any]]:

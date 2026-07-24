@@ -7,7 +7,7 @@ name = "opentrace"
 version = "0.1.0"
 description = "Self-hosted enterprise AgentOS for governed data, knowledge, and automation"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 license = {file = "LICENSE"}
 authors = [
     {name = "OpenTrace Team"}
@@ -17,6 +17,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
@@ -35,8 +36,7 @@ dependencies = [
     # Database
     "sqlalchemy[asyncio]>=2.0.30",
     "asyncpg>=0.29.0",
-    "asyncmy==0.2.9; platform_system == 'Linux' and platform_machine == 'aarch64'",
-    "asyncmy>=0.2.10; platform_system != 'Linux' or platform_machine != 'aarch64'",
+    "aiomysql>=0.2.0",
     "alembic>=1.13.1",
     "psycopg2-binary>=2.9.9",
     "pgvector>=0.2.5",
@@ -53,7 +53,7 @@ dependencies = [
     "tenacity>=8.3.0",
 
     # Auth / Security
-    "python-jose[cryptography]>=3.3.0",
+    "PyJWT[crypto]>=2.9.0",
     "passlib[bcrypt]>=1.7.4",
     "bcrypt>=3.2.0,<4.0.0",
     "python-dotenv>=1.0.1",
@@ -103,6 +103,8 @@ dev = [
     "mypy>=1.10.0",
     "pre-commit>=3.7.1",
     "import-linter>=2.0",
+    "pip-audit>=2.7.3",
+    "types-PyYAML>=6.0.12",
 ]
 
 [project.scripts]

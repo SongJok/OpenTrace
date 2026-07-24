@@ -1,58 +1,32 @@
-# OpenTrace — Feature Flag 注册表（内核与数据）
+# OpenTrace — 高影响 Feature Flag 注册表
 
-新增开关请在本表追加一行。完整列表见 `infra/config/settings.py` 与 `.env.example`。
+> 产品成熟度：**Alpha**。能力组合优先使用 `CAPABILITY_PROFILE`；本表只保留少量紧急熔断、迁移与实验例外。旧 Cognitive Runtime 细粒度字段仅兼容读取，不属于产品配置面。
 
-| Flag | 默认 | 影响面 | Owner 域 |
-|------|------|--------|----------|
-| `kernel_goal_driven_dag_enabled` | true | Goal→DAG 1:1 | goal |
-| `kernel_runtime_phase_transition_strict` | true | 非法 phase 阻断 | runtime |
-| `kernel_registry_dispatch_strict` | true | registry 违规阻断 | runtime |
-| `kernel_evidence_contract_strict` | true | 证据契约 | governance |
-| `kernel_capability_contract_strict` | true | 能力拓扑 | capability |
-| `kernel_memory_fabric_primary_only` | true | 记忆读路径 | memory |
-| `kernel_memory_fabric_retrieval_enabled` | true | Fabric 检索 | memory |
-| `kernel_memory_graph_redis_enabled` | true | 关系图 Redis | memory |
-| `kernel_cognitive_state_persist_enabled` | false* | Redis 认知态 | runtime |
-| `kernel_governance_evidence_gate_enabled` | true | 证据门控 | governance |
-| `kernel_governance_risk_gate_enabled` | true | 风险门控 | governance |
-| `kernel_semantic_alerts_enabled` | true | 语义告警导出 | observability |
-| `kernel_runtime_replay_enabled` | true | 回放快照 | replay |
-| `kernel_capability_intelligence_enabled` | true | Profiler Phase1 | capability |
-| `kernel_capability_intelligence_phase2_enabled` | true | KG/策略记忆 | capability |
-| `kernel_clarification_gate_enabled` | true | 澄清问句 | cognition |
-| `kernel_conversation_state_enabled` | true | 结构化多轮 | cognition |
-| `kernel_refine_replan_enabled` | true | 失败重规划 | runtime |
-| `kernel_data_intelligence_routing_enabled` | true | Data V2 runtime | data |
-| `kernel_data_intelligence_route_executive` | false | Data tier → full Executive | data |
-| `data_agent_v2_enabled` | true | DataAgent V2 | data |
-| `data_agent_v2_fallback_to_v1` | false | V1 回退 | data |
-| `kernel_agent_bus_enabled` | true | Redis Bus | agents |
-| `kernel_agent_bus_mode` | pubsub | stream/pubsub | agents |
-| `kernel_agent_runtime_v3_enabled` | true | Manifest SSOT、UnifiedEvidence、GoalParticipation | agents |
-| `kernel_agent_runtime_v3_strict` | false | Contribution 契约 fail-closed | agents |
-| `kernel_unified_evidence_strict` | false | 成功 turn 必须有 UnifiedEvidence | governance |
-| `kernel_agent_runtime_p3_enabled` | true | Hypothesis/Contradiction/Reflection 元数据 | cognition |
+## 能力 Profile（默认组合不超过 5 套）
 
-\* staging 下强制 `true`，见 `ENV_PROFILES.md`。
+| Profile | 内置 Agent | 用途 |
+|---|---|---|
+| `core` | tool / skills / rules | 最小 Responses 工具执行 |
+| `data` | core + data | DataAgent / Text2SQL |
+| `knowledge` | core + rag | 企业知识问答 |
+| `data_knowledge` | data + knowledge + web_intelligence + vision | 默认完整产品闭环 |
 
-## 内核注册表（自动生成）
+## 公开高影响开关（自动生成）
 
-<!-- KERNEL_REGISTRY_AUTO_START -->
-| Flag | 默认 | Phase | 依赖 | 影响面 |
-|------|------|-------|------|--------|
-| `kernel_runtime_phase_transition_strict` | true | stable | — | runtime |
-| `kernel_cognitive_state_persist_enabled` | false | stable | — | runtime |
-| `kernel_staging_phase_transition_strict` | false | stable | kernel_runtime_phase_transition_strict | runtime |
-| `kernel_refine_replan_enabled` | true | stable | — | planning |
-| `kernel_memory_fabric_primary_only` | false | stable | — | memory |
-| `kernel_runtime_replay_enabled` | false | experimental | — | replay |
-| `kernel_agent_runtime_v3_enabled` | true | stable | — | agent_runtime |
-| `kernel_agent_runtime_v3_strict` | false | stable | kernel_agent_runtime_v3_enabled | agent_runtime |
-| `kernel_unified_evidence_strict` | false | stable | kernel_agent_runtime_v3_enabled | evidence |
-| `kernel_web_intelligence_preferred` | true | stable | — | routing |
-| `kernel_capability_intelligence_enabled` | true | stable | — | capability_intelligence |
-| `kernel_agent_learning_auto_apply` | false | experimental | kernel_capability_intelligence_enabled | capability_intelligence |
-| `enterprise_quota_redis_enabled` | false | experimental | — | control_plane |
-| `enterprise_usage_redis_enabled` | false | experimental | — | control_plane |
-| `kernel_world_model_cross_process_enabled` | false | experimental | — | world_model |
-<!-- KERNEL_REGISTRY_AUTO_END -->
+| Flag | 默认 | 阶段 | Owner | 引入版本 | 退出条件 | 最晚删除版本 | 影响面 | 依赖 |
+|---|---:|---|---|---|---|---|---|---|
+| `kernel_runtime_phase_transition_strict` | true | stable | runtime | 0.1.0 | — | — | responses-runtime | — |
+| `kernel_registry_dispatch_strict` | true | stable | runtime | 0.1.0 | — | — | tool-dispatch | — |
+| `kernel_runtime_replay_enabled` | true | stable | observability | 0.1.0 | — | — | audit-replay | — |
+| `kernel_agent_runtime_v3_strict` | false | stable | agent-runtime | 0.1.0 | — | — | agent-contribution-contract | kernel_agent_runtime_v3_enabled |
+| `kernel_agent_learning_auto_apply` | false | experimental | agent-quality | 0.1.0 | 连续两个 Beta 发布中通过回放评测且无越权策略写入 | 0.3.0 | learning | kernel_capability_intelligence_enabled |
+| `data_agent_v2_fallback_to_v1` | false | deprecated | data-agent | 0.1.0 | — | — | data | — |
+| `enterprise_tenant_rls_enabled` | false | experimental | security | 0.1.0 | 核心事实表 RLS 与跨租户负向测试全部进入发布门禁 | 0.3.0 | tenant-isolation | — |
+| `web_fetch_enabled` | false | experimental | security | 0.1.0 | 独立网络出口、域名白名单、凭据隔离和配额全部落地 | 0.3.0 | network-egress | — |
+
+## 治理规则
+
+- 新能力优先加入现有 Profile，不新增布尔开关。
+- 实验开关必须同时声明 owner、引入版本、退出条件和最晚删除版本。
+- deprecated 开关只用于滚动升级，禁止在新部署模板中默认开启。
+- `development/staging/production` 决定安全强度；`CAPABILITY_PROFILE` 决定能力集合。

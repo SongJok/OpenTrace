@@ -1,5 +1,8 @@
 # OpenTrace Cognitive OS vNext — 需求对齐审查
 
+> **Compatibility / Experimental（Alpha）**：本文只用于旧 Cognitive Runtime 架构合约，不是当前 `/api/v2/responses` 在线入口说明。
+
+
 > 对照重构蓝图 Phase 1 与当前代码库（不含 DataAgent 独立产品化）。
 
 ## 已实现 ✅

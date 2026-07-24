@@ -1,5 +1,8 @@
 # Enterprise Cognitive OS — 需求拆分与实现映射
 
+> **历史兼容文档（Alpha）**：本文描述旧 Cognitive Runtime 的阶段性实现，不代表当前在线产品主路径。当前主路径仅为 Responses Agent Loop，见 `docs/architecture_overview.md`。
+
+
 > **最终结论（架构定位）**  
 > OpenTrace 当前已是 **Agent Operating System** 量级（Runtime / Goal / Governance / Capability / Memory / Replay 主路径闭合）。  
 > 下一阶段目标是 **Cognitive Operating System（企业级）**：在现有四平面（Runtime / Capability / Memory / Governance）之上补齐 **Control Plane**，并落地五块企业能力：**Capability OS、World Model Runtime、Enterprise Observability、Multi-Tenant Runtime、Goal Portfolio Runtime**。

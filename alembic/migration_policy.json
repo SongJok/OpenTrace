@@ -1,0 +1,298 @@
+{
+  "schema_version": 1,
+  "policy_effective_date": "2026-07-24",
+  "production_baseline_revision": "20260724_chatgpt_runtime_completion",
+  "new_revision_format": "^r[0-9]{4}_[a-z0-9_]+$",
+  "next_sequence": 1,
+  "frozen_migrations": [
+    {
+      "revision": "20260400_core_baseline",
+      "file": "alembic/versions/20260400_core_baseline.py",
+      "sha256": "f382c83e67d4e5b57cdbb6f447a226eca228c642ebc31c043fcdede9891fdec9"
+    },
+    {
+      "revision": "20260401_redis_shadow",
+      "file": "alembic/versions/20260401_redis_shadow_add_table.py",
+      "sha256": "011a781113ba1305e0c58f7a444e65de133c5cf65d8de1b42dd16eca29d636ff"
+    },
+    {
+      "revision": "20260405_reasoning_artifacts",
+      "file": "alembic/versions/20260405_reasoning_artifacts.py",
+      "sha256": "e39d208ae9d446f161adbfdb403a130faeda561b8215749a5e2aa8ab87edfe57"
+    },
+    {
+      "revision": "20260406_chat_session_stage1",
+      "file": "alembic/versions/20260406_chat_session_stage1.py",
+      "sha256": "3bdf0a6a8c6879fcd2d51008b2a900ecdc8537c4fd16126aa74e9dd4923e84d5"
+    },
+    {
+      "revision": "20260407_audit_ret",
+      "file": "alembic/versions/20260407_audit_replay_retention.py",
+      "sha256": "cd917ea16149a117be4a94cc62e139b93105107de0820b99a714a47297d52c9f"
+    },
+    {
+      "revision": "20260407_fix_chat_cols",
+      "file": "alembic/versions/20260407_fix_chat_sessions_columns.py",
+      "sha256": "9e34b921768edc60ded1d93dfe61e04272ece0c360df968043bc4d382fd6f150"
+    },
+    {
+      "revision": "20260407_mem_stage1",
+      "file": "alembic/versions/20260407_memories_stage1.py",
+      "sha256": "67c001550e5e4a7b2c55de0d14f878f6f0c6f979215f8ce932885c4235ede20d"
+    },
+    {
+      "revision": "20260407_p2_learning_tables",
+      "file": "alembic/versions/20260407_p2_learning_tables.py",
+      "sha256": "38a96a5de5380bb8f4e3276ef5039efa0870251ba865dd246d79de741fc31095"
+    },
+    {
+      "revision": "20260407_task_notify",
+      "file": "alembic/versions/20260407_tasks_notifications.py",
+      "sha256": "5ea87b304d581bc7e7412e8dd304359bd64f83f7a220a68d0e910a4a9ad79799"
+    },
+    {
+      "revision": "20260407_task_stage1",
+      "file": "alembic/versions/20260407_tasks_stage1.py",
+      "sha256": "8bc20672e2816b3a2bddd2cb84ba26e721ee7c1177e20483232de03683cb9186"
+    },
+    {
+      "revision": "20260408_ui_settings",
+      "file": "alembic/versions/20260408_user_ui_settings.py",
+      "sha256": "c587fba474ee1b96b98d611e4e7c758d62b1c7c08ccde882461e322cdb1f2785"
+    },
+    {
+      "revision": "20260411_documents_guard",
+      "file": "alembic/versions/20260411_documents_tables_guard.py",
+      "sha256": "394d3414144796882e836779e8144b941336aba7bb17c56250764798970753bc"
+    },
+    {
+      "revision": "20260411_public_core_guard",
+      "file": "alembic/versions/20260411_public_core_guard.py",
+      "sha256": "7fd1f18300bedfb8a7b20a54dcb3ca382965e7f8d80cccc9fc7760795791d6db"
+    },
+    {
+      "revision": "20260412_data_sources_guard",
+      "file": "alembic/versions/20260412_data_sources_tables_guard.py",
+      "sha256": "545f6cae3c650d7a94f67811d2623a33cc791d0f13c4a2ec0191c7f4f5afbfcf"
+    },
+    {
+      "revision": "20260416_version_num_128",
+      "file": "alembic/versions/20260416_widen_alembic_version.py",
+      "sha256": "c9ba00af15abef7dfa4738e4e3eba690910c4b02f998723b2e49c289af074728"
+    },
+    {
+      "revision": "20260417_document_chunks_pgvector",
+      "file": "alembic/versions/20260417_document_chunks_pgvector.py",
+      "sha256": "fc7ecf6615740d8a8fef921301d3500b79852bbff94a2b4c90c514fb69f6a5aa"
+    },
+    {
+      "revision": "20260422_add_document_llmwiki",
+      "file": "alembic/versions/20260422_add_document_llmwiki.py",
+      "sha256": "f1de2a00456ffc4c214a887858c1a74390cb794b9ada26446af8bdb086a3049e"
+    },
+    {
+      "revision": "20260422_add_semantic_mappings",
+      "file": "alembic/versions/20260422_add_semantic_mappings.py",
+      "sha256": "11b8b4fe7890f507cbd4faa47ec87c387d236ab61df369d182f86167d174d62d"
+    },
+    {
+      "revision": "20260423_add_chunk_strategy",
+      "file": "alembic/versions/20260423_add_chunk_strategy.py",
+      "sha256": "3ceb1a0d598401387a9f481ac3a375b5e5eedd750a56fbc31034664185ba6294"
+    },
+    {
+      "revision": "20260508_add_conversation_state",
+      "file": "alembic/versions/20260508_add_conversation_state.py",
+      "sha256": "2add765e6a70b955550c639a53e0c1803fe0144e8cdc8bd13d8fcb642508dcac"
+    },
+    {
+      "revision": "20260509_add_attachment_state",
+      "file": "alembic/versions/20260509_add_attachment_state.py",
+      "sha256": "af3484e3603019bd04be4946913b55d7c615fe8c51e11793a2952d0fa17c6c4d"
+    },
+    {
+      "revision": "20260509_add_attachments",
+      "file": "alembic/versions/20260509_add_attachments.py",
+      "sha256": "fe02467f2ad71d34013398a6fac4a7e376eb20d6b3ba3cfefd593ed5a24ffef0"
+    },
+    {
+      "revision": "20260511_add_messages",
+      "file": "alembic/versions/20260511_add_messages.py",
+      "sha256": "d2a97b16286482bd96ce58b9a3f66c34fb06e2c63bd4e0665c3f2e600aec22a7"
+    },
+    {
+      "revision": "20260512_add_state_extension",
+      "file": "alembic/versions/20260512_add_state_extension.py",
+      "sha256": "d55f23c7587456945d20faa0cf3778ea060f197584260701cd34f99ed903b430"
+    },
+    {
+      "revision": "20260513_add_user_registration",
+      "file": "alembic/versions/20260513_add_user_registration.py",
+      "sha256": "f665a93a4b11f230cff9ca6b61ec39a06b236c2faa85bd7faeb6527b300f64b3"
+    },
+    {
+      "revision": "20260513_data_agent_v2_knowledge_tables",
+      "file": "alembic/versions/20260513_data_agent_v2_knowledge_tables.py",
+      "sha256": "a40b5948ede32fe6a3d5ef8e8f493838a8a8065cb9c8fece17a89da057600572"
+    },
+    {
+      "revision": "20260514_cognitive_events",
+      "file": "alembic/versions/20260514_cognitive_events.py",
+      "sha256": "588ca0c0f663554f21cb7b5098357d996c26e990a6cdca60aadbc41551a71388"
+    },
+    {
+      "revision": "20260606_enterprise_tenant",
+      "file": "alembic/versions/20260606_enterprise_tenant_tables.py",
+      "sha256": "7f1b254ed69b32f1a3884d99e2568f197d2164e6345f6ed1a6f1d6b279916651"
+    },
+    {
+      "revision": "20260606_enterprise_tenants_rls",
+      "file": "alembic/versions/20260606_enterprise_tenants_rls.py",
+      "sha256": "d53e2df3ae4aa171077b12e245bc8f4705d1e92082890f87d54819396c854155"
+    },
+    {
+      "revision": "20260610_merge_heads",
+      "file": "alembic/versions/20260610_merge_cognitive_enterprise_heads.py",
+      "sha256": "ee0314de737fdc4e0ffc098216eb10e65206d489d38d6cc7e3c3d5b0f118ba8a"
+    },
+    {
+      "revision": "20260611_billing_invoice",
+      "file": "alembic/versions/20260611_billing_invoice_tables.py",
+      "sha256": "36cce399783b8b6a3c1fb793d1f7f8f2223ec8faf9d0aae83a0eb011d06ed093"
+    },
+    {
+      "revision": "20260613_documents_tenant",
+      "file": "alembic/versions/20260613_documents_tenant_workspace.py",
+      "sha256": "ffe7c7c17a65a487418135897f862bc6b286a2b5916d9e53adf8f85ea4bb9f46"
+    },
+    {
+      "revision": "20260710_data_sources_tenant",
+      "file": "alembic/versions/20260710_data_sources_tenant_workspace.py",
+      "sha256": "68dfcbef99d89f47587d3ca25efaf7a1f503cfdf00b40ad659cbc20e345081e2"
+    },
+    {
+      "revision": "20260711_chat_session_skills",
+      "file": "alembic/versions/20260711_chat_session_skills.py",
+      "sha256": "2c98faf39dad2a73dd99ba1e92214753960d323a3ce6b1b38a86a17ebef6cd39"
+    },
+    {
+      "revision": "20260712_connector_credentials",
+      "file": "alembic/versions/20260712_connector_credentials.py",
+      "sha256": "be347195f9215aef06433b7d55cb6173ece5e068204783e9dd61db8fdd7fc259"
+    },
+    {
+      "revision": "20260713_knowledge_orchestration",
+      "file": "alembic/versions/20260713_knowledge_orchestration.py",
+      "sha256": "cf274e0b5214a5ba940b26d5241c353a86c473d0b59eea938408bb14dbc57dc7"
+    },
+    {
+      "revision": "20260714_knowledge_search_indexes",
+      "file": "alembic/versions/20260714_knowledge_search_indexes.py",
+      "sha256": "24c367db669c9dd0daa754498575d7f718d8072ab9b7fd12d8e6a601d3c92992"
+    },
+    {
+      "revision": "20260715_knowledge_metadata_metacognition",
+      "file": "alembic/versions/20260715_knowledge_metadata_metacognition.py",
+      "sha256": "b2cdceadc41d8c28e9b538e57cc9dcd7c84b1255fce937f37fcb10faf01508fc"
+    },
+    {
+      "revision": "20260716_chat_knowledge_assets",
+      "file": "alembic/versions/20260716_chat_knowledge_assets.py",
+      "sha256": "5734fe1c380a2504695e46a0694b6c624225b1bce6526e97f54a637ef7454398"
+    },
+    {
+      "revision": "20260717_response_runtime",
+      "file": "alembic/versions/20260717_response_runtime.py",
+      "sha256": "804c52723b43a572a645110d674e23ce22849a1d9e85f16546b8ef65dcc97faf"
+    },
+    {
+      "revision": "20260718_custom_instructions",
+      "file": "alembic/versions/20260718_custom_instructions.py",
+      "sha256": "29cf9de3e0812b2e3dc5368b92e9fa7c4f2efc3e5881d4b5ca9790c779cce59e"
+    },
+    {
+      "revision": "20260719_response_model_calls",
+      "file": "alembic/versions/20260719_response_model_calls.py",
+      "sha256": "d14c1c663563db57362b4807e26863f67d2e13e439892cb06ca69ceb962d09fe"
+    },
+    {
+      "revision": "20260720_response_leases",
+      "file": "alembic/versions/20260720_response_leases.py",
+      "sha256": "610d33b82a62c899f441d7ae6f94ac9f4c9c31685c382a77f64c2eb3b6447138"
+    },
+    {
+      "revision": "20260721_conversation_response_lineage",
+      "file": "alembic/versions/20260721_conversation_response_lineage.py",
+      "sha256": "45359f7648512dc2a6049968c7551ec84dfcd2d9131bff16e465294686c0eb9f"
+    },
+    {
+      "revision": "20260722_chatgpt_product_loop",
+      "file": "alembic/versions/20260722_chatgpt_product_loop.py",
+      "sha256": "21b93e756aa461e09bed02c08e434dc08d917c925adc330178ad2399188f3edb"
+    },
+    {
+      "revision": "20260723_unified_agent_runtime",
+      "file": "alembic/versions/20260723_unified_agent_runtime.py",
+      "sha256": "6dc15ee6ab037d8c9acb5e64f5a7b7c08ce5157f57e8a740014afefde18e110c"
+    },
+    {
+      "revision": "20260724_chatgpt_runtime_completion",
+      "file": "alembic/versions/20260724_chatgpt_runtime_completion.py",
+      "sha256": "cde68c97b6d158afc94e603e738d14326786d2c0ddaa5c0aa36593595ccf5544"
+    },
+    {
+      "revision": "20260725_vector_columns",
+      "file": "alembic/versions/20260725_normalize_vector_columns.py",
+      "sha256": "6fb3d6bdac3a166b5e5d552b3f5c8c3cf389c67ef5f3d81fd9e729b6bc9331da"
+    },
+    {
+      "revision": "20260726_user_memory_score",
+      "file": "alembic/versions/20260726_add_user_memory_score.py",
+      "sha256": "f699296f4f4bbd38b2e11fb376593864554df1518480536c194ad1a863677248"
+    },
+    {
+      "revision": "20260727_project_knowledge_scope",
+      "file": "alembic/versions/20260727_project_knowledge_scope.py",
+      "sha256": "a2a5160e36b0a656ee107165e5ad26678647413e6b721a8bf1fdd29afb5ba04e"
+    },
+    {
+      "revision": "20260728_active_alerts",
+      "file": "alembic/versions/20260728_active_alerts.py",
+      "sha256": "455ddde50d9b7b3d0d8d3b3f8b1b923b39c53eaa642f2f51a0e9a2a80f108204"
+    },
+    {
+      "revision": "20260729_skillhub_acl",
+      "file": "alembic/versions/20260729_skillhub_acl_orchestration.py",
+      "sha256": "d646c9618b0ecf46a8648f56b36afa42d2df9614c759e1d2435e4340f8e80920"
+    },
+    {
+      "revision": "20260730_ds_schema_embedding",
+      "file": "alembic/versions/20260730_data_source_schema_embedding.py",
+      "sha256": "9cdcadd473be1aea9b2162b096e40a2549ee7e33ae1f843428200f330ad4720e"
+    },
+    {
+      "revision": "20260731_memory_constitution",
+      "file": "alembic/versions/20260731_memory_constitution.py",
+      "sha256": "bb24d72f75fb69ee411d13d3f84e4aec56532b357801715d68d4b2cbb5bf13e7"
+    },
+    {
+      "revision": "20260801_memory_constitution_concurrency",
+      "file": "alembic/versions/20260801_memory_constitution_concurrency.py",
+      "sha256": "07071f409092dd7e63b8e96ac66da5edf6ea3f03a03bb37108596f933d467283"
+    },
+    {
+      "revision": "20260802_chat_constitution",
+      "file": "alembic/versions/20260802_chat_constitution.py",
+      "sha256": "c41086e3f080dfc7d5cbacc090dd47eae71c3dbbe8c4aebe96526a66c6532836"
+    },
+    {
+      "revision": "20260803_chatgpt_five_pillars",
+      "file": "alembic/versions/20260803_chatgpt_five_pillars.py",
+      "sha256": "a7eb597d8c20eb0fe53423e394cdb638cc2ed8cd367f14014b504f8384c72148"
+    }
+  ],
+  "notes": [
+    "已提交迁移保持不可变，包括名称中晚于 2026-07-24 的历史文件。",
+    "新 revision 使用 rNNNN_slug；发布日期记录在 alembic/revision_releases.json。"
+  ]
+}

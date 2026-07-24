@@ -1,4 +1,4 @@
-"""Kernel feature-flag registry — dependencies and phase labels for enterprise config governance."""
+"""P0 高影响开关注册表与能力 Profile，作为配置治理单一真相。"""
 
 from __future__ import annotations
 
@@ -12,88 +12,104 @@ FlagPhase = Literal["experimental", "stable", "deprecated"]
 class FlagSpec:
     name: str
     default: bool
-    phase: FlagPhase = "stable"
+    phase: FlagPhase
+    owner: str
+    introduced: str
+    affects: str
     requires: tuple[str, ...] = ()
-    affects: str = "runtime"
+    exit_criteria: str = ""
+    remove_by: str = ""
+
+    def governance_errors(self) -> list[str]:
+        errors: list[str] = []
+        if self.phase == "experimental":
+            if not self.exit_criteria:
+                errors.append(f"{self.name}: experimental flag missing exit_criteria")
+            if not self.remove_by:
+                errors.append(f"{self.name}: experimental flag missing remove_by")
+        return errors
 
 
-# Subset of high-impact kernel flags (extend in CI contract tests).
+# P0 后公开支持的高影响运行时例外开关。Agent 能力组合由 CAPABILITY_PROFILE 管理；
+# 旧 Cognitive Runtime 的大量细粒度字段继续兼容读取，但不再进入公开注册表。
 KERNEL_FLAG_REGISTRY: tuple[FlagSpec, ...] = (
     FlagSpec(
         "kernel_runtime_phase_transition_strict",
         True,
         "stable",
-        affects="runtime",
+        "runtime",
+        "0.1.0",
+        "responses-runtime",
     ),
     FlagSpec(
-        "kernel_cognitive_state_persist_enabled",
-        False,
-        "stable",
-        affects="runtime",
-    ),
-    FlagSpec(
-        "kernel_staging_phase_transition_strict",
-        False,
-        "stable",
-        ("kernel_runtime_phase_transition_strict",),
-        affects="runtime",
-    ),
-    FlagSpec("kernel_refine_replan_enabled", True, "stable", affects="planning"),
-    FlagSpec("kernel_memory_fabric_primary_only", False, "stable", affects="memory"),
-    FlagSpec("kernel_runtime_replay_enabled", False, "experimental", affects="replay"),
-    FlagSpec(
-        "kernel_agent_runtime_v3_enabled",
+        "kernel_registry_dispatch_strict",
         True,
         "stable",
-        affects="agent_runtime",
+        "runtime",
+        "0.1.0",
+        "tool-dispatch",
+    ),
+    FlagSpec(
+        "kernel_runtime_replay_enabled",
+        True,
+        "stable",
+        "observability",
+        "0.1.0",
+        "audit-replay",
     ),
     FlagSpec(
         "kernel_agent_runtime_v3_strict",
         False,
         "stable",
+        "agent-runtime",
+        "0.1.0",
+        "agent-contribution-contract",
         ("kernel_agent_runtime_v3_enabled",),
-        affects="agent_runtime",
-    ),
-    FlagSpec(
-        "kernel_unified_evidence_strict",
-        False,
-        "stable",
-        ("kernel_agent_runtime_v3_enabled",),
-        affects="evidence",
-    ),
-    FlagSpec("kernel_web_intelligence_preferred", True, "stable", affects="routing"),
-    FlagSpec(
-        "kernel_capability_intelligence_enabled",
-        True,
-        "stable",
-        affects="capability_intelligence",
     ),
     FlagSpec(
         "kernel_agent_learning_auto_apply",
         False,
         "experimental",
+        "agent-quality",
+        "0.1.0",
+        "learning",
         ("kernel_capability_intelligence_enabled",),
-        affects="capability_intelligence",
+        "连续两个 Beta 发布中通过回放评测且无越权策略写入",
+        "0.3.0",
     ),
     FlagSpec(
-        "enterprise_quota_redis_enabled",
+        "data_agent_v2_fallback_to_v1",
         False,
-        "experimental",
-        affects="control_plane",
+        "deprecated",
+        "data-agent",
+        "0.1.0",
+        "data",
     ),
     FlagSpec(
-        "enterprise_usage_redis_enabled",
+        "enterprise_tenant_rls_enabled",
         False,
         "experimental",
-        affects="control_plane",
+        "security",
+        "0.1.0",
+        "tenant-isolation",
+        exit_criteria="核心事实表 RLS 与跨租户负向测试全部进入发布门禁",
+        remove_by="0.3.0",
     ),
     FlagSpec(
-        "kernel_world_model_cross_process_enabled",
+        "web_fetch_enabled",
         False,
         "experimental",
-        affects="world_model",
+        "security",
+        "0.1.0",
+        "network-egress",
+        exit_criteria="独立网络出口、域名白名单、凭据隔离和配额全部落地",
+        remove_by="0.3.0",
     ),
 )
+
+
+def validate_registry_governance() -> list[str]:
+    return [error for spec in KERNEL_FLAG_REGISTRY for error in spec.governance_errors()]
 
 
 def validate_flag_dependencies(settings: object) -> list[str]:
@@ -113,7 +129,7 @@ def duplicate_settings_field_names(settings_cls: type) -> list[str]:
     from collections import Counter
 
     names = list(getattr(settings_cls, "model_fields", {}).keys())
-    return [n for n, c in Counter(names).items() if c > 1]
+    return [name for name, count in Counter(names).items() if count > 1]
 
 
 def env_var_name_for_flag(flag_name: str) -> str:
@@ -121,7 +137,6 @@ def env_var_name_for_flag(flag_name: str) -> str:
 
 
 def env_example_lines_for_registry() -> list[str]:
-    """Suggested .env.example lines for KERNEL_FLAG_REGISTRY (idempotent append)."""
     lines: list[str] = []
     for spec in KERNEL_FLAG_REGISTRY:
         env_key = env_var_name_for_flag(spec.name)
@@ -131,4 +146,4 @@ def env_example_lines_for_registry() -> list[str]:
 
 
 def registry_env_keys() -> set[str]:
-    return {env_var_name_for_flag(s.name) for s in KERNEL_FLAG_REGISTRY}
+    return {env_var_name_for_flag(spec.name) for spec in KERNEL_FLAG_REGISTRY}

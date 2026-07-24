@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -61,7 +60,8 @@ def test_dockerfile_uses_buildkit_dependency_caches_without_remote_frontend():
     assert "# syntax=" not in dockerfile
 
 
-def test_linux_arm64_uses_available_asyncmy_wheel():
+def test_mysql_driver_is_platform_independent_and_security_maintained():
     requirements = _read("requirements.txt")
 
-    assert 'asyncmy==0.2.9; platform_system == "Linux" and platform_machine == "aarch64"' in requirements
+    assert "aiomysql>=0.2.0" in requirements
+    assert "asyncmy" not in requirements

@@ -2,6 +2,7 @@
 OpenTrace — Centralized Settings
 All configuration is loaded once from environment/dotenv via pydantic-settings.
 """
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -13,6 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # ---------------------------------------------------------------------------
 # Sub-setting blocks
 # ---------------------------------------------------------------------------
+
 
 class DatabaseSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -61,15 +63,11 @@ class LLMSettings(BaseSettings):
     default_llm_query_api_key: str = ""
     default_llm_fast_model: str = Field(
         default="qwen3-8b",
-        validation_alias=AliasChoices(
-            "DEFAULT_LLM_FAST_MODEL", "DEFAULT_LLM_FAST_OPENAI_MODEL"
-        ),
+        validation_alias=AliasChoices("DEFAULT_LLM_FAST_MODEL", "DEFAULT_LLM_FAST_OPENAI_MODEL"),
     )
     default_llm_deep_model: str = Field(
         default="qwen3.7-max",
-        validation_alias=AliasChoices(
-            "DEFAULT_LLM_DEEP_MODEL", "DEFAULT_LLM_DEEP_OPENAI_MODEL"
-        ),
+        validation_alias=AliasChoices("DEFAULT_LLM_DEEP_MODEL", "DEFAULT_LLM_DEEP_OPENAI_MODEL"),
     )
 
     # Transitional Python aliases. Deployments keep accepting the old env
@@ -207,6 +205,7 @@ class AppSettings(BaseSettings):
 
     app_name: str = "opentrace"
     app_env: Literal["development", "staging", "production"] = "development"
+    capability_profile: Literal["core", "data", "knowledge", "data_knowledge"] = "data_knowledge"
     app_secret_key: str = ""
     app_host: str = "0.0.0.0"
     app_port: int = 14100
@@ -235,16 +234,15 @@ class AppSettings(BaseSettings):
     web_fetch_timeout_seconds: float = 10.0
     web_fetch_max_redirects: int = 3
     web_fetch_max_response_bytes: int = 1_000_000
-    connector_allowed_redirect_origins: str = (
-        "http://localhost:14108,http://127.0.0.1:14108"
-    )
+    connector_allowed_redirect_origins: str = "http://localhost:14108,http://127.0.0.1:14108"
     connector_oauth_state_ttl_seconds: int = 600
 
     # Weather
     weather_api_key: str = ""
     weather_stack_api_key: str = ""
 
-    # Legacy 标签：/health 在 V4 启用时展示；V4 关闭时由 resolve_orchestrator_label 报告 vnext
+    # 兼容性细粒度开关：新部署应只配置 CAPABILITY_PROFILE。
+    # 这些字段保留用于滚动升级和紧急熔断，不再作为推荐组合公开。
     kernel_agent_enabled: bool = True
     kernel_agent_data_enabled: bool = True
     kernel_agent_tool_enabled: bool = True
@@ -367,8 +365,6 @@ class AppSettings(BaseSettings):
     kernel_autonomous_goal_commit_enabled: bool = False
     kernel_self_optimizing_runtime_enabled: bool = True
     kernel_self_optimizing_runtime_apply: bool = False
-    kernel_capability_evolution_enabled: bool = True
-    kernel_capability_evolution_interval: int = 10
     # Persist cognitive runtime state to Redis per phase (requires Redis)
     kernel_cognitive_state_persist_enabled: bool = False
     # Persist full CognitiveStateGraph JSON to Redis (bus write path); defaults on when cognitive_state_persist in prod profile
@@ -551,7 +547,9 @@ class AppSettings(BaseSettings):
 
     # ── NER-based PII masking ──────────────────────────────────────────
     kernel_ner_masking_enabled: bool = True
-    kernel_ner_masking_entity_types: str = "EMAIL,PHONE_CN,PHONE_INTL,CREDIT_CARD,ID_CN,IP_ADDRESS,PERSON_CN,LOCATION_CN,ORG_CN"
+    kernel_ner_masking_entity_types: str = (
+        "EMAIL,PHONE_CN,PHONE_INTL,CREDIT_CARD,ID_CN,IP_ADDRESS,PERSON_CN,LOCATION_CN,ORG_CN"
+    )
 
     # ── DataAgent V2 — Cognitive Data Core ────────────────────────────
     data_agent_v2_enabled: bool = True
@@ -637,6 +635,7 @@ class Settings(
     OTelSettings,
 ):
     """Unified settings object — single source of truth."""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -761,9 +760,7 @@ class Settings(
                 missing.append(env_name)
         if missing:
             joined = ", ".join(missing)
-            raise ValueError(
-                f"{self.app_env} requires explicit non-placeholder secrets: {joined}"
-            )
+            raise ValueError(f"{self.app_env} requires explicit non-placeholder secrets: {joined}")
         if self.web_fetch_enabled and not self.web_fetch_domain_list:
             raise ValueError(
                 f"{self.app_env} requires WEB_FETCH_ALLOWED_DOMAINS when web fetch is enabled"

@@ -247,7 +247,7 @@ def test_sql_executor_configures_read_only_transaction_and_limits():
 
     executor = SQLExecutor(max_rows=25, timeout_ms=1200)
     postgres_setup = executor._read_only_setup_statements("postgresql+asyncpg://db")
-    mysql_setup = executor._read_only_setup_statements("mysql+asyncmy://db")
+    mysql_setup = executor._read_only_setup_statements("mysql+aiomysql://db")
     assert "SET TRANSACTION READ ONLY" in postgres_setup
     assert any("statement_timeout" in statement for statement in postgres_setup)
     assert "SET TRANSACTION READ ONLY" in mysql_setup

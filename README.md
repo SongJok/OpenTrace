@@ -5,7 +5,7 @@
 [![CI](https://github.com/SongJok/OpenTrace/actions/workflows/ci.yml/badge.svg)](https://github.com/SongJok/OpenTrace/actions/workflows/ci.yml)
 [![vNext contracts](https://github.com/SongJok/OpenTrace/actions/workflows/vnext-contract.yml/badge.svg)](https://github.com/SongJok/OpenTrace/actions/workflows/vnext-contract.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/)
+[![Python 3.11–3.12](https://img.shields.io/badge/Python-3.11--3.12-3776AB.svg)](https://www.python.org/)
 
 OpenTrace is a self-hosted enterprise AgentOS. Built around an OpenAI-compatible Responses
 API, a recoverable Agent Loop, and durable PostgreSQL events, it brings enterprise databases,
@@ -105,7 +105,7 @@ return `410 Gone`.
 - Docker 24+
 - Docker Compose 2.20+
 - Node.js 20.19+ and npm 10+ for the frontend
-- Python 3.11+ for local development and tests
+- Python 3.11 or 3.12 for local development and tests
 
 ### 1. Prepare the configuration
 
@@ -192,8 +192,8 @@ cause staging and production startup to fail fast.
 
 | Type | Driver / protocol | Default port | Notes |
 | --- | --- | ---: | --- |
-| MySQL | `asyncmy` | `3306` | Read-only session settings, schema synchronization, and Text2SQL |
-| Doris | MySQL protocol / `asyncmy` | `9030` | Doris dialect with a compatible read-only execution strategy |
+| MySQL | `aiomysql` | `3306` | Read-only session settings, schema synchronization, and Text2SQL |
+| Doris | MySQL protocol / `aiomysql` | `9030` | Doris dialect with a compatible read-only execution strategy |
 | ClickHouse | `clickhouse-sqlalchemy` + `asynch` | `9000` | Schema synchronization through ClickHouse system tables |
 | PostgreSQL | `asyncpg` | `5432` | PostgreSQL dialect and read-only transactions |
 
@@ -245,7 +245,7 @@ Swagger is the authoritative, up-to-date API definition.
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -e ".[dev]"
+bash scripts/bootstrap_dev.sh
 ```
 
 When PostgreSQL and Redis run in Docker while the API runs on the host, override the container

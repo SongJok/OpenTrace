@@ -9,9 +9,10 @@ import string
 import uuid
 from datetime import datetime, timedelta
 
+import jwt
 from fastapi import APIRouter, Depends
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from jose import JWTError, jwt
+from jwt import InvalidTokenError
 from passlib.context import CryptContext
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
@@ -127,7 +128,7 @@ async def get_current_user(
     try:
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
         user_id: str = payload.get("sub", "")
-    except JWTError:
+    except InvalidTokenError:
         raise AppException(ErrorCodes.AUTH_INTERNAL_ERROR.code, message="Invalid token")
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()

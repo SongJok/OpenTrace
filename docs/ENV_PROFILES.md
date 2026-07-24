@@ -77,3 +77,16 @@ Worker 与 in-process dispatch 在 `kernel_agent_runtime_v3_enabled=true` 时走
 - `data_agent_v2_advanced_analytics_mode=off`
 
 聊天主路径固定走 Responses Agent Loop；已不存在 V4 回退开关。
+
+## P0 能力 Profile
+
+环境 Profile 负责安全强度，`CAPABILITY_PROFILE` 负责内置 Agent 集合。新部署只选择以下四套之一，避免组合爆炸：
+
+| `CAPABILITY_PROFILE` | 能力集合 |
+|---|---|
+| `core` | tool / skills / rules |
+| `data` | core + DataAgent |
+| `knowledge` | core + RAG |
+| `data_knowledge` | data + knowledge + web_intelligence + vision（默认） |
+
+旧 `KERNEL_AGENT_*_ENABLED` 字段只为滚动升级和紧急熔断保留，不再作为推荐配置面。实验例外见 `docs/FEATURE_FLAG_REGISTRY.md`。

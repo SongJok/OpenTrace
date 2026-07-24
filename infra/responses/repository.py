@@ -20,9 +20,13 @@ async def append_event(
     payload: dict[str, Any],
 ) -> ResponseEvent:
     # Serialise sequence allocation with all API/worker writers.
-    await db.scalar(select(ResponseRecord.id).where(ResponseRecord.id == response_id).with_for_update())
+    await db.scalar(
+        select(ResponseRecord.id).where(ResponseRecord.id == response_id).with_for_update()
+    )
     current = await db.scalar(
-        select(func.max(ResponseEvent.sequence_number)).where(ResponseEvent.response_id == response_id)
+        select(func.max(ResponseEvent.sequence_number)).where(
+            ResponseEvent.response_id == response_id
+        )
     )
     event = ResponseEvent(
         id=f"evt_{uuid.uuid4().hex}",
@@ -89,7 +93,9 @@ async def claim_response(
     return row
 
 
-async def renew_lease(db: AsyncSession, response_id: str, owner: str, lease_seconds: int = 120) -> bool:
+async def renew_lease(
+    db: AsyncSession, response_id: str, owner: str, lease_seconds: int = 120
+) -> bool:
     row = await db.scalar(
         select(ResponseRecord).where(
             ResponseRecord.id == response_id,

@@ -1,24 +1,20 @@
-# OpenTrace — 能力成熟度（对外与 README 对齐）
+# OpenTrace 能力成熟度
 
-| 模块 | 状态 | 说明 |
-|------|------|------|
-| vNext 主路径（Supervisor + Gateway + Executive） | **生产** | 契约测试覆盖 |
-| V5 路由（L0/L1/语义缓存） | **生产** | 启发式 + 小模型 |
-| RAG Agent + 混合检索/Rerank | **生产** | 需 pgvector + Key |
-| DataAgent V2 核心（Intent→SQL→Verify） | **生产** | Supervisor + DAG |
-| DataAgent V2 Phase4（insight/stat/viz） | **auto/stub 混合** | `data_agent_v2_advanced_analytics_mode` |
-| Memory Fabric + Redis graph | **生产**（单集群） | 跨进程 World Model ⚠️ |
-| Agent Runtime V3（Manifest / Contribution / UnifiedEvidence） | **生产** | DAG + Executive + Worker 统一 invoke；`attach_evidence_objects` 热路径 |
-| Data 凭据解密 | **生产** | `infra/security/data_source_secrets`（Agent/API 共用，无 gateway 依赖） |
-| Agent Bus 资格门控 | **生产** | manifest `bus_eligible`；`rules` 仅进程内 |
-| RuntimeContribution（统一 evidence/goal/memory/world/risks） | **生产** | `runtime_contribution.py` + executor trace |
-| CognitiveStateGraph（Goal→Evidence→Memory→World） | **生产**（单集群 + Redis 可选） | `bus.apply_runtime_contribution_to_bus` 单写；`KERNEL_COGNITIVE_STATE_GRAPH_PERSIST_ENABLED` / `turn_envelope` 见 `docs/architecture/turn_envelope_field_mapping.md` |
-| Tier-1 vision / skills / rules | **生产** | manifest 3.1.0 + bootstrap；rules 仅 API 进程 |
-| Web 单轨（web_intelligence） | **生产** | legacy `web` bootstrap off，alias 解析到 WI |
-| Capability Intelligence P1/P2 | **生产** | 可 flag 关闭降本 |
-| Cognitive Replay | **生产** | 审计向 |
-| V4 Orchestrator | **legacy** | 默认关闭 |
-| `context_composer` / DST / reference_resolver | **部分 stub** | 不影响主路径 |
-| `file_parser.parse_attachment_content` | **stub** | 附件多模态部分可用 |
+> **产品整体状态：Alpha。** OpenTrace 对外只使用 Alpha / Beta / GA，不再以单个模块“生产级”替代产品交付成熟度。在线架构以 `docs/architecture/runtime_manifest.yaml` 为准。
 
-更新本表时同步 README「当前能力」一节。
+| 产品能力 | 当前状态 | 进入 Beta 前的主要缺口 |
+|---|---|---|
+| Responses 持久化运行时 | **Alpha** | 真实故障注入、SLO、容量和备份恢复门禁 |
+| Agent Loop 与持久化审批 | **Alpha** | Golden Dataset、Trace Grading、副作用 reconciliation 演练 |
+| DataAgent / Text2SQL | **Alpha** | 脱敏评测集、方言黑盒覆盖、跨租户负向测试 |
+| RAG 与知识发布 | **Alpha** | 发布治理评测、引用准确率基线、生产规模召回测试 |
+| Memory / Goal / Task / Alert | **Alpha** | 一致性、恢复、租户隔离和运维告警覆盖 |
+| Agent Bus 与专家 Agent | **Alpha** | 独立 Worker Pool、背压、DLQ 运维和容量基线 |
+| 旧 Cognitive Runtime | **compatibility / experimental** | 不进入当前产品主路径；仅维护兼容合约 |
+| MCP / A2A | **未对外支持** | 完成真实协议、授权、审批、隔离与互操作测试 |
+
+## 成熟度定义
+
+- **Alpha（当前）**：核心能力可运行且有合约保护，但仍缺生产交付、安全和持续质量闭环。
+- **Beta**：可用于受控企业试点，具备恢复、租户隔离、评测和运维基线。
+- **GA**：完成生产 SLO、备份恢复、安全评审、容量与升级策略，并持续通过发布门禁。

@@ -107,3 +107,21 @@ Agent Loop 会把重复工具参数、重复有效结果、连续失败和无结
 ```bash
 bash restart.sh --build
 ```
+
+## P0 配置收敛
+
+- 产品只支持 `development`、`staging`、`production` 三种环境 Profile。
+- 内置 Agent 只支持 `core`、`data`、`knowledge`、`data_knowledge` 四种 `CAPABILITY_PROFILE`。
+- 公开高影响布尔开关以 `infra/config/flag_registry.py` 为准；实验开关缺 owner、引入版本、退出条件或最晚删除版本时 CI 失败。
+- 旧 Cognitive Runtime 细粒度字段继续兼容读取，但不进入 `.env.example` 的推荐配置面。
+
+## P0 迁移创建流程
+
+```bash
+python scripts/create_migration.py add_response_trace_id --release unreleased
+# 完成 upgrade/downgrade 内容后冻结校验和
+python scripts/freeze_migration.py r0001_add_response_trace_id
+python scripts/check_migration_policy.py
+```
+
+已提交迁移（包括文件名为 2026-07-25 至 2026-08-03 的历史文件）不重命名、不改写。新 revision 使用 `rNNNN_slug`，发布信息单独记录在 `alembic/revision_releases.json`。

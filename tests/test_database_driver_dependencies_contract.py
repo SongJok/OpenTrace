@@ -18,17 +18,26 @@ def test_clickhouse_async_dsn_has_dialect_and_driver_dependencies():
 def test_doris_reuses_the_installed_async_mysql_driver():
     router = (ROOT / "execution/data/db_router.py").read_text(encoding="utf-8")
     assert 'if t in {"doris"}' in router
-    assert "mysql+asyncmy" in router
+    assert "mysql+aiomysql" in router
 
 
 def test_doris_does_not_receive_mysql_transaction_setup():
     from execution.data.sql_executor import SQLExecutor
 
     executor = SQLExecutor(timeout_ms=1000)
-    dsn = "mysql+asyncmy://user:password@doris.example:9030/warehouse"
+    dsn = "mysql+aiomysql://user:password@doris.example:9030/warehouse"
 
     assert executor._read_only_setup_statements(dsn, source_type="doris") == ()
     assert executor._read_only_setup_statements(dsn, source_type="mysql") == (
         "SET TRANSACTION READ ONLY",
         "SET SESSION MAX_EXECUTION_TIME = 1000",
+    )
+
+
+def test_legacy_asyncmy_dsn_is_normalized_without_requiring_vulnerable_driver():
+    from execution.data.sql_executor import SQLExecutor
+
+    assert (
+        SQLExecutor._runtime_dsn("mysql+asyncmy://user:pass@db/app")
+        == "mysql+aiomysql://user:pass@db/app"
     )

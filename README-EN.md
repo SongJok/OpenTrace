@@ -5,7 +5,7 @@
 [![CI](https://github.com/SongJok/OpenTrace/actions/workflows/ci.yml/badge.svg)](https://github.com/SongJok/OpenTrace/actions/workflows/ci.yml)
 [![vNext contracts](https://github.com/SongJok/OpenTrace/actions/workflows/vnext-contract.yml/badge.svg)](https://github.com/SongJok/OpenTrace/actions/workflows/vnext-contract.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](https://www.python.org/)
+[![Python 3.11–3.12](https://img.shields.io/badge/Python-3.11--3.12-3776AB.svg)](https://www.python.org/)
 
 OpenTrace 是一个可自托管的企业 AgentOS。它以 OpenAI 风格的 Responses API、可恢复
 Agent Loop 和 PostgreSQL 持久化事件为核心，把企业数据库、知识库、审批治理、主动预警、
@@ -94,7 +94,7 @@ PostgreSQL 是在线事实来源，Redis 仅承担投递、唤醒和可选镜像
 - Docker 24+
 - Docker Compose 2.20+
 - Node.js 20.19+ 与 npm 10+（前端）
-- Python 3.11+（仅本地开发和测试需要）
+- Python 3.11 或 3.12（仅本地开发和测试需要）
 
 ### 1. 准备配置
 
@@ -177,8 +177,8 @@ API 端口以 `APP_PORT=14100` 为准。`GATEWAY_PORT` 必须保持一致；stag
 
 | 类型 | 驱动/协议 | 默认端口 | 说明 |
 | --- | --- | ---: | --- |
-| MySQL | `asyncmy` | `3306` | 支持只读会话设置、Schema 与 Text2SQL |
-| Doris | MySQL protocol / `asyncmy` | `9030` | 使用 Doris 方言与兼容的只读执行策略 |
+| MySQL | `aiomysql` | `3306` | 支持只读会话设置、Schema 与 Text2SQL |
+| Doris | MySQL protocol / `aiomysql` | `9030` | 使用 Doris 方言与兼容的只读执行策略 |
 | ClickHouse | `clickhouse-sqlalchemy` + `asynch` | `9000` | 使用 ClickHouse 系统表同步 Schema |
 | PostgreSQL | `asyncpg` | `5432` | 支持 PostgreSQL 方言与只读事务 |
 
@@ -227,7 +227,7 @@ python scripts/check_public_release.py
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -e ".[dev]"
+bash scripts/bootstrap_dev.sh
 ```
 
 如果 PostgreSQL/Redis 在 Docker 中，而 API 在宿主机运行，需要覆盖容器网络主机名：

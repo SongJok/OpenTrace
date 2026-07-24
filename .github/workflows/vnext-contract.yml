@@ -1,9 +1,7 @@
 name: vnext-contract
 
 on:
-  push:
-    branches: ["**"]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,10 +20,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install package (editable)
+      - name: Install from lock
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          python -m pip install uv==0.8.24
+          uv pip install --system --require-hashes -r requirements-dev.lock
+          uv pip install --system --no-deps -e .
 
       - name: Public release safety check
         run: python scripts/check_public_release.py
@@ -71,7 +70,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -e ".[dev]"
+      - name: Install from lock
+        run: |
+          python -m pip install uv==0.8.24
+          uv pip install --system --require-hashes -r requirements-dev.lock
+          uv pip install --system --no-deps -e .
       - name: Staging profile + agent strict + enterprise contracts
         run: |
           python -m pytest tests/test_config_truth_contract.py \

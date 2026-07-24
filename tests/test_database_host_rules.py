@@ -58,7 +58,7 @@ class DatabaseHostRulesTests(unittest.TestCase):
         resolve_host.assert_called_once_with("127.0.0.1")
         self.assertEqual(
             dsn,
-            "mysql+asyncmy://root:950514@host.docker.internal:3306/test_db",
+            "mysql+aiomysql://root:950514@host.docker.internal:3306/test_db",
         )
 
     def test_docker_compose_exposes_host_gateway_alias(self):

@@ -6,7 +6,8 @@ import time
 import uuid
 from urllib.parse import urlsplit
 
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError
 
 from infra.config.settings import settings
 
@@ -80,7 +81,7 @@ def verify_connector_oauth_state(
             _state_secret(),
             algorithms=[settings.jwt_algorithm],
         )
-    except JWTError as exc:
+    except InvalidTokenError as exc:
         raise ConnectorOAuthError("invalid or expired connector OAuth state") from exc
     expected = {
         "sub": user_id,

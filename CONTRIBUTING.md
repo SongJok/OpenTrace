@@ -10,7 +10,7 @@ cp .env.example .env
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -e ".[dev]"
+bash scripts/bootstrap_dev.sh
 
 cd frontend
 npm ci

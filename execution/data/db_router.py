@@ -27,9 +27,9 @@ class DBRouter:
         if t in {"postgres", "postgresql", "pg"}:
             return f"postgresql+asyncpg://{user}:{passwd}@{host}:{conn.port}/{conn.database}"
         if t in {"mysql"}:
-            return f"mysql+asyncmy://{user}:{passwd}@{host}:{conn.port}/{conn.database}"
+            return f"mysql+aiomysql://{user}:{passwd}@{host}:{conn.port}/{conn.database}"
         if t in {"clickhouse"}:
             return f"clickhouse+asynch://{user}:{passwd}@{host}:{conn.port}/{conn.database}"
         if t in {"doris"}:
-            return f"mysql+asyncmy://{user}:{passwd}@{host}:{conn.port}/{conn.database}"
+            return f"mysql+aiomysql://{user}:{passwd}@{host}:{conn.port}/{conn.database}"
         raise ValueError(f"unsupported data source type: {conn.source_type}")

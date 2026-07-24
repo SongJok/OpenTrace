@@ -1,4 +1,4 @@
-name: opentrace-ci-fast
+name: opentrace-pr-fast
 
 on:
   pull_request:
@@ -7,79 +7,39 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pr-fast-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  fast-check:
+  backend-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
+    timeout-minutes: 12
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Prepare development configuration
-        run: cp .env.example .env
-
-      - name: Start services (Docker)
-        run: bash start.sh
-
-      - name: Wait for API health
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - name: Install locked development dependencies
         run: |
-          for i in $(seq 1 40); do
-            if curl -sf http://127.0.0.1:14100/api/v1/health >/dev/null 2>&1; then
-              echo "API ready"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "API not ready"
-          exit 1
+          python -m pip install uv==0.8.24
+          uv lock --check
+          uv pip install --system --require-hashes -r requirements-dev.lock
+          uv pip install --system --no-deps -e .
+      - name: Run local-equivalent backend fast gate
+        run: PYTHON_BIN=python bash scripts/ci_fast.sh --backend
 
-      - name: Run quick E2E
-        run: bash scripts/verify_e2e.sh
-
-      - name: Run kernel loop contract
-        run: bash scripts/verify_kernel_loop.sh
-
-      - name: Install package (editable) for vNext contract imports
-        run: pip install -e ".[dev]"
-
-      - name: vNext architecture contract suite (no Docker LLM)
-        run: bash scripts/run_vnext_final_tests.sh
-
-      - name: Import boundaries
-        run: bash scripts/check_import_boundaries.sh
-
-      - name: Public release safety check
-        run: python scripts/check_public_release.py
-
-      - name: Import linter (importlinter)
-        run: lint-imports --config importlinter.ini
-
-      - name: Enterprise cognitive OS contract suite
-        run: bash scripts/run_enterprise_contract_tests.sh
-
-      - name: Full pytest (migration consistency)
-        run: python -m pytest -q --tb=no
-
-      - name: Run V4 agent lightweight contracts
-        run: |
-          python -m unittest \
-            tests/test_orchestrator_v4_contract.py \
-            tests/test_rag_agent_contract.py \
-            tests/test_all_agent_bus_routing_contract.py \
-            tests/test_agent_bus_governance_contract.py
-
-      - name: Dump diagnostics on failure
-        if: failure()
-        run: |
-          docker compose ps || true
-          docker compose logs --tail=200 api || true
-
-      - name: Stop and cleanup
-        if: always()
-        run: bash stop.sh --volumes
+  frontend-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Run local-equivalent frontend fast gate
+        run: bash scripts/ci_fast.sh --frontend

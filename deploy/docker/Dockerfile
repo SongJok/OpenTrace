@@ -6,11 +6,11 @@ WORKDIR /app
 ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ARG PIP_EXTRA_INDEX_URL=
 
-COPY requirements.txt ./
+COPY requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     PIP_INDEX_URL="${PIP_INDEX_URL}" \
     PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}" \
-    pip install --prefer-binary --disable-pip-version-check -r requirements.txt
+    pip install --prefer-binary --disable-pip-version-check --require-hashes -r requirements.lock
 
 COPY . .
 
