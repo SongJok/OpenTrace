@@ -24,14 +24,17 @@ def test_ingest_preserves_review_policy_and_trusted_project_scope():
     assert metadata["owner"] == "u1"
 
 
-def test_knowledge_page_is_connected_to_real_upload_jobs_and_networks():
+def test_knowledge_governance_reuses_unified_ingestion_and_review_lifecycle():
     page = (ROOT / "frontend/src/pages/KnowledgeCenterPage.tsx").read_text(encoding="utf-8")
+    documents_page = (ROOT / "frontend/src/pages/DocumentsPage.tsx").read_text(encoding="utf-8")
     documents = (ROOT / "gateway/api_gateway/routers/documents.py").read_text(encoding="utf-8")
-    assert "apiUploadDocument" in page
+    assert "apiUploadDocument" not in page
+    assert "apiUploadDocument" in documents_page
+    assert "我的资料" in documents_page and "投稿企业知识库" in documents_page
     assert "apiOrchestrateKnowledge" in page
     assert "apiGetKnowledgeGraph" in page
-    assert "apiPublishKnowledgePage" in page
-    assert "回主问答验证" in page
+    assert "apiDecideKnowledgeReview" in page
+    assert "apiPublishKnowledgePage" not in page
     assert "审核并发布" in page
     assert "window.setInterval" in page
     assert "mockGraph" not in page

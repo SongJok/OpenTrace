@@ -33,7 +33,7 @@ from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
 from infra.observability.logger import get_logger
 from infra.storage.database import db_session_dependency as get_db
-from infra.storage.models import Document, Project, User
+from infra.storage.models import Document, KnowledgeSource, Project, User
 from knowledge.access import CLASSIFICATION_RANK, require_space_role
 from knowledge.jobs import enqueue_document_compile
 from plugins.document_plugin import generate_llmwiki_entries
@@ -51,6 +51,15 @@ router = APIRouter()
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
+
+
+def _source_requires_withdrawal(source: KnowledgeSource) -> bool:
+    """已进入企业治理或发布链的来源不能随原始资料被物理删除。"""
+    return bool(
+        source.space_id
+        or source.active_version_id
+        or source.status in {"review", "published", "deprecated"}
+    )
 
 
 class DocumentOut(BaseModel):
@@ -434,12 +443,34 @@ async def delete_document(
     if not row:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Document not found")
 
-    # Remove governed derivatives first; raw evidence and source assets never
-    # outlive their underlying document.
+    # 已进入企业知识生命周期的资料必须撤回而不是物理删除，否则会破坏
+    # SourceVersion → Page/Claim/Relation → Citation 的审计与引用链。
     if await _has_table(db, "knowledge_sources"):
-        await db.execute(
-            text("DELETE FROM knowledge_sources WHERE document_id = :doc_id"), {"doc_id": doc_id}
+        governed_sources = list(
+            (
+                await db.execute(
+                    select(KnowledgeSource).where(
+                        KnowledgeSource.document_id == doc_id,
+                        KnowledgeSource.tenant_id == tenant_id,
+                        KnowledgeSource.workspace_id == workspace_id,
+                    )
+                )
+            ).scalars()
         )
+        protected_sources = [
+            source for source in governed_sources if _source_requires_withdrawal(source)
+        ]
+        if protected_sources:
+            raise AppException(
+                ErrorCodes.RESOURCE_EXISTS.code,
+                message="该资料已进入企业知识治理，请先在知识治理中心撤回知识来源",
+                details={"source_ids": [source.id for source in protected_sources]},
+            )
+        if governed_sources:
+            await db.execute(
+                text("DELETE FROM knowledge_sources WHERE document_id = :doc_id"),
+                {"doc_id": doc_id},
+            )
     # Use raw SQL deletes to avoid ORM cascade / lazy-load behavior entirely.
     if await _has_table(db, "document_llmwiki"):
         await db.execute(

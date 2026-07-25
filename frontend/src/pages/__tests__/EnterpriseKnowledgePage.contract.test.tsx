@@ -11,17 +11,28 @@ import {
 describe('enterprise knowledge base contracts', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it('exposes employee search, governed spaces and review workflow', async () => {
-    const pageSource = (await import('../EnterpriseKnowledgePage')).default.toString()
-    expect(pageSource).toContain('企业知识库')
-    expect(pageSource).toContain('知识资产')
-    expect(pageSource).toContain('来源与时效')
-    expect(pageSource).toContain('发布审核')
-    expect(pageSource).toContain('连接器')
-    expect(pageSource).toContain('成员权限')
-    expect(pageSource).toContain('syncRuns')
-    expect(pageSource).toContain('retrySyncRun')
-    expect(pageSource).toContain('knowledge_space_id')
+  it('separates employee knowledge, unified ingestion and governance workflows', async () => {
+    const employeeSource = (await import('../EnterpriseKnowledgePage')).default.toString()
+    const governanceSource = (await import('../KnowledgeCenterPage')).default.toString()
+    const documentsSource = (await import('../DocumentsPage')).default.toString()
+
+    expect(employeeSource).toContain('企业知识库')
+    expect(employeeSource).toContain('知识资产')
+    expect(employeeSource).toContain('来源与状态')
+    expect(employeeSource).toContain('投稿资料')
+    expect(employeeSource).not.toContain('apiListKnowledgeReviews')
+    expect(employeeSource).not.toContain('apiListEnterpriseKnowledgeConnectors')
+
+    expect(documentsSource).toContain('我的资料')
+    expect(documentsSource).toContain('投稿企业知识库')
+    expect(documentsSource).toContain('knowledge_space_id')
+
+    expect(governanceSource).toContain('知识治理中心')
+    expect(governanceSource).toContain('审核队列')
+    expect(governanceSource).toContain('连接器与同步')
+    expect(governanceSource).toContain('空间访问控制')
+    expect(governanceSource).toContain('syncRuns')
+    expect(governanceSource).toContain('retryRun')
   })
 
   it('uses the enterprise knowledge API envelope', async () => {

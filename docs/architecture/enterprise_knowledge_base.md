@@ -22,9 +22,19 @@
 
 | 产品面 | 用户 | 职责 |
 |---|---|---|
-| 企业知识库 `/knowledge-base` | 全体员工 | 搜索、浏览空间、查看来源、提交知识、反馈 |
-| 知识治理 `/knowledge` | Owner/Steward/Reviewer | 编译规则、关系图、任务、质量和来源治理 |
+| 我的资料 `/documents` | 全体员工 | 原始文件、个人/Project 检索资料，以及向知识空间投稿的唯一上传入口 |
+| 企业知识库 `/knowledge-base` | 全体员工 | 搜索、浏览空间、查看已发布资产和来源状态、发起知识投稿 |
+| 知识治理中心 `/knowledge` | Owner/Steward/Reviewer | 编排规则、关系图、任务、审核、连接器、同步、质量和空间授权 |
 | Responses/RAG | Agent | 在统一权限范围内检索 Page、Claim、Relation 和原文证据 |
+
+产品层必须保持以下边界：
+
+- `Document` 是原始内容事实，不等于已发布企业知识；
+- `KnowledgeSource` 是稳定治理身份，更新文件应生成新 Source Version；
+- `KnowledgePage/Claim/Relation` 是派生资产，不能脱离 Source Version 成为第二套事实；
+- 员工端不直接操作编译 Job、Connector Cursor、Review 决策或空间 ACL；
+- 企业知识版本只能通过 Review Task 决策发布，兼容 Page Publish API 仅用于非空间个人知识；
+- 已进入企业知识生命周期的 Document 不能物理删除，必须先撤回 Source 并保留审计链。
 
 ## 治理边界
 

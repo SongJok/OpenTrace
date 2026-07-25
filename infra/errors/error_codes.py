@@ -23,6 +23,8 @@ class ErrorCodes:
     # Auth (01)
     AUTH_SERVICE_UNAVAILABLE = ErrorSpec(104001, 503, "认证服务不可用")
     AUTH_INTERNAL_ERROR = ErrorSpec(104002, 500, "认证内部错误")
+    AUTH_INVALID_CREDENTIALS = ErrorSpec(104003, 401, "账号或密码错误")
+    AUTH_INVALID_TOKEN = ErrorSpec(104004, 401, "登录凭证无效或已过期")
     AUTH_UNKNOWN = ErrorSpec(105001, 500, "认证未知错误")
 
     # Registration (02)

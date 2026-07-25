@@ -87,8 +87,8 @@ def _hash(password: str) -> str:
     return pwd_ctx.hash(password)
 
 
-def _verify(plain: str, hashed: str | None) -> bool:
-    if hashed is None:
+def _verify(plain: str | None, hashed: str | None) -> bool:
+    if not plain or hashed is None:
         return False
     return pwd_ctx.verify(plain, hashed)
 
@@ -129,11 +129,11 @@ async def get_current_user(
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
         user_id: str = payload.get("sub", "")
     except InvalidTokenError:
-        raise AppException(ErrorCodes.AUTH_INTERNAL_ERROR.code, message="Invalid token")
+        raise AppException(ErrorCodes.AUTH_INVALID_TOKEN.code)
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if not user or user.status != "active":
-        raise AppException(ErrorCodes.AUTH_INTERNAL_ERROR.code, message="User not found")
+        raise AppException(ErrorCodes.AUTH_INVALID_TOKEN.code)
     return user
 
 
@@ -155,17 +155,18 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)) -> 
     if existing.scalar_one_or_none():
         raise AppException(ErrorCodes.RESOURCE_EXISTS.code, message="Email already registered")
 
+    password = (req.password or "").strip()
     dev_auto = (
         settings.app_env == "development"
         and settings.dev_registration_auto_activate
-        and bool((req.password or "").strip())
+        and bool(password)
     )
 
     if dev_auto:
         user = User(
             id=str(uuid.uuid4()),
             email=email,
-            hashed_password=_hash(req.password.strip()),
+            hashed_password=_hash(password),
             display_name=req.display_name or email.split("@")[0],
             status="active",
             role="user",
@@ -211,10 +212,10 @@ async def login(
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if not user:
-        raise AppException(ErrorCodes.AUTH_INTERNAL_ERROR.code, message="Invalid credentials")
+        raise AppException(ErrorCodes.AUTH_INVALID_CREDENTIALS.code)
     _check_user_active(user)
     if not _verify(form.password, user.hashed_password):
-        raise AppException(ErrorCodes.AUTH_INTERNAL_ERROR.code, message="Invalid credentials")
+        raise AppException(ErrorCodes.AUTH_INVALID_CREDENTIALS.code)
     token = _create_token(user.id, user.email)
     logger.info("User logged in", email=user.email)
     return LoginResponse(
@@ -236,10 +237,10 @@ async def login_json(
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if not user:
-        raise AppException(ErrorCodes.AUTH_INTERNAL_ERROR.code, message="Invalid credentials")
+        raise AppException(ErrorCodes.AUTH_INVALID_CREDENTIALS.code)
     _check_user_active(user)
     if not _verify(req.password, user.hashed_password):
-        raise AppException(ErrorCodes.AUTH_INTERNAL_ERROR.code, message="Invalid credentials")
+        raise AppException(ErrorCodes.AUTH_INVALID_CREDENTIALS.code)
     token = _create_token(user.id, user.email)
     return LoginResponse(
         access_token=token,

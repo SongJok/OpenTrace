@@ -1,5 +1,6 @@
 // API client — all backend calls go through here
 import { normalizeFinalAnswerEnvelope, type TurnMetaEnvelope } from '../utils/streamEnvelope'
+import { useAuthStore } from '../store/auth'
 
 const BASE = '/api/v1'
 const RESPONSES_BASE = '/api/v2'
@@ -79,26 +80,37 @@ function authHeaders(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
 }
 
+function handleUnauthorized(res: Response, init?: RequestInit): Response {
+  const hasAuthorization = new Headers(init?.headers).has('Authorization')
+  if (res.status === 401 && hasAuthorization) {
+    useAuthStore.getState().logout()
+  }
+  return res
+}
+
 async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   try {
     const res = await fetch(`${BASE}${path}`, init)
-    return res
+    return handleUnauthorized(res, init)
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw error
     }
-    return fetch(`${BACKEND_DIRECT}${path}`, init)
+    const res = await fetch(`${BACKEND_DIRECT}${path}`, init)
+    return handleUnauthorized(res, init)
   }
 }
 
 async function apiFetchResponses(path: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(`${RESPONSES_BASE}${path}`, init)
+    const res = await fetch(`${RESPONSES_BASE}${path}`, init)
+    return handleUnauthorized(res, init)
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw error
     }
-    return fetch(`${RESPONSES_BACKEND_DIRECT}${path}`, init)
+    const res = await fetch(`${RESPONSES_BACKEND_DIRECT}${path}`, init)
+    return handleUnauthorized(res, init)
   }
 }
 
@@ -334,11 +346,16 @@ export interface KnowledgeSourceItem {
   id: string
   document_id?: string | null
   project_id?: string | null
+  space_id?: string | null
   title: string
   source_type: string
+  source_system?: string | null
   authority: string
+  classification?: string | null
   status: string
+  sync_status?: string | null
   active_version_id?: string | null
+  review_due_at?: string | null
   updated_at?: string | null
 }
 
@@ -501,8 +518,26 @@ export async function apiDecideKnowledgeReview(token: string, reviewId: string, 
   return res.json()
 }
 
-export async function apiListKnowledgeSources(token: string, projectId?: string | null): Promise<KnowledgeSourceItem[]> {
-  const res = await apiFetch(`/knowledge/sources${projectQuery(projectId)}`, { headers: authHeaders(token) })
+export async function apiWithdrawKnowledgeSource(token: string, sourceId: string, reason: string): Promise<Record<string, unknown>> {
+  const res = await apiFetch(`/knowledge/sources/${encodeURIComponent(sourceId)}/withdraw`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ reason }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '撤回知识来源失败'))
+  return res.json()
+}
+
+export async function apiListKnowledgeSources(
+  token: string,
+  options?: { projectId?: string | null; spaceId?: string | null; status?: string | null },
+): Promise<KnowledgeSourceItem[]> {
+  const query = new URLSearchParams()
+  if (options?.projectId) query.set('project_id', options.projectId)
+  if (options?.spaceId) query.set('space_id', options.spaceId)
+  if (options?.status) query.set('status', options.status)
+  const suffix = query.size ? `?${query.toString()}` : ''
+  const res = await apiFetch(`/knowledge/sources${suffix}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取知识源失败'))
   return res.json()
 }
@@ -1784,14 +1819,15 @@ export async function apiUpdateDocument(
 export async function apiSearchDocuments(
   token: string,
   query: string,
-  topK = 6
+  topK = 6,
+  projectId?: string | null,
 ): Promise<SearchResult[]> {
   const res = await apiFetch('/documents/search', {
     method: 'POST',
     headers: authHeaders(token),
-    body: JSON.stringify({ query, top_k: topK }),
+    body: JSON.stringify({ query, top_k: topK, project_id: projectId || null }),
   })
-  if (!res.ok) throw new Error('Search failed')
+  if (!res.ok) throw new Error(await readApiError(res, 'Search failed'))
   return res.json()
 }
 

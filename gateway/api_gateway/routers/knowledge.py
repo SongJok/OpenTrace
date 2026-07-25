@@ -29,7 +29,7 @@ from infra.storage.models import (
     Project,
     User,
 )
-from knowledge.access import require_space_role
+from knowledge.access import accessible_source_predicate, require_space_role, resolve_access_context
 from knowledge.domain import KnowledgeStatus, source_status_during_refresh
 from knowledge.evolution import build_evolution_proposal
 from knowledge.graph import build_project_graph, link_project_pages
@@ -70,32 +70,54 @@ class KnowledgeTraceRequest(BaseModel):
 async def list_knowledge_sources(
     http_request: Request,
     project_id: str | None = None,
+    space_id: str | None = None,
+    status: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
+    """统一来源查询：默认返回我的来源，指定空间时应用企业 ACL。"""
     tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
     stmt = select(KnowledgeSource).where(
-        KnowledgeSource.owner_id == current_user.id,
         KnowledgeSource.tenant_id == tenant_id,
         KnowledgeSource.workspace_id == workspace_id,
     )
+    if space_id:
+        try:
+            await require_space_role(
+                db, user=current_user, tenant_id=tenant_id, workspace_id=workspace_id,
+                space_id=space_id, required_role="viewer",
+            )
+        except PermissionError as exc:
+            raise AppException(ErrorCodes.PERMISSION_DENIED.code, message=str(exc)) from exc
+        context = await resolve_access_context(
+            db, user=current_user, tenant_id=tenant_id, workspace_id=workspace_id,
+        )
+        stmt = stmt.where(
+            KnowledgeSource.space_id == space_id,
+            accessible_source_predicate(context),
+        )
+    else:
+        stmt = stmt.where(KnowledgeSource.owner_id == current_user.id)
     if project_id:
         stmt = stmt.where(KnowledgeSource.project_id == project_id)
-    rows = (
-        await db.execute(
-            stmt.order_by(KnowledgeSource.updated_at.desc())
-        )
-    ).scalars().all()
+    if status:
+        stmt = stmt.where(KnowledgeSource.status == status)
+    rows = (await db.execute(stmt.order_by(KnowledgeSource.updated_at.desc()))).scalars().all()
     return [
         {
             "id": row.id,
             "document_id": row.document_id,
             "title": row.title,
             "source_type": row.source_type,
+            "source_system": row.source_system,
             "authority": row.authority,
+            "classification": row.classification,
             "status": row.status,
+            "sync_status": row.sync_status,
             "project_id": row.project_id,
+            "space_id": row.space_id,
             "active_version_id": row.active_version_id,
+            "review_due_at": row.review_due_at.isoformat() if row.review_due_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
         for row in rows
@@ -597,18 +619,11 @@ async def publish_knowledge_page(
     if version is None or source is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Knowledge source not found")
     if source.space_id:
-        try:
-            await require_space_role(
-                db,
-                user=current_user,
-                tenant_id=tenant_id,
-                workspace_id=workspace_id,
-                space_id=source.space_id,
-                required_role="publisher",
-            )
-        except PermissionError as exc:
-            raise AppException(ErrorCodes.PERMISSION_DENIED.code, message=str(exc)) from exc
-    elif source.owner_id != current_user.id:
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message="企业知识版本必须通过审核任务发布",
+        )
+    if source.owner_id != current_user.id:
         raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="Knowledge publish denied")
     try:
         result = await publish_source_version(

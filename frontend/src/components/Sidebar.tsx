@@ -247,6 +247,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
         </button>
         <button
           onClick={() => navigate('/documents')}
+          title="我的资料"
           className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
         >
           <FileText size={16} className="cartoon-icon icon-documents" />
@@ -296,10 +297,20 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
         </button>
         <button
           onClick={() => navigate('/knowledge-base')}
+          title="企业知识库"
           className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
         >
-          <Network size={16} className="cartoon-icon" />
+          <BookOpen size={16} className="cartoon-icon" />
         </button>
+        {role === 'admin' && (
+          <button
+            onClick={() => navigate('/knowledge')}
+            title="知识治理中心"
+            className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+          >
+            <Network size={16} className="cartoon-icon" />
+          </button>
+        )}
         {role === 'admin' && (
           <button
             onClick={() => navigate('/permissions')}
@@ -484,7 +495,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           <ChevronRight size={14} className={clsx('transition-transform', showTools && 'rotate-90')} />
         </button>
         {showTools && <div className="grid grid-cols-2 gap-2">
-          <NavButton icon={<FileText size={15} className="cartoon-icon icon-documents" />} label={t('nav.documents')} onClick={() => navigate('/documents')} />
+          <NavButton icon={<FileText size={15} className="cartoon-icon icon-documents" />} label="我的资料" onClick={() => navigate('/documents')} />
           <NavButton icon={<Database size={15} className="cartoon-icon icon-database" />} label="数据库" onClick={() => navigate('/databases')} />
           <NavButton icon={<Brain size={15} className="cartoon-icon icon-memory" />} label={t('nav.memories')} onClick={() => navigate('/memories')} />
           <NavButton icon={<Bell size={15} className="cartoon-icon icon-task" />} label={t('nav.tasks')} onClick={() => navigate('/tasks')} />
@@ -493,7 +504,9 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           <NavButton icon={<Plug size={15} className="cartoon-icon icon-integrations" />} label={t('nav.integrations')} onClick={() => navigate('/integrations')} />
           <NavButton icon={<Wrench size={15} className="cartoon-icon icon-skills" />} label="Skills" onClick={() => navigate(store.activeId ? `/skills?session=${encodeURIComponent(store.activeId)}` : '/skills')} />
           <NavButton icon={<BookOpen size={15} className="cartoon-icon" />} label="企业知识库" onClick={() => navigate('/knowledge-base')} />
-          <NavButton icon={<Network size={15} className="cartoon-icon" />} label="知识治理" onClick={() => navigate('/knowledge')} />
+          {role === 'admin' && (
+            <NavButton icon={<Network size={15} className="cartoon-icon" />} label="知识治理中心" onClick={() => navigate('/knowledge')} />
+          )}
           <NavButton icon={<FileCode size={15} className="cartoon-icon icon-rules" />} label="规则" onClick={() => navigate('/rules')} />
           {role === 'admin' && (
             <NavButton icon={<ShieldCheck size={15} className="cartoon-icon icon-permissions" />} label="权限" onClick={() => navigate('/permissions')} />

@@ -209,15 +209,24 @@ def test_governed_migration_and_local_alembic_template_are_present() -> None:
 
 
 def test_frontend_separates_employee_knowledge_base_from_governance_console() -> None:
-    page = (ROOT / "frontend/src/pages/EnterpriseKnowledgePage.tsx").read_text()
+    employee_page = (ROOT / "frontend/src/pages/EnterpriseKnowledgePage.tsx").read_text()
+    governance_page = (ROOT / "frontend/src/pages/KnowledgeCenterPage.tsx").read_text()
+    documents_page = (ROOT / "frontend/src/pages/DocumentsPage.tsx").read_text()
     app = (ROOT / "frontend/src/App.tsx").read_text()
     sidebar = (ROOT / "frontend/src/components/Sidebar.tsx").read_text()
     client = (ROOT / "frontend/src/api/client.ts").read_text()
-    assert "企业知识库" in page
-    assert "知识资产" in page and "来源与时效" in page and "发布审核" in page
-    assert "同步运行记录" in page and "重试失败项" in page
+    assert "企业知识库" in employee_page
+    assert "知识资产" in employee_page and "来源与状态" in employee_page
+    assert "apiListKnowledgeReviews" not in employee_page
+    assert "apiListEnterpriseKnowledgeConnectors" not in employee_page
+    assert "投稿资料" in employee_page and "/documents?space_id=" in employee_page
+    assert "知识治理中心" in governance_page
+    assert "审核队列" in governance_page and "连接器与同步" in governance_page
+    assert "空间访问控制" in governance_page and "重试失败项" in governance_page
+    assert "我的资料" in documents_page and "投稿企业知识库" in documents_page
     assert 'path="/knowledge-base"' in app
-    assert "企业知识库" in sidebar and "知识治理" in sidebar
+    assert "企业知识库" in sidebar and "知识治理中心" in sidebar
+    assert "role === 'admin'" in sidebar
     assert "apiSearchEnterpriseKnowledge" in client
     assert "apiListKnowledgeSyncRuns" in client
     assert "apiRetryKnowledgeSyncRun" in client
