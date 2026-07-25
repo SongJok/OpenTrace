@@ -7,7 +7,7 @@ import json
 import re
 import uuid
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, select, update
@@ -23,8 +23,10 @@ from infra.storage.models import (
     KnowledgeCompilationJob,
     KnowledgePage,
     KnowledgeRelation,
+    KnowledgeReviewTask,
     KnowledgeSource,
     KnowledgeSourceVersion,
+    KnowledgeSpace,
 )
 from knowledge.domain import (
     KNOWLEDGE_COMPILER_VERSION,
@@ -284,6 +286,10 @@ async def compile_document_knowledge_in_session(
         return {"status": "skipped", "reason": "document_not_ready", "document_id": document_id}
 
     digest = content_hash(document.content or "")
+    try:
+        document_metadata = json.loads(document.doc_metadata or "{}")
+    except (TypeError, json.JSONDecodeError):
+        document_metadata = {}
     job = await db.get(KnowledgeCompilationJob, job_id) if job_id else None
     source_result = await db.execute(
         select(KnowledgeSource).where(
@@ -328,11 +334,17 @@ async def compile_document_knowledge_in_session(
             tenant_id=document.tenant_id,
             workspace_id=document.workspace_id,
             project_id=document.project_id,
+            space_id=document_metadata.get("knowledge_space_id"),
+            steward_id=document_metadata.get("knowledge_steward_id") or document.owner_id,
             source_type="document",
             external_ref=f"document:{document.id}",
             title=document.title,
             content_hash=digest,
-            authority=KnowledgeAuthority.CONTEXTUAL.value,
+            authority=str(
+                document_metadata.get("knowledge_authority") or KnowledgeAuthority.CONTEXTUAL.value
+            ),
+            classification=str(document_metadata.get("classification") or "internal"),
+            source_system=str(document_metadata.get("source_system") or "upload"),
             status=KnowledgeStatus.COMPILING.value,
             source_metadata={"file_type": document.file_type, "document_version": document.version},
         )
@@ -346,6 +358,18 @@ async def compile_document_knowledge_in_session(
             KnowledgeStatus.COMPILING,
         )
         source.project_id = document.project_id
+        source.space_id = source.space_id or document_metadata.get("knowledge_space_id")
+        source.steward_id = (
+            source.steward_id or document_metadata.get("knowledge_steward_id") or document.owner_id
+        )
+        source.classification = str(
+            document_metadata.get("classification") or source.classification or "internal"
+        )
+        source.source_system = str(
+            document_metadata.get("source_system") or source.source_system or "upload"
+        )
+        source.deleted_at = None
+        source.sync_status = "current"
         source.source_metadata = {
             **(source.source_metadata or {}),
             "file_type": document.file_type,
@@ -384,15 +408,18 @@ async def compile_document_knowledge_in_session(
         job.started_at = job.started_at or datetime.now(UTC)
 
     try:
-        try:
-            document_metadata = json.loads(document.doc_metadata or "{}")
-        except (TypeError, json.JSONDecodeError):
-            document_metadata = {}
+        space = await db.get(KnowledgeSpace, source.space_id) if source.space_id else None
         requested_publish_policy = str(document_metadata.get("publish_policy") or "").lower()
         if requested_publish_policy == "review":
             publication_status = KnowledgeStatus.REVIEW.value
         elif requested_publish_policy == "auto":
             publication_status = KnowledgeStatus.PUBLISHED.value
+        elif space is not None:
+            publication_status = (
+                KnowledgeStatus.PUBLISHED.value
+                if space.publish_policy == "auto"
+                else KnowledgeStatus.REVIEW.value
+            )
         else:
             publication_status = (
                 KnowledgeStatus.PUBLISHED.value
@@ -553,9 +580,43 @@ async def compile_document_knowledge_in_session(
                     )
         version.status = publication_status
         version.compiled_at = datetime.now(UTC)
+        if publication_status == KnowledgeStatus.REVIEW.value:
+            review_task = await db.scalar(
+                select(KnowledgeReviewTask).where(
+                    KnowledgeReviewTask.source_version_id == version.id
+                )
+            )
+            if review_task is None:
+                review_task = KnowledgeReviewTask(
+                    id=str(uuid.uuid4()),
+                    source_version_id=version.id,
+                    space_id=source.space_id,
+                    tenant_id=document.tenant_id,
+                    workspace_id=document.workspace_id,
+                    status="pending",
+                    required_role="publisher",
+                    requested_by=document.owner_id,
+                )
+                db.add(review_task)
+            else:
+                review_task.status = "pending"
+                review_task.decided_by = None
+                review_task.decided_at = None
+                review_task.decision_comment = None
+            review_task.diff_summary = {
+                "previous_version_id": source.active_version_id,
+                "pages": len(pages),
+                "claims": len(claims),
+                "relations": len(relations),
+                "content_hash": digest,
+            }
         if publication_status == KnowledgeStatus.PUBLISHED.value:
             source.active_version_id = version.id
             source.status = KnowledgeStatus.PUBLISHED.value
+            if space is not None:
+                source.review_due_at = datetime.now(UTC) + timedelta(
+                    days=max(1, space.review_cycle_days)
+                )
         else:
             # Keep the previous active revision queryable while a new
             # revision waits for review.

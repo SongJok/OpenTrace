@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select, update
 
+from infra.config.settings import settings
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import (
     Document,
@@ -34,6 +36,10 @@ async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
             return {"status": "skipped", "reason": "document_not_ready", "document_id": document_id}
 
         digest = content_hash(document.content or "")
+        try:
+            document_metadata = json.loads(document.doc_metadata or "{}")
+        except (TypeError, json.JSONDecodeError):
+            document_metadata = {}
         source = await db.scalar(
             select(KnowledgeSource).where(
                 KnowledgeSource.document_id == document.id,
@@ -43,19 +49,31 @@ async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
         )
         if source is None:
             source = KnowledgeSource(
-                id=stable_id("source", f"{document.tenant_id}:{document.workspace_id}:{document.id}"),
+                id=stable_id(
+                    "source", f"{document.tenant_id}:{document.workspace_id}:{document.id}"
+                ),
                 document_id=document.id,
                 owner_id=document.owner_id,
                 tenant_id=document.tenant_id,
                 workspace_id=document.workspace_id,
                 project_id=document.project_id,
+                space_id=document_metadata.get("knowledge_space_id"),
+                steward_id=document_metadata.get("knowledge_steward_id") or document.owner_id,
                 source_type="document",
                 external_ref=f"document:{document.id}",
                 title=document.title,
                 content_hash=digest,
-                authority=KnowledgeAuthority.CONTEXTUAL.value,
+                authority=str(
+                    document_metadata.get("knowledge_authority")
+                    or KnowledgeAuthority.CONTEXTUAL.value
+                ),
+                classification=str(document_metadata.get("classification") or "internal"),
+                source_system=str(document_metadata.get("source_system") or "upload"),
                 status=KnowledgeStatus.COMPILING.value,
-                source_metadata={"file_type": document.file_type, "document_version": document.version},
+                source_metadata={
+                    "file_type": document.file_type,
+                    "document_version": document.version,
+                },
             )
             db.add(source)
             await db.flush()
@@ -63,6 +81,20 @@ async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
             source.content_hash = digest
             source.title = document.title
             source.project_id = document.project_id
+            source.space_id = source.space_id or document_metadata.get("knowledge_space_id")
+            source.steward_id = (
+                source.steward_id
+                or document_metadata.get("knowledge_steward_id")
+                or document.owner_id
+            )
+            source.classification = str(
+                document_metadata.get("classification") or source.classification or "internal"
+            )
+            source.source_system = str(
+                document_metadata.get("source_system") or source.source_system or "upload"
+            )
+            source.deleted_at = None
+            source.sync_status = "current"
 
         compiled_revision = await db.scalar(
             select(KnowledgeSourceVersion.id).where(
@@ -96,7 +128,12 @@ async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
         )
         if existing is not None:
             await db.commit()
-            return {"status": "queued", "job_id": existing.id, "document_id": document_id, "deduplicated": True}
+            return {
+                "status": "queued",
+                "job_id": existing.id,
+                "document_id": document_id,
+                "deduplicated": True,
+            }
 
         job = KnowledgeCompilationJob(
             id=str(uuid.uuid4()),
@@ -111,7 +148,12 @@ async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
         )
         db.add(job)
         await db.commit()
-        return {"status": "queued", "job_id": job.id, "document_id": document_id, "deduplicated": False}
+        return {
+            "status": "queued",
+            "job_id": job.id,
+            "document_id": document_id,
+            "deduplicated": False,
+        }
 
 
 async def process_pending_compile_jobs(*, limit: int = 4, worker_id: str | None = None) -> int:
@@ -129,7 +171,7 @@ async def process_pending_compile_jobs(*, limit: int = 4, worker_id: str | None 
             # completion.  Requeue only old running jobs so a fresh worker can
             # recover them without racing a healthy worker.
             reclaim_minutes = max(1, int(os.getenv("KNOWLEDGE_JOB_RECLAIM_MINUTES", "10")))
-            cutoff = datetime.now(timezone.utc) - timedelta(minutes=reclaim_minutes)
+            cutoff = datetime.now(UTC) - timedelta(minutes=reclaim_minutes)
             await db.execute(
                 update(KnowledgeCompilationJob)
                 .where(
@@ -154,7 +196,7 @@ async def process_pending_compile_jobs(*, limit: int = 4, worker_id: str | None 
                 break
             job, source = row
             job.status = "running"
-            job.started_at = datetime.now(timezone.utc)
+            job.started_at = datetime.now(UTC)
             job.result_metadata = {**(job.result_metadata or {}), "worker_id": worker}
             await db.commit()
 
@@ -168,7 +210,7 @@ async def process_pending_compile_jobs(*, limit: int = 4, worker_id: str | None 
                 if failed is not None:
                     failed.status = "failed"
                     failed.error = str(exc)[:2000]
-                    failed.completed_at = datetime.now(timezone.utc)
+                    failed.completed_at = datetime.now(UTC)
                     await db.commit()
         processed += 1
     return processed
@@ -185,7 +227,9 @@ async def reconcile_ready_documents(*, limit: int = 200) -> dict[str, int]:
                     .order_by(Document.updated_at.desc())
                     .limit(max(1, min(limit, 1000)))
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
     queued = 0
     for document_id in document_ids:
@@ -206,8 +250,13 @@ async def knowledge_job_loop() -> None:
             if loop.time() >= next_reconcile:
                 await reconcile_ready_documents()
                 next_reconcile = loop.time() + reconcile_interval
-            processed = await process_pending_compile_jobs()
-            if not processed:
+            from knowledge.sync import process_pending_sync_items
+
+            sync_processed = await process_pending_sync_items(
+                limit=max(1, int(settings.knowledge_sync_batch_size))
+            )
+            compile_processed = await process_pending_compile_jobs()
+            if not sync_processed and not compile_processed:
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             raise

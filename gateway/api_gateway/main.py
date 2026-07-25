@@ -30,6 +30,7 @@ from gateway.api_gateway.routers import (
     feedback,
     health,
     knowledge,
+    knowledge_enterprise,
     memories,
     metrics,
     personalization,
@@ -174,6 +175,7 @@ app.include_router(conversations.router, prefix="/api/v1", tags=["conversations"
 app.include_router(cognitive.router, prefix="/api/v1", tags=["cognitive"])
 app.include_router(documents.router, prefix="/api/v1", tags=["documents"])
 app.include_router(knowledge.router, prefix="/api/v1", tags=["knowledge"])
+app.include_router(knowledge_enterprise.router, prefix="/api/v1", tags=["enterprise-knowledge"])
 app.include_router(memories.router, prefix="/api/v1", tags=["memories"])
 app.include_router(tasks.router, prefix="/api/v1", tags=["tasks"])
 app.include_router(audit.router, prefix="/api/v1", tags=["audit"])

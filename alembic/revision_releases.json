@@ -1,4 +1,11 @@
 {
   "schema_version": 1,
-  "revisions": {}
+  "revisions": {
+    "r0001_enterprise_knowledge_base": {
+      "release": "unreleased"
+    },
+    "r0002_durable_knowledge_sync_queue": {
+      "release": "unreleased"
+    }
+  }
 }

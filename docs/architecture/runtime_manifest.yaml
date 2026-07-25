@@ -3,7 +3,7 @@ product:
   name: OpenTrace
   maturity: Alpha
   maturity_scale: [Alpha, Beta, GA]
-  current_as_of: "2026-07-24"
+  current_as_of: "2026-07-25"
   positioning: 可治理的企业数据与知识 Agent 执行平台
 
 online_runtime:
@@ -52,6 +52,36 @@ online_runtime:
     environment_profiles: [development, staging, production]
     capability_profiles: [core, data, knowledge, data_knowledge]
     feature_flag_registry: infra.config.flag_registry:KERNEL_FLAG_REGISTRY
+
+
+enterprise_knowledge:
+  maturity: Alpha
+  control_plane: knowledge-orchestration
+  employee_product: enterprise-knowledge-base
+  api_routes:
+    - {method: GET, path: /api/v1/knowledge/spaces}
+    - {method: POST, path: /api/v1/knowledge/search}
+    - {method: POST, path: "/api/v1/knowledge/connectors/{connector_id}/push"}
+    - {method: GET, path: /api/v1/knowledge/sync-runs}
+    - {method: GET, path: "/api/v1/knowledge/sync-runs/{run_id}/items"}
+    - {method: POST, path: "/api/v1/knowledge/sync-runs/{run_id}/retry"}
+    - {method: POST, path: "/api/v1/knowledge/reviews/{review_id}/decision"}
+  models_module: infra.storage.models
+  required_models:
+    - KnowledgeSpace
+    - KnowledgeSpaceMember
+    - KnowledgePrincipalMembership
+    - KnowledgeSpaceProject
+    - KnowledgeConnector
+    - KnowledgeSyncRun
+    - KnowledgeSyncItem
+    - KnowledgeSourcePermission
+    - KnowledgeReviewTask
+  authorization: knowledge.access:accessible_source_predicate
+  publication: knowledge.lifecycle:publish_source_version
+  sync_worker: knowledge.sync:process_pending_sync_items
+  source_of_truth: PostgreSQL
+  projection_only: Obsidian Vault
 
 compatibility_runtime:
   maturity: Alpha

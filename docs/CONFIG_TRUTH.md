@@ -41,6 +41,9 @@
 | `KNOWLEDGE_STALE_AFTER_DAYS` | `settings.knowledge_stale_after_days` | 默认 stale 判定周期 |
 | `KNOWLEDGE_JOB_POLL_SECONDS` | `agents.worker` 环境变量 | 持久化编译队列轮询间隔 |
 | `KNOWLEDGE_JOB_RECLAIM_MINUTES` | `agents.worker` 环境变量 | 崩溃 worker 任务回收阈值 |
+| `KNOWLEDGE_SYNC_BATCH_SIZE` | `settings.knowledge_sync_batch_size` | 单轮连接器 Snapshot 领取上限 |
+| `KNOWLEDGE_SYNC_RECLAIM_MINUTES` | `settings.knowledge_sync_reclaim_minutes` | 同步 Worker 崩溃后的运行项回收阈值 |
+| `KNOWLEDGE_SYNC_MAX_ATTEMPTS` | `settings.knowledge_sync_max_attempts` | 单个 Snapshot 显式重试前的最大尝试次数 |
 
 ## Skills 与主动预警
 

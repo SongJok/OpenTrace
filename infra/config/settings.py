@@ -459,6 +459,9 @@ class AppSettings(BaseSettings):
     knowledge_max_relation_hops: int = 2
     knowledge_query_candidate_budget: int = 60
     knowledge_stale_after_days: int = 30
+    knowledge_sync_batch_size: int = 4
+    knowledge_sync_reclaim_minutes: int = 10
+    knowledge_sync_max_attempts: int = 3
     llmwiki_enabled: bool = True
     llmwiki_model: str = "qwen3.5-27b"
     llmwiki_top_k: int = 3

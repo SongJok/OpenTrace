@@ -12,6 +12,13 @@
 Lint 会记录 `KnowledgeObservation`，并通过 `/api/v1/knowledge/evolution/proposal` 生成需人工批准的演化建议。
 跨 active source 的重复声明会形成 `KnowledgeMergeCase`，通过合并审核接口闭环，不会静默覆盖来源。
 
+
+## 企业知识空间与授权
+
+企业知识检索不再只按 `owner_id` 判断。在线查询通过 `knowledge.access` 解析用户、部门、组、岗位、Project、空间角色和密级，并在候选召回前过滤 Source ACL、有效期、撤回状态及 Project 挂载关系。旧个人资产继续按 owner/project 兼容。证据对象同时携带 `space_id`、`classification`、`source_system`、`sync_status`、有效期和复审日期，Session 热证据每轮重新授权。
+
+排序在文本相关性之外加入权威级别与过期复审惩罚；RAG 仍通过多 lane RRF 融合受治理知识和原始文档证据。
+
 ## 2. 核心职责
 
 - **文档分块检索**：从向量数据库中检索与查询相关的文档片段

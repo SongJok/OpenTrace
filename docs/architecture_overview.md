@@ -45,3 +45,7 @@ OpenTrace 对外只使用 **Alpha / Beta / GA**：
 - **GA**：完成生产 SLO、备份恢复演练、安全评审、容量与升级策略，并通过发布门禁。
 
 模块不得单独宣称“生产级”来绕过产品整体成熟度。
+
+## 企业知识库主链
+
+知识编排继续作为内部控制面，员工产品面为企业知识库。`KnowledgeSpace` 提供公司、部门、岗位、项目和个人治理边界；连接器增量同步来源内容与 ACL，编译结果经过密级、有效期、Lint 和 Review Task 后才能成为 Active Published Version。RAG 在召回前统一执行空间与来源权限过滤。详细设计见 `docs/architecture/enterprise_knowledge_base.md`。

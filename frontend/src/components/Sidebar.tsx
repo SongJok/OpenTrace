@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { t } from '../i18n'
 import {
+  BookOpen,
   Plus,
   Trash2,
   MessageSquare,
@@ -294,7 +295,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           <Wrench size={16} className="cartoon-icon icon-skills" />
         </button>
         <button
-          onClick={() => navigate('/knowledge')}
+          onClick={() => navigate('/knowledge-base')}
           className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
         >
           <Network size={16} className="cartoon-icon" />
@@ -491,7 +492,8 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           <NavButton icon={<ShieldAlert size={15} className="cartoon-icon icon-audit" />} label={t('nav.audit')} onClick={() => navigate('/audit')} />
           <NavButton icon={<Plug size={15} className="cartoon-icon icon-integrations" />} label={t('nav.integrations')} onClick={() => navigate('/integrations')} />
           <NavButton icon={<Wrench size={15} className="cartoon-icon icon-skills" />} label="Skills" onClick={() => navigate(store.activeId ? `/skills?session=${encodeURIComponent(store.activeId)}` : '/skills')} />
-          <NavButton icon={<Network size={15} className="cartoon-icon" />} label="知识编排" onClick={() => navigate('/knowledge')} />
+          <NavButton icon={<BookOpen size={15} className="cartoon-icon" />} label="企业知识库" onClick={() => navigate('/knowledge-base')} />
+          <NavButton icon={<Network size={15} className="cartoon-icon" />} label="知识治理" onClick={() => navigate('/knowledge')} />
           <NavButton icon={<FileCode size={15} className="cartoon-icon icon-rules" />} label="规则" onClick={() => navigate('/rules')} />
           {role === 'admin' && (
             <NavButton icon={<ShieldCheck size={15} className="cartoon-icon icon-permissions" />} label="权限" onClick={() => navigate('/permissions')} />

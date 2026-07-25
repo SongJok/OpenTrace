@@ -3,7 +3,7 @@
   "policy_effective_date": "2026-07-24",
   "production_baseline_revision": "20260724_chatgpt_runtime_completion",
   "new_revision_format": "^r[0-9]{4}_[a-z0-9_]+$",
-  "next_sequence": 1,
+  "next_sequence": 3,
   "frozen_migrations": [
     {
       "revision": "20260400_core_baseline",
@@ -289,6 +289,20 @@
       "revision": "20260803_chatgpt_five_pillars",
       "file": "alembic/versions/20260803_chatgpt_five_pillars.py",
       "sha256": "a7eb597d8c20eb0fe53423e394cdb638cc2ed8cd367f14014b504f8384c72148"
+    },
+    {
+      "revision": "r0001_enterprise_knowledge_base",
+      "file": "alembic/versions/r0001_enterprise_knowledge_base.py",
+      "sha256": "e226099f203c0a52274d3996a9594cba3bf1443518f5ef435dcea6d72ff7cd81",
+      "governed_format": "r-sequence",
+      "frozen_on": "2026-07-25"
+    },
+    {
+      "revision": "r0002_durable_knowledge_sync_queue",
+      "file": "alembic/versions/r0002_durable_knowledge_sync_queue.py",
+      "sha256": "a490bd96cab06a0f4083aca0f249522fdee1685d989c7e15da74e41c6c4f6932",
+      "governed_format": "r-sequence",
+      "frozen_on": "2026-07-25"
     }
   ],
   "notes": [
