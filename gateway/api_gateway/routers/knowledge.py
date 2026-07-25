@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.resource_scope import normalized_tenant_scope, scoped_documents_statement
@@ -23,17 +23,18 @@ from infra.storage.models import (
     KnowledgeLintIssue,
     KnowledgeMergeCase,
     KnowledgePage,
-    KnowledgeRelation,
     KnowledgeRule,
     KnowledgeSource,
     KnowledgeSourceVersion,
     Project,
     User,
 )
+from knowledge.access import require_space_role
 from knowledge.domain import KnowledgeStatus, source_status_during_refresh
 from knowledge.evolution import build_evolution_proposal
 from knowledge.graph import build_project_graph, link_project_pages
 from knowledge.jobs import enqueue_document_compile
+from knowledge.lifecycle import publish_source_version
 from knowledge.lint import run_knowledge_lint
 from knowledge.merge import resolve_merge_case as apply_merge_case
 from knowledge.trace import trace_knowledge_assets
@@ -578,81 +579,45 @@ async def publish_knowledge_page(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Promote a reviewed page revision and its dependent claims/edges.
-
-    Publishing is intentionally explicit so deployments can disable automatic
-    compiler promotion while retaining the same query contract.
-    """
+    """兼容发布入口；企业空间统一要求 publisher 角色并复用生命周期服务。"""
     tenant_id, workspace_id = normalized_tenant_scope(
         build_tenant_metadata(http_request, user_id=current_user.id)
     )
     page = await db.scalar(
         select(KnowledgePage).where(
             KnowledgePage.id == page_id,
-            KnowledgePage.owner_id == current_user.id,
             KnowledgePage.tenant_id == tenant_id,
             KnowledgePage.workspace_id == workspace_id,
         )
     )
     if page is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Knowledge page not found")
-
     version = await db.get(KnowledgeSourceVersion, page.source_version_id)
-    if version is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Knowledge revision not found")
-    source = await db.get(KnowledgeSource, version.source_id)
-    if source is None:
+    source = await db.get(KnowledgeSource, version.source_id) if version is not None else None
+    if version is None or source is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Knowledge source not found")
-
-    pages = (
-        await db.execute(
-            select(KnowledgePage).where(
-                KnowledgePage.source_version_id == version.id,
-                KnowledgePage.owner_id == current_user.id,
+    if source.space_id:
+        try:
+            await require_space_role(
+                db,
+                user=current_user,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                space_id=source.space_id,
+                required_role="publisher",
             )
+        except PermissionError as exc:
+            raise AppException(ErrorCodes.PERMISSION_DENIED.code, message=str(exc)) from exc
+    elif source.owner_id != current_user.id:
+        raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="Knowledge publish denied")
+    try:
+        result = await publish_source_version(
+            db, source_version_id=version.id, decided_by=current_user.id
         )
-    ).scalars().all()
-    claims = (
-        await db.execute(
-            select(KnowledgeClaim).where(
-                KnowledgeClaim.source_version_id == version.id,
-                KnowledgeClaim.owner_id == current_user.id,
-            )
-        )
-    ).scalars().all()
-    relations = (
-        await db.execute(
-            select(KnowledgeRelation).where(
-                KnowledgeRelation.source_version_id == version.id,
-                KnowledgeRelation.owner_id == current_user.id,
-            )
-        )
-    ).scalars().all()
-
-    previous_version_id = source.active_version_id
-    if previous_version_id and previous_version_id != version.id:
-        previous = await db.get(KnowledgeSourceVersion, previous_version_id)
-        if previous is not None:
-            previous.status = KnowledgeStatus.ARCHIVED.value
-            for model in (KnowledgePage, KnowledgeClaim, KnowledgeRelation):
-                await db.execute(
-                    update(model)
-                    .where(model.source_version_id == previous.id)
-                    .values(status=KnowledgeStatus.ARCHIVED.value)
-                )
-    for item in (*pages, *claims, *relations):
-        item.status = KnowledgeStatus.PUBLISHED.value
-    version.status = KnowledgeStatus.PUBLISHED.value
-    version.compiled_at = version.compiled_at or datetime.now(timezone.utc)
-    source.active_version_id = version.id
-    source.status = KnowledgeStatus.PUBLISHED.value
+    except ValueError as exc:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
     await db.commit()
-    return {
-        "published": True,
-        "page_id": page_id,
-        "source_id": source.id,
-        "source_version_id": version.id,
-    }
+    return {**result, "page_id": page_id}
 
 
 @router.get("/knowledge/lint/issues")

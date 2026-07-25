@@ -64,6 +64,25 @@ def validate_manifest(manifest_path: Path = MANIFEST_PATH) -> list[str]:
         if str(spec["status_code"]) not in responses:
             errors.append(f"退役路由未返回 {spec['status_code']}: {spec['method']} {spec['path']}")
 
+    enterprise_knowledge = manifest.get("enterprise_knowledge", {})
+    for spec in enterprise_knowledge.get("api_routes", []):
+        method = spec["method"].lower()
+        if method not in openapi_paths.get(spec["path"], {}):
+            errors.append(f"缺少企业知识库路由: {spec['method']} {spec['path']}")
+    knowledge_models = importlib.import_module(
+        enterprise_knowledge.get("models_module", "infra.storage.models")
+    )
+    for model_name in enterprise_knowledge.get("required_models", []):
+        if not isinstance(getattr(knowledge_models, model_name, None), type):
+            errors.append(f"企业知识库缺少模型: {model_name}")
+    for symbol in (
+        enterprise_knowledge.get("authorization"),
+        enterprise_knowledge.get("publication"),
+        enterprise_knowledge.get("sync_worker"),
+    ):
+        if symbol and not callable(_load_symbol(symbol)):
+            errors.append(f"企业知识库入口不可调用: {symbol}")
+
     worker = importlib.import_module(runtime["worker"]["execution_module"])
     for name in runtime["worker"]["required_callables"]:
         if not callable(getattr(worker, name, None)):

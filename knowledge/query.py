@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from infra.config.settings import settings
+from infra.observability.logger import get_logger
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import (
     ConversationState,
@@ -17,8 +20,12 @@ from infra.storage.models import (
     KnowledgeRelation,
     KnowledgeSource,
     KnowledgeSourceVersion,
+    User,
 )
+from knowledge.access import accessible_source_predicate, resolve_access_context
 from knowledge.domain import KNOWLEDGE_QUERY_PLAN_VERSION
+
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -127,6 +134,33 @@ def _score(text: str, title: str, tokens: list[str]) -> float:
     return min(0.99, matches / len(tokens) * 0.72 + title_matches / len(tokens) * 0.22)
 
 
+def _governed_score(base_score: float, source: KnowledgeSource, authority: str) -> float:
+    authority_boost = {
+        "official": 0.12,
+        "approved": 0.09,
+        "verified": 0.06,
+        "external": 0.02,
+        "contextual": 0.0,
+        "inferred": -0.04,
+    }.get(authority, 0.0)
+    review_penalty = 0.0
+    if source.review_due_at is not None and source.review_due_at <= datetime.now(UTC):
+        review_penalty = 0.08
+    return min(0.999, max(0.0, base_score + authority_boost - review_penalty))
+
+
+def _source_governance(source: KnowledgeSource) -> dict[str, Any]:
+    return {
+        "space_id": source.space_id,
+        "classification": source.classification,
+        "source_system": source.source_system,
+        "sync_status": source.sync_status,
+        "effective_from": source.effective_from.isoformat() if source.effective_from else None,
+        "effective_to": source.effective_to.isoformat() if source.effective_to else None,
+        "review_due_at": source.review_due_at.isoformat() if source.review_due_at else None,
+    }
+
+
 def _owner_filter(column, user_id: str):
     if not user_id or user_id == "shared":
         return None
@@ -158,6 +192,23 @@ async def search_knowledge(
     workspace = (workspace_id or "default").strip() or "default"
     try:
         async with AsyncSessionLocal() as db:
+            user = await db.get(User, user_id) if user_id and user_id != "shared" else None
+            access_context = (
+                await resolve_access_context(
+                    db,
+                    user=user,
+                    tenant_id=tenant,
+                    workspace_id=workspace,
+                    project_id=project_id,
+                )
+                if user is not None
+                else None
+            )
+            source_access = (
+                accessible_source_predicate(access_context, project_id=project_id)
+                if access_context is not None
+                else None
+            )
             hot_results: list[dict[str, Any]] = []
             if session_id:
                 state = await db.scalar(
@@ -186,6 +237,27 @@ async def search_knowledge(
                                 },
                             }
                         )
+            if access_context is not None and hot_results:
+                hot_source_ids = {
+                    str(item.get("source_id") or (item.get("provenance") or {}).get("source_id"))
+                    for item in hot_results
+                    if item.get("source_id") or (item.get("provenance") or {}).get("source_id")
+                }
+                allowed_hot_source_ids = set(
+                    (
+                        await db.execute(
+                            select(KnowledgeSource.id).where(
+                                KnowledgeSource.id.in_(hot_source_ids), source_access
+                            )
+                        )
+                    ).scalars()
+                )
+                hot_results = [
+                    item
+                    for item in hot_results
+                    if str(item.get("source_id") or (item.get("provenance") or {}).get("source_id"))
+                    in allowed_hot_source_ids
+                ]
             page_stmt = (
                 select(KnowledgePage, KnowledgeSource, KnowledgeSourceVersion)
                 .join(
@@ -201,12 +273,15 @@ async def search_knowledge(
                     KnowledgeSource.active_version_id == KnowledgeSourceVersion.id,
                 )
             )
-            owner_clause = _owner_filter(KnowledgePage.owner_id, user_id)
-            if owner_clause is not None:
-                page_stmt = page_stmt.where(owner_clause)
-            if project_id:
-                page_stmt = page_stmt.where(KnowledgeSource.project_id == project_id)
-            page_filters = []
+            if source_access is not None:
+                page_stmt = page_stmt.where(source_access)
+            else:
+                owner_clause = _owner_filter(KnowledgePage.owner_id, user_id)
+                if owner_clause is not None:
+                    page_stmt = page_stmt.where(owner_clause)
+                if project_id:
+                    page_stmt = page_stmt.where(KnowledgeSource.project_id == project_id)
+            page_filters: list[Any] = []
             for token in tokens:
                 like = f"%{token}%"
                 page_filters.extend(
@@ -241,11 +316,14 @@ async def search_knowledge(
                     KnowledgeSource.active_version_id == KnowledgeSourceVersion.id,
                 )
             )
-            owner_clause = _owner_filter(KnowledgeClaim.owner_id, user_id)
-            if owner_clause is not None:
-                claim_stmt = claim_stmt.where(owner_clause)
-            if project_id:
-                claim_stmt = claim_stmt.where(KnowledgeSource.project_id == project_id)
+            if source_access is not None:
+                claim_stmt = claim_stmt.where(source_access)
+            else:
+                owner_clause = _owner_filter(KnowledgeClaim.owner_id, user_id)
+                if owner_clause is not None:
+                    claim_stmt = claim_stmt.where(owner_clause)
+                if project_id:
+                    claim_stmt = claim_stmt.where(KnowledgeSource.project_id == project_id)
             claim_filters = [KnowledgeClaim.text.ilike(f"%{token}%") for token in tokens]
             claim_search = func.to_tsvector(
                 "simple", func.concat(KnowledgeClaim.text, " ", KnowledgeClaim.normalized_text)
@@ -292,7 +370,7 @@ async def search_knowledge(
                         KnowledgeSource.active_version_id == KnowledgeSourceVersion.id,
                     )
                 )
-                relation_filters = []
+                relation_filters: list[Any] = []
                 for token in tokens:
                     like = f"%{token}%"
                     relation_filters.extend(
@@ -303,14 +381,19 @@ async def search_knowledge(
                             target_page.content.ilike(like),
                         )
                     )
-                owner_clause = _owner_filter(source_page.owner_id, user_id)
-                if owner_clause is not None:
-                    relation_stmt = relation_stmt.where(
-                        owner_clause,
-                        target_page.owner_id == user_id,
-                    )
-                if project_id:
-                    relation_stmt = relation_stmt.where(KnowledgeSource.project_id == project_id)
+                if source_access is not None:
+                    relation_stmt = relation_stmt.where(source_access)
+                else:
+                    owner_clause = _owner_filter(source_page.owner_id, user_id)
+                    if owner_clause is not None:
+                        relation_stmt = relation_stmt.where(
+                            owner_clause,
+                            target_page.owner_id == user_id,
+                        )
+                    if project_id:
+                        relation_stmt = relation_stmt.where(
+                            KnowledgeSource.project_id == project_id
+                        )
                 relation_rows = (
                     await db.execute(
                         relation_stmt.where(or_(*relation_filters)).limit(max(top_k * 3, 12))
@@ -351,8 +434,9 @@ async def search_knowledge(
                             break
                         frontier = next_frontier
                     relation_rows = expanded[: max(top_k * 4, 16)]
-    except Exception:
-        # Migration may not be applied yet; raw document retrieval remains a safe fallback.
+    except SQLAlchemyError as exc:
+        # 未迁移环境保留原始文档兜底，但必须留下可观测错误，禁止静默吞掉授权查询失败。
+        logger.warning("knowledge_query_unavailable", error=str(exc))
         return []
 
     results: list[dict[str, Any]] = []
@@ -374,7 +458,7 @@ async def search_knowledge(
                 "source_type": "knowledge_page",
                 "title": page.title,
                 "text": page.summary or page.content[:900],
-                "score": score,
+                "score": _governed_score(score, source, page.authority),
                 "knowledge_page_id": page.id,
                 "source_id": source.id,
                 "source_version_id": version.id,
@@ -383,6 +467,8 @@ async def search_knowledge(
                 "knowledge_status": page.status,
                 "evidence_tier": "factual",
                 "disclosure_stage": "summary",
+                **_source_governance(source),
+                **_source_governance(source),
                 "provenance": {
                     "source_id": source.id,
                     "source_version_id": version.id,
@@ -403,7 +489,9 @@ async def search_knowledge(
                 "source_type": "knowledge_claim",
                 "title": page.title,
                 "text": claim.text,
-                "score": min(0.99, score + claim.confidence * 0.12),
+                "score": _governed_score(
+                    min(0.99, score + claim.confidence * 0.12), source, claim.authority
+                ),
                 "knowledge_page_id": page.id,
                 "claim_id": claim.id,
                 "source_id": source.id,
@@ -436,7 +524,11 @@ async def search_knowledge(
                 "source_type": "knowledge_relation",
                 "title": relation_text,
                 "text": relation_text,
-                "score": min(0.99, 0.55 + relation.confidence * 0.25),
+                "score": _governed_score(
+                    min(0.99, 0.55 + relation.confidence * 0.25),
+                    source,
+                    relation.authority,
+                ),
                 "knowledge_page_id": source_page.id,
                 "relation_id": relation.id,
                 "target_page_id": target_page.id,
@@ -448,6 +540,7 @@ async def search_knowledge(
                 "knowledge_status": relation.status,
                 "evidence_tier": "structural",
                 "disclosure_stage": "relation",
+                **_source_governance(source),
                 "provenance": {
                     "relation_id": relation.id,
                     "source_page_id": source_page.id,

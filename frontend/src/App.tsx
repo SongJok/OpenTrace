@@ -18,6 +18,7 @@ const DatabasesPage = lazy(() => import('./pages/DatabasesPage'))
 const SkillsPage = lazy(() => import('./pages/SkillsPage'))
 const RulesPage = lazy(() => import('./pages/RulesPage'))
 const KnowledgeCenterPage = lazy(() => import('./pages/KnowledgeCenterPage'))
+const EnterpriseKnowledgePage = lazy(() => import('./pages/EnterpriseKnowledgePage'))
 const SharedConversationPage = lazy(() => import('./pages/SharedConversationPage'))
 const WorkPage = lazy(() => import('./pages/WorkPage'))
 const AlertsPage = lazy(() => import('./pages/AlertsPage'))
@@ -95,6 +96,11 @@ function KnowledgeRoute() {
   return <KnowledgeCenterPage onBack={() => navigate('/chat')} />
 }
 
+function EnterpriseKnowledgeRoute() {
+  const navigate = useNavigate()
+  return <EnterpriseKnowledgePage onBack={() => navigate('/chat')} />
+}
+
 function AlertsRoute() {
   const navigate = useNavigate()
   return <AlertsPage onBack={() => navigate('/chat')} />
@@ -134,6 +140,7 @@ export default function App() {
         <Route path="/databases" element={<Protected><DatabasesRoute /></Protected>} />
         <Route path="/skills" element={<Protected><SkillsRoute /></Protected>} />
         <Route path="/rules" element={<Protected><RulesRoute /></Protected>} />
+        <Route path="/knowledge-base" element={<Protected><EnterpriseKnowledgeRoute /></Protected>} />
         <Route path="/knowledge" element={<Protected><KnowledgeRoute /></Protected>} />
         <Route path="/alerts" element={<Protected><AlertsRoute /></Protected>} />
         <Route path="/permissions" element={<Protected><PermissionsPage /></Protected>} />

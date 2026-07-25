@@ -184,13 +184,15 @@ export async function apiListDocuments(token: string, projectId?: string | null)
 export async function apiUploadDocument(
   token: string,
   file: File,
-  options?: { title?: string; chunk_strategy?: number; project_id?: string | null; publish_policy?: 'auto' | 'review' }
+  options?: { title?: string; chunk_strategy?: number; project_id?: string | null; knowledge_space_id?: string | null; classification?: 'public' | 'internal' | 'confidential' | 'restricted'; publish_policy?: 'auto' | 'review' }
 ): Promise<DocumentOut> {
   const form = new FormData()
   form.append('file', file)
   if (options?.title) form.append('title', options.title)
   if (options?.chunk_strategy) form.append('chunk_strategy', String(options.chunk_strategy))
   if (options?.project_id) form.append('project_id', options.project_id)
+  if (options?.knowledge_space_id) form.append('knowledge_space_id', options.knowledge_space_id)
+  if (options?.classification) form.append('classification', options.classification)
   if (options?.publish_policy) form.append('publish_policy', options.publish_policy)
   const res = await apiFetch('/documents', {
     method: 'POST',
@@ -201,6 +203,131 @@ export async function apiUploadDocument(
     throw new Error(await readApiError(res, 'Upload failed'))
   }
   return res.json()
+}
+
+export interface KnowledgeSpaceItem {
+  id: string
+  name: string
+  slug: string
+  description: string
+  space_type: 'company' | 'department' | 'role' | 'project' | 'personal'
+  visibility: 'private' | 'members' | 'tenant'
+  classification: 'public' | 'internal' | 'confidential' | 'restricted'
+  publish_policy: 'auto' | 'review'
+  review_cycle_days: number
+  status: string
+  role: 'viewer' | 'contributor' | 'reviewer' | 'publisher' | 'admin'
+  metadata?: Record<string, unknown>
+}
+
+export interface EnterpriseKnowledgeSourceItem {
+  id: string
+  title: string
+  source_type: string
+  source_system?: string | null
+  classification: string
+  authority: string
+  status: string
+  sync_status: string
+  active_version_id?: string | null
+  effective_from?: string | null
+  effective_to?: string | null
+  review_due_at?: string | null
+  updated_at?: string | null
+}
+
+export interface EnterpriseKnowledgeAssetItem {
+  id: string
+  source_id: string
+  source_version_id: string
+  title: string
+  page_type: string
+  summary?: string | null
+  authority: string
+  confidence: number
+  classification: string
+  review_due_at?: string | null
+}
+
+export interface EnterpriseKnowledgeEvidence {
+  id: string
+  source_type: string
+  title: string
+  text: string
+  score: number
+  source_id?: string | null
+  source_version_id?: string | null
+  document_id?: string | null
+  claim_id?: string | null
+  authority?: string | null
+  disclosure_stage?: string
+  provenance?: Record<string, unknown>
+}
+
+export interface KnowledgeSpaceMemberItem {
+  id: string
+  subject_type: 'user' | 'department' | 'group' | 'role' | 'project'
+  subject_id: string
+  role: 'viewer' | 'contributor' | 'reviewer' | 'publisher' | 'admin'
+  expires_at?: string | null
+}
+
+export interface EnterpriseKnowledgeConnectorItem {
+  id: string
+  space_id: string
+  name: string
+  connector_type: string
+  status: string
+  sync_cursor?: string | null
+  last_sync_at?: string | null
+  last_error?: string | null
+}
+
+export interface KnowledgeSyncRunItem {
+  id: string
+  connector_id: string
+  connector_name: string
+  status: 'pending' | 'running' | 'succeeded' | 'failed'
+  cursor_before?: string | null
+  cursor_after?: string | null
+  stats: {
+    queued?: number
+    running?: number
+    succeeded?: number
+    failed?: number
+    created?: number
+    updated?: number
+    unchanged?: number
+    deleted?: number
+  }
+  error?: string | null
+  started_at?: string | null
+  completed_at?: string | null
+}
+
+export interface KnowledgeSyncItem {
+  id: string
+  external_id: string
+  title: string
+  deleted: boolean
+  status: 'pending' | 'running' | 'succeeded' | 'failed'
+  attempts: number
+  document_id?: string | null
+  source_id?: string | null
+  error?: string | null
+  started_at?: string | null
+  completed_at?: string | null
+}
+
+export interface KnowledgeReviewItem {
+  id: string
+  source_version_id: string
+  space_id?: string | null
+  status: string
+  required_role: string
+  assigned_to?: string | null
+  diff_summary: Record<string, unknown>
+  created_at?: string | null
 }
 
 export interface KnowledgeSourceItem {
@@ -267,6 +394,111 @@ function projectQuery(projectId?: string | null, extra?: Record<string, string>)
   if (projectId) params.set('project_id', projectId)
   const value = params.toString()
   return value ? `?${value}` : ''
+}
+
+export async function apiListKnowledgeSpaces(token: string): Promise<KnowledgeSpaceItem[]> {
+  const res = await apiFetch('/knowledge/spaces', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取知识空间失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiCreateKnowledgeSpace(token: string, payload: Record<string, unknown>): Promise<{ id: string; slug: string; role: string }> {
+  const res = await apiFetch('/knowledge/spaces', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '创建知识空间失败'))
+  return res.json()
+}
+
+export async function apiListKnowledgeSpaceMembers(token: string, spaceId: string): Promise<KnowledgeSpaceMemberItem[]> {
+  const res = await apiFetch(`/knowledge/spaces/${encodeURIComponent(spaceId)}/members`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取知识空间成员失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiGrantKnowledgeSpaceMember(token: string, spaceId: string, payload: Omit<KnowledgeSpaceMemberItem, 'id'>): Promise<{ id: string; role: string }> {
+  const res = await apiFetch(`/knowledge/spaces/${encodeURIComponent(spaceId)}/members`, { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '授权知识空间失败'))
+  return res.json()
+}
+
+export async function apiRevokeKnowledgeSpaceMember(token: string, spaceId: string, memberId: string): Promise<void> {
+  const res = await apiFetch(`/knowledge/spaces/${encodeURIComponent(spaceId)}/members/${encodeURIComponent(memberId)}`, { method: 'DELETE', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '撤销知识空间授权失败'))
+}
+
+export async function apiListEnterpriseKnowledgeConnectors(token: string, spaceId?: string): Promise<EnterpriseKnowledgeConnectorItem[]> {
+  const query = spaceId ? `?space_id=${encodeURIComponent(spaceId)}` : ''
+  const res = await apiFetch(`/knowledge/connectors${query}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取知识连接器失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiCreateEnterpriseKnowledgeConnector(token: string, payload: Record<string, unknown>): Promise<{ id: string; status: string }> {
+  const res = await apiFetch('/knowledge/connectors', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '创建知识连接器失败'))
+  return res.json()
+}
+
+export async function apiListKnowledgeSyncRuns(token: string, connectorId?: string, spaceId?: string): Promise<KnowledgeSyncRunItem[]> {
+  const params = new URLSearchParams()
+  if (connectorId) params.set('connector_id', connectorId)
+  if (spaceId) params.set('space_id', spaceId)
+  const query = params.size ? `?${params.toString()}` : ''
+  const res = await apiFetch(`/knowledge/sync-runs${query}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取连接器同步记录失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiListKnowledgeSyncRunItems(token: string, runId: string): Promise<KnowledgeSyncItem[]> {
+  const res = await apiFetch(`/knowledge/sync-runs/${encodeURIComponent(runId)}/items`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取同步明细失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiRetryKnowledgeSyncRun(token: string, runId: string): Promise<{ run_id: string; requeued: number; status: string }> {
+  const res = await apiFetch(`/knowledge/sync-runs/${encodeURIComponent(runId)}/retry`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '重试同步失败项失败'))
+  return res.json()
+}
+
+export async function apiListKnowledgeSpaceSources(token: string, spaceId: string): Promise<EnterpriseKnowledgeSourceItem[]> {
+  const res = await apiFetch(`/knowledge/spaces/${encodeURIComponent(spaceId)}/sources`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取空间知识源失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiListKnowledgeSpaceAssets(token: string, spaceId: string): Promise<EnterpriseKnowledgeAssetItem[]> {
+  const res = await apiFetch(`/knowledge/spaces/${encodeURIComponent(spaceId)}/assets`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取知识资产失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiSearchEnterpriseKnowledge(token: string, query: string, projectId?: string | null, topK = 8): Promise<EnterpriseKnowledgeEvidence[]> {
+  const res = await apiFetch('/knowledge/search', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ query, project_id: projectId || null, top_k: topK }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '企业知识检索失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiListKnowledgeReviews(token: string, status = 'pending'): Promise<KnowledgeReviewItem[]> {
+  const res = await apiFetch(`/knowledge/reviews?status=${encodeURIComponent(status)}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取知识审核任务失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiDecideKnowledgeReview(token: string, reviewId: string, decision: 'approve' | 'reject', comment = ''): Promise<Record<string, unknown>> {
+  const res = await apiFetch(`/knowledge/reviews/${encodeURIComponent(reviewId)}/decision`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ decision, comment }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, decision === 'approve' ? '发布知识失败' : '驳回知识失败'))
+  return res.json()
 }
 
 export async function apiListKnowledgeSources(token: string, projectId?: string | null): Promise<KnowledgeSourceItem[]> {

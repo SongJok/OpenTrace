@@ -36,7 +36,9 @@ def test_knowledge_page_is_connected_to_real_upload_jobs_and_networks():
     assert "window.setInterval" in page
     assert "mockGraph" not in page
     assert "实体图谱" in page and "依赖关系" in page and "来源网络" in page
-    assert "**existing_metadata" in documents
+    ingest_service = (ROOT / "services/document_ingestion.py").read_text(encoding="utf-8")
+    assert "**existing_metadata" in ingest_service
+    assert "_merge_ingest_metadata = document_ingestion.merge_ingest_metadata" in documents
     assert "background_tasks.add_task(enqueue_document_compile" not in documents
 
 

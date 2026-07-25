@@ -52,8 +52,8 @@ A typical workflow looks like this:
    definitions, or business documents.
 3. Select the Project and data source in Chat, then ask questions that combine operational data
    with governed knowledge.
-4. Ask the Agent to create an alert rule. The write operation enters approval first, and the
-   Worker runs it continuously after approval.
+4. Open `/knowledge-base` to search authorized company knowledge or contribute to a space; use `/knowledge` for compiler and governance operations.
+5. Ask the Agent to create an alert rule. The write operation enters approval first, and the Worker runs it continuously after approval.
 
 ## Core Architecture
 
@@ -82,7 +82,7 @@ return `410 Gone`.
 | Agent Loop | IntentPlan, minimum-capability selection, tool loop, expert agents, evidence synthesis, and step limits |
 | Enterprise databases | MySQL, Doris, ClickHouse, and PostgreSQL; connection tests, schemas, semantic mappings, and read-only SQL |
 | DataAgent | Text2SQL, metric/entity/time/join reasoning, validation, reflection, result interpretation, and visualization specs |
-| Knowledge | Document processing, Project scope, knowledge compilation, publishing, retrieval, relation graphs, and citations |
+| Enterprise Knowledge | Company/department/role/project/personal spaces, source ACL sync, review publishing, validity, classification, governed retrieval, graphs, and citations |
 | Governance | Multi-tenant/workspace boundaries, resource permissions, durable approvals, audit, quotas, and policy interfaces |
 | Automation | Goals, scheduled tasks, proactive data alerts, notifications, retries, and recovery events |
 | Memory | Conversation summaries, user and Project memory, memory governance, and feedback learning |
