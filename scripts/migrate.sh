@@ -30,11 +30,17 @@ if ! docker compose ps --status running --services | grep -qx "api"; then
   exit 1
 fi
 
+reconcile_pre_migration_schema() {
+  docker compose exec -T api python scripts/reconcile_pre_migration_schema.py
+}
+
 case "$mode" in
   upgrade)
+    reconcile_pre_migration_schema
     docker compose exec -T api alembic upgrade head
     ;;
   verify)
+    reconcile_pre_migration_schema
     docker compose exec -T api alembic upgrade head
     docker compose exec -T api alembic upgrade head
     echo "✓ migration idempotency verified"

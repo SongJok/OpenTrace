@@ -200,6 +200,11 @@ work_postgres_users_table_exists() {
 work_run_alembic_upgrade() {
   local root="$1"
   cd "$root"
+  echo "▸ 检查迁移前 schema..."
+  if ! docker compose exec -T api python scripts/reconcile_pre_migration_schema.py; then
+    echo "✗ 迁移前 schema 检查失败；为避免数据损失，已停止自动升级"
+    return 1
+  fi
   echo "▸ 执行数据库迁移 (alembic upgrade head)..."
   if ! docker compose exec -T api alembic upgrade head; then
     echo "✗ 迁移失败，查看: bash scripts/docker_logs.sh api"

@@ -19,7 +19,16 @@ name = url.path.lstrip("/")
 print(urlunsplit((url.scheme, url.netloc, f"/{name}_baseline", url.query, url.fragment)))
 PY
 )}"
+RUNTIME_COLLISION_TEST_DATABASE_URL="${MIGRATION_RUNTIME_COLLISION_TEST_DATABASE_URL:-$($PYTHON_BIN - <<'PY'
+import os
+from urllib.parse import urlsplit, urlunsplit
+url = urlsplit(os.environ["MIGRATION_TEST_DATABASE_URL"])
+name = url.path.lstrip("/")
+print(urlunsplit((url.scheme, url.netloc, f"/{name}_runtime_collision", url.query, url.fragment)))
+PY
+)}"
 export MIGRATION_BASELINE_TEST_DATABASE_URL="$BASELINE_TEST_DATABASE_URL"
+export MIGRATION_RUNTIME_COLLISION_TEST_DATABASE_URL="$RUNTIME_COLLISION_TEST_DATABASE_URL"
 
 "$PYTHON_BIN" - <<'PY'
 import os
@@ -28,7 +37,11 @@ from urllib.parse import unquote, urlsplit
 import psycopg2
 from psycopg2 import sql
 
-for env_name in ("MIGRATION_TEST_DATABASE_URL", "MIGRATION_BASELINE_TEST_DATABASE_URL"):
+for env_name in (
+    "MIGRATION_TEST_DATABASE_URL",
+    "MIGRATION_BASELINE_TEST_DATABASE_URL",
+    "MIGRATION_RUNTIME_COLLISION_TEST_DATABASE_URL",
+):
     parsed = urlsplit(os.environ[env_name])
     database = parsed.path.lstrip("/")
     if "migration_test" not in database:
@@ -72,6 +85,34 @@ echo "== fresh production baseline upgrade: $BASELINE =="
 run_alembic "$BASELINE_TEST_DATABASE_URL" upgrade "$BASELINE"
 run_alembic "$BASELINE_TEST_DATABASE_URL" upgrade head
 run_alembic "$BASELINE_TEST_DATABASE_URL" current
+
+echo "== recover empty tables created by legacy runtime create_all =="
+run_alembic "$RUNTIME_COLLISION_TEST_DATABASE_URL" upgrade 20260803_chatgpt_five_pillars
+DATABASE_URL="$RUNTIME_COLLISION_TEST_DATABASE_URL" "$PYTHON_BIN" - <<'PY'
+import asyncio
+import os
+
+from sqlalchemy.ext.asyncio import create_async_engine
+
+import infra.storage.models  # noqa: F401
+from infra.storage.database import Base
+
+url = os.environ["DATABASE_URL"].replace("postgresql://", "postgresql+asyncpg://", 1)
+
+
+async def create_runtime_tables() -> None:
+    engine = create_async_engine(url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await engine.dispose()
+
+
+asyncio.run(create_runtime_tables())
+PY
+DATABASE_URL="$RUNTIME_COLLISION_TEST_DATABASE_URL" \
+  "$PYTHON_BIN" scripts/reconcile_pre_migration_schema.py
+run_alembic "$RUNTIME_COLLISION_TEST_DATABASE_URL" upgrade head
+run_alembic "$RUNTIME_COLLISION_TEST_DATABASE_URL" current
 
 echo "== enterprise knowledge ACL and publication lifecycle =="
 ENTERPRISE_KNOWLEDGE_TEST_DATABASE_URL="$MIGRATION_TEST_DATABASE_URL" \

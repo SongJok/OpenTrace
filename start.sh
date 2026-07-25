@@ -85,6 +85,11 @@ fi
 # The API container intentionally does not run Alembic in its uvicorn command.
 # Reconcile the database after the services are healthy so an existing
 # database cannot silently miss columns introduced by a newer release.
+echo "▸ 检查迁移前 schema..."
+if ! docker compose exec -T api python scripts/reconcile_pre_migration_schema.py; then
+  echo "✗ 迁移前 schema 检查失败；为避免数据损失，已停止自动升级"
+  exit 1
+fi
 echo "▸ 同步数据库迁移 (alembic upgrade head)..."
 if ! docker compose exec -T api alembic upgrade head; then
   echo "✗ 数据库迁移失败，请查看: bash scripts/docker_logs.sh api"

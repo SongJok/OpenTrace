@@ -97,17 +97,14 @@ async def init_db() -> None:
 async def ensure_runtime_schema() -> None:
     """Best-effort runtime schema guard for local/dev databases.
 
-    SQLAlchemy create_all() does not alter existing tables, so older local
-    databases can miss columns added to ORM models by later migrations. The
-    chat UI reads chat_sessions immediately after login; missing columns there
-    make the app unusable before a user can run manual migrations.
+    这里只执行明确、幂等的兼容 DDL，不能调用 ``Base.metadata.create_all()``。
+    正式表结构由 Alembic 管理；运行时抢先创建新 ORM 表会让后续迁移因重名失败。
     """
     try:
         async with engine.begin() as conn:
             if settings.app_env in {"staging", "production"}:
                 await _verify_runtime_schema(conn)
                 return
-            await conn.run_sync(Base.metadata.create_all)
             await _ensure_chat_sessions_columns(conn)
             await _ensure_conversation_states_columns(conn)
             await _ensure_enterprise_tenant_tables(conn)
@@ -194,13 +191,11 @@ async def _verify_runtime_schema(conn) -> None:
     missing: list[str] = []
     for table, columns in required_columns.items():
         rows = await conn.execute(
-            text(
-                """
+            text("""
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = :table
-                """
-            ),
+                """),
             {"table": table},
         )
         present = {str(row[0]) for row in rows}
@@ -248,15 +243,11 @@ async def _verify_runtime_schema(conn) -> None:
         "user_skill_installations",
         "resource_permissions",
     }
-    table_rows = await conn.execute(
-        text(
-            """
+    table_rows = await conn.execute(text("""
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public'
-            """
-        )
-    )
+            """))
     present_tables = {str(row[0]) for row in table_rows}
     for table in sorted(required_tables - present_tables):
         missing.append(table)

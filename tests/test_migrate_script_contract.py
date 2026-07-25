@@ -17,10 +17,10 @@ def test_backend_start_always_reconciles_existing_databases() -> None:
     start = text.index("work_ensure_db_schema()")
     end = text.index("\n}\n", start) + 2
     function = text[start:end]
-    assert "work_run_alembic_upgrade \"$root\"" in function
+    assert 'work_run_alembic_upgrade "$root"' in function
     # A legacy users table is not proof that newer response/conversation
     # columns exist; startup must not return early on that check.
-    assert "if work_postgres_users_table_exists \"$root\"; then" not in function
+    assert 'if work_postgres_users_table_exists "$root"; then' not in function
 
 
 def test_root_start_runs_migrations_after_api_readiness() -> None:
@@ -34,3 +34,29 @@ def test_response_lease_migration_tolerates_runtime_schema_repair() -> None:
     assert "ADD COLUMN IF NOT EXISTS request_payload" in text
     assert "CREATE INDEX IF NOT EXISTS ix_responses_lease_owner" in text
     assert "CREATE TABLE IF NOT EXISTS response_tool_executions" in text
+
+
+def test_runtime_schema_guard_does_not_create_migration_managed_tables() -> None:
+    text = (ROOT / "infra/storage/database.py").read_text(encoding="utf-8")
+    start = text.index("async def ensure_runtime_schema()")
+    end = text.index("\n\nasync def _verify_runtime_schema", start)
+    function = text[start:end]
+    assert "await conn.run_sync(Base.metadata.create_all)" not in function
+    assert "_ensure_chat_sessions_columns" in function
+
+
+def test_migration_entrypoints_reconcile_runtime_created_tables_first() -> None:
+    start_script = (ROOT / "start.sh").read_text(encoding="utf-8")
+    migrate_script = (ROOT / "scripts/migrate.sh").read_text(encoding="utf-8")
+    work_lib = (ROOT / "scripts/work/lib.sh").read_text(encoding="utf-8")
+    command = "python scripts/reconcile_pre_migration_schema.py"
+
+    assert command in start_script
+    assert start_script.index(command) < start_script.index("alembic upgrade head")
+    migrate_case = migrate_script[migrate_script.index('case "$mode" in') :]
+    assert command in migrate_script
+    assert migrate_case.index("reconcile_pre_migration_schema") < migrate_case.index(
+        "alembic upgrade head"
+    )
+    assert command in work_lib
+    assert work_lib.index(command) < work_lib.index("alembic upgrade head")
