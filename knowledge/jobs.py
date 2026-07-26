@@ -239,6 +239,16 @@ async def reconcile_ready_documents(*, limit: int = 200) -> dict[str, int]:
     return {"scanned": len(document_ids), "queued": queued}
 
 
+async def reconcile_due_reviews(*, limit: int = 200) -> dict[str, int]:
+    """周期扫描到期知识，并复用既有 Review Task 重新认证。"""
+    from knowledge.lifecycle import reopen_due_review_tasks
+
+    async with AsyncSessionLocal() as db:
+        result = await reopen_due_review_tasks(db, limit=limit)
+        await db.commit()
+        return result
+
+
 async def knowledge_job_loop() -> None:
     """Long-running worker loop; safe when no jobs are available."""
     interval = max(1, int(os.getenv("KNOWLEDGE_JOB_POLL_SECONDS", "2")))
@@ -249,6 +259,7 @@ async def knowledge_job_loop() -> None:
         try:
             if loop.time() >= next_reconcile:
                 await reconcile_ready_documents()
+                await reconcile_due_reviews()
                 next_reconcile = loop.time() + reconcile_interval
             from knowledge.sync import process_pending_sync_items
 

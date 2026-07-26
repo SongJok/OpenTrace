@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  Activity,
+  AlertTriangle,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -7,11 +9,13 @@ import {
   FileText,
   GitBranch,
   Loader2,
+  MessageSquareWarning,
   Network,
   Play,
   Plug,
   RefreshCw,
   Save,
+  ScanLine,
   ShieldCheck,
   Trash2,
   Users,
@@ -23,10 +27,14 @@ import {
   apiCreateEnterpriseKnowledgeConnector,
   apiCreateKnowledgeRule,
   apiDecideKnowledgeReview,
+  apiGetKnowledgeGovernanceHealth,
   apiGetKnowledgeGraph,
   apiGrantKnowledgeSpaceMember,
   apiListEnterpriseKnowledgeConnectors,
+  apiListKnowledgeFeedback,
   apiListKnowledgeJobs,
+  apiListKnowledgeLintIssues,
+  apiListKnowledgeMergeCases,
   apiListKnowledgePages,
   apiListKnowledgeReviews,
   apiListKnowledgeRules,
@@ -37,12 +45,20 @@ import {
   apiListKnowledgeSyncRuns,
   apiListProjects,
   apiOrchestrateKnowledge,
+  apiReconcileDueKnowledgeReviews,
+  apiResolveKnowledgeFeedback,
+  apiResolveKnowledgeMergeCase,
   apiRetryKnowledgeSyncRun,
+  apiRunKnowledgeLint,
   apiRevokeKnowledgeSpaceMember,
   apiWithdrawKnowledgeSource,
   type EnterpriseKnowledgeConnectorItem,
+  type KnowledgeFeedbackItem,
+  type KnowledgeGovernanceHealth,
   type KnowledgeGraphData,
   type KnowledgeJobItem,
+  type KnowledgeLintIssueItem,
+  type KnowledgeMergeCaseItem,
   type KnowledgePageItem,
   type KnowledgeReviewItem,
   type KnowledgeRuleItem,
@@ -56,7 +72,7 @@ import {
 import { useAuthStore } from '../store/auth'
 import { useChatPreferences } from '../store/chatPreferences'
 
-type GovernanceTab = 'pipeline' | 'reviews' | 'connectors' | 'access'
+type GovernanceTab = 'pipeline' | 'reviews' | 'quality' | 'connectors' | 'access'
 type NetworkType = KnowledgeGraphData['network']
 
 const NETWORK_LABELS: Record<NetworkType, string> = {
@@ -80,6 +96,10 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
   const [jobs, setJobs] = useState<KnowledgeJobItem[]>([])
   const [rules, setRules] = useState<KnowledgeRuleItem[]>([])
   const [reviews, setReviews] = useState<KnowledgeReviewItem[]>([])
+  const [health, setHealth] = useState<KnowledgeGovernanceHealth | null>(null)
+  const [feedback, setFeedback] = useState<KnowledgeFeedbackItem[]>([])
+  const [lintIssues, setLintIssues] = useState<KnowledgeLintIssueItem[]>([])
+  const [mergeCases, setMergeCases] = useState<KnowledgeMergeCaseItem[]>([])
   const [members, setMembers] = useState<KnowledgeSpaceMemberItem[]>([])
   const [connectors, setConnectors] = useState<EnterpriseKnowledgeConnectorItem[]>([])
   const [syncRuns, setSyncRuns] = useState<KnowledgeSyncRunItem[]>([])
@@ -132,7 +152,7 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
 
   const loadGovernance = useCallback(async () => {
     try {
-      const nextReviews = await apiListKnowledgeReviews(token, 'pending')
+      const nextReviews = await apiListKnowledgeReviews(token, 'pending', selectedSpaceId || null)
       setReviews(nextReviews)
       if (!selectedSpaceId) {
         setMembers([])
@@ -156,6 +176,31 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
     }
   }, [selectedSpaceId, spaces, token])
 
+  const loadQuality = useCallback(async () => {
+    const space = spaces.find((item) => item.id === selectedSpaceId)
+    if (!space || !['reviewer', 'publisher', 'admin'].includes(space.role)) {
+      setHealth(null)
+      setFeedback([])
+      setLintIssues([])
+      setMergeCases([])
+      return
+    }
+    try {
+      const [nextHealth, nextFeedback, nextLintIssues, nextMergeCases] = await Promise.all([
+        apiGetKnowledgeGovernanceHealth(token, selectedSpaceId),
+        apiListKnowledgeFeedback(token, selectedSpaceId, false),
+        apiListKnowledgeLintIssues(token, 'open', selectedSpaceId),
+        apiListKnowledgeMergeCases(token, 'open', selectedSpaceId),
+      ])
+      setHealth(nextHealth)
+      setFeedback(nextFeedback)
+      setLintIssues(nextLintIssues)
+      setMergeCases(nextMergeCases)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    }
+  }, [selectedSpaceId, spaces, token])
+
   useEffect(() => {
     void Promise.all([apiListProjects(token), apiListKnowledgeSpaces(token)]).then(([nextProjects, nextSpaces]) => {
       setProjects(nextProjects)
@@ -165,6 +210,7 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
   }, [token])
   useEffect(() => { void loadPipeline() }, [loadPipeline])
   useEffect(() => { void loadGovernance() }, [loadGovernance])
+  useEffect(() => { void loadQuality() }, [loadQuality])
   useEffect(() => {
     if (!hasActiveJobs && !hasActiveSync) return
     const timer = window.setInterval(() => {
@@ -232,6 +278,86 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
       await apiWithdrawKnowledgeSource(token, source.id, reason.trim())
       setMessage('知识来源已撤回，原始资料和历史版本继续保留用于审计。')
       await loadPipeline(true)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  async function reconcileDueReviews() {
+    if (!selectedSpace) return
+    setWorking(true)
+    try {
+      const result = await apiReconcileDueKnowledgeReviews(token, selectedSpace.id)
+      setMessage(`复审扫描完成：扫描 ${result.scanned}，重新进入队列 ${result.reopened}`)
+      await Promise.all([loadGovernance(), loadQuality(), loadPipeline(true)])
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  async function runLint() {
+    setWorking(true)
+    try {
+      const result = await apiRunKnowledgeLint(token, selectedSpace?.id)
+      setMessage(`知识质量检查完成，发现 ${result.open_count} 个开放问题`)
+      await loadQuality()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  async function resolveFeedback(item: KnowledgeFeedbackItem, resolution: 'acknowledged' | 'needs_revision' | 'dismissed') {
+    const comment = window.prompt('处理说明（可选）') || ''
+    setWorking(true)
+    try {
+      await apiResolveKnowledgeFeedback(token, item.id, resolution, comment)
+      setMessage('知识反馈已处理并记录治理审计信息')
+      await loadQuality()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  async function keepMergeCaseSeparate(item: KnowledgeMergeCaseItem) {
+    setWorking(true)
+    try {
+      await apiResolveKnowledgeMergeCase(token, item.id, { action: 'keep_separate' }, selectedSpace?.id)
+      setMessage('知识冲突已人工确认保持独立')
+      await loadQuality()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  async function mergeKnowledgeCase(item: KnowledgeMergeCaseItem) {
+    if (!item.candidates.length) {
+      setMessage('当前冲突缺少可合并的候选事实')
+      return
+    }
+    const options = item.candidates.map((candidate, index) => `${index + 1}. ${candidate.text.slice(0, 80)}`).join('\n')
+    const selected = Number(window.prompt(`请选择要保留的候选序号：\n${options}`, '1'))
+    if (!Number.isInteger(selected) || selected < 1 || selected > item.candidates.length) return
+    const candidate = item.candidates[selected - 1]
+    const mergedText = window.prompt('可输入合并后的事实文本；留空则沿用所选候选', candidate.text)?.trim() || ''
+    setWorking(true)
+    try {
+      await apiResolveKnowledgeMergeCase(token, item.id, {
+        action: 'merge',
+        keep_claim_id: candidate.id,
+        merged_text: mergedText,
+      }, selectedSpace?.id)
+      setMessage('知识冲突已合并，未保留候选已归档并保留审计链路')
+      await Promise.all([loadQuality(), loadPipeline(true)])
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {
@@ -325,14 +451,15 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
         <div className="min-w-52 flex-1"><h1 className="text-lg font-semibold">知识治理中心</h1><p className="text-xs text-[var(--text-secondary)]">编排、审核、连接器、质量与访问控制的内部控制面</p></div>
         <select value={selectedProjectId || ''} onChange={(event) => setSelectedProjectId(event.target.value || null)} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><option value="">工作区默认</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
         <select value={selectedSpaceId} onChange={(event) => setSelectedSpaceId(event.target.value)} className="max-w-56 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><option value="">我的非空间知识</option>{spaces.map((space) => <option key={space.id} value={space.id}>{space.name} · {space.role}</option>)}</select>
-        <button onClick={() => { void loadPipeline(); void loadGovernance() }} className="rounded-xl border border-[var(--border)] p-2" title="刷新"><RefreshCw size={15} /></button>
+        <button onClick={() => { void loadPipeline(); void loadGovernance(); void loadQuality() }} className="rounded-xl border border-[var(--border)] p-2" title="刷新"><RefreshCw size={15} /></button>
       </header>
 
       <main className="mx-auto max-w-7xl space-y-5 p-6">
         {message && <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm">{message}</div>}
-        <nav className="grid gap-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-1 sm:grid-cols-4">
-          <TabButton active={tab === 'pipeline'} onClick={() => setTab('pipeline')} icon={<Network size={14} />} label="编排与质量" />
+        <nav className="grid gap-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-1 sm:grid-cols-5">
+          <TabButton active={tab === 'pipeline'} onClick={() => setTab('pipeline')} icon={<Network size={14} />} label="知识编排" />
           <TabButton active={tab === 'reviews'} onClick={() => setTab('reviews')} icon={<ShieldCheck size={14} />} label={`审核队列 ${reviews.length}`} />
+          <TabButton active={tab === 'quality'} onClick={() => setTab('quality')} icon={<Activity size={14} />} label={`质量与反馈 ${feedback.length}`} />
           <TabButton active={tab === 'connectors'} onClick={() => setTab('connectors')} icon={<Plug size={14} />} label="连接器与同步" />
           <TabButton active={tab === 'access'} onClick={() => setTab('access')} icon={<Users size={14} />} label="空间访问控制" />
         </nav>
@@ -350,11 +477,26 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
         )}
 
         {tab === 'reviews' && <ReviewPanel reviews={reviews} canReview={canReview} working={working} onDecision={decide} />}
+        {tab === 'quality' && <QualityPanel selectedSpace={selectedSpace} health={health} feedback={feedback} lintIssues={lintIssues} mergeCases={mergeCases} working={working} onReconcile={reconcileDueReviews} onLint={runLint} onResolveFeedback={resolveFeedback} onKeepSeparate={keepMergeCaseSeparate} onMerge={mergeKnowledgeCase} />}
         {tab === 'connectors' && <ConnectorPanel selectedSpace={selectedSpace} connectors={connectors} runs={syncRuns} items={syncItems} expandedRunId={expandedRunId} working={working} name={connectorName} type={connectorType} onName={setConnectorName} onType={setConnectorType} onCreate={createConnector} onToggle={toggleRun} onRetry={retryRun} />}
         {tab === 'access' && <AccessPanel selectedSpace={selectedSpace} canAdmin={canAdmin} members={members} subjectType={memberType} subjectId={memberId} role={memberRole} working={working} onSubjectType={setMemberType} onSubjectId={setMemberId} onRole={setMemberRole} onGrant={grantMember} onRevoke={revokeMember} />}
       </main>
     </div>
   )
+}
+
+function QualityPanel({ selectedSpace, health, feedback, lintIssues, mergeCases, working, onReconcile, onLint, onResolveFeedback, onKeepSeparate, onMerge }: { selectedSpace: KnowledgeSpaceItem | null; health: KnowledgeGovernanceHealth | null; feedback: KnowledgeFeedbackItem[]; lintIssues: KnowledgeLintIssueItem[]; mergeCases: KnowledgeMergeCaseItem[]; working: boolean; onReconcile: () => Promise<void>; onLint: () => Promise<void>; onResolveFeedback: (item: KnowledgeFeedbackItem, resolution: 'acknowledged' | 'needs_revision' | 'dismissed') => Promise<void>; onKeepSeparate: (item: KnowledgeMergeCaseItem) => Promise<void>; onMerge: (item: KnowledgeMergeCaseItem) => Promise<void> }) {
+  if (!selectedSpace || !['reviewer', 'publisher', 'admin'].includes(selectedSpace.role)) {
+    return <section className="rounded-2xl border border-dashed border-[var(--border)] p-12 text-center text-sm text-[var(--text-secondary)]">请选择具有 Reviewer 及以上角色的知识空间</section>
+  }
+  const metrics = health?.metrics || {}
+  return <div className="space-y-5">
+    <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="flex flex-wrap items-center justify-between gap-4"><div><div className="flex items-center gap-3"><div className={clsx('grid h-16 w-16 place-items-center rounded-2xl text-2xl font-semibold', health?.status === 'critical' ? 'bg-red-500/10 text-red-500' : health?.status === 'attention' ? 'bg-amber-500/10 text-amber-500' : 'bg-emerald-500/10 text-emerald-500')}>{health?.score ?? '—'}</div><div><h2 className="font-semibold">治理健康分</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">综合复审、有效期、质量问题、员工反馈、冲突与连接器状态</p></div></div></div><div className="flex gap-2"><button onClick={() => void onReconcile()} disabled={working} className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2 text-xs disabled:opacity-40"><ScanLine size={14} />扫描到期复审</button><button onClick={() => void onLint()} disabled={working} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-40">{working ? <Loader2 size={14} className="animate-spin" /> : <Activity size={14} />}执行质量检查</button></div></div><div className="mt-5 grid gap-3 sm:grid-cols-4 xl:grid-cols-8"><Metric label="已发布来源" value={metrics.published_sources ?? 0} /><Metric label="到期复审" value={metrics.due_reviews ?? 0} /><Metric label="复审阻塞" value={metrics.blocked_reviews ?? 0} /><Metric label="已过期来源" value={metrics.expired_sources ?? 0} /><Metric label="来源不同步" value={metrics.stale_sources ?? 0} /><Metric label="失败任务" value={metrics.failed_jobs ?? 0} /><Metric label="开放质量问题" value={metrics.open_lint_issues ?? 0} /><Metric label="连接器异常/滞后" value={(metrics.failed_connectors ?? 0) + (metrics.stale_connectors ?? 0)} /></div></section>
+    <div className="grid gap-5 xl:grid-cols-2">
+      <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><h2 className="flex items-center gap-2 font-semibold"><MessageSquareWarning size={16} />员工反馈 · {feedback.length}</h2><div className="mt-3 max-h-[520px] space-y-2 overflow-auto">{feedback.map((item) => <article key={item.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3"><div className="flex items-start justify-between gap-2"><div><h3 className="text-sm font-medium">{item.source_title}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{item.feedback_type} · {item.target_type} · {item.created_at ? new Date(item.created_at).toLocaleString() : '—'}</p></div>{['incorrect', 'outdated', 'correction'].includes(item.feedback_type) && <AlertTriangle size={15} className="text-amber-500" />}</div>{item.correction && <p className="mt-2 rounded-lg bg-[var(--surface)] p-2 text-xs leading-5">{item.correction}</p>}<div className="mt-3 flex flex-wrap gap-1.5"><button disabled={working} onClick={() => void onResolveFeedback(item, 'acknowledged')} className="rounded-lg border border-[var(--border)] px-2 py-1 text-[11px]">已确认</button><button disabled={working} onClick={() => void onResolveFeedback(item, 'needs_revision')} className="rounded-lg bg-amber-500/10 px-2 py-1 text-[11px] text-amber-500">需要修订</button><button disabled={working} onClick={() => void onResolveFeedback(item, 'dismissed')} className="rounded-lg px-2 py-1 text-[11px] text-[var(--text-secondary)]">忽略</button></div></article>)}{!feedback.length && <p className="py-10 text-center text-xs text-[var(--text-secondary)]">暂无未处理员工反馈</p>}</div></section>
+      <div className="space-y-5"><section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><h2 className="flex items-center gap-2 font-semibold"><AlertTriangle size={16} />质量问题 · {lintIssues.length}</h2><div className="mt-3 max-h-64 space-y-2 overflow-auto">{lintIssues.map((issue) => <article key={issue.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3"><div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{issue.code}</span><span className={clsx('rounded-full px-2 py-0.5 text-[10px]', issue.severity === 'error' ? 'bg-red-500/10 text-red-500' : 'bg-amber-500/10 text-amber-500')}>{issue.severity}</span></div><p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{issue.message}</p></article>)}{!lintIssues.length && <p className="py-8 text-center text-xs text-[var(--text-secondary)]">暂无开放质量问题</p>}</div></section><section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><h2 className="flex items-center gap-2 font-semibold"><GitBranch size={16} />知识冲突 · {mergeCases.length}</h2><div className="mt-3 max-h-64 space-y-2 overflow-auto">{mergeCases.map((item) => <article key={item.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3"><p className="text-sm font-medium">{item.entity_key}</p><p className="mt-1 text-xs text-[var(--text-secondary)]">{item.conflict_type} · {item.candidate_ids.length} 个候选</p><div className="mt-2 space-y-1.5">{item.candidates.map((candidate, index) => <div key={candidate.id} className="rounded-lg bg-[var(--surface)] p-2"><p className="line-clamp-2 text-xs leading-5">{index + 1}. {candidate.text}</p><p className="mt-1 text-[10px] text-[var(--text-secondary)]">{candidate.source_title} / {candidate.page_title} · {candidate.authority} · {candidate.confidence.toFixed(2)}</p></div>)}</div><div className="mt-2 flex flex-wrap gap-1.5"><button disabled={working || !item.candidates.length} onClick={() => void onMerge(item)} className="rounded-lg bg-[var(--accent)] px-2 py-1 text-[11px] text-[var(--accent-foreground)] disabled:opacity-40">选择并合并</button><button disabled={working} onClick={() => void onKeepSeparate(item)} className="rounded-lg border border-[var(--border)] px-2 py-1 text-[11px]">保持独立</button></div></article>)}{!mergeCases.length && <p className="py-8 text-center text-xs text-[var(--text-secondary)]">暂无待处理知识冲突</p>}</div></section></div>
+    </div>
+  </div>
 }
 
 function TabButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
@@ -383,7 +525,8 @@ function JobList({ jobs }: { jobs: KnowledgeJobItem[] }) {
 
 function ReviewPanel({ reviews, canReview, working, onDecision }: { reviews: KnowledgeReviewItem[]; canReview: boolean; working: boolean; onDecision: (review: KnowledgeReviewItem, decision: 'approve' | 'reject') => Promise<void> }) {
   if (!canReview) return <Empty text="当前账号在所选空间没有 reviewer 权限" />
-  return <section className="space-y-3">{reviews.map((review) => <article key={review.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="flex items-start justify-between gap-4"><div><h2 className="font-semibold">待审核知识版本</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">版本 {review.source_version_id} · 空间 {review.space_id || '个人/Project'}</p><p className="mt-3 text-sm text-[var(--text-secondary)]">页面 {String(review.diff_summary.pages ?? 0)} · 事实 {String(review.diff_summary.claims ?? 0)} · 关系 {String(review.diff_summary.relations ?? 0)}</p></div><ShieldCheck className="text-amber-500" /></div><div className="mt-4 flex justify-end gap-2"><button onClick={() => void onDecision(review, 'reject')} disabled={working} className="inline-flex items-center gap-1 rounded-xl border border-red-500/30 px-3 py-2 text-sm text-red-500"><X size={14} />驳回</button><button onClick={() => void onDecision(review, 'approve')} disabled={working} className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white"><Check size={14} />审核并发布</button></div></article>)}{!reviews.length && <Empty text="没有待审核知识版本" />}</section>
+  const reasonLabel: Record<string, string> = { content_change: '内容变更', scheduled_recertification: '周期复审', feedback_resolution: '员工反馈触发' }
+  return <section className="space-y-3">{reviews.map((review) => <article key={review.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="flex items-start justify-between gap-4"><div><div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold">{review.source_title || '待审核知识版本'}</h2><span className="rounded-full bg-amber-500/10 px-2 py-1 text-[10px] text-amber-500">{reasonLabel[review.review_reason || 'content_change'] || review.review_reason}</span></div><p className="mt-1 text-xs text-[var(--text-secondary)]">版本 v{review.version_number} · {review.source_system || '企业知识'} · {review.classification || 'internal'} · {review.authority || 'contextual'}</p><p className="mt-3 text-sm text-[var(--text-secondary)]">页面 {String(review.diff_summary.pages ?? 0)} · 事实 {String(review.diff_summary.claims ?? 0)} · 关系 {String(review.diff_summary.relations ?? 0)} · 复审日期 {review.review_due_at ? new Date(review.review_due_at).toLocaleDateString() : '—'}</p><p className="mt-2 font-mono text-[10px] text-[var(--text-secondary)]">Source {review.source_id} · Version {review.source_version_id}</p></div><ShieldCheck className="text-amber-500" /></div><div className="mt-4 flex justify-end gap-2"><button onClick={() => void onDecision(review, 'reject')} disabled={working} className="inline-flex items-center gap-1 rounded-xl border border-red-500/30 px-3 py-2 text-sm text-red-500"><X size={14} />驳回</button><button onClick={() => void onDecision(review, 'approve')} disabled={working} className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white"><Check size={14} />审核并发布</button></div></article>)}{!reviews.length && <Empty text="没有待审核知识版本" />}</section>
 }
 
 function ConnectorPanel({ selectedSpace, connectors, runs, items, expandedRunId, working, name, type, onName, onType, onCreate, onToggle, onRetry }: { selectedSpace: KnowledgeSpaceItem | null; connectors: EnterpriseKnowledgeConnectorItem[]; runs: KnowledgeSyncRunItem[]; items: Record<string, KnowledgeSyncItem[]>; expandedRunId: string | null; working: boolean; name: string; type: string; onName: (value: string) => void; onType: (value: string) => void; onCreate: () => Promise<void>; onToggle: (run: KnowledgeSyncRunItem) => Promise<void>; onRetry: (run: KnowledgeSyncRunItem) => Promise<void> }) {

@@ -76,3 +76,22 @@ def test_governed_source_delete_decision_is_behavioral() -> None:
     assert _source_requires_withdrawal(
         SimpleNamespace(space_id=None, active_version_id=None, status="review")
     )
+
+
+def test_enterprise_search_feedback_and_quality_workbench_are_space_scoped() -> None:
+    employee = (ROOT / "frontend/src/pages/EnterpriseKnowledgePage.tsx").read_text()
+    governance = (ROOT / "frontend/src/pages/KnowledgeCenterPage.tsx").read_text()
+    client = (ROOT / "frontend/src/api/client.ts").read_text()
+    query = (ROOT / "knowledge/query.py").read_text()
+
+    assert "apiSubmitKnowledgeFeedback" in employee
+    assert "有帮助" in employee and "内容过期" in employee and "提交纠正" in employee
+    assert "source_system" in employee and "review_due_at" in employee
+    assert "selectedSpaceId, 12" in employee
+    assert "space_id: spaceId || null" in client
+    assert "KnowledgeSource.space_id == space_id" in query
+    assert "质量与反馈" in governance
+    assert "治理健康分" in governance
+    assert "扫描到期复审" in governance
+    assert "选择并合并" in governance
+    assert "apiUploadDocument" not in governance

@@ -3,6 +3,7 @@ from pathlib import Path
 from gateway.api_gateway.main import app
 from gateway.api_gateway.routers.knowledge_enterprise import (
     ConnectorPushRequest,
+    KnowledgeSearchRequest,
     KnowledgeSpaceCreate,
 )
 from infra.storage.models import (
@@ -127,6 +128,8 @@ def test_enterprise_knowledge_openapi_exposes_employee_and_governance_surfaces()
 
 
 def test_space_and_connector_requests_enforce_enterprise_limits() -> None:
+    search = KnowledgeSearchRequest(query="报销制度", space_id="space-a")
+    assert search.space_id == "space-a"
     space = KnowledgeSpaceCreate(name="公司制度", space_type="company")
     assert space.publish_policy == "review"
     assert space.default_classification == "internal"

@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  AlertTriangle,
   ArrowLeft,
   BookOpen,
   FileSearch,
   FileText,
   Loader2,
+  MessageSquareWarning,
   Plus,
   Search,
   Send,
   ShieldCheck,
+  ThumbsDown,
+  ThumbsUp,
   X,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -19,15 +23,18 @@ import {
   apiListKnowledgeSpaces,
   apiListKnowledgeSpaceSources,
   apiSearchEnterpriseKnowledge,
+  apiSubmitKnowledgeFeedback,
   type EnterpriseKnowledgeAssetItem,
   type EnterpriseKnowledgeEvidence,
   type EnterpriseKnowledgeSourceItem,
+  type KnowledgeFeedbackType,
   type KnowledgeSpaceItem,
 } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import { useChatPreferences } from '../store/chatPreferences'
 
 type Tab = 'assets' | 'sources'
+type FeedbackTarget = { targetType: string; targetId: string }
 
 const TYPE_LABEL: Record<string, string> = {
   company: '公司',
@@ -45,6 +52,18 @@ const CLASS_LABEL: Record<string, string> = {
 }
 
 const formatDate = (value?: string | null) => value ? new Date(value).toLocaleDateString() : '—'
+const isReviewDue = (value?: string | null) => Boolean(value && new Date(value).getTime() <= Date.now())
+
+function evidenceFeedbackTarget(result: EnterpriseKnowledgeEvidence): FeedbackTarget | null {
+  if (result.source_type === 'knowledge_claim') {
+    return { targetType: 'knowledge_claim', targetId: result.claim_id || result.id }
+  }
+  if (result.source_type === 'knowledge_page') {
+    return { targetType: 'knowledge_page', targetId: result.knowledge_page_id || result.id }
+  }
+  if (result.source_id) return { targetType: 'knowledge_source', targetId: result.source_id }
+  return null
+}
 
 export default function EnterpriseKnowledgePage({ onBack }: { onBack?: () => void }) {
   const token = useAuthStore((state) => state.token)!
@@ -60,6 +79,7 @@ export default function EnterpriseKnowledgePage({ onBack }: { onBack?: () => voi
   const [results, setResults] = useState<EnterpriseKnowledgeEvidence[] | null>(null)
   const [loading, setLoading] = useState(true)
   const [searching, setSearching] = useState(false)
+  const [feedbackBusy, setFeedbackBusy] = useState('')
   const [message, setMessage] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [createName, setCreateName] = useState('')
@@ -111,11 +131,38 @@ export default function EnterpriseKnowledgePage({ onBack }: { onBack?: () => voi
     setSearching(true)
     setMessage('')
     try {
-      setResults(await apiSearchEnterpriseKnowledge(token, query.trim(), projectId, 12))
+      setResults(await apiSearchEnterpriseKnowledge(token, query.trim(), projectId, selectedSpaceId, 12))
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {
       setSearching(false)
+    }
+  }
+
+  async function submitFeedback(
+    target: FeedbackTarget,
+    feedbackType: KnowledgeFeedbackType,
+  ) {
+    const key = `${target.targetType}:${target.targetId}:${feedbackType}`
+    let correction: string | null = null
+    if (feedbackType === 'correction') {
+      correction = window.prompt('请描述正确内容、依据或建议修改方式')?.trim() || null
+      if (!correction) return
+    }
+    setFeedbackBusy(key)
+    try {
+      await apiSubmitKnowledgeFeedback(token, {
+        target_type: target.targetType,
+        target_id: target.targetId,
+        feedback_type: feedbackType,
+        correction,
+        score: feedbackType === 'helpful' ? 1 : feedbackType === 'unhelpful' ? 0 : null,
+      })
+      setMessage('反馈已提交，将进入知识治理闭环。')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setFeedbackBusy('')
     }
   }
 
@@ -177,7 +224,11 @@ export default function EnterpriseKnowledgePage({ onBack }: { onBack?: () => voi
           {results !== null ? (
             <section className="mt-5 space-y-3">
               <div className="flex items-center justify-between"><h2 className="font-semibold">检索结果 · {results.length}</h2><button onClick={() => setResults(null)} className="rounded-lg p-2 hover:bg-[var(--surface)]"><X size={16} /></button></div>
-              {results.map((result) => <article key={`${result.source_type}:${result.id}`} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-start justify-between gap-3"><div><h3 className="font-medium">{result.title || '知识证据'}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{result.source_type} · 权威级别 {result.authority || 'contextual'} · score {result.score.toFixed(3)}</p></div><FileSearch size={17} className="text-[var(--accent)]" /></div><p className="mt-3 whitespace-pre-wrap text-sm leading-6">{result.text}</p><p className="mt-3 text-xs text-[var(--text-secondary)]">版本 {result.source_version_id || '—'} · 来源 {result.source_id || result.document_id || '—'}</p></article>)}
+              {results.map((result) => {
+                const target = evidenceFeedbackTarget(result)
+                const due = isReviewDue(result.review_due_at)
+                return <article key={`${result.source_type}:${result.id}`} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-start justify-between gap-3"><div><h3 className="font-medium">{result.title || '知识证据'}</h3><div className="mt-2 flex flex-wrap gap-1.5"><TrustBadge text={`权威 ${result.authority || 'contextual'}`} /><TrustBadge text={CLASS_LABEL[result.classification || 'internal'] || result.classification || '内部'} /><TrustBadge text={result.source_system || '企业知识'} /><TrustBadge text={`同步 ${result.sync_status || 'current'}`} />{due && <TrustBadge warning text="需要复审" />}</div></div><FileSearch size={17} className="text-[var(--accent)]" /></div><p className="mt-3 whitespace-pre-wrap text-sm leading-6">{result.text}</p><div className="mt-3 grid gap-1 text-xs text-[var(--text-secondary)] sm:grid-cols-2"><p>版本 {result.source_version_id || '—'} · 相关度 {result.score.toFixed(3)}</p><p>生效 {formatDate(result.effective_from)} · 失效 {formatDate(result.effective_to)} · 复审 {formatDate(result.review_due_at)}</p><p className="sm:col-span-2">Citation：来源 {result.source_id || result.document_id || '—'}{result.claim_id ? ` · Claim ${result.claim_id}` : ''}</p></div>{target && <FeedbackActions target={target} busy={feedbackBusy} onSubmit={submitFeedback} />}</article>
+              })}
               {!results.length && <div className="rounded-2xl border border-dashed border-[var(--border)] py-12 text-center text-sm text-[var(--text-secondary)]">未找到当前权限范围内的有效知识</div>}
             </section>
           ) : selectedSpace ? (
@@ -188,7 +239,7 @@ export default function EnterpriseKnowledgePage({ onBack }: { onBack?: () => voi
               </section>
 
               <nav className="flex rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-1"><TabButton active={tab === 'assets'} onClick={() => setTab('assets')} icon={<BookOpen size={14} />} label="知识资产" /><TabButton active={tab === 'sources'} onClick={() => setTab('sources')} icon={<FileText size={14} />} label="来源与状态" /></nav>
-              {tab === 'assets' ? <AssetGrid assets={assets} /> : <SourceList sources={sources} />}
+              {tab === 'assets' ? <AssetGrid assets={assets} feedbackBusy={feedbackBusy} onFeedback={submitFeedback} /> : <SourceList sources={sources} />}
             </div>
           ) : <div className="mt-5 rounded-3xl border border-dashed border-[var(--border)] py-20 text-center text-sm text-[var(--text-secondary)]">请选择一个知识空间</div>}
         </main>
@@ -201,6 +252,21 @@ export default function EnterpriseKnowledgePage({ onBack }: { onBack?: () => voi
   )
 }
 
+function TrustBadge({ text, warning = false }: { text: string; warning?: boolean }) {
+  return <span className={clsx('rounded-full px-2 py-1 text-[11px]', warning ? 'bg-amber-500/10 text-amber-500' : 'bg-[var(--bg)] text-[var(--text-secondary)]')}>{warning && <AlertTriangle size={11} className="mr-1 inline" />}{text}</span>
+}
+
+function FeedbackActions({ target, busy, onSubmit }: { target: FeedbackTarget; busy: string; onSubmit: (target: FeedbackTarget, type: KnowledgeFeedbackType) => Promise<void> }) {
+  const actions: Array<{ type: KnowledgeFeedbackType; label: string; icon: React.ReactNode }> = [
+    { type: 'helpful', label: '有帮助', icon: <ThumbsUp size={12} /> },
+    { type: 'unhelpful', label: '无帮助', icon: <ThumbsDown size={12} /> },
+    { type: 'incorrect', label: '内容错误', icon: <MessageSquareWarning size={12} /> },
+    { type: 'outdated', label: '内容过期', icon: <AlertTriangle size={12} /> },
+    { type: 'correction', label: '提交纠正', icon: <FileText size={12} /> },
+  ]
+  return <div className="mt-4 flex flex-wrap gap-1.5 border-t border-[var(--border)] pt-3">{actions.map((action) => { const key = `${target.targetType}:${target.targetId}:${action.type}`; return <button key={action.type} onClick={() => void onSubmit(target, action.type)} disabled={Boolean(busy)} className="inline-flex items-center gap-1 rounded-lg border border-[var(--border)] px-2 py-1.5 text-[11px] text-[var(--text-secondary)] hover:bg-[var(--bg)] disabled:opacity-40">{busy === key ? <Loader2 size={12} className="animate-spin" /> : action.icon}{action.label}</button> })}</div>
+}
+
 function Metric({ label, value }: { label: string; value: string | number }) {
   return <div className="rounded-2xl bg-[var(--bg)] p-3"><div className="text-lg font-semibold">{value}</div><div className="mt-1 text-xs text-[var(--text-secondary)]">{label}</div></div>
 }
@@ -209,14 +275,14 @@ function TabButton({ active, onClick, icon, label }: { active: boolean; onClick:
   return <button onClick={onClick} className={clsx('flex flex-1 items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm', active ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg)]')}>{icon}{label}</button>
 }
 
-function AssetGrid({ assets }: { assets: EnterpriseKnowledgeAssetItem[] }) {
+function AssetGrid({ assets, feedbackBusy, onFeedback }: { assets: EnterpriseKnowledgeAssetItem[]; feedbackBusy: string; onFeedback: (target: FeedbackTarget, type: KnowledgeFeedbackType) => Promise<void> }) {
   if (!assets.length) return <Empty icon={<BookOpen size={28} />} text="该空间还没有已发布知识资产" />
-  return <div className="grid gap-3 md:grid-cols-2">{assets.map((asset) => <article key={asset.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-start justify-between gap-3"><div><h3 className="font-medium">{asset.title}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{asset.page_type} · {CLASS_LABEL[asset.classification] || asset.classification}</p></div><BookOpen size={16} className="text-[var(--accent)]" /></div><p className="mt-3 line-clamp-4 text-sm leading-6 text-[var(--text-secondary)]">{asset.summary || '暂无摘要'}</p><p className="mt-3 text-xs text-[var(--text-secondary)]">权威 {asset.authority} · 置信度 {asset.confidence.toFixed(2)} · 下次复审 {formatDate(asset.review_due_at)}</p></article>)}</div>
+  return <div className="grid gap-3 md:grid-cols-2">{assets.map((asset) => <article key={asset.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-start justify-between gap-3"><div><h3 className="font-medium">{asset.title}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{asset.page_type} · {CLASS_LABEL[asset.classification] || asset.classification}</p></div><BookOpen size={16} className="text-[var(--accent)]" /></div><p className="mt-3 line-clamp-4 text-sm leading-6 text-[var(--text-secondary)]">{asset.summary || '暂无摘要'}</p><div className="mt-3 flex flex-wrap gap-1.5"><TrustBadge text={`权威 ${asset.authority}`} /><TrustBadge text={`置信度 ${asset.confidence.toFixed(2)}`} /><TrustBadge warning={isReviewDue(asset.review_due_at)} text={`${isReviewDue(asset.review_due_at) ? '需要复审' : '复审'} ${formatDate(asset.review_due_at)}`} /></div><FeedbackActions target={{ targetType: 'knowledge_page', targetId: asset.id }} busy={feedbackBusy} onSubmit={onFeedback} /></article>)}</div>
 }
 
 function SourceList({ sources }: { sources: EnterpriseKnowledgeSourceItem[] }) {
   if (!sources.length) return <Empty icon={<FileSearch size={28} />} text="该空间还没有知识来源" />
-  return <div className="space-y-2">{sources.map((source) => <article key={source.id} className="flex flex-wrap items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><FileText size={17} className="text-[var(--accent)]" /><div className="min-w-0 flex-1"><h3 className="truncate text-sm font-medium">{source.title}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{source.source_system || source.source_type} · {CLASS_LABEL[source.classification] || source.classification} · 更新 {formatDate(source.updated_at)}</p></div><span className={clsx('rounded-full px-2 py-1 text-xs', source.status === 'published' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500')}>{source.status}</span><span className="text-xs text-[var(--text-secondary)]">复审 {formatDate(source.review_due_at)}</span></article>)}</div>
+  return <div className="space-y-2">{sources.map((source) => <article key={source.id} className="flex flex-wrap items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><FileText size={17} className="text-[var(--accent)]" /><div className="min-w-0 flex-1"><h3 className="truncate text-sm font-medium">{source.title}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{source.source_system || source.source_type} · {CLASS_LABEL[source.classification] || source.classification} · 更新 {formatDate(source.updated_at)}</p></div><span className={clsx('rounded-full px-2 py-1 text-xs', source.status === 'published' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500')}>{source.status}</span><span className={clsx('text-xs', isReviewDue(source.review_due_at) ? 'text-amber-500' : 'text-[var(--text-secondary)]')}>{isReviewDue(source.review_due_at) ? '需要复审' : '复审'} {formatDate(source.review_due_at)}</span></article>)}</div>
 }
 
 function Empty({ icon, text }: { icon: React.ReactNode; text: string }) {

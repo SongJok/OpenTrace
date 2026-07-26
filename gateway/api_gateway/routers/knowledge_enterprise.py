@@ -42,7 +42,12 @@ from knowledge.access import (
     role_allows,
 )
 from knowledge.compiler import content_hash
-from knowledge.lifecycle import publish_source_version, reject_source_version, withdraw_source
+from knowledge.lifecycle import (
+    publish_source_version,
+    reject_source_version,
+    reopen_due_review_tasks,
+    withdraw_source,
+)
 from knowledge.query import search_knowledge
 from knowledge.sync import retry_sync_run
 
@@ -134,6 +139,7 @@ class ConnectorPushRequest(BaseModel):
 class KnowledgeSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     project_id: str | None = None
+    space_id: str | None = None
     top_k: int = Field(default=8, ge=1, le=50)
 
 
@@ -228,14 +234,24 @@ async def enterprise_knowledge_search(
     payload: KnowledgeSearchRequest,
     request: Request,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     tenant_id, workspace_id = _scope(request, current_user)
+    if payload.space_id:
+        await _space_or_error(
+            db,
+            request=request,
+            user=current_user,
+            space_id=payload.space_id,
+            role="viewer",
+        )
     items = await search_knowledge(
         query=payload.query,
         user_id=current_user.id,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
         project_id=payload.project_id,
+        space_id=payload.space_id,
         top_k=payload.top_k,
     )
     return {"items": items, "count": len(items)}
@@ -972,10 +988,49 @@ async def retry_knowledge_sync_run(
     return result
 
 
+@router.post("/knowledge/reviews/reconcile-due")
+async def reconcile_due_reviews(
+    request: Request,
+    space_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Reviewer 手动扫描到期复审；Worker 也会周期执行同一逻辑。"""
+    tenant_id, workspace_id = _scope(request, current_user)
+    context = await resolve_access_context(
+        db, user=current_user, tenant_id=tenant_id, workspace_id=workspace_id
+    )
+    review_space_ids = tuple(
+        item for item, role in context.space_roles.items() if role_allows(role, "reviewer")
+    )
+    if space_id:
+        if space_id not in review_space_ids:
+            raise AppException(
+                ErrorCodes.PERMISSION_DENIED.code, message="knowledge_space_requires_reviewer"
+            )
+        review_space_ids = (space_id,)
+    result = await reopen_due_review_tasks(
+        db,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        space_ids=review_space_ids,
+    )
+    await db.commit()
+    await write_audit_log(
+        user_id=current_user.id,
+        action="knowledge_review.reconcile_due",
+        resource_type="knowledge_space",
+        resource_id=space_id or workspace_id,
+        payload=result,
+    )
+    return result
+
+
 @router.get("/knowledge/reviews")
 async def list_reviews(
     request: Request,
     status: str = "pending",
+    space_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -986,11 +1041,17 @@ async def list_reviews(
     review_space_ids = [
         item for item, role in context.space_roles.items() if role_allows(role, "reviewer")
     ]
+    if space_id:
+        if space_id not in review_space_ids:
+            raise AppException(
+                ErrorCodes.PERMISSION_DENIED.code, message="knowledge_space_requires_reviewer"
+            )
+        review_space_ids = [space_id]
     source_access = accessible_source_predicate(context)
     rows = list(
         (
             await db.execute(
-                select(KnowledgeReviewTask)
+                select(KnowledgeReviewTask, KnowledgeSourceVersion, KnowledgeSource)
                 .join(
                     KnowledgeSourceVersion,
                     KnowledgeReviewTask.source_version_id == KnowledgeSourceVersion.id,
@@ -1009,21 +1070,30 @@ async def list_reviews(
                 )
                 .order_by(KnowledgeReviewTask.created_at)
             )
-        ).scalars()
+        ).all()
     )
     return {
         "items": [
             {
-                "id": row.id,
-                "source_version_id": row.source_version_id,
-                "space_id": row.space_id,
-                "status": row.status,
-                "required_role": row.required_role,
-                "assigned_to": row.assigned_to,
-                "diff_summary": row.diff_summary,
-                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "id": task.id,
+                "source_id": source.id,
+                "source_title": source.title,
+                "source_version_id": task.source_version_id,
+                "version_number": version.version_number,
+                "space_id": task.space_id,
+                "status": task.status,
+                "required_role": task.required_role,
+                "requested_by": task.requested_by,
+                "assigned_to": task.assigned_to,
+                "review_reason": (task.diff_summary or {}).get("review_reason", "content_change"),
+                "review_due_at": source.review_due_at.isoformat() if source.review_due_at else None,
+                "classification": source.classification,
+                "authority": source.authority,
+                "source_system": source.source_system,
+                "diff_summary": task.diff_summary,
+                "created_at": task.created_at.isoformat() if task.created_at else None,
             }
-            for row in rows
+            for task, version, source in rows
         ]
     }
 

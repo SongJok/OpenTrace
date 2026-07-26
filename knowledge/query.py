@@ -174,6 +174,7 @@ async def search_knowledge(
     tenant_id: str | None,
     workspace_id: str | None,
     project_id: str | None = None,
+    space_id: str | None = None,
     top_k: int,
     query_type: str | None = None,
     session_id: str | None = None,
@@ -204,11 +205,16 @@ async def search_knowledge(
                 if user is not None
                 else None
             )
+            if space_id and (
+                access_context is None or space_id not in access_context.accessible_space_ids
+            ):
+                return []
             source_access = (
                 accessible_source_predicate(access_context, project_id=project_id)
                 if access_context is not None
                 else None
             )
+            source_space = KnowledgeSource.space_id == space_id if space_id else True
             hot_results: list[dict[str, Any]] = []
             if session_id:
                 state = await db.scalar(
@@ -247,7 +253,9 @@ async def search_knowledge(
                     (
                         await db.execute(
                             select(KnowledgeSource.id).where(
-                                KnowledgeSource.id.in_(hot_source_ids), source_access
+                                KnowledgeSource.id.in_(hot_source_ids),
+                                source_access,
+                                source_space,
                             )
                         )
                     ).scalars()
@@ -271,6 +279,7 @@ async def search_knowledge(
                     KnowledgePage.status == "published",
                     KnowledgeSource.status == "published",
                     KnowledgeSource.active_version_id == KnowledgeSourceVersion.id,
+                    source_space,
                 )
             )
             if source_access is not None:
@@ -314,6 +323,7 @@ async def search_knowledge(
                     KnowledgePage.status == "published",
                     KnowledgeSource.status == "published",
                     KnowledgeSource.active_version_id == KnowledgeSourceVersion.id,
+                    source_space,
                 )
             )
             if source_access is not None:
@@ -368,6 +378,7 @@ async def search_knowledge(
                         target_page.status == "published",
                         KnowledgeSource.status == "published",
                         KnowledgeSource.active_version_id == KnowledgeSourceVersion.id,
+                        source_space,
                     )
                 )
                 relation_filters: list[Any] = []
@@ -468,7 +479,6 @@ async def search_knowledge(
                 "evidence_tier": "factual",
                 "disclosure_stage": "summary",
                 **_source_governance(source),
-                **_source_governance(source),
                 "provenance": {
                     "source_id": source.id,
                     "source_version_id": version.id,
@@ -504,6 +514,7 @@ async def search_knowledge(
                 "knowledge_status": claim.status,
                 "evidence_tier": "factual",
                 "disclosure_stage": "claim",
+                **_source_governance(source),
                 "provenance": {
                     "source_id": source.id,
                     "source_version_id": version.id,

@@ -271,9 +271,89 @@ export interface EnterpriseKnowledgeEvidence {
   source_version_id?: string | null
   document_id?: string | null
   claim_id?: string | null
+  knowledge_page_id?: string | null
   authority?: string | null
+  classification?: string | null
+  source_system?: string | null
+  sync_status?: string | null
+  effective_from?: string | null
+  effective_to?: string | null
+  review_due_at?: string | null
   disclosure_stage?: string
   provenance?: Record<string, unknown>
+}
+
+export type KnowledgeFeedbackType = 'helpful' | 'unhelpful' | 'incorrect' | 'outdated' | 'correction'
+
+export interface KnowledgeFeedbackItem {
+  id: string
+  target_type: string
+  target_id: string
+  feedback_type: string
+  score?: number | null
+  correction?: string | null
+  applied: boolean
+  user_id: string
+  source_id: string
+  source_title: string
+  space_id?: string | null
+  source_version_id?: string | null
+  metadata: Record<string, unknown>
+  created_at?: string | null
+}
+
+export interface KnowledgeGovernanceHealth {
+  score: number
+  status: 'healthy' | 'attention' | 'critical'
+  scope: { space_id?: string | null; space_count: number }
+  metrics: {
+    sources?: number
+    published_sources?: number
+    due_reviews?: number
+    expired_sources?: number
+    pending_reviews?: number
+    blocked_reviews?: number
+    failed_jobs?: number
+    stale_sources?: number
+    open_lint_issues?: number
+    open_lint_errors?: number
+    unresolved_feedback?: number
+    open_merge_cases?: number
+    failed_connectors?: number
+    stale_connectors?: number
+  }
+}
+
+export interface KnowledgeLintIssueItem {
+  id: string
+  severity: string
+  code: string
+  resource_type: string
+  resource_id: string
+  message: string
+  status: string
+  details: Record<string, unknown>
+}
+
+export interface KnowledgeMergeCandidateItem {
+  id: string
+  text: string
+  page_id: string
+  page_title: string
+  source_id: string
+  source_title: string
+  authority: string
+  confidence: number
+}
+
+export interface KnowledgeMergeCaseItem {
+  id: string
+  entity_key: string
+  conflict_type: string
+  candidate_ids: string[]
+  candidates: KnowledgeMergeCandidateItem[]
+  status: string
+  resolution: Record<string, unknown>
 }
 
 export interface KnowledgeSpaceMemberItem {
@@ -333,11 +413,20 @@ export interface KnowledgeSyncItem {
 
 export interface KnowledgeReviewItem {
   id: string
+  source_id: string
+  source_title: string
   source_version_id: string
+  version_number: number
   space_id?: string | null
   status: string
   required_role: string
+  requested_by?: string | null
   assigned_to?: string | null
+  review_reason?: string | null
+  review_due_at?: string | null
+  classification?: string | null
+  authority?: string | null
+  source_system?: string | null
   diff_summary: Record<string, unknown>
   created_at?: string | null
 }
@@ -492,18 +581,20 @@ export async function apiListKnowledgeSpaceAssets(token: string, spaceId: string
   return (await res.json()).items ?? []
 }
 
-export async function apiSearchEnterpriseKnowledge(token: string, query: string, projectId?: string | null, topK = 8): Promise<EnterpriseKnowledgeEvidence[]> {
+export async function apiSearchEnterpriseKnowledge(token: string, query: string, projectId?: string | null, spaceId?: string | null, topK = 8): Promise<EnterpriseKnowledgeEvidence[]> {
   const res = await apiFetch('/knowledge/search', {
     method: 'POST',
     headers: authHeaders(token),
-    body: JSON.stringify({ query, project_id: projectId || null, top_k: topK }),
+    body: JSON.stringify({ query, project_id: projectId || null, space_id: spaceId || null, top_k: topK }),
   })
   if (!res.ok) throw new Error(await readApiError(res, '企业知识检索失败'))
   return (await res.json()).items ?? []
 }
 
-export async function apiListKnowledgeReviews(token: string, status = 'pending'): Promise<KnowledgeReviewItem[]> {
-  const res = await apiFetch(`/knowledge/reviews?status=${encodeURIComponent(status)}`, { headers: authHeaders(token) })
+export async function apiListKnowledgeReviews(token: string, status = 'pending', spaceId?: string | null): Promise<KnowledgeReviewItem[]> {
+  const params = new URLSearchParams({ status })
+  if (spaceId) params.set('space_id', spaceId)
+  const res = await apiFetch(`/knowledge/reviews?${params.toString()}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取知识审核任务失败'))
   return (await res.json()).items ?? []
 }
@@ -515,6 +606,81 @@ export async function apiDecideKnowledgeReview(token: string, reviewId: string, 
     body: JSON.stringify({ decision, comment }),
   })
   if (!res.ok) throw new Error(await readApiError(res, decision === 'approve' ? '发布知识失败' : '驳回知识失败'))
+  return res.json()
+}
+
+export async function apiReconcileDueKnowledgeReviews(token: string, spaceId?: string | null): Promise<{ scanned: number; reopened: number; already_pending: number; blocked: number }> {
+  const query = spaceId ? `?space_id=${encodeURIComponent(spaceId)}` : ''
+  const res = await apiFetch(`/knowledge/reviews/reconcile-due${query}`, { method: 'POST', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '扫描到期复审失败'))
+  return res.json()
+}
+
+export async function apiSubmitKnowledgeFeedback(
+  token: string,
+  payload: { target_type: string; target_id: string; feedback_type: KnowledgeFeedbackType; correction?: string | null; score?: number | null },
+): Promise<{ accepted: boolean; feedback_id: string }> {
+  const res = await apiFetch('/knowledge/feedback', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '提交知识反馈失败'))
+  return res.json()
+}
+
+export async function apiListKnowledgeFeedback(token: string, spaceId?: string | null, applied = false): Promise<KnowledgeFeedbackItem[]> {
+  const params = new URLSearchParams({ applied: String(applied), actionable_only: 'true', limit: '200' })
+  if (spaceId) params.set('space_id', spaceId)
+  const res = await apiFetch(`/knowledge/feedback?${params.toString()}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取知识反馈失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiResolveKnowledgeFeedback(token: string, feedbackId: string, resolution: 'acknowledged' | 'needs_revision' | 'corrected' | 'dismissed', comment = ''): Promise<Record<string, unknown>> {
+  const res = await apiFetch(`/knowledge/feedback/${encodeURIComponent(feedbackId)}/resolve`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ resolution, comment }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '处理知识反馈失败'))
+  return res.json()
+}
+
+export async function apiGetKnowledgeGovernanceHealth(token: string, spaceId?: string | null): Promise<KnowledgeGovernanceHealth> {
+  const query = spaceId ? `?space_id=${encodeURIComponent(spaceId)}` : ''
+  const res = await apiFetch(`/knowledge/governance/health${query}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取知识治理健康度失败'))
+  return res.json()
+}
+
+export async function apiRunKnowledgeLint(token: string, spaceId?: string | null): Promise<{ open_count: number; findings: Array<Record<string, unknown>> }> {
+  const query = spaceId ? `?space_id=${encodeURIComponent(spaceId)}` : ''
+  const res = await apiFetch(`/knowledge/lint${query}`, { method: 'POST', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '执行知识质量检查失败'))
+  return res.json()
+}
+
+export async function apiListKnowledgeLintIssues(token: string, status = 'open', spaceId?: string | null): Promise<KnowledgeLintIssueItem[]> {
+  const params = new URLSearchParams({ status })
+  if (spaceId) params.set('space_id', spaceId)
+  const res = await apiFetch(`/knowledge/lint/issues?${params.toString()}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取知识质量问题失败'))
+  return res.json()
+}
+
+export async function apiListKnowledgeMergeCases(token: string, status = 'open', spaceId?: string | null): Promise<KnowledgeMergeCaseItem[]> {
+  const params = new URLSearchParams({ status })
+  if (spaceId) params.set('space_id', spaceId)
+  const res = await apiFetch(`/knowledge/merge-cases?${params.toString()}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取知识冲突失败'))
+  return res.json()
+}
+
+export async function apiResolveKnowledgeMergeCase(token: string, caseId: string, resolution: Record<string, unknown>, spaceId?: string | null): Promise<Record<string, unknown>> {
+  const query = spaceId ? `?space_id=${encodeURIComponent(spaceId)}` : ''
+  const res = await apiFetch(`/knowledge/merge-cases/${encodeURIComponent(caseId)}/resolve${query}`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify(resolution),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '处理知识冲突失败'))
   return res.json()
 }
 

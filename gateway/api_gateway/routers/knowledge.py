@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,10 +19,10 @@ from infra.storage.models import (
     Document,
     KnowledgeClaim,
     KnowledgeCompilationJob,
-    KnowledgeFeedback,
     KnowledgeLintIssue,
     KnowledgeMergeCase,
     KnowledgePage,
+    KnowledgeRelation,
     KnowledgeRule,
     KnowledgeSource,
     KnowledgeSourceVersion,
@@ -32,6 +32,12 @@ from infra.storage.models import (
 from knowledge.access import accessible_source_predicate, require_space_role, resolve_access_context
 from knowledge.domain import KnowledgeStatus, source_status_during_refresh
 from knowledge.evolution import build_evolution_proposal
+from knowledge.governance import (
+    create_knowledge_feedback,
+    knowledge_governance_health,
+    list_knowledge_feedback,
+    resolve_knowledge_feedback,
+)
 from knowledge.graph import build_project_graph, link_project_pages
 from knowledge.jobs import enqueue_document_compile
 from knowledge.lifecycle import publish_source_version
@@ -46,9 +52,14 @@ class KnowledgeFeedbackRequest(BaseModel):
     target_type: str
     target_id: str
     feedback_type: str
-    score: float | None = None
-    correction: str | None = None
+    score: float | None = Field(default=None, ge=0, le=1)
+    correction: str | None = Field(default=None, max_length=4000)
     session_id: str | None = None
+
+
+class KnowledgeFeedbackResolutionRequest(BaseModel):
+    resolution: str = Field(min_length=1, max_length=32)
+    comment: str | None = Field(default=None, max_length=4000)
 
 
 class KnowledgeRuleRequest(BaseModel):
@@ -66,6 +77,76 @@ class KnowledgeTraceRequest(BaseModel):
     ids: list[str] = Field(default_factory=list, max_length=100)
 
 
+async def _space_quality_scope(
+    db: AsyncSession,
+    *,
+    http_request: Request,
+    current_user: User,
+    space_id: str,
+) -> tuple[set[str], set[str], set[str]]:
+    """解析治理空间内的 Source、Claim 与全部可审计资源 ID。"""
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
+    try:
+        await require_space_role(
+            db,
+            user=current_user,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            space_id=space_id,
+            required_role="reviewer",
+        )
+    except PermissionError as exc:
+        raise AppException(ErrorCodes.PERMISSION_DENIED.code, message=str(exc)) from exc
+    context = await resolve_access_context(
+        db,
+        user=current_user,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    sources = list(
+        (
+            await db.execute(
+                select(KnowledgeSource.id, KnowledgeSource.active_version_id).where(
+                    KnowledgeSource.space_id == space_id,
+                    KnowledgeSource.tenant_id == tenant_id,
+                    KnowledgeSource.workspace_id == workspace_id,
+                    accessible_source_predicate(context),
+                )
+            )
+        ).all()
+    )
+    source_ids = {row.id for row in sources}
+    version_ids = {row.active_version_id for row in sources if row.active_version_id}
+    if not version_ids:
+        return source_ids, set(), set(source_ids)
+    page_ids = set(
+        (
+            await db.execute(
+                select(KnowledgePage.id).where(KnowledgePage.source_version_id.in_(version_ids))
+            )
+        ).scalars()
+    )
+    claim_ids = set(
+        (
+            await db.execute(
+                select(KnowledgeClaim.id).where(KnowledgeClaim.source_version_id.in_(version_ids))
+            )
+        ).scalars()
+    )
+    relation_ids = set(
+        (
+            await db.execute(
+                select(KnowledgeRelation.id).where(
+                    KnowledgeRelation.source_version_id.in_(version_ids)
+                )
+            )
+        ).scalars()
+    )
+    return source_ids, claim_ids, source_ids | page_ids | claim_ids | relation_ids
+
+
 @router.get("/knowledge/sources")
 async def list_knowledge_sources(
     http_request: Request,
@@ -76,7 +157,9 @@ async def list_knowledge_sources(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     """统一来源查询：默认返回我的来源，指定空间时应用企业 ACL。"""
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
     stmt = select(KnowledgeSource).where(
         KnowledgeSource.tenant_id == tenant_id,
         KnowledgeSource.workspace_id == workspace_id,
@@ -84,13 +167,20 @@ async def list_knowledge_sources(
     if space_id:
         try:
             await require_space_role(
-                db, user=current_user, tenant_id=tenant_id, workspace_id=workspace_id,
-                space_id=space_id, required_role="viewer",
+                db,
+                user=current_user,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                space_id=space_id,
+                required_role="viewer",
             )
         except PermissionError as exc:
             raise AppException(ErrorCodes.PERMISSION_DENIED.code, message=str(exc)) from exc
         context = await resolve_access_context(
-            db, user=current_user, tenant_id=tenant_id, workspace_id=workspace_id,
+            db,
+            user=current_user,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
         )
         stmt = stmt.where(
             KnowledgeSource.space_id == space_id,
@@ -131,22 +221,45 @@ async def list_knowledge_source_versions(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
-    source = await db.scalar(select(KnowledgeSource).where(
-        KnowledgeSource.id == source_id, KnowledgeSource.owner_id == current_user.id,
-        KnowledgeSource.tenant_id == tenant_id, KnowledgeSource.workspace_id == workspace_id,
-    ))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
+    source = await db.scalar(
+        select(KnowledgeSource).where(
+            KnowledgeSource.id == source_id,
+            KnowledgeSource.owner_id == current_user.id,
+            KnowledgeSource.tenant_id == tenant_id,
+            KnowledgeSource.workspace_id == workspace_id,
+        )
+    )
     if source is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Knowledge source not found")
-    rows = (await db.execute(select(KnowledgeSourceVersion).where(
-        KnowledgeSourceVersion.source_id == source.id,
-    ).order_by(KnowledgeSourceVersion.version_number.desc()))).scalars().all()
-    return [{
-        "id": row.id, "version_number": row.version_number, "status": row.status,
-        "content_hash": row.content_hash, "compiler_version": row.compiler_version,
-        "raw_metadata": row.raw_metadata, "compiled_at": row.compiled_at.isoformat() if row.compiled_at else None,
-        "active": row.id == source.active_version_id,
-    } for row in rows]
+    rows = (
+        (
+            await db.execute(
+                select(KnowledgeSourceVersion)
+                .where(
+                    KnowledgeSourceVersion.source_id == source.id,
+                )
+                .order_by(KnowledgeSourceVersion.version_number.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": row.id,
+            "version_number": row.version_number,
+            "status": row.status,
+            "content_hash": row.content_hash,
+            "compiler_version": row.compiler_version,
+            "raw_metadata": row.raw_metadata,
+            "compiled_at": row.compiled_at.isoformat() if row.compiled_at else None,
+            "active": row.id == source.active_version_id,
+        }
+        for row in rows
+    ]
 
 
 @router.post("/knowledge/trace")
@@ -156,9 +269,15 @@ async def trace_knowledge(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
     refs = await trace_knowledge_assets(
-        db, ids=req.ids, tenant_id=tenant_id, workspace_id=workspace_id, owner_id=current_user.id,
+        db,
+        ids=req.ids,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        owner_id=current_user.id,
     )
     return {"evidence_refs": refs, "count": len(refs)}
 
@@ -170,7 +289,9 @@ async def list_knowledge_rules(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
     stmt = select(KnowledgeRule).where(
         KnowledgeRule.owner_id == current_user.id,
         KnowledgeRule.tenant_id == tenant_id,
@@ -178,13 +299,29 @@ async def list_knowledge_rules(
     )
     if project_id:
         stmt = stmt.where(KnowledgeRule.project_id == project_id)
-    rows = (await db.execute(stmt.order_by(KnowledgeRule.rule_key.asc(), KnowledgeRule.version.desc()))).scalars().all()
-    return [{
-        "id": row.id, "rule_key": row.rule_key, "version": row.version,
-        "rule_type": row.rule_type, "status": row.status, "schema": row.schema_json,
-        "instructions": row.instructions, "provenance": row.provenance,
-        "project_id": row.project_id,
-    } for row in rows]
+    rows = (
+        (
+            await db.execute(
+                stmt.order_by(KnowledgeRule.rule_key.asc(), KnowledgeRule.version.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": row.id,
+            "rule_key": row.rule_key,
+            "version": row.version,
+            "rule_type": row.rule_type,
+            "status": row.status,
+            "schema": row.schema_json,
+            "instructions": row.instructions,
+            "provenance": row.provenance,
+            "project_id": row.project_id,
+        }
+        for row in rows
+    ]
 
 
 @router.post("/knowledge/rules")
@@ -194,40 +331,72 @@ async def create_knowledge_rule(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
     if req.project_id:
-        project = await db.scalar(select(Project.id).where(
-            Project.id == req.project_id, Project.user_id == current_user.id,
-            Project.tenant_id == tenant_id, Project.workspace_id == workspace_id,
-            Project.archived_at.is_(None),
-        ))
+        project = await db.scalar(
+            select(Project.id).where(
+                Project.id == req.project_id,
+                Project.user_id == current_user.id,
+                Project.tenant_id == tenant_id,
+                Project.workspace_id == workspace_id,
+                Project.archived_at.is_(None),
+            )
+        )
         if project is None:
             raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project not found")
     allowed_keys = {
-        "summary_length", "content_limit", "min_claim_length", "max_claims_per_page",
-        "page_type_keywords", "required_page_fields", "required_claim_fields",
-        "required_relation_fields", "allowed_page_types",
+        "summary_length",
+        "content_limit",
+        "min_claim_length",
+        "max_claims_per_page",
+        "page_type_keywords",
+        "required_page_fields",
+        "required_claim_fields",
+        "required_relation_fields",
+        "allowed_page_types",
     }
     unknown = sorted(set(req.schema_payload) - allowed_keys)
     if unknown:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message=f"Unsupported orchestration fields: {', '.join(unknown)}")
-    latest = await db.scalar(select(KnowledgeRule).where(
-        KnowledgeRule.owner_id == current_user.id,
-        KnowledgeRule.tenant_id == tenant_id,
-        KnowledgeRule.workspace_id == workspace_id,
-        KnowledgeRule.rule_key == req.rule_key,
-    ).order_by(KnowledgeRule.version.desc()))
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message=f"Unsupported orchestration fields: {', '.join(unknown)}",
+        )
+    latest = await db.scalar(
+        select(KnowledgeRule)
+        .where(
+            KnowledgeRule.owner_id == current_user.id,
+            KnowledgeRule.tenant_id == tenant_id,
+            KnowledgeRule.workspace_id == workspace_id,
+            KnowledgeRule.rule_key == req.rule_key,
+        )
+        .order_by(KnowledgeRule.version.desc())
+    )
     version = (latest.version + 1) if latest else 1
     row = KnowledgeRule(
-        id=str(uuid.uuid4()), owner_id=current_user.id, tenant_id=tenant_id, workspace_id=workspace_id,
-        project_id=req.project_id, rule_key=req.rule_key, version=version,
-        rule_type=req.rule_type, schema_json=req.schema_payload,
-        instructions=req.instructions, provenance={**req.provenance, "created_via": "knowledge_api"},
+        id=str(uuid.uuid4()),
+        owner_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        project_id=req.project_id,
+        rule_key=req.rule_key,
+        version=version,
+        rule_type=req.rule_type,
+        schema_json=req.schema_payload,
+        instructions=req.instructions,
+        provenance={**req.provenance, "created_via": "knowledge_api"},
         created_by=current_user.id,
     )
     db.add(row)
     await db.commit()
-    return {"id": row.id, "rule_key": row.rule_key, "version": row.version, "status": row.status, "project_id": row.project_id}
+    return {
+        "id": row.id,
+        "rule_key": row.rule_key,
+        "version": row.version,
+        "status": row.status,
+        "project_id": row.project_id,
+    }
 
 
 @router.post("/knowledge/rules/{rule_id}/approve")
@@ -237,24 +406,41 @@ async def approve_knowledge_rule(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
-    row = await db.scalar(select(KnowledgeRule).where(
-        KnowledgeRule.id == rule_id, KnowledgeRule.owner_id == current_user.id,
-        KnowledgeRule.tenant_id == tenant_id, KnowledgeRule.workspace_id == workspace_id,
-    ))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
+    row = await db.scalar(
+        select(KnowledgeRule).where(
+            KnowledgeRule.id == rule_id,
+            KnowledgeRule.owner_id == current_user.id,
+            KnowledgeRule.tenant_id == tenant_id,
+            KnowledgeRule.workspace_id == workspace_id,
+        )
+    )
     if row is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Knowledge rule not found")
-    previous = (await db.execute(select(KnowledgeRule).where(
-        KnowledgeRule.owner_id == current_user.id, KnowledgeRule.tenant_id == tenant_id,
-        KnowledgeRule.workspace_id == workspace_id, KnowledgeRule.rule_key == row.rule_key,
-        KnowledgeRule.project_id == row.project_id,
-        KnowledgeRule.status == "approved", KnowledgeRule.id != row.id,
-    ))).scalars().all()
+    previous = (
+        (
+            await db.execute(
+                select(KnowledgeRule).where(
+                    KnowledgeRule.owner_id == current_user.id,
+                    KnowledgeRule.tenant_id == tenant_id,
+                    KnowledgeRule.workspace_id == workspace_id,
+                    KnowledgeRule.rule_key == row.rule_key,
+                    KnowledgeRule.project_id == row.project_id,
+                    KnowledgeRule.status == "approved",
+                    KnowledgeRule.id != row.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     for item in previous:
         item.status = "archived"
     row.status = "approved"
     row.approved_by = current_user.id
-    row.approved_at = datetime.now(timezone.utc)
+    row.approved_at = datetime.now(UTC)
     await db.commit()
     return {"approved": True, "rule_key": row.rule_key, "version": row.version}
 
@@ -269,7 +455,9 @@ async def list_knowledge_pages(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
     stmt = (
         select(KnowledgePage, KnowledgeSource, KnowledgeSourceVersion)
         .join(KnowledgeSourceVersion, KnowledgePage.source_version_id == KnowledgeSourceVersion.id)
@@ -330,7 +518,9 @@ async def compile_document(
     if doc is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Document not found")
     if doc.status != "ready":
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Document is not ready for compilation")
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code, message="Document is not ready for compilation"
+        )
     result = await enqueue_document_compile(document_id)
     return {"accepted": True, **result}
 
@@ -345,7 +535,9 @@ async def list_knowledge_jobs(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     """Inspect durable compiler jobs for operational visibility."""
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
     conditions = [
         KnowledgeCompilationJob.owner_id == current_user.id,
         KnowledgeCompilationJob.tenant_id == tenant_id,
@@ -356,13 +548,17 @@ async def list_knowledge_jobs(
     if project_id:
         conditions.append(KnowledgeCompilationJob.project_id == project_id)
     rows = (
-        await db.execute(
-            select(KnowledgeCompilationJob)
-            .where(*conditions)
-            .order_by(KnowledgeCompilationJob.created_at.desc())
-            .limit(max(1, min(limit, 200)))
+        (
+            await db.execute(
+                select(KnowledgeCompilationJob)
+                .where(*conditions)
+                .order_by(KnowledgeCompilationJob.created_at.desc())
+                .limit(max(1, min(limit, 200)))
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [
         {
             "id": row.id,
@@ -467,7 +663,9 @@ async def retry_knowledge_job(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
     job = await db.scalar(
         select(KnowledgeCompilationJob).where(
             KnowledgeCompilationJob.id == job_id,
@@ -479,35 +677,61 @@ async def retry_knowledge_job(
     if job is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Knowledge job not found")
     if job.status not in {"failed", "succeeded"}:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Only completed jobs can be retried")
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code, message="Only completed jobs can be retried"
+        )
     source = await db.get(KnowledgeSource, job.source_id)
     if source is None or not source.document_id:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Knowledge source has no document")
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code, message="Knowledge source has no document"
+        )
     job.status = "pending"
     job.error = None
     job.started_at = None
     job.completed_at = None
-    job.result_metadata = {**(job.result_metadata or {}), "retry_requested_at": datetime.now(timezone.utc).isoformat()}
+    job.result_metadata = {
+        **(job.result_metadata or {}),
+        "retry_requested_at": datetime.now(UTC).isoformat(),
+    }
     source.status = source_status_during_refresh(
         source.active_version_id,
         KnowledgeStatus.COMPILING,
     )
     await db.commit()
-    return {"accepted": True, "job_id": job.id, "document_id": source.document_id, "status": "pending"}
+    return {
+        "accepted": True,
+        "job_id": job.id,
+        "document_id": source.document_id,
+        "status": "pending",
+    }
 
 
 @router.post("/knowledge/lint")
 async def lint_knowledge(
     http_request: Request,
+    space_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
+    source_ids = None
+    owner_id: str | None = current_user.id
+    if space_id:
+        source_ids, _, _ = await _space_quality_scope(
+            db,
+            http_request=http_request,
+            current_user=current_user,
+            space_id=space_id,
+        )
+        owner_id = None
     result = await run_knowledge_lint(
         db,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
-        owner_id=current_user.id,
+        owner_id=owner_id,
+        source_ids=source_ids,
     )
     await db.commit()
     return result
@@ -519,7 +743,9 @@ async def knowledge_evolution_proposal(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
     result = await build_evolution_proposal(
         db, tenant_id=tenant_id, workspace_id=workspace_id, owner_id=current_user.id
     )
@@ -535,37 +761,116 @@ async def list_knowledge_observations(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     from infra.storage.models import KnowledgeObservation
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
-    rows = (await db.execute(select(KnowledgeObservation).where(
-        KnowledgeObservation.owner_id == current_user.id,
-        KnowledgeObservation.tenant_id == tenant_id,
-        KnowledgeObservation.workspace_id == workspace_id,
-    ).order_by(KnowledgeObservation.created_at.desc()).limit(max(1, min(limit, 500))))).scalars().all()
-    return [{
-        "id": row.id, "metric": row.metric, "value": row.value,
-        "dimensions": row.dimensions, "trigger": row.trigger,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-    } for row in rows]
+
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
+    rows = (
+        (
+            await db.execute(
+                select(KnowledgeObservation)
+                .where(
+                    KnowledgeObservation.owner_id == current_user.id,
+                    KnowledgeObservation.tenant_id == tenant_id,
+                    KnowledgeObservation.workspace_id == workspace_id,
+                )
+                .order_by(KnowledgeObservation.created_at.desc())
+                .limit(max(1, min(limit, 500)))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        {
+            "id": row.id,
+            "metric": row.metric,
+            "value": row.value,
+            "dimensions": row.dimensions,
+            "trigger": row.trigger,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
 
 
 @router.get("/knowledge/merge-cases")
 async def list_knowledge_merge_cases(
     http_request: Request,
     status: str = "open",
+    space_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
-    rows = (await db.execute(select(KnowledgeMergeCase).where(
-        KnowledgeMergeCase.owner_id == current_user.id,
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
+    stmt = select(KnowledgeMergeCase).where(
         KnowledgeMergeCase.tenant_id == tenant_id,
         KnowledgeMergeCase.workspace_id == workspace_id,
         KnowledgeMergeCase.status == status,
-    ).order_by(KnowledgeMergeCase.created_at.desc()))).scalars().all()
-    return [{
-        "id": row.id, "entity_key": row.entity_key, "conflict_type": row.conflict_type,
-        "candidate_ids": row.candidate_ids, "status": row.status, "resolution": row.resolution,
-    } for row in rows]
+    )
+    claim_ids: set[str] | None = None
+    if space_id:
+        _, claim_ids, _ = await _space_quality_scope(
+            db,
+            http_request=http_request,
+            current_user=current_user,
+            space_id=space_id,
+        )
+    else:
+        stmt = stmt.where(KnowledgeMergeCase.owner_id == current_user.id)
+    rows = list((await db.execute(stmt.order_by(KnowledgeMergeCase.created_at.desc()))).scalars())
+    if claim_ids is not None:
+        rows = [row for row in rows if set(row.candidate_ids or []).issubset(claim_ids)]
+    candidate_ids = {str(item) for row in rows for item in (row.candidate_ids or [])}
+    candidate_details: dict[str, dict] = {}
+    if candidate_ids:
+        candidate_stmt = (
+            select(KnowledgeClaim, KnowledgePage, KnowledgeSource)
+            .join(KnowledgePage, KnowledgeClaim.page_id == KnowledgePage.id)
+            .join(
+                KnowledgeSourceVersion,
+                KnowledgeClaim.source_version_id == KnowledgeSourceVersion.id,
+            )
+            .join(KnowledgeSource, KnowledgeSourceVersion.source_id == KnowledgeSource.id)
+            .where(
+                KnowledgeClaim.id.in_(candidate_ids),
+                KnowledgeClaim.tenant_id == tenant_id,
+                KnowledgeClaim.workspace_id == workspace_id,
+            )
+        )
+        if space_id:
+            candidate_stmt = candidate_stmt.where(KnowledgeSource.space_id == space_id)
+        else:
+            candidate_stmt = candidate_stmt.where(KnowledgeClaim.owner_id == current_user.id)
+        for claim, page, source in (await db.execute(candidate_stmt)).all():
+            candidate_details[claim.id] = {
+                "id": claim.id,
+                "text": claim.text,
+                "page_id": page.id,
+                "page_title": page.title,
+                "source_id": source.id,
+                "source_title": source.title,
+                "authority": claim.authority,
+                "confidence": claim.confidence,
+            }
+    return [
+        {
+            "id": row.id,
+            "entity_key": row.entity_key,
+            "conflict_type": row.conflict_type,
+            "candidate_ids": row.candidate_ids,
+            "candidates": [
+                candidate_details[item]
+                for item in (row.candidate_ids or [])
+                if item in candidate_details
+            ],
+            "status": row.status,
+            "resolution": row.resolution,
+        }
+        for row in rows
+    ]
 
 
 @router.post("/knowledge/merge-cases/{case_id}/resolve")
@@ -573,23 +878,42 @@ async def resolve_knowledge_merge_case(
     http_request: Request,
     case_id: str,
     resolution: dict,
+    space_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
-    row = await db.scalar(select(KnowledgeMergeCase).where(
-        KnowledgeMergeCase.id == case_id, KnowledgeMergeCase.owner_id == current_user.id,
-        KnowledgeMergeCase.tenant_id == tenant_id, KnowledgeMergeCase.workspace_id == workspace_id,
-    ))
-    if row is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Knowledge merge case not found")
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
+    owner_id: str | None = current_user.id
+    allowed_claim_ids: set[str] | None = None
+    if space_id:
+        _, allowed_claim_ids, _ = await _space_quality_scope(
+            db,
+            http_request=http_request,
+            current_user=current_user,
+            space_id=space_id,
+        )
+        owner_id = None
     try:
         result = await apply_merge_case(
-            db, case_id=case_id, owner_id=current_user.id, tenant_id=tenant_id,
-            workspace_id=workspace_id, resolution=resolution,
+            db,
+            case_id=case_id,
+            owner_id=owner_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            resolution=resolution,
+            resolved_by=current_user.id,
+            allowed_claim_ids=allowed_claim_ids,
         )
     except ValueError as exc:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
+        message = str(exc)
+        code = (
+            ErrorCodes.RESOURCE_NOT_FOUND.code
+            if message == "knowledge_merge_case_not_found"
+            else ErrorCodes.PARAM_INVALID.code
+        )
+        raise AppException(code, message=message) from exc
     await db.commit()
     return {"resolved": True, **result}
 
@@ -639,22 +963,31 @@ async def publish_knowledge_page(
 async def list_lint_issues(
     http_request: Request,
     status: str = "open",
+    space_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
-    rows = (
-        await db.execute(
-            select(KnowledgeLintIssue)
-            .where(
-                KnowledgeLintIssue.tenant_id == tenant_id,
-                KnowledgeLintIssue.workspace_id == workspace_id,
-                KnowledgeLintIssue.owner_id == current_user.id,
-                KnowledgeLintIssue.status == status,
-            )
-            .order_by(KnowledgeLintIssue.detected_at.desc())
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
+    stmt = select(KnowledgeLintIssue).where(
+        KnowledgeLintIssue.tenant_id == tenant_id,
+        KnowledgeLintIssue.workspace_id == workspace_id,
+        KnowledgeLintIssue.status == status,
+    )
+    if space_id:
+        _, _, resource_ids = await _space_quality_scope(
+            db,
+            http_request=http_request,
+            current_user=current_user,
+            space_id=space_id,
         )
-    ).scalars().all()
+        if not resource_ids:
+            return []
+        stmt = stmt.where(KnowledgeLintIssue.resource_id.in_(resource_ids))
+    else:
+        stmt = stmt.where(KnowledgeLintIssue.owner_id == current_user.id)
+    rows = (await db.execute(stmt.order_by(KnowledgeLintIssue.detected_at.desc()))).scalars().all()
     return [
         {
             "id": issue.id,
@@ -677,28 +1010,14 @@ async def submit_knowledge_feedback(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    tenant_id, workspace_id = normalized_tenant_scope(build_tenant_metadata(http_request, user_id=current_user.id))
-    target_models = {
-        "knowledge_page": KnowledgePage,
-        "knowledge_claim": KnowledgeClaim,
-        "knowledge_source": KnowledgeSource,
-    }
-    model = target_models.get(req.target_type)
-    if model is None:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Unsupported knowledge feedback target")
-    target = await db.get(model, req.target_id)
-    if (
-        target is None
-        or getattr(target, "tenant_id", None) != tenant_id
-        or getattr(target, "workspace_id", None) != workspace_id
-        or getattr(target, "owner_id", None) != current_user.id
-    ):
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Knowledge target not found")
-    db.add(
-        KnowledgeFeedback(
-            id=str(uuid.uuid4()),
-            session_id=req.session_id,
-            user_id=current_user.id,
+    """员工可对所有经 ACL 授权可见的企业知识提交反馈。"""
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
+    try:
+        feedback = await create_knowledge_feedback(
+            db,
+            user=current_user,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             target_type=req.target_type,
@@ -706,8 +1025,108 @@ async def submit_knowledge_feedback(
             feedback_type=req.feedback_type,
             score=req.score,
             correction=req.correction,
-            feedback_metadata={"source": "knowledge_api"},
+            session_id=req.session_id,
         )
-    )
+    except LookupError as exc:
+        raise AppException(
+            ErrorCodes.RESOURCE_NOT_FOUND.code, message="Knowledge target not found"
+        ) from exc
+    except ValueError as exc:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
     await db.commit()
-    return {"accepted": True, "target_type": req.target_type, "target_id": req.target_id}
+    return {
+        "accepted": True,
+        "feedback_id": feedback.id,
+        "target_type": req.target_type,
+        "target_id": req.target_id,
+    }
+
+
+@router.get("/knowledge/feedback")
+async def get_knowledge_feedback(
+    http_request: Request,
+    space_id: str | None = None,
+    applied: bool | None = False,
+    actionable_only: bool = True,
+    limit: int = 100,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Reviewer 工作台：读取有权治理空间内的员工反馈。"""
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
+    try:
+        items = await list_knowledge_feedback(
+            db,
+            user=current_user,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            space_id=space_id,
+            applied=applied,
+            actionable_only=actionable_only,
+            limit=limit,
+        )
+    except PermissionError as exc:
+        raise AppException(ErrorCodes.PERMISSION_DENIED.code, message=str(exc)) from exc
+    return {"items": items}
+
+
+@router.post("/knowledge/feedback/{feedback_id}/resolve")
+async def resolve_feedback(
+    http_request: Request,
+    feedback_id: str,
+    req: KnowledgeFeedbackResolutionRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Reviewer 处理反馈并将处理人、时间和结论写入审计元数据。"""
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
+    try:
+        feedback = await resolve_knowledge_feedback(
+            db,
+            feedback_id=feedback_id,
+            user=current_user,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            resolution=req.resolution,
+            comment=req.comment,
+        )
+    except LookupError as exc:
+        raise AppException(
+            ErrorCodes.RESOURCE_NOT_FOUND.code, message="Knowledge feedback not found"
+        ) from exc
+    except PermissionError as exc:
+        raise AppException(ErrorCodes.PERMISSION_DENIED.code, message=str(exc)) from exc
+    except ValueError as exc:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
+    await db.commit()
+    return {
+        "resolved": True,
+        "feedback_id": feedback.id,
+        "resolution": feedback.feedback_metadata.get("resolution"),
+    }
+
+
+@router.get("/knowledge/governance/health")
+async def get_knowledge_governance_health(
+    http_request: Request,
+    space_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(http_request, user_id=current_user.id)
+    )
+    try:
+        return await knowledge_governance_health(
+            db,
+            user=current_user,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            space_id=space_id,
+        )
+    except PermissionError as exc:
+        raise AppException(ErrorCodes.PERMISSION_DENIED.code, message=str(exc)) from exc
