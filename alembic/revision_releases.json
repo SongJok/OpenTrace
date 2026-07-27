@@ -6,6 +6,9 @@
     },
     "r0002_durable_knowledge_sync_queue": {
       "release": "unreleased"
+    },
+    "r0003_enterprise_directory_and_operations": {
+      "release": "unreleased"
     }
   }
 }

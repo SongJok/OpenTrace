@@ -7,6 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
 if [ -f "$SCRIPT_DIR/_lib.sh" ]; then
   # shellcheck source=/dev/null
@@ -15,6 +16,6 @@ if [ -f "$SCRIPT_DIR/_lib.sh" ]; then
 fi
 
 cd "$ROOT_DIR"
-python3 -m unittest tests.test_kernel_agent_loop -v
+"$PYTHON_BIN" -m unittest tests.test_kernel_agent_loop -v
 
 echo "✅ verify_kernel_loop 完成"

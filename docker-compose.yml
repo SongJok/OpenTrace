@@ -166,6 +166,30 @@ services:
       redis:
         condition: service_healthy
 
+  # -------------------------------------------------------------------------
+  # Disposable contract-test runner — production runtime plus locked dev tools
+  # -------------------------------------------------------------------------
+  test-runner:
+    image: ${OPENTRACE_TEST_IMAGE:-opentrace-test:local}
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.test
+      args:
+        OPENTRACE_IMAGE: ${OPENTRACE_IMAGE:-opentrace-app:local}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
+        PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
+    profiles:
+      - test
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/opentrace_v2
+      TOKEN_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/opentrace_v2
+      REDIS_URL: redis://redis:6379/10
+      PYTHONDONTWRITEBYTECODE: "1"
+
   prometheus:
     image: prom/prometheus:latest
     container_name: opentrace_prometheus

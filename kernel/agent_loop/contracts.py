@@ -152,7 +152,9 @@ class ExecutionPlan:
         if complexity not in {"simple", "moderate", "complex"}:
             complexity = "simple"
         try:
-            replan_limit = int(value.get("replan_limit") or 1)
+            replan_limit = int(
+                value["replan_limit"] if value.get("replan_limit") is not None else 1
+            )
         except (TypeError, ValueError):
             replan_limit = 1
         return cls(

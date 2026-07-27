@@ -340,6 +340,36 @@ class AgentLoop:
                 "manifest": context.context_manifest,
             },
         )
+        direct_memory_answer = None
+        if str(payload.get("tool_choice") or "auto") != "required":
+            direct_memory_answer = self._direct_memory_answer(query, context.recalled_memories)
+        if direct_memory_answer:
+            await self._emit_text(emit, direct_memory_answer)
+            await self._complete_remaining_plan(emit, execution_plan, plan_statuses)
+            await self._persist_execution_plan_runtime(
+                db,
+                response=response,
+                statuses=plan_statuses,
+                replan_count=replan_count,
+            )
+            return AgentLoopResult(
+                status="completed",
+                content=direct_memory_answer,
+                model="opentrace-memory-projection",
+                intent=intent,
+                metadata={
+                    "model_calls": model_calls,
+                    "model_call_count": len(model_calls),
+                    "memory_ids": context.memory_ids,
+                    "attachment_ids": context.attachment_ids,
+                    "execution_profile": profile.value,
+                    "execution_plan": execution_plan.to_dict(),
+                    "execution_plan_status": dict(plan_statuses),
+                    "execution_plan_replan_count": replan_count,
+                    "context_manifest": context.context_manifest,
+                    "direct_memory_answer": True,
+                },
+            )
         if intent.clarification_question:
             question = intent.clarification_question.strip()
             await self._emit_text(emit, question)
@@ -554,7 +584,11 @@ class AgentLoop:
                 reasoning_summary = self._reasoning_summary(model_response.output_items)
                 if reasoning_summary:
                     await emit("response.reasoning_summary_text.done", {"text": reasoning_summary})
-                content = str(model_response.content or "")
+                content = self._govern_memory_capture_response(
+                    intent=intent,
+                    context_manifest=context.context_manifest,
+                    model_content=str(model_response.content or ""),
+                )
                 await self._emit_text(emit, content)
                 await self._complete_remaining_plan(emit, execution_plan, plan_statuses)
                 await self._persist_execution_plan_runtime(
@@ -1434,6 +1468,7 @@ class AgentLoop:
         except Exception:
             parsed = {}
 
+        parsed = self._apply_conversational_memory_policy(query, parsed)
         planned_capabilities = [
             str(step.get("capability") or "")
             for step in parsed.get("steps") or []
@@ -1540,6 +1575,145 @@ class AgentLoop:
             ],
         )
         return decision.intent
+
+    @staticmethod
+    def _govern_memory_capture_response(
+        *,
+        intent: IntentPlan,
+        context_manifest: dict[str, Any],
+        model_content: str,
+    ) -> str:
+        """记忆学习关闭时，不允许模型虚假声称已经持久保存。"""
+
+        if intent.task_type != "memory_capture":
+            return model_content
+        if context_manifest.get("memory_learning_enabled") is False:
+            return "当前持久记忆学习已关闭，本次信息不会被持久保存。"
+        return model_content or "我会按照当前企业记忆策略处理这条信息。"
+
+    @staticmethod
+    def _direct_memory_answer(query: str, memories: list[dict[str, Any]]) -> str | None:
+        """对命中已确认记忆的直接询问使用确定性投影，避免模型忽略事实。"""
+
+        normalized = re.sub(r"\s+", "", query or "").lower()
+        if not normalized or not memories:
+            return None
+        mutation_markers = (
+            "记住",
+            "忘记",
+            "删除",
+            "修改",
+            "更新",
+            "更改",
+            "设置",
+            "保存",
+            "写入",
+            "rememberthat",
+            "forget",
+            "delete",
+            "update",
+            "change",
+        )
+        if any(marker in normalized for marker in mutation_markers):
+            return None
+        compound_markers = (
+            "然后",
+            "并且",
+            "同时",
+            "顺便",
+            "以及",
+            "另外",
+            "还要",
+            "再帮",
+            "再查",
+            "andalso",
+            "then",
+        )
+        if any(marker in normalized for marker in compound_markers):
+            return None
+        question_end = max(query.rfind("？"), query.rfind("?"))
+        if question_end >= 0 and query[question_end + 1 :].strip():
+            return None
+        chinese_question = "我的" in normalized and any(
+            marker in normalized
+            for marker in ("是什么", "叫什么", "多少", "哪个", "哪一个", "还记得", "记得吗")
+        )
+        english_question = bool(
+            re.search(r"(?:what(?:'s| is)|do you remember)\s+my\b", query or "", flags=re.I)
+        )
+        if not chinese_question and not english_question:
+            return None
+
+        query_terms = ContextAssembler._search_terms(query)
+        ranked: list[tuple[float, int, dict[str, Any]]] = []
+        for index, memory in enumerate(memories):
+            content = str(memory.get("content") or "").strip()
+            if not content:
+                continue
+            content_terms = ContextAssembler._search_terms(content)
+            overlap = len(query_terms & content_terms) / max(1, len(query_terms))
+            if overlap < 0.25:
+                continue
+            ranked.append((overlap, -index, memory))
+        if not ranked:
+            return None
+        selected = max(ranked, key=lambda item: (item[0], item[1]))[2]
+        content = str(selected.get("content") or "").strip().rstrip("。.!！")
+        return f"根据你已确认的记忆，{content}。"
+
+    @staticmethod
+    def _is_conversational_memory_capture(query: str) -> bool:
+        """识别由受治理 MemoryLearner 处理的自然语言记忆请求。"""
+
+        normalized = re.sub(r"\s+", "", (query or "").lower())
+        memory_markers = (
+            "请记住",
+            "帮我记住",
+            "请你记住",
+            "记住：",
+            "记住:",
+            "rememberthis",
+            "pleaseremember",
+        )
+        if not any(marker in normalized for marker in memory_markers):
+            return False
+        explicit_file_operation = re.search(
+            r"(?:保存|写入|写到|记录到|导出|创建).{0,12}(?:文件|目录|\.md|\.txt)"
+            r"|(?:save|write|export|create).{0,20}(?:file|directory|\.md|\.txt)"
+            r"|file_sandbox",
+            normalized,
+        )
+        return explicit_file_operation is None
+
+    @classmethod
+    def _apply_conversational_memory_policy(
+        cls, query: str, parsed: dict[str, Any]
+    ) -> dict[str, Any]:
+        """记忆表达不得被规划器转换为沙箱文件或其他副作用写入。"""
+
+        if not cls._is_conversational_memory_capture(query):
+            return parsed
+        sanitized = dict(parsed or {})
+        sanitized.setdefault("goal", query)
+        sanitized["task_type"] = "memory_capture"
+        sanitized["capabilities"] = []
+        sanitized.setdefault("ambiguity", None)
+        sanitized.setdefault("execution_mode", "interactive")
+        sanitized.setdefault("expected_outputs", ["确认当前记忆策略"])
+        sanitized.setdefault("clarification_question", None)
+        sanitized["complexity"] = "simple"
+        sanitized["replan_limit"] = 0
+        sanitized["steps"] = [
+            {
+                "id": "memory-capture",
+                "objective": "回应用户，并由 Response 完成后的受治理记忆学习流程处理",
+                "capability": None,
+                "depends_on": [],
+                "success_criteria": "明确说明当前记忆策略下是否会持久保存",
+            }
+        ]
+        sanitized["success_criteria"] = ["不调用文件或其他副作用工具持久化记忆"]
+        return sanitized
 
     @staticmethod
     def _intent_planning_prompt(

@@ -22,6 +22,7 @@ const EnterpriseKnowledgePage = lazy(() => import('./pages/EnterpriseKnowledgePa
 const SharedConversationPage = lazy(() => import('./pages/SharedConversationPage'))
 const WorkPage = lazy(() => import('./pages/WorkPage'))
 const AlertsPage = lazy(() => import('./pages/AlertsPage'))
+const EnterpriseAdminPage = lazy(() => import('./pages/EnterpriseAdminPage'))
 
 function RouteLoading() {
   return (
@@ -106,6 +107,12 @@ function AlertsRoute() {
   return <AlertsPage onBack={() => navigate('/chat')} />
 }
 
+function EnterpriseAdminRoute() {
+  const navigate = useNavigate()
+  return <EnterpriseAdminPage onBack={() => navigate('/work')} />
+}
+
+
 export default function App() {
   const token = useAuthStore((s) => s.token)
   const mode = useThemeStore((s) => s.mode)
@@ -124,10 +131,10 @@ export default function App() {
   return (
     <Suspense fallback={<RouteLoading />}>
       <Routes>
-        <Route path="/login" element={token ? <Navigate to="/chat" replace /> : <LoginPage />} />
-        <Route path="/register" element={token ? <Navigate to="/chat" replace /> : <RegisterPage />} />
+        <Route path="/login" element={token ? <Navigate to="/work" replace /> : <LoginPage />} />
+        <Route path="/register" element={token ? <Navigate to="/work" replace /> : <RegisterPage />} />
 
-        <Route path="/" element={<Navigate to="/chat" replace />} />
+        <Route path="/" element={<Navigate to="/work" replace />} />
         <Route path="/chat" element={<Protected><ChatPage /></Protected>} />
         <Route path="/share/:publicId/:token" element={<SharedConversationPage />} />
         <Route path="/documents" element={<Protected><DocumentsRoute /></Protected>} />
@@ -144,8 +151,9 @@ export default function App() {
         <Route path="/knowledge" element={<Protected><KnowledgeRoute /></Protected>} />
         <Route path="/alerts" element={<Protected><AlertsRoute /></Protected>} />
         <Route path="/permissions" element={<Protected><PermissionsPage /></Protected>} />
+        <Route path="/enterprise-admin" element={<Protected><EnterpriseAdminRoute /></Protected>} />
 
-        <Route path="*" element={<Navigate to={token ? '/chat' : '/login'} replace />} />
+        <Route path="*" element={<Navigate to={token ? '/work' : '/login'} replace />} />
       </Routes>
     </Suspense>
   )

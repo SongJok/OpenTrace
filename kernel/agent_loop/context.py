@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,6 +22,7 @@ from infra.storage.models import (
     ResponseRecord,
     UserCustomInstruction,
     UserMemory,
+    UserMemorySettings,
 )
 from kernel.agent_loop.prompt import PLATFORM_PROMPT, render_scope_prompt
 from kernel.token_counter import get_token_counter
@@ -50,6 +51,7 @@ class AssembledContext:
     context_manifest: dict[str, Any]
     memory_relation_count: int = 0
     current_message_count: int = 1
+    recalled_memories: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ContextAssembler:
@@ -323,8 +325,29 @@ class ContextAssembler:
         )
         memory_ids: list[str] = []
         memory_relation_count = 0
+        recalled_memories: list[dict[str, Any]] = []
         if memory_policy.get("enabled") is False:
             memory_mode = "disabled"
+        memory_settings = await db.scalar(
+            select(UserMemorySettings).where(UserMemorySettings.user_id == response.user_id)
+        )
+        memory_learning_enabled = bool(
+            memory_mode == "enabled"
+            and not bool(getattr(session, "is_temporary", False))
+            and memory_policy.get("learn") is not False
+            and (memory_settings is None or memory_settings.memory_learning_enabled)
+        )
+        if memory_learning_enabled:
+            system_blocks.append(
+                "持久记忆由 Response 完成后的受治理 MemoryLearner 统一处理。"
+                "当用户要求‘记住’个人信息或偏好时，正常回应即可；"
+                "不要调用 file_sandbox、代码执行或其他工具自行持久化。"
+            )
+        else:
+            system_blocks.append(
+                "当前会话未启用持久记忆学习。若用户要求‘记住’信息，应诚实说明本次不会"
+                "持久保存；不要调用 file_sandbox、代码执行或其他工具绕过该设置。"
+            )
         if memory_mode == "enabled" and not bool(getattr(session, "is_temporary", False)):
             now = datetime.now(UTC)
             scope_clause = (UserMemory.scope_type == "conversation") & (
@@ -419,6 +442,20 @@ class ContextAssembler:
             )[:24]
             if memories:
                 memory_ids = [memory.id for memory in memories]
+                recalled_memories = [
+                    {
+                        "id": memory.id,
+                        "content": memory.content,
+                        "kind": memory.kind,
+                        "memory_key": memory.memory_key,
+                        "scope_type": memory.scope_type,
+                        "scope_id": memory.scope_id,
+                        "confidence": float(memory.confidence or 0.0),
+                        "salience": float(memory.salience or 0.0),
+                        "pinned": bool(memory.pinned),
+                    }
+                    for memory in memories
+                ]
                 for memory in memories:
                     memory.access_count = int(memory.access_count or 0) + 1
                     memory.last_accessed_at = now
@@ -461,6 +498,7 @@ class ContextAssembler:
             {
                 "memory_count": len(memory_ids),
                 "memory_relation_count": memory_relation_count,
+                "memory_learning_enabled": memory_learning_enabled,
                 "attachment_count": len(attachment_ids),
             }
         )
@@ -479,6 +517,7 @@ class ContextAssembler:
             context_manifest=context_manifest,
             memory_relation_count=memory_relation_count,
             current_message_count=len(current_messages),
+            recalled_memories=recalled_memories,
         )
 
     @staticmethod

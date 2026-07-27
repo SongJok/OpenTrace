@@ -1279,6 +1279,192 @@ export async function apiResolveResponseApproval(
   return res.json()
 }
 
+export interface EnterpriseOperationsOverview {
+  generated_at: string
+  scope: { tenant_id: string; workspace_id: string }
+  health: {
+    score: number
+    status: 'healthy' | 'attention' | 'critical'
+    dimensions: { reliability: number; governance: number; knowledge: number; adoption: number }
+  }
+  adoption: { active_users_30d: number; active_goals: number; completed_goals: number; scheduled_tasks: number; active_alerts: number }
+  responses: {
+    total_24h: number
+    completed_24h: number
+    failed_24h: number
+    requires_action_24h: number
+    active_24h: number
+    success_rate: number
+    pending_approvals: number
+    model_calls_24h: number
+    prompt_tokens_24h: number
+    completion_tokens_24h: number
+    avg_latency_ms: number
+    p95_latency_ms: number
+  }
+  assets: {
+    data_sources: number
+    active_data_sources: number
+    knowledge_spaces: number
+    knowledge_sources: number
+    published_knowledge: number
+    due_reviews: number
+    stale_knowledge: number
+    pending_reviews: number
+    unresolved_feedback: number
+  }
+  directory: { principals: number; memberships: number; last_sync?: DirectorySyncRunItem | null }
+  alerts: { unacknowledged: number; critical: number }
+  model_usage: Array<{ model: string; calls: number; prompt_tokens: number; completion_tokens: number; avg_latency_ms: number }>
+  risks: Array<{ code: string; severity: string; count: number; title: string; route: string }>
+}
+
+export interface DirectoryPrincipalItem {
+  id: string
+  principal_type: 'department' | 'group' | 'role'
+  external_id: string
+  display_name: string
+  parent_external_id?: string | null
+  source: 'manual' | 'scim' | 'hr'
+  status: 'active' | 'inactive'
+  attributes: Record<string, unknown>
+  last_synced_at?: string | null
+}
+
+export interface DirectoryMembershipItem {
+  id: string
+  user_id: string
+  user_email?: string | null
+  display_name?: string | null
+  principal_id: string
+  principal_type?: 'department' | 'group' | 'role' | null
+  principal_external_id?: string | null
+  principal_name?: string | null
+  source: 'manual' | 'scim' | 'hr'
+  status: 'active' | 'inactive'
+  effective_from?: string | null
+  effective_to?: string | null
+  metadata: Record<string, unknown>
+}
+
+export interface DirectorySyncRunItem {
+  id: string
+  provider: 'manual' | 'scim' | 'hr'
+  status: string
+  cursor?: string | null
+  authoritative: boolean
+  stats: Record<string, number>
+  requested_by: string
+  error?: string | null
+  started_at?: string | null
+  completed_at?: string | null
+}
+
+export interface DirectorySyncPayload {
+  provider: 'manual' | 'scim' | 'hr'
+  cursor?: string | null
+  authoritative?: boolean
+  principals: Array<{
+    principal_type: 'department' | 'group' | 'role'
+    external_id: string
+    display_name: string
+    parent_external_id?: string | null
+    status?: 'active' | 'inactive'
+    attributes?: Record<string, unknown>
+  }>
+  memberships: Array<{
+    user_email: string
+    principal_type: 'department' | 'group' | 'role'
+    principal_external_id: string
+    status?: 'active' | 'inactive'
+    metadata?: Record<string, unknown>
+  }>
+}
+
+export async function apiGetEnterpriseOperations(token: string): Promise<EnterpriseOperationsOverview> {
+  const res = await apiFetch('/admin/enterprise/operations/overview', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取企业运营中心失败'))
+  return res.json()
+}
+
+export async function apiListDirectoryPrincipals(token: string): Promise<DirectoryPrincipalItem[]> {
+  const res = await apiFetch('/admin/enterprise/directory/principals?limit=2000', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取企业目录失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiListDirectoryMemberships(token: string): Promise<DirectoryMembershipItem[]> {
+  const res = await apiFetch('/admin/enterprise/directory/memberships?limit=5000', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取目录成员失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiListDirectorySyncRuns(token: string): Promise<DirectorySyncRunItem[]> {
+  const res = await apiFetch('/admin/enterprise/directory/sync-runs?limit=50', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取目录同步记录失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiSyncEnterpriseDirectory(token: string, payload: DirectorySyncPayload): Promise<DirectorySyncRunItem> {
+  const res = await apiFetch('/admin/enterprise/directory/sync', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '同步企业目录失败'))
+  return res.json()
+}
+
+export interface WorkbenchAttentionItem {
+  id: string
+  type: 'approval' | 'alert' | 'response' | 'knowledge' | string
+  severity: 'info' | 'warning' | 'critical' | 'error' | string
+  title: string
+  description: string
+  route: string
+  resource_id?: string | null
+  created_at?: string | null
+}
+
+export interface WorkbenchActivityItem {
+  id: string
+  type: 'response' | 'goal' | string
+  status: string
+  title: string
+  description: string
+  route: string
+  created_at?: string | null
+}
+
+export interface EnterpriseWorkbenchOverview {
+  generated_at: string
+  scope: { tenant_id: string; workspace_id: string; user_id: string }
+  readiness: {
+    score: number
+    status: 'ready' | 'attention' | 'foundation'
+    dimensions: { context: number; knowledge: number; data: number; automation: number; governance: number }
+    blockers: Array<{ code: string; title: string; description: string; route: string }>
+  }
+  summary: {
+    projects: number
+    active_goals: number
+    running_responses: number
+    pending_approvals: number
+    unread_notifications: number
+    scheduled_tasks: number
+    active_alerts: number
+    unacknowledged_alerts: number
+    accessible_data_sources: number
+    knowledge_spaces: number
+    published_knowledge: number
+  }
+  knowledge_health: KnowledgeGovernanceHealth
+  attention_items: WorkbenchAttentionItem[]
+  recent_activity: WorkbenchActivityItem[]
+}
+
+export async function apiGetEnterpriseWorkbench(token: string, recentLimit = 6): Promise<EnterpriseWorkbenchOverview> {
+  const res = await apiFetchResponses(`/workbench/overview?recent_limit=${recentLimit}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取企业 AI 工作台失败'))
+  return res.json()
+}
+
 export interface ProjectItem {
   id: string
   name: string

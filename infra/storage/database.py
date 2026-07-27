@@ -191,11 +191,13 @@ async def _verify_runtime_schema(conn) -> None:
     missing: list[str] = []
     for table, columns in required_columns.items():
         rows = await conn.execute(
-            text("""
+            text(
+                """
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = :table
-                """),
+                """
+            ),
             {"table": table},
         )
         present = {str(row[0]) for row in rows}
@@ -242,12 +244,19 @@ async def _verify_runtime_schema(conn) -> None:
         "skill_catalog_entries",
         "user_skill_installations",
         "resource_permissions",
+        "enterprise_directory_principals",
+        "enterprise_directory_memberships",
+        "enterprise_directory_sync_runs",
     }
-    table_rows = await conn.execute(text("""
+    table_rows = await conn.execute(
+        text(
+            """
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public'
-            """))
+            """
+        )
+    )
     present_tables = {str(row[0]) for row in table_rows}
     for table in sorted(required_tables - present_tables):
         missing.append(table)

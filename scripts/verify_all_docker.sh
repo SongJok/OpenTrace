@@ -2,7 +2,7 @@
 # =============================================================================
 # OpenTrace — 纯 Docker 全量验证脚本
 # 用法: bash scripts/verify_all_docker.sh
-# 说明: 所有 unittest 在 api 容器内执行，避免本机 Python 环境差异
+# 说明: unittest 在使用生产依赖镜像的临时容器内执行，源码以只读方式挂载。
 # =============================================================================
 set -euo pipefail
 
@@ -24,19 +24,29 @@ if ! docker compose ps api >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "▸ 构建锁定依赖的临时测试镜像..."
+docker compose --profile test build test-runner
+
+TEST_RUNNER=(
+  docker compose --profile test run --rm --no-deps -T
+  --volume "$PROJECT_DIR:/workspace:ro"
+  --workdir /workspace
+  test-runner
+)
+
 echo "== OpenTrace verify_all (docker mode) =="
 
 bash scripts/verify_error_envelope.sh
 bash scripts/verify_e2e.sh
 docker compose exec -T api python scripts/verify_business_flows_e2e.py
 bash scripts/verify_memory_e2e.sh
-bash scripts/verify_kernel_loop.sh
+"${TEST_RUNNER[@]}" python -m unittest tests.test_kernel_agent_loop -v
 bash scripts/verify_code_plugin.sh
 bash scripts/verify_agent_bus_e2e.sh
 bash scripts/verify_migration_idempotent.sh
 
-echo "▸ 在 api 容器内执行 unittest..."
-docker compose exec -T api python -m unittest \
+echo "▸ 在临时测试容器内执行 unittest..."
+"${TEST_RUNNER[@]}" python -m unittest \
   tests/test_memory_api_contract.py \
   tests/test_memory_evolve.py \
   tests/test_tasks_api_contract.py \

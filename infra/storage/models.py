@@ -533,6 +533,100 @@ class KnowledgeSpaceMember(Base):
     )
 
 
+class EnterpriseDirectoryPrincipal(Base):
+    """企业目录中的部门、用户组和岗位；外部 ID 在租户工作区内稳定。"""
+
+    __tablename__ = "enterprise_directory_principals"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "workspace_id",
+            "principal_type",
+            "external_id",
+            name="uq_enterprise_directory_principal",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    principal_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    external_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    parent_external_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual", index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active", index=True)
+    attributes: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class EnterpriseDirectoryMembership(Base):
+    """企业用户到目录主体的持久化成员关系。"""
+
+    __tablename__ = "enterprise_directory_memberships"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "workspace_id",
+            "user_id",
+            "principal_id",
+            name="uq_enterprise_directory_membership",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    principal_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("enterprise_directory_principals.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual", index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active", index=True)
+    effective_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    membership_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class EnterpriseDirectorySyncRun(Base):
+    """SCIM/HR/手工目录同步的审计记录。"""
+
+    __tablename__ = "enterprise_directory_sync_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running", index=True)
+    cursor: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    authoritative: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    stats: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    requested_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class KnowledgePrincipalMembership(Base):
     """用户到部门、组和岗位主体的映射，可由 SCIM/HR 系统同步。"""
 

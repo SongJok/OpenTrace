@@ -140,3 +140,18 @@ def test_ci_has_fast_full_and_security_gates() -> None:
     assert "timeout-minutes: 30" in full
     for gate in ("pip-audit", "gitleaks", "sbom", "trivy"):
         assert gate in security.lower()
+
+
+def test_runtime_verification_uses_declared_or_container_python() -> None:
+    kernel_verify = (ROOT / "scripts/verify_kernel_loop.sh").read_text(encoding="utf-8")
+    docker_verify = (ROOT / "scripts/verify_all_docker.sh").read_text(encoding="utf-8")
+
+    assert 'PYTHON_BIN="${PYTHON_BIN:-python}"' in kernel_verify
+    assert '"$PYTHON_BIN" -m unittest tests.test_kernel_agent_loop -v' in kernel_verify
+    assert "python3 -m unittest tests.test_kernel_agent_loop" not in kernel_verify
+    assert "docker compose --profile test build test-runner" in docker_verify
+    assert "TEST_RUNNER=(" in docker_verify
+    assert "test-runner" in (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert (ROOT / "deploy/docker/Dockerfile.test").exists()
+    assert '--volume "$PROJECT_DIR:/workspace:ro"' in docker_verify
+    assert '"${TEST_RUNNER[@]}" python -m unittest tests.test_kernel_agent_loop -v' in docker_verify

@@ -10,7 +10,8 @@
 OpenTrace is a self-hosted enterprise AgentOS. Built around an OpenAI-compatible Responses
 API, a recoverable Agent Loop, and durable PostgreSQL events, it brings enterprise databases,
 knowledge bases, approval governance, proactive alerts, conversations, memory, goals, and
-scheduled tasks into one coherent product workflow.
+scheduled tasks into one coherent product workflow. The enterprise AI workbench turns those
+durable capabilities into one actionable employee home.
 
 > **Project status: Alpha.** The core runtime and contract suites are in place. Before using
 > OpenTrace in production, complete secret management, network isolation, backup and recovery,
@@ -35,13 +36,20 @@ scheduled tasks into one coherent product workflow.
 
 ## Product Workflow
 
+Authenticated users land on `/work`, the enterprise AI workbench. It aggregates current
+Responses, Goals, approvals, alerts, governed knowledge, and authorized data sources without
+creating a second execution plane. See
+[Enterprise AI workbench architecture](docs/architecture/enterprise_ai_workbench.md).
+
 ```text
-Project
-  |-- Enterprise databases: MySQL / Doris / ClickHouse / PostgreSQL
-  |     `-- Connection test -> Schema sync -> Semantic layer -> DataAgent / Text2SQL
-  |-- Enterprise knowledge: Documents -> Compile -> Review/Publish -> RAG citations
-  |-- Approval governance: Tenant/Workspace/Project ACL -> Write approval -> Audit events
-  `-- Proactive alerts: Scheduled query -> Deterministic threshold -> Trigger/Recover -> Evidence
+Enterprise AI Workbench
+  `-- Attention queue / readiness / recent durable work / capability launchpad
+       `-- Project
+            |-- Enterprise databases: MySQL / Doris / ClickHouse / PostgreSQL
+            |     `-- Connection test -> Schema sync -> Semantic layer -> DataAgent / Text2SQL
+            |-- Enterprise knowledge: Documents -> Compile -> Review/Publish -> RAG citations
+            |-- Approval governance: Tenant/Workspace/Project ACL -> Write approval -> Audit events
+            `-- Proactive alerts: Scheduled query -> Deterministic threshold -> Trigger/Recover -> Evidence
 ```
 
 A typical workflow looks like this:
@@ -83,12 +91,12 @@ return `410 Gone`.
 | Enterprise databases | MySQL, Doris, ClickHouse, and PostgreSQL; connection tests, schemas, semantic mappings, and read-only SQL |
 | DataAgent | Text2SQL, metric/entity/time/join reasoning, validation, reflection, result interpretation, and visualization specs |
 | Enterprise Knowledge | Company/department/role/project/personal spaces, source ACL sync, review publishing, validity, classification, governed retrieval, graphs, and citations |
-| Governance | Multi-tenant/workspace boundaries, resource permissions, durable approvals, audit, quotas, and policy interfaces |
+| Governance | Multi-tenant/workspace boundaries, enterprise directory sync, resource permissions, durable approvals, audit, quotas, and policy interfaces |
 | Automation | Goals, scheduled tasks, proactive data alerts, notifications, retries, and recovery events |
 | Memory | Conversation summaries, user and Project memory, memory governance, and feedback learning |
 | Skills and tools | Typed tools, SkillHub, and local Skill management; dynamic execution is disabled by default |
 | Observability | Structured logging, OpenTelemetry, Prometheus, Jaeger, and runtime health endpoints |
-| Frontend | React, TypeScript, and Vite interfaces for chat, data sources, knowledge, approvals, tasks, and alerts |
+| Frontend | Employee AI workbench and administrator operations center, plus React, TypeScript, and Vite interfaces for chat, data, knowledge, approvals, tasks, and alerts |
 
 ## Technology Stack
 
@@ -317,6 +325,8 @@ tests/            Unit, integration, and architecture contract tests
 ## Documentation
 
 - [Architecture overview](docs/architecture_overview.md)
+- [Enterprise AI workbench](docs/architecture/enterprise_ai_workbench.md)
+- [Enterprise identity and operations](docs/architecture/enterprise_identity_and_operations.md)
 - [Responses cutover and rollback](docs/runbooks/chatgpt_cutover.md)
 - [DataAgent](docs/catalog/data_agent.md)
 - [RAG retrieval](docs/catalog/rag_retrieval.md)

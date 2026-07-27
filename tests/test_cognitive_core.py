@@ -12,13 +12,17 @@ from kernel.agent_loop.runner import AgentLoop
 
 
 def test_tool_schema_is_strict_and_namespaced_policy_is_not_sent_to_provider():
-    spec = parse_tool_specs([{
-        "type": "function",
-        "name": "save_note",
-        "description": "Save a note",
-        "parameters": {"type": "object", "properties": {"text": {"type": "string"}}},
-        "opentrace": {"side_effect": "write", "required_permissions": ["notes:write"]},
-    }])[0]
+    spec = parse_tool_specs(
+        [
+            {
+                "type": "function",
+                "name": "save_note",
+                "description": "Save a note",
+                "parameters": {"type": "object", "properties": {"text": {"type": "string"}}},
+                "opentrace": {"side_effect": "write", "required_permissions": ["notes:write"]},
+            }
+        ]
+    )[0]
     provider = spec.as_openai_tool()
     assert spec.side_effect == SideEffect.WRITE
     assert provider["strict"] is True
@@ -64,9 +68,7 @@ def test_memory_learner_classifies_explicit_preferences():
 
 
 def test_memory_learner_proactively_extracts_stable_profile_and_preference():
-    candidates = MemoryLearner._extract_proactive(
-        "我叫林舟。\n我偏好使用简洁的中文回答。"
-    )
+    candidates = MemoryLearner._extract_proactive("我叫林舟。\n我偏好使用简洁的中文回答。")
 
     assert [(item["key"], item["kind"]) for item in candidates] == [
         ("profile.name", "profile"),
@@ -113,21 +115,30 @@ def test_memory_learner_uses_proactive_fallback_when_model_output_is_invalid(mon
 
 
 def test_only_governed_proactive_candidates_auto_activate():
-    assert MemoryLearner._candidate_status(
-        confidence=0.90,
-        explicit=False,
-        learning_mode="proactive",
-    ) == "active"
-    assert MemoryLearner._candidate_status(
-        confidence=0.99,
-        explicit=False,
-        learning_mode="model",
-    ) == "pending"
-    assert MemoryLearner._candidate_status(
-        confidence=1.0,
-        explicit=True,
-        learning_mode="explicit",
-    ) == "active"
+    assert (
+        MemoryLearner._candidate_status(
+            confidence=0.90,
+            explicit=False,
+            learning_mode="proactive",
+        )
+        == "active"
+    )
+    assert (
+        MemoryLearner._candidate_status(
+            confidence=0.99,
+            explicit=False,
+            learning_mode="model",
+        )
+        == "pending"
+    )
+    assert (
+        MemoryLearner._candidate_status(
+            confidence=1.0,
+            explicit=True,
+            learning_mode="explicit",
+        )
+        == "active"
+    )
 
 
 def test_memory_learner_uses_explicit_fallback_when_model_output_is_invalid(monkeypatch):
@@ -143,6 +154,21 @@ def test_memory_learner_uses_explicit_fallback_when_model_output_is_invalid(monk
 
     assert candidates[0]["content"] == "我的代号是北辰-42"
     assert candidates[0]["explicit"] is True
+
+
+def test_deterministic_memory_candidate_skips_model_call(monkeypatch):
+    class ForbiddenGateway:
+        async def complete(self, *args, **kwargs):
+            raise AssertionError("确定性记忆不应调用模型")
+
+    monkeypatch.setattr(
+        "kernel.agent_loop.memory_learner.get_model_gateway", lambda: ForbiddenGateway()
+    )
+
+    candidates = asyncio.run(MemoryLearner()._extract("我的代号是北辰-42。以后我们会继续合作。"))
+
+    assert candidates[0]["content"] == "我的代号是北辰-42"
+    assert candidates[0]["_learning_mode"] == "proactive"
 
 
 def test_explicit_memory_uses_stable_key_even_when_model_returns_an_explicit_candidate(

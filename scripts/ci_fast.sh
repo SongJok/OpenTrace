@@ -30,11 +30,20 @@ QUALITY_PATHS=(
   knowledge/sync.py
   services/document_ingestion.py
   services/rag_query_planning.py
+  services/enterprise_workbench.py
+  services/enterprise_directory.py
+  services/enterprise_operations.py
+  gateway/api_gateway/routers/workbench.py
+  gateway/api_gateway/routers/enterprise_admin.py
   alembic/versions/r0001_enterprise_knowledge_base.py
   alembic/versions/r0002_durable_knowledge_sync_queue.py
+  alembic/versions/r0003_enterprise_directory_and_operations.py
   scripts/verify_enterprise_knowledge_postgres.py
   scripts/verify_durable_knowledge_sync_postgres.py
+  scripts/verify_enterprise_directory_postgres.py
   tests/test_enterprise_knowledge_base.py
+  tests/test_enterprise_workbench.py
+  tests/test_enterprise_directory_and_operations.py
   tests/test_p0_engineering_baseline.py
 )
 
@@ -48,8 +57,12 @@ backend_gate() {
     knowledge/access.py knowledge/lifecycle.py knowledge/query.py knowledge/trace.py \
     knowledge/compiler.py knowledge/jobs.py knowledge/sync.py \
     services/document_ingestion.py services/rag_query_planning.py \
+    services/enterprise_workbench.py services/enterprise_directory.py \
+    services/enterprise_operations.py gateway/api_gateway/routers/workbench.py \
+    gateway/api_gateway/routers/enterprise_admin.py \
     scripts/check_architecture_manifest.py scripts/verify_enterprise_knowledge_postgres.py \
     scripts/verify_durable_knowledge_sync_postgres.py \
+    scripts/verify_enterprise_directory_postgres.py \
     scripts/check_migration_policy.py scripts/create_migration.py scripts/freeze_migration.py
 
   local env_before docs_before env_after docs_after
@@ -68,6 +81,8 @@ backend_gate() {
   "$PYTHON_BIN" -m pytest -q --tb=short \
     tests/test_p0_engineering_baseline.py \
     tests/test_enterprise_knowledge_base.py \
+    tests/test_enterprise_workbench.py \
+    tests/test_enterprise_directory_and_operations.py \
     tests/test_config_truth_contract.py \
     tests/test_alembic_single_head_contract.py \
     tests/test_responses_contract.py \

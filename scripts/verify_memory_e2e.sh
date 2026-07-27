@@ -70,6 +70,21 @@ def create_memory(**payload) -> str:
     return memory_id
 
 
+def wait_for_response(result: dict, *, timeout: float = 180.0) -> dict:
+    response_id = result.get("id")
+    assert response_id, result
+    terminal_statuses = {"completed", "failed", "incomplete", "cancelled", "requires_action"}
+    deadline = time.monotonic() + timeout
+    while result.get("status") not in terminal_statuses and time.monotonic() < deadline:
+        time.sleep(0.5)
+        result = request(f"/api/v2/responses/{response_id}")
+    if result.get("status") not in terminal_statuses:
+        raise AssertionError(
+            f"Response {response_id} 未在 {timeout:.0f}s 内完成，当前状态：{result.get('status')}"
+        )
+    return result
+
+
 def respond(conversation_id: str, text: str, *, memory_mode: str = "enabled") -> dict:
     result = request(
         "/api/v2/responses",
@@ -81,6 +96,7 @@ def respond(conversation_id: str, text: str, *, memory_mode: str = "enabled") ->
             "opentrace": {"memory_mode": memory_mode},
         },
     )
+    result = wait_for_response(result)
     assert result.get("status") == "completed", result
     return result
 
@@ -105,6 +121,17 @@ def wait_for_memory(marker: str, *, should_exist: bool, timeout: float = 20.0) -
         expectation = "生成" if should_exist else "不生成"
         raise AssertionError(f"记忆 {marker} 应{expectation}，实际为 {found}")
     return found
+
+
+def wait_for_candidate(marker: str, *, observations: int, timeout: float = 20.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pending = request("/api/v2/memories/inbox")["items"]
+        found = next((item for item in pending if marker in item.get("content", "")), None)
+        if found is not None and int(found.get("observations") or 0) >= observations:
+            return found
+        time.sleep(0.5)
+    raise AssertionError(f"记忆候选 {marker} 未在 {timeout:.0f}s 内达到 {observations} 次观察")
 
 
 def cleanup() -> None:
@@ -298,13 +325,12 @@ request(
 constitution_changed = True
 reinforcement_marker = f"重复观察-{suffix}"
 first_observation = create_conversation()
-respond(first_observation, f"我的代号是 {reinforcement_marker}。")
+respond(first_observation, f"我的常用技术栈是 {reinforcement_marker}。")
 wait_for_memory(reinforcement_marker, should_exist=False, timeout=3)
-pending = request("/api/v2/memories/inbox")["items"]
-candidate = next(item for item in pending if reinforcement_marker in item.get("content", ""))
+candidate = wait_for_candidate(reinforcement_marker, observations=1)
 assert candidate["observations"] == 1
 second_observation = create_conversation()
-respond(second_observation, f"我的代号是 {reinforcement_marker}。")
+respond(second_observation, f"我的常用技术栈是 {reinforcement_marker}。")
 reinforced_memory = wait_for_memory(reinforcement_marker, should_exist=True)
 assert reinforced_memory is not None
 assert reinforced_memory.get("metadata", {}).get("observations") == 2

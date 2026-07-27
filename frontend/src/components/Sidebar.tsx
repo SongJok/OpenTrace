@@ -26,6 +26,7 @@ import {
   FolderKanban,
   Activity,
   CheckCheck,
+  Building2,
   X,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -240,7 +241,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
         <div className="my-1 h-px w-8 bg-[var(--border)]" />
         <button
           onClick={() => navigate('/work')}
-          title="Projects 与 Goals"
+          title="企业 AI 工作台"
           className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
         >
           <FolderKanban size={16} />
@@ -309,6 +310,15 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
             className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
           >
             <Network size={16} className="cartoon-icon" />
+          </button>
+        )}
+        {role === 'admin' && (
+          <button
+            onClick={() => navigate('/enterprise-admin')}
+            title="企业运营中心"
+            className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+          >
+            <Building2 size={16} className="cartoon-icon" />
           </button>
         )}
         {role === 'admin' && (
@@ -392,7 +402,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
       </div>
 
       <div className="px-4 pb-3 space-y-2">
-        <button onClick={() => navigate('/work')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><FolderKanban size={15} /><span>Projects 与 Goals</span></button>
+        <button onClick={() => navigate('/work')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><FolderKanban size={15} /><span>企业 AI 工作台</span></button>
         <button onClick={() => navigate('/tasks')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Bell size={15} /><span>定时任务</span></button>
         <button onClick={() => navigate('/alerts')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Activity size={15} /><span>主动预警</span></button>
         <div className="relative rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
@@ -508,6 +518,9 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
             <NavButton icon={<Network size={15} className="cartoon-icon" />} label="知识治理中心" onClick={() => navigate('/knowledge')} />
           )}
           <NavButton icon={<FileCode size={15} className="cartoon-icon icon-rules" />} label="规则" onClick={() => navigate('/rules')} />
+          {role === 'admin' && (
+            <NavButton icon={<Building2 size={15} className="cartoon-icon" />} label="企业运营中心" onClick={() => navigate('/enterprise-admin')} />
+          )}
           {role === 'admin' && (
             <NavButton icon={<ShieldCheck size={15} className="cartoon-icon icon-permissions" />} label="权限" onClick={() => navigate('/permissions')} />
           )}

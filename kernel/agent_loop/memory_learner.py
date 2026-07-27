@@ -370,6 +370,11 @@ class MemoryLearner:
     ) -> list[dict[str, Any]]:
         explicit_candidates = self._extract_explicit(text)
         proactive_candidates = self._extract_proactive(text)
+        deterministic_candidates = [*explicit_candidates, *proactive_candidates]
+        # 企业主链路优先使用可审计的确定性规则：命中后不再为相同信息额外调用模型，
+        # 避免 Response 已完成后记忆投影仍被模型延迟或抖动阻塞。模型只补充规则未覆盖的表达。
+        if deterministic_candidates:
+            return deterministic_candidates
         prompt = (
             "主动从用户消息中提取将来多轮对话中仍有用的稳定记忆，即使用户没有说‘记住’也要识别。只输出 JSON 数组。"
             "每项字段为 content, key(稳定的snake_case主题键), kind(profile|preference|workflow|fact|episodic), confidence(0-1), "
