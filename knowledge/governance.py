@@ -30,6 +30,7 @@ from knowledge.access import (
     resolve_access_context,
     role_allows,
 )
+from knowledge.lint import merge_case_ids_in_claim_scope
 
 ALLOWED_FEEDBACK_TYPES = {
     "helpful",
@@ -43,6 +44,30 @@ ALLOWED_FEEDBACK_TYPES = {
 ALLOWED_RESOLUTIONS = {"acknowledged", "needs_revision", "corrected", "dismissed"}
 ACTIONABLE_FEEDBACK_TYPES = {"unhelpful", "incorrect", "outdated", "correction", "dislike"}
 AUTO_APPLIED_FEEDBACK_TYPES = {"helpful", "like"}
+
+
+def connector_sync_is_stale(
+    *,
+    connector_type: str,
+    status: str,
+    sync_interval_seconds: int,
+    last_sync_at: datetime | None,
+    created_at: datetime | None,
+    now: datetime,
+) -> bool:
+    """仅轮询型连接器需要按同步周期检查滞后；Push 无事件不代表异常。"""
+
+    if status != "active" or connector_type == "push":
+        return False
+
+    def aware(value: datetime | None) -> datetime | None:
+        if value is None or value.tzinfo is not None:
+            return value
+        return value.replace(tzinfo=UTC)
+
+    threshold = now - timedelta(seconds=max(120, sync_interval_seconds * 2))
+    last_activity = aware(last_sync_at) or aware(created_at)
+    return last_activity is not None and last_activity < threshold
 
 
 @dataclass(frozen=True, slots=True)
@@ -587,7 +612,20 @@ async def knowledge_governance_health(
             ).scalars()
         )
 
-    resource_ids = source_ids | {row.id for row in pages} | {row.id for row in claims}
+    claim_ids = {claim.id for claim in claims}
+    merge_cases = list(
+        (
+            await db.execute(
+                select(KnowledgeMergeCase).where(
+                    KnowledgeMergeCase.tenant_id == tenant_id,
+                    KnowledgeMergeCase.workspace_id == workspace_id,
+                    KnowledgeMergeCase.status == "open",
+                )
+            )
+        ).scalars()
+    )
+    scoped_merge_case_ids = merge_case_ids_in_claim_scope(merge_cases, claim_ids)
+    resource_ids = source_ids | {row.id for row in pages} | claim_ids | scoped_merge_case_ids
     lint_issues = []
     if resource_ids:
         lint_issues = list(
@@ -613,23 +651,6 @@ async def knowledge_governance_health(
         actionable_only=True,
         limit=200,
     )
-    merge_cases = list(
-        (
-            await db.execute(
-                select(KnowledgeMergeCase).where(
-                    KnowledgeMergeCase.tenant_id == tenant_id,
-                    KnowledgeMergeCase.workspace_id == workspace_id,
-                    KnowledgeMergeCase.status == "open",
-                )
-            )
-        ).scalars()
-    )
-    claim_ids = {claim.id for claim in claims}
-    scoped_merge_cases = [
-        case
-        for case in merge_cases
-        if case.candidate_ids and set(case.candidate_ids).issubset(claim_ids)
-    ]
     connectors = list(
         (
             await db.execute(
@@ -642,19 +663,17 @@ async def knowledge_governance_health(
         ).scalars()
     )
 
-    def aware(value: datetime | None) -> datetime | None:
-        if value is None or value.tzinfo is not None:
-            return value
-        return value.replace(tzinfo=UTC)
-
-    stale_connectors = 0
-    for connector in connectors:
-        if connector.status != "active":
-            continue
-        threshold = now - timedelta(seconds=max(120, connector.sync_interval_seconds * 2))
-        last_activity = aware(connector.last_sync_at) or aware(connector.created_at)
-        if last_activity is not None and last_activity < threshold:
-            stale_connectors += 1
+    stale_connectors = sum(
+        connector_sync_is_stale(
+            connector_type=connector.connector_type,
+            status=connector.status,
+            sync_interval_seconds=connector.sync_interval_seconds,
+            last_sync_at=connector.last_sync_at,
+            created_at=connector.created_at,
+            now=now,
+        )
+        for connector in connectors
+    )
 
     metrics = {
         "sources": len(sources),
@@ -680,7 +699,7 @@ async def knowledge_governance_health(
         "open_lint_issues": len(lint_issues),
         "open_lint_errors": sum(issue.severity == "error" for issue in lint_issues),
         "unresolved_feedback": len(feedback_items),
-        "open_merge_cases": len(scoped_merge_cases),
+        "open_merge_cases": len(scoped_merge_case_ids),
         "failed_connectors": sum(
             connector.status == "failed" or bool(connector.last_error) for connector in connectors
         ),

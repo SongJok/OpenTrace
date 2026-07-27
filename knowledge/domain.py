@@ -62,6 +62,21 @@ KNOWLEDGE_EVIDENCE_VERSION = "knowledge_evidence_object_v1"
 KNOWLEDGE_RULESET_VERSION = "knowledge_ruleset_v1"
 
 
+def source_is_withdrawn(
+    *,
+    status: str | None,
+    sync_status: str | None,
+    deleted_at: object | None,
+) -> bool:
+    """撤回是持久化治理状态，后台补偿任务不得自动重新激活来源。"""
+
+    return bool(
+        deleted_at is not None
+        or sync_status == "deleted"
+        or status == KnowledgeStatus.DEPRECATED.value
+    )
+
+
 def source_status_during_refresh(
     active_version_id: str | None,
     fallback: KnowledgeStatus,

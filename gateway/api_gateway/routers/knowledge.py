@@ -41,7 +41,7 @@ from knowledge.governance import (
 from knowledge.graph import build_project_graph, link_project_pages
 from knowledge.jobs import enqueue_document_compile
 from knowledge.lifecycle import publish_source_version
-from knowledge.lint import run_knowledge_lint
+from knowledge.lint import merge_case_ids_in_claim_scope, run_knowledge_lint
 from knowledge.merge import resolve_merge_case as apply_merge_case
 from knowledge.trace import trace_knowledge_assets
 
@@ -144,7 +144,22 @@ async def _space_quality_scope(
             )
         ).scalars()
     )
-    return source_ids, claim_ids, source_ids | page_ids | claim_ids | relation_ids
+    merge_cases = list(
+        (
+            await db.execute(
+                select(KnowledgeMergeCase).where(
+                    KnowledgeMergeCase.tenant_id == tenant_id,
+                    KnowledgeMergeCase.workspace_id == workspace_id,
+                )
+            )
+        ).scalars()
+    )
+    merge_case_ids = merge_case_ids_in_claim_scope(merge_cases, claim_ids)
+    return (
+        source_ids,
+        claim_ids,
+        source_ids | page_ids | claim_ids | relation_ids | merge_case_ids,
+    )
 
 
 @router.get("/knowledge/sources")

@@ -76,17 +76,45 @@ print("[PASS] Responses 历史投影")
 PY
 
 tmp_file=$(mktemp "${TMPDIR:-/tmp}/opentrace-doc-XXXXXX.txt")
-trap 'rm -f "$tmp_file"' EXIT
+delete_body=$(mktemp "${TMPDIR:-/tmp}/opentrace-doc-delete-XXXXXX.json")
+trap 'rm -f "$tmp_file" "$delete_body"' EXIT
 printf 'OpenTrace main path document test %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$tmp_file"
-upload=$(curl -fsS --max-time 60 -X POST "${BASE_URL}/api/v1/documents" \
-  -H "Authorization: Bearer ${TOKEN}" -F "file=@${tmp_file};type=text/plain" -F "title=e2e-doc")
-DOC_ID=$(json_get "$upload" id)
+existing_documents=$(curl -fsS --max-time 20 "${BASE_URL}/api/v1/documents" \
+  -H "Authorization: Bearer ${TOKEN}")
+DOC_ID=$("$PYTHON_BIN" - "$existing_documents" <<'PY'
+import json, sys
+rows = json.loads(sys.argv[1])
+print(next((str(row.get("id") or "") for row in rows if row.get("title") == "e2e-doc"), ""))
+PY
+)
+if [ -n "$DOC_ID" ]; then
+  upload=$(curl -fsS --max-time 60 -X PUT "${BASE_URL}/api/v1/documents/${DOC_ID}" \
+    -H "Authorization: Bearer ${TOKEN}" -F "file=@${tmp_file};type=text/plain" -F "title=e2e-doc")
+else
+  upload=$(curl -fsS --max-time 60 -X POST "${BASE_URL}/api/v1/documents" \
+    -H "Authorization: Bearer ${TOKEN}" -F "file=@${tmp_file};type=text/plain" -F "title=e2e-doc")
+  DOC_ID=$(json_get "$upload" id)
+fi
 [ -n "$DOC_ID" ] || { echo "[FAIL] document: id 为空"; exit 1; }
 curl -fsS --max-time 20 "${BASE_URL}/api/v1/documents" \
   -H "Authorization: Bearer ${TOKEN}" >/dev/null
-curl -fsS --max-time 20 -X DELETE "${BASE_URL}/api/v1/documents/${DOC_ID}" \
-  -H "Authorization: Bearer ${TOKEN}" >/dev/null
-echo "[PASS] 文档上传、列表与清理"
+delete_status=$(curl -sS --max-time 20 -o "$delete_body" -w '%{http_code}' \
+  -X DELETE "${BASE_URL}/api/v1/documents/${DOC_ID}" \
+  -H "Authorization: Bearer ${TOKEN}")
+if [ "$delete_status" = "200" ]; then
+  echo "[PASS] 文档上传/更新、列表与清理"
+elif [ "$delete_status" = "409" ]; then
+  "$PYTHON_BIN" - "$delete_body" <<'PY'
+import json, pathlib, sys
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+if "治理" not in str(payload.get("message") or ""):
+    raise SystemExit(f"[FAIL] document delete protection: {payload}")
+print("[PASS] 文档上传/更新、列表与治理删除保护")
+PY
+else
+  echo "[FAIL] document delete: HTTP $delete_status $(cat "$delete_body")"
+  exit 1
+fi
 
 ui=$(curl -fsS --max-time 20 "${BASE_URL}/api/v1/users/ui-settings" \
   -H "Authorization: Bearer ${TOKEN}")

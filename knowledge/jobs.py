@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy import select, update
 
 from infra.config.settings import settings
+from infra.observability.logger import get_logger
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import (
     Document,
@@ -24,8 +25,21 @@ from knowledge.domain import (
     KNOWLEDGE_COMPILER_VERSION,
     KnowledgeAuthority,
     KnowledgeStatus,
+    source_is_withdrawn,
     source_status_during_refresh,
 )
+
+logger = get_logger(__name__)
+
+
+def _safe_compilation_error(exc: Exception) -> str:
+    """对外只持久化稳定错误码，避免 SQL 参数和文档正文泄露到治理 UI。"""
+
+    if isinstance(exc, ValueError):
+        value = str(exc).strip()
+        if value and len(value) <= 120 and all(char.isalnum() or char in "_.:-" for char in value):
+            return value
+    return f"knowledge_compilation_failed:{type(exc).__name__}"
 
 
 async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
@@ -41,12 +55,25 @@ async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
         except (TypeError, json.JSONDecodeError):
             document_metadata = {}
         source = await db.scalar(
-            select(KnowledgeSource).where(
+            select(KnowledgeSource)
+            .where(
                 KnowledgeSource.document_id == document.id,
                 KnowledgeSource.tenant_id == document.tenant_id,
                 KnowledgeSource.workspace_id == document.workspace_id,
             )
+            .with_for_update()
         )
+        if source is not None and source_is_withdrawn(
+            status=source.status,
+            sync_status=source.sync_status,
+            deleted_at=source.deleted_at,
+        ):
+            return {
+                "status": "skipped",
+                "reason": "source_withdrawn",
+                "document_id": document_id,
+                "source_id": source.id,
+            }
         if source is None:
             source = KnowledgeSource(
                 id=stable_id(
@@ -205,12 +232,28 @@ async def process_pending_compile_jobs(*, limit: int = 4, worker_id: str | None 
                 raise ValueError("knowledge_source_has_no_document")
             await compile_document_knowledge(source.document_id, job_id=job.id)
         except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "knowledge compilation failed",
+                job_id=job.id,
+                source_id=source.id,
+                error_type=type(exc).__name__,
+            )
             async with AsyncSessionLocal() as db:
                 failed = await db.get(KnowledgeCompilationJob, job.id)
                 if failed is not None:
                     failed.status = "failed"
-                    failed.error = str(exc)[:2000]
+                    failed.error = _safe_compilation_error(exc)
                     failed.completed_at = datetime.now(UTC)
+                    failed.result_metadata = {
+                        **(failed.result_metadata or {}),
+                        "error_type": type(exc).__name__,
+                    }
+                    failed_source = await db.get(KnowledgeSource, failed.source_id)
+                    if failed_source is not None:
+                        failed_source.status = source_status_during_refresh(
+                            failed_source.active_version_id,
+                            KnowledgeStatus.ERROR,
+                        )
                     await db.commit()
         processed += 1
     return processed

@@ -78,4 +78,12 @@ describe('enterprise knowledge base contracts', () => {
     expect(fetchMock.mock.calls[2][1]?.method).toBe('POST')
   })
 
+  it('redacts compilation internals from the governance UI', async () => {
+    const { formatKnowledgeJobError } = await import('../KnowledgeCenterPage')
+
+    expect(formatKnowledgeJobError("This Session's transaction has been rolled back; SELECT private")).toContain('历史编排任务失败')
+    expect(formatKnowledgeJobError('knowledge_compilation_failed:RuntimeError')).toContain('RuntimeError')
+    expect(formatKnowledgeJobError('raw document content')).not.toContain('raw document content')
+  })
+
 })

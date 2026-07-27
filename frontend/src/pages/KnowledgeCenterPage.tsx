@@ -519,8 +519,20 @@ function SourceList({ sources, canWithdraw, working, onWithdraw }: { sources: Kn
   return <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><h2 className="flex items-center gap-2 font-semibold"><FileText size={15} />知识来源</h2><div className="mt-3 max-h-72 space-y-2 overflow-auto">{sources.map((source) => <article key={source.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3"><div className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-sm font-medium">{source.title}</span><Status value={source.status} />{canWithdraw && source.status !== 'deprecated' && <button onClick={() => void onWithdraw(source)} disabled={working} className="rounded-lg px-2 py-1 text-[11px] text-red-500 hover:bg-red-500/10 disabled:opacity-40">撤回</button>}</div><p className="mt-1 text-[11px] text-[var(--text-secondary)]">{source.source_system || source.source_type} · {source.classification || 'internal'} · {source.sync_status || 'current'}</p></article>)}{!sources.length && <p className="py-6 text-center text-xs text-[var(--text-secondary)]">当前范围暂无知识来源</p>}</div></section>
 }
 
+export function formatKnowledgeJobError(error: string): string {
+  const normalized = error.toLowerCase()
+  if (normalized.includes('transaction has been rolled back') || normalized.includes('stringdatarighttruncation')) {
+    return '历史编排任务失败：治理校验未完成，请清理失败任务后重新编排。'
+  }
+  if (error.startsWith('knowledge_compilation_failed:')) {
+    return `知识编排失败（${error.split(':', 2)[1] || 'unknown'}），请重新编排或联系管理员查看服务日志。`
+  }
+  return '知识编排失败，请重新编排；如仍失败，请联系管理员查看服务日志。'
+}
+
+
 function JobList({ jobs }: { jobs: KnowledgeJobItem[] }) {
-  return <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><h2 className="flex items-center gap-2 font-semibold"><GitBranch size={15} />最近编排任务</h2><div className="mt-3 max-h-72 space-y-2 overflow-auto">{jobs.slice(0, 20).map((job) => <article key={job.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3"><div className="flex items-center justify-between"><span className="font-mono text-[11px]">{job.id.slice(0, 10)}</span><Status value={job.status} /></div>{job.error && <p className="mt-2 text-xs text-red-500">{job.error}</p>}</article>)}{!jobs.length && <p className="py-6 text-center text-xs text-[var(--text-secondary)]">暂无编排任务</p>}</div></section>
+  return <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><h2 className="flex items-center gap-2 font-semibold"><GitBranch size={15} />最近编排任务</h2><div className="mt-3 max-h-72 space-y-2 overflow-auto">{jobs.slice(0, 20).map((job) => <article key={job.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3"><div className="flex items-center justify-between"><span className="font-mono text-[11px]">{job.id.slice(0, 10)}</span><Status value={job.status} /></div>{job.error && <p className="mt-2 text-xs text-red-500">{formatKnowledgeJobError(job.error)}</p>}</article>)}{!jobs.length && <p className="py-6 text-center text-xs text-[var(--text-secondary)]">暂无编排任务</p>}</div></section>
 }
 
 function ReviewPanel({ reviews, canReview, working, onDecision }: { reviews: KnowledgeReviewItem[]; canReview: boolean; working: boolean; onDecision: (review: KnowledgeReviewItem, decision: 'approve' | 'reject') => Promise<void> }) {

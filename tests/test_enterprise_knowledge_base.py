@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from gateway.api_gateway.main import app
@@ -26,6 +27,7 @@ from knowledge.access import (
     classification_allows,
     role_allows,
 )
+from knowledge.domain import KnowledgeStatus, source_is_withdrawn
 from services.rag_query_planning import build_rag_query_plan, normalize_rag_evidence
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -255,3 +257,127 @@ def test_durable_sync_migration_is_additive_and_reversible() -> None:
     assert '"knowledge_sync_items"' in migration
     assert "op.create_table(" in migration
     assert 'op.drop_table("knowledge_sync_items")' in migration
+
+
+def test_knowledge_lint_uses_merge_case_id_and_compiler_rolls_back_failed_session() -> None:
+    lint_source = (ROOT / "knowledge/lint.py").read_text(encoding="utf-8")
+    compiler_source = (ROOT / "knowledge/compiler.py").read_text(encoding="utf-8")
+
+    assert '"resource_id": existing_case.id' in lint_source
+    assert '"resource_id": entity_key' not in lint_source
+    failure_block = compiler_source.split("async def compile_document_knowledge_in_session", 1)[0]
+    assert "await db.rollback()" in failure_block
+    assert "await db.commit()\n            raise" not in failure_block
+
+
+def test_compilation_error_persistence_never_exposes_document_or_sql_payload() -> None:
+    from knowledge.jobs import _safe_compilation_error
+
+    assert _safe_compilation_error(ValueError("knowledge_source_has_no_document")) == (
+        "knowledge_source_has_no_document"
+    )
+    unsafe = _safe_compilation_error(RuntimeError("SELECT secret FROM document正文"))
+    assert unsafe == "knowledge_compilation_failed:RuntimeError"
+    assert "document" not in unsafe.lower()
+    assert "正文" not in unsafe
+
+
+def test_space_quality_scope_includes_only_merge_cases_inside_claim_scope() -> None:
+    from types import SimpleNamespace
+
+    from knowledge.lint import merge_case_ids_in_claim_scope
+
+    rows = [
+        SimpleNamespace(id="case-in", candidate_ids=["claim-a", "claim-b"]),
+        SimpleNamespace(id="case-cross", candidate_ids=["claim-a", "claim-x"]),
+        SimpleNamespace(id="case-empty", candidate_ids=[]),
+    ]
+
+    assert merge_case_ids_in_claim_scope(rows, {"claim-a", "claim-b"}) == {"case-in"}
+
+
+def test_merge_resolution_archives_pages_left_without_published_claims() -> None:
+    source = (ROOT / "knowledge/merge.py").read_text(encoding="utf-8")
+
+    assert "await db.flush()" in source.split("archived_page_ids", 1)[0]
+    assert 'page.status = "archived"' in source
+    assert 'relation.status = "archived"' in source
+    assert '"archived_page_ids": archived_page_ids' in source
+
+
+def test_withdrawn_sources_require_explicit_reactivation() -> None:
+    assert source_is_withdrawn(
+        status=KnowledgeStatus.DEPRECATED.value,
+        sync_status="current",
+        deleted_at=None,
+    )
+    assert source_is_withdrawn(
+        status=KnowledgeStatus.PUBLISHED.value,
+        sync_status="deleted",
+        deleted_at=None,
+    )
+    assert source_is_withdrawn(
+        status=KnowledgeStatus.PUBLISHED.value,
+        sync_status="current",
+        deleted_at=object(),
+    )
+    assert not source_is_withdrawn(
+        status=KnowledgeStatus.PUBLISHED.value,
+        sync_status="current",
+        deleted_at=None,
+    )
+
+
+def test_withdrawal_cannot_be_reversed_by_reconciliation_or_inflight_compile() -> None:
+    jobs = (ROOT / "knowledge/jobs.py").read_text(encoding="utf-8")
+    compiler = (ROOT / "knowledge/compiler.py").read_text(encoding="utf-8")
+    lifecycle = (ROOT / "knowledge/lifecycle.py").read_text(encoding="utf-8")
+
+    assert "source_is_withdrawn(" in jobs
+    assert '"reason": "source_withdrawn"' in jobs
+    assert ".with_for_update()" in jobs
+    assert "source_is_withdrawn(" in compiler
+    assert '"reason": "source_withdrawn"' in compiler
+    assert ".with_for_update()" in compiler
+    assert "await db.refresh(source, with_for_update=True)" in lifecycle
+    assert 'KnowledgeCompilationJob.status.in_(["pending", "running"])' in lifecycle
+    assert '"reason": "source_withdrawn"' in lifecycle
+
+
+def test_push_connector_is_not_marked_stale_without_periodic_events() -> None:
+    from knowledge.governance import connector_sync_is_stale
+
+    now = datetime(2026, 7, 27, 8, 0, tzinfo=UTC)
+    old_activity = now - timedelta(hours=2)
+    assert not connector_sync_is_stale(
+        connector_type="push",
+        status="active",
+        sync_interval_seconds=900,
+        last_sync_at=old_activity,
+        created_at=old_activity,
+        now=now,
+    )
+    assert connector_sync_is_stale(
+        connector_type="confluence",
+        status="active",
+        sync_interval_seconds=900,
+        last_sync_at=old_activity,
+        created_at=old_activity,
+        now=now,
+    )
+    assert not connector_sync_is_stale(
+        connector_type="confluence",
+        status="failed",
+        sync_interval_seconds=900,
+        last_sync_at=old_activity,
+        created_at=old_activity,
+        now=now,
+    )
+
+
+def test_governance_health_counts_merge_case_lint_in_the_same_space_scope() -> None:
+    governance = (ROOT / "knowledge/governance.py").read_text(encoding="utf-8")
+
+    assert "scoped_merge_case_ids = merge_case_ids_in_claim_scope" in governance
+    assert "| scoped_merge_case_ids" in governance
+    assert '"open_merge_cases": len(scoped_merge_case_ids)' in governance

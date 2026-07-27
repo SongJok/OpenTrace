@@ -5,10 +5,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from infra.storage.models import KnowledgeClaim, KnowledgeMergeCase
+from infra.storage.models import (
+    KnowledgeClaim,
+    KnowledgeMergeCase,
+    KnowledgePage,
+    KnowledgeRelation,
+)
 from knowledge.compiler import content_hash
 
 
@@ -87,6 +92,47 @@ async def resolve_merge_case(
             "merged_into_claim_id": keep_id,
         }
         archived.append(claim.id)
+    # 全局 AsyncSession 配置 autoflush=False；先持久化 Claim 状态再判断页面是否失去事实。
+    await db.flush()
+    archived_page_ids: list[str] = []
+    candidate_page_ids = {claim.page_id for claim in claims if claim.id != keep_id}
+    for page_id in candidate_page_ids:
+        published_claims = int(
+            await db.scalar(
+                select(func.count(KnowledgeClaim.id)).where(
+                    KnowledgeClaim.page_id == page_id,
+                    KnowledgeClaim.status == "published",
+                )
+            )
+            or 0
+        )
+        if published_claims:
+            continue
+        page = await db.get(KnowledgePage, page_id)
+        if page is None or page.status != "published":
+            continue
+        page.status = "archived"
+        page.page_metadata = {
+            **(page.page_metadata or {}),
+            "merge_case_id": case.id,
+            "merged_into_claim_id": keep_id,
+        }
+        archived_page_ids.append(page.id)
+    if archived_page_ids:
+        relations = list(
+            (
+                await db.execute(
+                    select(KnowledgeRelation).where(
+                        (KnowledgeRelation.source_page_id.in_(archived_page_ids))
+                        | (KnowledgeRelation.target_page_id.in_(archived_page_ids)),
+                        KnowledgeRelation.status == "published",
+                    )
+                )
+            ).scalars()
+        )
+        for relation in relations:
+            relation.status = "archived"
+
     case.status = "resolved"
     case.resolution = {**resolution, "resolved_via": "human_review", "kept_claim_id": keep_id}
     case.resolved_by = actor_id
@@ -97,4 +143,5 @@ async def resolve_merge_case(
         "status": case.status,
         "kept_claim_id": keep_id,
         "archived_claim_ids": archived,
+        "archived_page_ids": archived_page_ids,
     }

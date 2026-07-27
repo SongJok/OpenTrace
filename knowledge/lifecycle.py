@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.storage.models import (
     KnowledgeClaim,
+    KnowledgeCompilationJob,
     KnowledgePage,
     KnowledgeRelation,
     KnowledgeReviewTask,
@@ -287,15 +288,41 @@ async def withdraw_source(
     decided_by: str,
     reason: str,
 ) -> dict[str, str | bool]:
+    # 与编译器对同一来源串行化，避免撤回后被在途或补偿任务重新发布。
+    await db.refresh(source, with_for_update=True)
+    now = datetime.now(UTC)
     source.status = KnowledgeStatus.DEPRECATED.value
     source.sync_status = "deleted"
-    source.deleted_at = datetime.now(UTC)
+    source.deleted_at = now
     source.source_metadata = {
         **(source.source_metadata or {}),
         "withdrawn_by": decided_by,
         "withdraw_reason": reason,
         "withdrawn_at": source.deleted_at.isoformat(),
     }
+    active_jobs = list(
+        (
+            await db.execute(
+                select(KnowledgeCompilationJob)
+                .where(
+                    KnowledgeCompilationJob.source_id == source.id,
+                    KnowledgeCompilationJob.status.in_(["pending", "running"]),
+                )
+                .with_for_update()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for job in active_jobs:
+        job.status = "succeeded"
+        job.completed_at = now
+        job.error = None
+        job.result_metadata = {
+            **(job.result_metadata or {}),
+            "reason": "source_withdrawn",
+        }
+
     if source.active_version_id:
         version = await db.get(KnowledgeSourceVersion, source.active_version_id)
         if version is not None:

@@ -27,6 +27,18 @@ def _issue_key(code: str, resource_type: str, resource_id: str) -> str:
     return hashlib.sha256(f"{code}:{resource_type}:{resource_id}".encode()).hexdigest()[:48]
 
 
+def merge_case_ids_in_claim_scope(
+    merge_cases: list[KnowledgeMergeCase], claim_ids: set[str]
+) -> set[str]:
+    """返回候选事实全部属于当前治理范围的冲突资源 ID。"""
+
+    return {
+        row.id
+        for row in merge_cases
+        if row.candidate_ids and set(str(item) for item in row.candidate_ids).issubset(claim_ids)
+    }
+
+
 async def run_knowledge_lint(
     db: AsyncSession,
     *,
@@ -96,8 +108,6 @@ async def run_knowledge_lint(
             | {claim.id for claim in claims}
             | {relation.id for relation in relations}
         )
-        if scoped_resource_ids:
-            issue_conditions.append(KnowledgeLintIssue.resource_id.in_(scoped_resource_ids))
     chunk_ids = {row[0] for row in (await db.execute(select(DocumentChunk.id))).all()}
     chunk_lengths = {
         row[0]: len(row[1] or "")
@@ -196,25 +206,26 @@ async def run_knowledge_lint(
             )
         )
         if existing_case is None:
-            db.add(
-                KnowledgeMergeCase(
-                    id=str(uuid.uuid4()),
-                    owner_id=owner_id,
-                    tenant_id=tenant_id,
-                    workspace_id=workspace_id,
-                    entity_key=entity_key,
-                    conflict_type="duplicate_claim",
-                    candidate_ids=candidate_ids,
-                    resolution={},
-                )
+            existing_case = KnowledgeMergeCase(
+                id=str(uuid.uuid4()),
+                owner_id=owner_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                entity_key=entity_key,
+                conflict_type="duplicate_claim",
+                candidate_ids=candidate_ids,
+                resolution={},
             )
+            db.add(existing_case)
         findings.append(
             {
                 "code": "duplicate_claim_requires_merge",
                 "severity": "warning",
                 "resource_type": "knowledge_merge_case",
-                "resource_id": entity_key,
+                # LintIssue.resource_id 是 36 位资源主键，不能写入完整事实文本。
+                "resource_id": existing_case.id,
                 "message": "Multiple published claims share the same normalized text and require review.",
+                "details": {"candidate_count": len(candidate_ids)},
             }
         )
     for source in sources:
@@ -268,7 +279,7 @@ async def run_knowledge_lint(
                     resource_type=finding["resource_type"],
                     resource_id=finding["resource_id"],
                     message=finding["message"],
-                    details={},
+                    details=dict(finding.get("details") or {}),
                 )
             )
         else:
@@ -276,6 +287,23 @@ async def run_knowledge_lint(
             existing.resolved_at = None
             existing.message = finding["message"]
             existing.severity = finding["severity"]
+            existing.details = dict(finding.get("details") or {})
+
+    if scoped_resource_ids is not None:
+        merge_cases = list(
+            (
+                await db.execute(
+                    select(KnowledgeMergeCase).where(
+                        KnowledgeMergeCase.tenant_id == tenant_id,
+                        KnowledgeMergeCase.workspace_id == workspace_id,
+                    )
+                )
+            ).scalars()
+        )
+        scoped_resource_ids.update(
+            merge_case_ids_in_claim_scope(merge_cases, {claim.id for claim in claims})
+        )
+        issue_conditions.append(KnowledgeLintIssue.resource_id.in_(scoped_resource_ids))
 
     existing_issues = list(
         (

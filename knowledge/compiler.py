@@ -33,6 +33,7 @@ from knowledge.domain import (
     KnowledgeAuthority,
     KnowledgeStatus,
     KnowledgeType,
+    source_is_withdrawn,
     source_status_during_refresh,
 )
 from knowledge.rules import active_rule, active_rule_version, validate_compiled_payload
@@ -271,7 +272,8 @@ async def compile_document_knowledge(document_id: str, job_id: str | None = None
             await db.commit()
             return result
         except Exception:
-            await db.commit()
+            # flush/commit 失败后 Session 必须先回滚，避免 PendingRollbackError 掩盖根因。
+            await db.rollback()
             raise
 
 
@@ -292,13 +294,35 @@ async def compile_document_knowledge_in_session(
         document_metadata = {}
     job = await db.get(KnowledgeCompilationJob, job_id) if job_id else None
     source_result = await db.execute(
-        select(KnowledgeSource).where(
+        select(KnowledgeSource)
+        .where(
             KnowledgeSource.document_id == document.id,
             KnowledgeSource.tenant_id == document.tenant_id,
             KnowledgeSource.workspace_id == document.workspace_id,
         )
+        .with_for_update()
     )
     source = source_result.scalar_one_or_none()
+    if source is not None and source_is_withdrawn(
+        status=source.status,
+        sync_status=source.sync_status,
+        deleted_at=source.deleted_at,
+    ):
+        if job is not None:
+            job.status = "succeeded"
+            job.completed_at = datetime.now(UTC)
+            job.error = None
+            job.result_metadata = {
+                **(job.result_metadata or {}),
+                "document_id": document.id,
+                "reason": "source_withdrawn",
+            }
+        return {
+            "status": "skipped",
+            "reason": "source_withdrawn",
+            "document_id": document.id,
+            "source_id": source.id,
+        }
     if source is not None and source.content_hash == digest and source.active_version_id:
         active_version = await db.get(KnowledgeSourceVersion, source.active_version_id)
         if (
