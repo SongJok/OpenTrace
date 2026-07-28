@@ -40,7 +40,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - run: |
           helm lint deploy/helm/opentrace
           helm template opentrace deploy/helm/opentrace > /tmp/opentrace.yaml
