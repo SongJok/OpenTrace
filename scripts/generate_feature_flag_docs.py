@@ -13,7 +13,11 @@ DOC = ROOT / "docs" / "FEATURE_FLAG_REGISTRY.md"
 def main() -> int:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    from infra.config.flag_registry import KERNEL_FLAG_REGISTRY, validate_registry_governance
+    from infra.config.flag_registry import (
+        ENTERPRISE_CONTROL_REGISTRY,
+        KERNEL_FLAG_REGISTRY,
+        validate_registry_governance,
+    )
 
     errors = validate_registry_governance()
     if errors:
@@ -52,6 +56,22 @@ def main() -> int:
     rows.extend(
         [
             "",
+            "## 企业协议上线控制（自动生成）",
+            "",
+            "| Control | 默认 | 阶段 | Owner | 引入版本 | 退出条件 | 最晚删除版本 | 影响面 |",
+            "|---|---:|---|---|---|---|---|---|",
+        ]
+    )
+    for spec in ENTERPRISE_CONTROL_REGISTRY:
+        default = "true" if spec.default else "false"
+        rows.append(
+            f"| `{spec.name}` | {default} | {spec.phase} | {spec.owner} | "
+            f"{spec.introduced} | {spec.exit_criteria or '—'} | {spec.remove_by or '—'} | "
+            f"{spec.affects} |"
+        )
+    rows.extend(
+        [
+            "",
             "## 治理规则",
             "",
             "- 新能力优先加入现有 Profile，不新增布尔开关。",
@@ -62,7 +82,10 @@ def main() -> int:
         ]
     )
     DOC.write_text("\n".join(rows), encoding="utf-8")
-    print(f"OK: generated {DOC} ({len(KERNEL_FLAG_REGISTRY)} public flags)")
+    print(
+        f"OK: generated {DOC} ({len(KERNEL_FLAG_REGISTRY)} public flags, "
+        f"{len(ENTERPRISE_CONTROL_REGISTRY)} enterprise controls)"
+    )
     return 0
 
 

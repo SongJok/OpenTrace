@@ -236,6 +236,12 @@ class AppSettings(BaseSettings):
     web_fetch_max_response_bytes: int = 1_000_000
     connector_allowed_redirect_origins: str = "http://localhost:14108,http://127.0.0.1:14108"
     connector_oauth_state_ttl_seconds: int = 600
+    github_connector_client_id: str = ""
+    github_connector_client_secret: str = ""
+    slack_connector_client_id: str = ""
+    slack_connector_client_secret: str = ""
+    confluence_connector_client_id: str = ""
+    confluence_connector_client_secret: str = ""
 
     # Weather
     weather_api_key: str = ""
@@ -402,6 +408,11 @@ class AppSettings(BaseSettings):
     kernel_agent_bus_dlq_stream: str = "opentrace:agent:stream:dlq"
     response_worker_poll_seconds: float = 2.0
     response_worker_batch_size: int = 20
+    response_worker_concurrency: int = 4
+    response_worker_max_queue_depth: int = 1000
+    response_worker_tenant_concurrency: int = 2
+    worker_role: Literal["all", "responses", "agents", "knowledge", "scheduler"] = "all"
+    worker_metrics_port: int = 9464
     alert_scheduler_poll_seconds: int = 10
     alert_scheduler_retry_seconds: int = 60
     # When True, tenant daily turn/cost quotas use Redis counters (multi-replica safe)
@@ -411,6 +422,23 @@ class AppSettings(BaseSettings):
     enterprise_billing_persist_enabled: bool = False
     enterprise_billing_prompt_per_million: float = 0.15
     enterprise_billing_completion_per_million: float = 0.60
+    enterprise_default_retention_days: int = 365
+    enterprise_deletion_grace_days: int = 7
+    data_deletion_poll_seconds: int = 60
+    enterprise_token_revocation_enabled: bool = True
+
+    # 联邦身份。SAML 由企业 IdP/OIDC bridge 转换为标准 OIDC JWT，应用只维护一种验证面。
+    identity_oidc_enabled: bool = False
+    identity_oidc_issuer: str = ""
+    identity_oidc_audience: str = ""
+    identity_oidc_jwks_url: str = ""
+    identity_oidc_algorithms: str = "RS256,ES256"
+
+    # 互操作协议默认关闭；启用后仍必须复用现有 ACL、审批与工具幂等账本。
+    mcp_client_enabled: bool = False
+    mcp_server_enabled: bool = False
+    a2a_protocol_enabled: bool = False
+    a2a_service_secret: str = ""
 
     # Cognition lexicon
     cognition_lexicon_json: str = ""
@@ -531,6 +559,14 @@ class AppSettings(BaseSettings):
     attachment_upload_enabled: bool = True
     attachment_max_size_mb: int = 20
     attachment_storage_path: str = "/tmp/opentrace_attachments"
+    object_storage_backend: Literal["database", "local", "s3"] = "database"
+    object_storage_local_path: str = "/var/lib/opentrace/objects"
+    object_storage_endpoint: str = ""
+    object_storage_bucket: str = ""
+    object_storage_region: str = "us-east-1"
+    object_storage_access_key: str = ""
+    object_storage_secret_key: str = ""
+    object_storage_path_style: bool = True
     attachment_max_chars: int = 4000
     multimodal_attachment_enabled: bool = True
     multimodal_inline_max_mb: int = 7
@@ -768,6 +804,33 @@ class Settings(
             raise ValueError(
                 f"{self.app_env} requires WEB_FETCH_ALLOWED_DOMAINS when web fetch is enabled"
             )
+        if self.a2a_protocol_enabled and len(self.a2a_service_secret) < 32:
+            raise ValueError(
+                "A2A_PROTOCOL_ENABLED requires A2A_SERVICE_SECRET of at least 32 chars"
+            )
+        if self.identity_oidc_enabled:
+            oidc_required = {
+                "IDENTITY_OIDC_ISSUER": self.identity_oidc_issuer,
+                "IDENTITY_OIDC_AUDIENCE": self.identity_oidc_audience,
+                "IDENTITY_OIDC_JWKS_URL": self.identity_oidc_jwks_url,
+            }
+            oidc_missing = [name for name, value in oidc_required.items() if not str(value).strip()]
+            if oidc_missing:
+                raise ValueError(f"OIDC enabled but missing: {', '.join(oidc_missing)}")
+        if self.object_storage_backend == "database":
+            raise ValueError(f"{self.app_env} forbids database binary attachment storage")
+        if self.object_storage_backend == "s3":
+            storage_required = {
+                "OBJECT_STORAGE_ENDPOINT": self.object_storage_endpoint,
+                "OBJECT_STORAGE_BUCKET": self.object_storage_bucket,
+                "OBJECT_STORAGE_ACCESS_KEY": self.object_storage_access_key,
+                "OBJECT_STORAGE_SECRET_KEY": self.object_storage_secret_key,
+            }
+            storage_missing = [
+                name for name, value in storage_required.items() if not str(value).strip()
+            ]
+            if storage_missing:
+                raise ValueError(f"S3 object storage missing: {', '.join(storage_missing)}")
         return self
 
 

@@ -73,6 +73,10 @@ if [ "$MODE" = "--full" ]; then
   bash scripts/verify_all.sh
 fi
 
+echo "▸ 企业边界与 Golden Dataset"
+python scripts/check_enterprise_boundaries.py
+python scripts/run_enterprise_evals.py --minimum-pass-rate 1.0
+
 echo "▸ API 健康检查"
 if ! curl -sf "$BASE_URL/api/v1/health" >/dev/null; then
   echo "✗ 健康检查失败：$BASE_URL/api/v1/health"

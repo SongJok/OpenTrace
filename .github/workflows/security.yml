@@ -45,7 +45,7 @@ jobs:
           pip-audit --strict --disable-pip -r requirements.lock
       - name: Frontend dependency vulnerability scan
         working-directory: frontend
-        run: npm audit --audit-level=high
+        run: npm run audit:security
 
   sbom:
     runs-on: ubuntu-latest

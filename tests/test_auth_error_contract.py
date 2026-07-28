@@ -37,8 +37,12 @@ async def test_unknown_login_returns_unauthorized_instead_of_internal_error() ->
 
 @pytest.mark.asyncio
 async def test_invalid_bearer_token_returns_unauthorized() -> None:
+    from starlette.requests import Request
+
+    request = Request({"type": "http", "headers": [], "method": "GET", "path": "/"})
     with pytest.raises(AppException) as raised:
         await get_current_user(
+            request=request,
             token="not-a-jwt",
             db=_FakeSession(),  # type: ignore[arg-type]
         )

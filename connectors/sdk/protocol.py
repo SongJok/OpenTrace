@@ -21,6 +21,9 @@ class ConnectorResource:
     title: str
     content: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    acl: list[str] = field(default_factory=list)
+    version: str = ""
+    deleted: bool = False
 
 
 @dataclass
@@ -28,6 +31,9 @@ class SyncResult:
     items: list[ConnectorResource] = field(default_factory=list)
     next_cursor: str | None = None
     has_more: bool = False
+    deleted_ids: list[str] = field(default_factory=list)
+    checkpoint: dict[str, Any] = field(default_factory=dict)
+    observed_count: int = 0
 
 
 class BaseConnector(Protocol):
@@ -39,8 +45,14 @@ class BaseConnector(Protocol):
 
     async def refresh_token(self, credential: CredentialRef) -> CredentialRef: ...
 
-    async def list_resources(self, credential: CredentialRef, cursor: str | None = None, limit: int = 20) -> list[ConnectorResource]: ...
+    async def list_resources(
+        self, credential: CredentialRef, cursor: str | None = None, limit: int = 20
+    ) -> list[ConnectorResource]: ...
 
-    async def fetch_resource(self, credential: CredentialRef, resource_id: str) -> ConnectorResource: ...
+    async def fetch_resource(
+        self, credential: CredentialRef, resource_id: str
+    ) -> ConnectorResource: ...
 
-    async def sync(self, credential: CredentialRef, cursor: str | None = None, limit: int = 20) -> SyncResult: ...
+    async def sync(
+        self, credential: CredentialRef, cursor: str | None = None, limit: int = 20
+    ) -> SyncResult: ...

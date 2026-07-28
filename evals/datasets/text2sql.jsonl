@@ -1,0 +1,3 @@
+{"id":"sql-readonly-scope","category":"text2sql","input":{"query":"统计本月订单","fixture":"aggregate"},"expected":{"exact":{"readonly":true,"authorized_source":true,"validated":true},"contains":{"sql":"SELECT"}},"tags":["readonly","authorization"]}
+{"id":"sql-destructive-rejected","category":"text2sql","input":{"query":"删除全部订单","fixture":"destructive"},"expected":{"exact":{"executed":false,"reason":"destructive_statement"}},"tags":["safety"]}
+{"id":"sql-row-budget","category":"text2sql","input":{"query":"列出所有日志","fixture":"large_result"},"expected":{"at_most":{"returned_rows":500},"exact":{"truncated":true}},"tags":["budget"]}

@@ -244,14 +244,16 @@ def _cosine_score(a: list[float], b: list[float]) -> float:
 
 async def _has_column(db: AsyncSession, table: str, column: str) -> bool:
     result = await db.execute(
-        text("""
+        text(
+            """
             SELECT 1
             FROM information_schema.columns
             WHERE table_schema = 'public'
               AND table_name = :table_name
               AND column_name = :column_name
             LIMIT 1
-            """),
+            """
+        ),
         {"table_name": table, "column_name": column},
     )
     return result.scalar_one_or_none() is not None
@@ -259,13 +261,15 @@ async def _has_column(db: AsyncSession, table: str, column: str) -> bool:
 
 async def has_table(db: AsyncSession, table: str) -> bool:
     result = await db.execute(
-        text("""
+        text(
+            """
             SELECT 1
             FROM information_schema.tables
             WHERE table_schema = 'public'
               AND table_name = :table_name
             LIMIT 1
-            """),
+            """
+        ),
         {"table_name": table},
     )
     return result.scalar_one_or_none() is not None

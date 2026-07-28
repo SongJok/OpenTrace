@@ -1,0 +1,21 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "opentrace.fullname" . }}-api
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: {{ include "opentrace.name" . }}, app.kubernetes.io/component: api}
+{{- range $role, $pool := .Values.workerPools }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "opentrace.fullname" $ }}-worker-{{ $role }}
+spec:
+  minAvailable: {{ $.Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: {{ include "opentrace.name" $ }}, app.kubernetes.io/component: worker-{{ $role }}}
+{{- end }}
+{{- end }}

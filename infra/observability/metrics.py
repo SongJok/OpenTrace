@@ -1,13 +1,15 @@
 """
 Prometheus metrics — gracefully degrades if prometheus_client not installed.
 """
+
 from __future__ import annotations
 
 from typing import Any
 
 _PROM_AVAILABLE = False
 try:
-    from prometheus_client import Counter, Gauge, Histogram, REGISTRY
+    from prometheus_client import Counter, Gauge, Histogram
+
     _PROM_AVAILABLE = True
 except ImportError:
     pass
@@ -15,15 +17,20 @@ except ImportError:
 
 class _Noop:
     """No-op metric object — ignores all calls."""
-    def labels(self, **kwargs) -> "_Noop":
+
+    def labels(self, **kwargs) -> _Noop:
         return self
+
     def inc(self, amount: float = 1) -> None:
         pass
+
     def dec(self, amount: float = 1) -> None:
         pass
+
     def observe(self, amount: float) -> None:
         pass
-    def __call__(self, *args, **kwargs) -> "_Noop":
+
+    def __call__(self, *args, **kwargs) -> _Noop:
         return self
 
 
@@ -60,8 +67,10 @@ HTTP_REQUESTS_TOTAL = _counter(
     "opentrace_http_requests_total", "Total HTTP requests", ["method", "endpoint", "status"]
 )
 HTTP_REQUEST_DURATION = _histogram(
-    "opentrace_http_request_duration_seconds", "HTTP latency",
-    ["method", "endpoint"], [0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+    "opentrace_http_request_duration_seconds",
+    "HTTP latency",
+    ["method", "endpoint"],
+    [0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0],
 )
 LLM_CALLS_TOTAL = _counter(
     "opentrace_llm_calls_total", "Total LLM calls", ["provider", "model", "status"]
@@ -70,25 +79,23 @@ LLM_TOKENS_USED = _counter(
     "opentrace_llm_tokens_total", "Total tokens", ["provider", "model", "type"]
 )
 LLM_LATENCY = _histogram(
-    "opentrace_llm_latency_seconds", "LLM latency",
-    ["provider", "model"], [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0]
+    "opentrace_llm_latency_seconds",
+    "LLM latency",
+    ["provider", "model"],
+    [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0],
 )
-AGENT_TASKS_TOTAL = _counter(
-    "opentrace_agent_tasks_total", "Agent tasks", ["agent_type", "status"]
-)
+AGENT_TASKS_TOTAL = _counter("opentrace_agent_tasks_total", "Agent tasks", ["agent_type", "status"])
 AGENT_STEPS = _histogram(
     "opentrace_agent_steps", "Steps per agent", ["agent_type"], [1, 2, 4, 8, 16, 32]
 )
 ACTIVE_SESSIONS = _gauge("opentrace_active_sessions", "Active sessions")
-MEMORY_HITS = _counter(
-    "opentrace_memory_hits_total", "Memory hits", ["store_type"]
-)
-DAG_EXECUTIONS_TOTAL = _counter(
-    "opentrace_dag_executions_total", "DAG executions", ["status"]
-)
+MEMORY_HITS = _counter("opentrace_memory_hits_total", "Memory hits", ["store_type"])
+DAG_EXECUTIONS_TOTAL = _counter("opentrace_dag_executions_total", "DAG executions", ["status"])
 DAG_TASK_DURATION = _histogram(
-    "opentrace_dag_task_duration_seconds", "DAG task duration",
-    ["task_type"], [0.01, 0.1, 0.5, 1.0, 5.0, 30.0]
+    "opentrace_dag_task_duration_seconds",
+    "DAG task duration",
+    ["task_type"],
+    [0.01, 0.1, 0.5, 1.0, 5.0, 30.0],
 )
 KERNEL_STEP_TOTAL = _counter(
     "opentrace_kernel_step_total", "Kernel loop step executions", ["step_type", "status"]
@@ -96,23 +103,28 @@ KERNEL_STEP_TOTAL = _counter(
 
 # Semantic parsing cache metrics
 SEMANTIC_PARSE_CACHE_TOTAL = _counter(
-    "opentrace_semantic_parse_cache_total", "Semantic parse cache lookups", ["result"]  # result: hit/miss/error
+    "opentrace_semantic_parse_cache_total",
+    "Semantic parse cache lookups",
+    ["result"],  # result: hit/miss/error
 )
 SEMANTIC_PARSE_CACHE_LATENCY = _histogram(
-    "opentrace_semantic_parse_cache_latency_seconds", "Cache lookup latency",
-    [], [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5]
+    "opentrace_semantic_parse_cache_latency_seconds",
+    "Cache lookup latency",
+    [],
+    [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5],
 )
 
 # JOIN path inference metrics
 JOIN_PATH_INFERENCE_TOTAL = _counter(
-    "opentrace_join_path_inference_total", "JOIN path inference attempts", ["method"]  # method: fk/heuristic/llm
+    "opentrace_join_path_inference_total",
+    "JOIN path inference attempts",
+    ["method"],  # method: fk/heuristic/llm
 )
 JOIN_PATH_INFERENCE_SUCCESS = _counter(
     "opentrace_join_path_inference_success", "Successful JOIN path inferences", ["method"]
 )
 JOIN_PATH_DEPTH = _histogram(
-    "opentrace_join_path_depth", "JOIN path depth distribution",
-    [], [1, 2, 3, 4, 5, 10]
+    "opentrace_join_path_depth", "JOIN path depth distribution", [], [1, 2, 3, 4, 5, 10]
 )
 
 ENTERPRISE_TURNS_TOTAL = _counter(
@@ -138,4 +150,56 @@ CAPABILITY_SUCCESS_RATE = _gauge(
     "opentrace_capability_success_rate",
     "Rolling capability success rate from Capability OS",
     ["capability_type"],
+)
+
+# Responses v2 durable execution SLI metrics. Labels intentionally avoid user/request IDs.
+RESPONSE_CREATED_TOTAL = _counter(
+    "opentrace_response_created_total",
+    "Responses accepted by the durable API",
+    ["mode"],
+)
+RESPONSE_COMPLETED_TOTAL = _counter(
+    "opentrace_response_completed_total",
+    "Terminal durable responses",
+    ["status", "attempt_bucket"],
+)
+RESPONSE_END_TO_END_DURATION = _histogram(
+    "opentrace_response_end_to_end_duration_seconds",
+    "Duration from response creation to terminal persistence",
+    ["status"],
+    [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300, 600],
+)
+RESPONSE_FIRST_EVENT_DURATION = _histogram(
+    "opentrace_response_first_event_duration_seconds",
+    "Duration from response creation to in-progress event",
+    [],
+    [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
+)
+RESPONSE_QUEUE_DEPTH = _gauge(
+    "opentrace_response_queue_depth",
+    "Queued or recoverable responses observed by a worker",
+)
+RESPONSE_OUTBOX_PENDING = _gauge(
+    "opentrace_response_outbox_pending",
+    "Pending response outbox rows",
+)
+RESPONSE_LEASE_RECOVERY_TOTAL = _counter(
+    "opentrace_response_lease_recovery_total",
+    "Responses reclaimed after an expired database lease",
+    [],
+)
+RESPONSE_TOOL_EXECUTIONS_TOTAL = _counter(
+    "opentrace_response_tool_executions_total",
+    "Durable tool executions",
+    ["tool_name", "status", "side_effect_level"],
+)
+RESPONSE_RECONCILIATION_TOTAL = _counter(
+    "opentrace_response_reconciliation_total",
+    "Unknown side-effect results requiring reconciliation",
+    ["tool_name"],
+)
+WORKER_ITERATION_FAILURES_TOTAL = _counter(
+    "opentrace_worker_iteration_failures_total",
+    "Worker loop failures",
+    ["worker_type"],
 )

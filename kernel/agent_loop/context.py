@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 from dataclasses import dataclass, field
@@ -10,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.config.settings import settings
+from infra.observability.tracer import traced_async
 from infra.security.resource_scope import accessible_data_sources_statement
 from infra.storage.models import (
     AssistantProfile,
@@ -24,6 +26,7 @@ from infra.storage.models import (
     UserMemory,
     UserMemorySettings,
 )
+from infra.storage.object_store import get_object_store
 from kernel.agent_loop.prompt import PLATFORM_PROMPT, render_scope_prompt
 from kernel.token_counter import get_token_counter
 from memory.constitution import (
@@ -75,6 +78,7 @@ class ContextAssembler:
         self.output_reserve_tokens = reserve
         self.token_counter = get_token_counter()
 
+    @traced_async("agent_loop.context_assemble")
     async def assemble(
         self,
         db: AsyncSession,
@@ -253,7 +257,17 @@ class ContextAssembler:
                 blocks: list[str] = []
                 image_budget = 12_000_000
                 media_budget = max(1, int(settings.multimodal_inline_max_mb)) * 1024 * 1024 * 4 // 3
+                object_store = get_object_store()
                 for attachment in ordered:
+                    image_base64 = attachment.image_base64
+                    media_base64 = attachment.media_base64
+                    if attachment.object_key and object_store is not None and attachment.media_kind:
+                        raw_object = await object_store.get(attachment.object_key)
+                        encoded_object = base64.b64encode(raw_object).decode("ascii")
+                        if attachment.media_kind == "image":
+                            image_base64 = encoded_object
+                        else:
+                            media_base64 = encoded_object
                     excerpt = (attachment.content_text or attachment.content_summary or "").strip()[
                         : max(1, int(settings.attachment_max_chars))
                     ]
@@ -261,58 +275,51 @@ class ContextAssembler:
                         f"[附件 {attachment.id}: {attachment.filename}]\n"
                         + (excerpt or "该附件没有可提取的文本；如为图片，请使用视觉能力。")
                     )
-                    if (
-                        attachment.image_base64
-                        and attachment.image_mime
-                        and len(attachment.image_base64) <= image_budget
-                    ):
+                    if image_base64 and attachment.image_mime and len(image_base64) <= image_budget:
                         attachment_parts.append(
                             {
                                 "type": "input_image",
                                 "image_url": (
-                                    f"data:{attachment.image_mime};base64,"
-                                    f"{attachment.image_base64}"
+                                    f"data:{attachment.image_mime};base64," f"{image_base64}"
                                 ),
                             }
                         )
-                        image_budget -= len(attachment.image_base64)
+                        image_budget -= len(image_base64)
                     elif (
-                        attachment.media_base64
+                        media_base64
                         and attachment.media_mime
                         and attachment.media_kind == "audio"
-                        and len(attachment.media_base64) <= media_budget
+                        and len(media_base64) <= media_budget
                     ):
                         attachment_parts.append(
                             {
                                 "type": "input_audio",
                                 "input_audio": {
                                     "data": (
-                                        f"data:{attachment.media_mime};base64,"
-                                        f"{attachment.media_base64}"
+                                        f"data:{attachment.media_mime};base64," f"{media_base64}"
                                     ),
                                     "format": attachment.file_extension or "wav",
                                 },
                             }
                         )
-                        media_budget -= len(attachment.media_base64)
+                        media_budget -= len(media_base64)
                     elif (
-                        attachment.media_base64
+                        media_base64
                         and attachment.media_mime
                         and attachment.media_kind == "video"
-                        and len(attachment.media_base64) <= media_budget
+                        and len(media_base64) <= media_budget
                     ):
                         attachment_parts.append(
                             {
                                 "type": "input_video",
                                 "video_url": {
                                     "url": (
-                                        f"data:{attachment.media_mime};base64,"
-                                        f"{attachment.media_base64}"
+                                        f"data:{attachment.media_mime};base64," f"{media_base64}"
                                     )
                                 },
                             }
                         )
-                        media_budget -= len(attachment.media_base64)
+                        media_budget -= len(media_base64)
                 attachment_context = "\n\n".join(blocks)
                 system_blocks.append(
                     "当前回合上传附件的内容已经完整注入下方上下文。应直接根据这些内容回答；"

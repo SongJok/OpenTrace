@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -22,6 +21,7 @@ def test_staging_profile_forces_v3_strict_flags():
         app_secret_key="test-app-secret",
         jwt_secret="test-jwt-secret",
         data_secret_key="test-data-secret",
+        object_storage_backend="local",
     )
     assert s.kernel_agent_runtime_v3_strict is True
     assert s.kernel_unified_evidence_strict is True

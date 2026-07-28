@@ -30,6 +30,7 @@ from infra.storage.models import (
     ResponseToolExecution,
     User,
 )
+from infra.storage.object_store import attachment_object_key, get_object_store
 
 router = APIRouter()
 
@@ -120,6 +121,7 @@ def _attachment_out(row: Attachment) -> dict:
         "ingest_status": row.ingest_status,
         "promoted_document_id": row.promoted_document_id,
         "media_kind": row.media_kind,
+        "storage_backend": row.storage_backend,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
@@ -152,7 +154,7 @@ async def upload_response_file(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    await _owned_session(db, session_id=session_id, user=current_user, request=request)
+    session = await _owned_session(db, session_id=session_id, user=current_user, request=request)
     raw = await file.read()
     max_bytes = max(1, int(settings.attachment_max_size_mb)) * 1024 * 1024
     if not raw:
@@ -223,10 +225,30 @@ async def upload_response_file(
     media_kind = "image" if is_image else "audio" if is_audio else "video" if is_video else None
     media_label = {"image": "图片", "audio": "音频", "video": "视频"}.get(media_kind or "", "文件")
     summary = content_text[:512] if content_text else f"{media_label}附件：{filename}"
+    object_store = get_object_store()
+    object_key = None
+    object_etag = None
+    storage_backend = "database"
+    if object_store is not None:
+        if duplicate and duplicate.object_key:
+            object_key = duplicate.object_key
+            object_etag = duplicate.object_etag
+            storage_backend = duplicate.storage_backend
+        else:
+            object_key = attachment_object_key(
+                tenant_id=session.tenant_id,
+                workspace_id=session.workspace_id,
+                content_hash=content_hash,
+            )
+            object_ref = await object_store.put(object_key, raw, mime_type)
+            object_etag = object_ref.etag
+            storage_backend = object_ref.backend
     row = Attachment(
         id=str(uuid.uuid4()),
         session_id=session_id,
         user_id=current_user.id,
+        tenant_id=session.tenant_id,
+        workspace_id=session.workspace_id,
         filename=filename,
         file_size=len(raw),
         mime_type=mime_type,
@@ -235,11 +257,20 @@ async def upload_response_file(
         duplicate_of=duplicate.id if duplicate else None,
         content_text=content_text[: max(1, int(settings.attachment_max_chars)) * 8] or None,
         content_summary=summary,
-        image_base64=base64.b64encode(raw).decode("ascii") if is_image else None,
+        image_base64=(
+            base64.b64encode(raw).decode("ascii") if is_image and object_store is None else None
+        ),
         image_mime=mime_type if is_image else None,
-        media_base64=(base64.b64encode(raw).decode("ascii") if is_audio or is_video else None),
+        media_base64=(
+            base64.b64encode(raw).decode("ascii")
+            if (is_audio or is_video) and object_store is None
+            else None
+        ),
         media_mime=mime_type if is_audio or is_video else None,
         media_kind=media_kind,
+        storage_backend=storage_backend,
+        object_key=object_key,
+        object_etag=object_etag,
         message_id=message_id,
         status="active",
         scope="session",

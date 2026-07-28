@@ -170,6 +170,7 @@ def test_managed_environments_force_shadow_learning_and_disable_dynamic_skills()
         app_secret_key="app-secret",
         jwt_secret="jwt-secret",
         data_secret_key="data-secret",
+        object_storage_backend="local",
         kernel_agent_learning_auto_apply=True,
         skills_git_install_enabled=True,
         skills_local_create_enabled=True,

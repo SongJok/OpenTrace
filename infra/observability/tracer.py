@@ -1,11 +1,12 @@
 """
 OpenTelemetry bootstrap — fully optional, gracefully degrades if not installed.
 """
+
 from __future__ import annotations
 
+import functools
 import logging
-from contextlib import contextmanager
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +15,9 @@ try:
     from opentelemetry import trace as _ot_trace
     from opentelemetry.sdk.resources import SERVICE_NAME, Resource
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
     from opentelemetry.sdk.trace.sampling import ALWAYS_ON, ParentBased
+
     _OTEL_AVAILABLE = True
 except ImportError:
     pass
@@ -29,8 +31,10 @@ _provider: Any = None
 class _NoopSpan:
     def set_attribute(self, key: str, value: Any) -> None:
         pass
+
     def __enter__(self):
         return self
+
     def __exit__(self, *args):
         pass
 
@@ -57,6 +61,7 @@ def setup_tracing(
     if enabled:
         try:
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+
             exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
             provider.add_span_processor(BatchSpanProcessor(exporter))
             logger.info("OTLP tracing enabled → %s", otlp_endpoint)
@@ -75,6 +80,7 @@ def get_tracer(name: str) -> Any:
         return _NoopTracer()
     try:
         from opentelemetry import trace
+
         return trace.get_tracer(name)
     except Exception:
         return _NoopTracer()
@@ -85,6 +91,26 @@ def get_current_span() -> Any:
         return _NoopSpan()
     try:
         from opentelemetry import trace
+
         return trace.get_current_span()
     except Exception:
         return _NoopSpan()
+
+
+def traced_async(span_name: str):
+    """为异步边界创建 OTel span；无 SDK 时保持零开销兼容。"""
+
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapped(*args, **kwargs):
+            with get_tracer(func.__module__).start_as_current_span(span_name) as span:
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as exc:
+                    if hasattr(span, "record_exception"):
+                        span.record_exception(exc)
+                    raise
+
+        return wrapped
+
+    return decorator

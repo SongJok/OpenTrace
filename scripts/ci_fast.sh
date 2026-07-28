@@ -9,6 +9,10 @@ QUALITY_PATHS=(
   gateway/api_gateway/routers/responses.py
   gateway/api_gateway/routers/auth.py
   connectors/security.py
+  connectors/sdk/protocol.py
+  connectors/builtin/github_connector.py
+  connectors/builtin/slack_connector.py
+  connectors/builtin/confluence_connector.py
   execution/data/db_router.py
   execution/data/sql_executor.py
   infra/responses
@@ -45,6 +49,33 @@ QUALITY_PATHS=(
   tests/test_enterprise_workbench.py
   tests/test_enterprise_directory_and_operations.py
   tests/test_p0_engineering_baseline.py
+  evals
+  kernel/interoperability
+  infra/reliability
+  infra/observability/tracer.py
+  infra/security/identity.py
+  infra/storage/object_store.py
+  services/data_governance.py
+  gateway/api_gateway/routers/data_governance.py
+  gateway/api_gateway/routers/interoperability.py
+  alembic/versions/r0004_enterprise_runtime_governance.py
+  scripts/check_enterprise_boundaries.py
+  scripts/run_enterprise_evals.py
+  scripts/load_responses.py
+  scripts/migrate_attachment_objects.py
+  scripts/verify_tenant_rls_postgres.py
+  tests/test_enterprise_evaluation_contract.py
+  tests/test_enterprise_slo_contract.py
+  tests/test_enterprise_deployment_contract.py
+  tests/test_enterprise_resilience_contract.py
+  tests/test_enterprise_governance_contract.py
+  tests/test_enterprise_object_storage_contract.py
+  tests/test_enterprise_identity_contract.py
+  tests/test_enterprise_interoperability_contract.py
+  tests/test_enterprise_protocol_server_contract.py
+  tests/test_enterprise_refactoring_contract.py
+  tests/test_enterprise_worker_metrics_contract.py
+  tests/test_enterprise_trace_contract.py
 )
 
 backend_gate() {
@@ -63,7 +94,16 @@ backend_gate() {
     scripts/check_architecture_manifest.py scripts/verify_enterprise_knowledge_postgres.py \
     scripts/verify_durable_knowledge_sync_postgres.py \
     scripts/verify_enterprise_directory_postgres.py \
-    scripts/check_migration_policy.py scripts/create_migration.py scripts/freeze_migration.py
+    scripts/check_migration_policy.py scripts/create_migration.py scripts/freeze_migration.py \
+    evals kernel/interoperability infra/reliability infra/security/identity.py \
+    infra/storage/object_store.py services/data_governance.py \
+    gateway/api_gateway/routers/data_governance.py \
+    gateway/api_gateway/routers/interoperability.py scripts/check_enterprise_boundaries.py \
+    scripts/run_enterprise_evals.py scripts/load_responses.py \
+    scripts/migrate_attachment_objects.py scripts/verify_tenant_rls_postgres.py
+
+  "$PYTHON_BIN" scripts/check_enterprise_boundaries.py
+  "$PYTHON_BIN" scripts/run_enterprise_evals.py --minimum-pass-rate 1.0
 
   local env_before docs_before env_after docs_after
   env_before="$(shasum -a 256 .env.example)"
@@ -93,7 +133,7 @@ backend_gate() {
 }
 
 frontend_gate() {
-  (cd frontend && npm ci && npm test -- --run && npm run build)
+  (cd frontend && npm ci && npm run audit:security && npm test -- --run && npm run build)
 }
 
 case "$MODE" in

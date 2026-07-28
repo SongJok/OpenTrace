@@ -67,6 +67,7 @@ services:
       - .env
     volumes:
       - skills_data:/app/skills/installed
+      - object_data:/var/lib/opentrace/objects
     extra_hosts:
       - "host.docker.internal:host-gateway"
     sysctls:
@@ -136,6 +137,7 @@ services:
       - .env
     volumes:
       - skills_data:/app/skills/installed
+      - object_data:/var/lib/opentrace/objects
     extra_hosts:
       - "host.docker.internal:host-gateway"
     sysctls:
@@ -154,6 +156,8 @@ services:
       https_proxy: ${https_proxy:-}
       all_proxy: ${all_proxy:-}
     command: ["python", "-m", "agents.worker"]
+    expose:
+      - "9464"
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import sys; data=open('/proc/1/cmdline','rb').read(); sys.exit(0 if b'agents.worker' in data else 1)\""]
       interval: 30s
@@ -198,6 +202,7 @@ services:
       - "14190:9090"
     volumes:
       - ./deploy/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/prometheus-rules.yml:/etc/prometheus/prometheus-rules.yml:ro
     profiles:
       - observability
 
@@ -215,3 +220,4 @@ volumes:
   postgres_data:
   redis_data:
   skills_data:
+  object_data:

@@ -34,7 +34,9 @@ class TestRuntimeGatewaySlimContract:
 
         assert "get_runtime_turn_dispatcher" in inspect.getsource(rg.RuntimeGateway.run)
         assert "dispatch_runtime" in inspect.getsource(
-            __import__("kernel.runtime.runtime_turn_dispatcher", fromlist=["RuntimeTurnDispatcher"]).RuntimeTurnDispatcher.run_turn
+            __import__(
+                "kernel.runtime.runtime_turn_dispatcher", fromlist=["RuntimeTurnDispatcher"]
+            ).RuntimeTurnDispatcher.run_turn
         )
 
     def test_gateway_delegates_stream(self):
@@ -112,7 +114,9 @@ class TestAgentRuntimeV3Alignment:
     def test_executor_attaches_evidence(self):
         from kernel.agent_runtime import executor as ex_mod
 
-        assert "attach_evidence_objects" in inspect.getsource(ex_mod.AgentRuntimeExecutor.execute_task)
+        assert "attach_evidence_objects" in inspect.getsource(
+            ex_mod.AgentRuntimeExecutor.execute_task
+        )
 
     def test_staging_profile_forces_strict_flags(self):
         from infra.config.settings import Settings
@@ -126,6 +130,7 @@ class TestAgentRuntimeV3Alignment:
             app_secret_key="test-app-secret",
             jwt_secret="test-jwt-secret",
             data_secret_key="test-data-secret",
+            object_storage_backend="local",
         )
         assert s.kernel_agent_runtime_v3_strict is True
         assert s.kernel_unified_evidence_strict is True
@@ -158,6 +163,7 @@ class TestDataIntelligenceInRepo:
 
         assert callable(run_data_intelligence_turn)
 
+
 class TestGoalEvidenceTypedField:
     def test_runtime_artifact_binding_field(self):
         from kernel.protocol.runtime_contract import GoalEvidenceBinding, RuntimeArtifact
@@ -177,7 +183,11 @@ class TestGoalDrivenPlanning:
                 "intent_category": "data_query",
                 "goals": [
                     {"goal_id": "r1", "parent_id": None},
-                    {"goal_id": "r1:sub:1", "parent_id": "r1", "metadata": {"domain": "web_search"}},
+                    {
+                        "goal_id": "r1:sub:1",
+                        "parent_id": "r1",
+                        "metadata": {"domain": "web_search"},
+                    },
                 ],
             }
         )
@@ -208,9 +218,7 @@ class TestRegistryDispatchGovernance:
         class _Ctx:
             metadata = {}
 
-        gate = evaluate_registry_dispatch(
-            "data_intelligence", request=_Req(), ctx=_Ctx()
-        )
+        gate = evaluate_registry_dispatch("data_intelligence", request=_Req(), ctx=_Ctx())
         assert gate.allowed is False
         assert any("data" in v for v in gate.violations)
 
@@ -301,27 +309,19 @@ class TestBehaviorContractsExtended:
 
         assert len(validate_evidence_contract([], min_count=1)) >= 1
         assert validate_evidence_contract(["e1"], min_count=1) == []
-        assert validate_capability_execution_contract(
-            "data.query", ["data.query"], []
-        ) == []
+        assert validate_capability_execution_contract("data.query", ["data.query"], []) == []
         assert "capability_disallowed" in str(
             validate_capability_execution_contract("data.query", ["data.query"], ["data.query"])
         )
-        assert validate_capability_execution_contract(
-            "data.query", ["model.answer"], []
-        )
+        assert validate_capability_execution_contract("data.query", ["model.answer"], [])
 
 
 class TestReplayContract:
     def test_validate_replay(self):
         from kernel.protocol.behavior_contracts import ReplayContract, validate_replay_contract
 
-        assert "missing_request_id" in validate_replay_contract(
-            ReplayContract("", "s", "g")
-        )
-        assert "missing_root_goal_id" in validate_replay_contract(
-            ReplayContract("r", "s", "")
-        )
+        assert "missing_request_id" in validate_replay_contract(ReplayContract("", "s", "g"))
+        assert "missing_root_goal_id" in validate_replay_contract(ReplayContract("r", "s", ""))
         assert validate_replay_contract(ReplayContract("r", "s", "g")) == []
 
 

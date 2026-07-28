@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.config.settings import settings
+from infra.observability.tracer import traced_async
 from infra.storage.models import (
     ResponseApproval,
     ResponseItem,
@@ -221,6 +222,7 @@ class AgentLoop:
         self.max_rounds = max(1, max_rounds)
         self.context_assembler = context_assembler or ContextAssembler()
 
+    @traced_async("agent_loop.run")
     async def run(
         self,
         db: AsyncSession,
@@ -1975,6 +1977,7 @@ class AgentLoop:
         await db.flush()
         return row
 
+    @traced_async("agent_loop.tool_execute")
     async def _execute_tool(
         self,
         db: AsyncSession,

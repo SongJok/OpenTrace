@@ -1,0 +1,9 @@
+# 至少两个维护者应在 GitHub branch protection 中要求 CODEOWNERS review。
+* @SongJok
+/gateway/api_gateway/ @SongJok
+/infra/responses/ @SongJok
+/kernel/agent_loop/ @SongJok
+/infra/security/ @SongJok
+/alembic/ @SongJok
+/deploy/ @SongJok
+/.github/workflows/ @SongJok

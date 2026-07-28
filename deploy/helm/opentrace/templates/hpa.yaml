@@ -1,0 +1,25 @@
+{{- if .Values.autoscaling.api.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "opentrace.fullname" . }}-api
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ include "opentrace.fullname" . }}-api}
+  minReplicas: {{ .Values.autoscaling.api.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.api.maxReplicas }}
+  metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: {{ .Values.autoscaling.api.targetCPUUtilizationPercentage }}}}}]
+{{- end }}
+{{- if .Values.autoscaling.worker.enabled }}
+{{- range $role, $pool := .Values.workerPools }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "opentrace.fullname" $ }}-worker-{{ $role }}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ include "opentrace.fullname" $ }}-worker-{{ $role }}}
+  minReplicas: {{ $.Values.autoscaling.worker.minReplicas }}
+  maxReplicas: {{ $.Values.autoscaling.worker.maxReplicas }}
+  metrics: [{type: Resource, resource: {name: cpu, target: {type: Utilization, averageUtilization: {{ $.Values.autoscaling.worker.targetCPUUtilizationPercentage }}}}}]
+{{- end }}
+{{- end }}

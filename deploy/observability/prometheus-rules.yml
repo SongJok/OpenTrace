@@ -1,0 +1,60 @@
+groups:
+  - name: opentrace.responses.slo
+    interval: 30s
+    rules:
+      - record: opentrace:response_success_rate_5m
+        expr: >-
+          sum(rate(opentrace_response_completed_total{status="completed"}[5m]))
+          / clamp_min(sum(rate(opentrace_response_completed_total[5m])), 0.000001)
+      - record: opentrace:response_p95_seconds_5m
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (rate(opentrace_response_end_to_end_duration_seconds_bucket[5m])))
+      - record: opentrace:http_5xx_rate_5m
+        expr: >-
+          sum(rate(opentrace_http_requests_total{status=~"5.."}[5m]))
+          / clamp_min(sum(rate(opentrace_http_requests_total[5m])), 0.000001)
+      - alert: OpenTraceResponseAvailabilityBurnRate
+        expr: opentrace:response_success_rate_5m < 0.99
+        for: 10m
+        labels:
+          severity: page
+          service: opentrace
+        annotations:
+          summary: Responses 成功率低于 99%
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceResponseLatencyHigh
+        expr: opentrace:response_p95_seconds_5m > 120
+        for: 15m
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: Responses P95 超过 120 秒
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceResponseQueueBacklog
+        expr: opentrace_response_queue_depth > 100
+        for: 10m
+        labels:
+          severity: page
+          service: opentrace
+        annotations:
+          summary: Response 队列持续积压
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceOutboxBacklog
+        expr: opentrace_response_outbox_pending > 100
+        for: 10m
+        labels:
+          severity: page
+          service: opentrace
+        annotations:
+          summary: Outbox 持续积压
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceWorkerFailureBurst
+        expr: increase(opentrace_worker_iteration_failures_total[10m]) > 10
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: Worker 循环错误突增
+          runbook: docs/runbooks/slo-incident-response.md

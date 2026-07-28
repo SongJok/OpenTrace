@@ -31,3 +31,11 @@ status within 14 days. Timelines may vary with severity and reproduction complex
 
 See `.env.example`, `docs/ENV_PROFILES.md`, and `docs/runbooks/tenant-rls-staging.md` for
 the relevant controls.
+
+## Time-bounded dependency exceptions
+
+Security audit exceptions must be machine-readable in `security/npm-audit-allowlist.json`, name one
+advisory and package, include an owner/reason, and expire within 30 days. `npm run audit:security`
+continues to fail on every non-allowlisted high/critical advisory and on expired exceptions. The current
+React Router exception is limited to GHSA-qwww-vcr4-c8h2 because OpenTrace does not use unstable RSC APIs;
+it expires on 2026-08-15 and must be removed as soon as an upstream patched stable release is available.

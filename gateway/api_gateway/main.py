@@ -24,11 +24,13 @@ from gateway.api_gateway.routers import (
     connectors,
     conversations,
     data,
+    data_governance,
     databases,
     documents,
     enterprise_admin,
     feedback,
     health,
+    interoperability,
     knowledge,
     knowledge_enterprise,
     memories,
@@ -49,6 +51,8 @@ from gateway.api_gateway.routers import (
 from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
 from infra.observability.logger import get_logger
+from infra.observability.metrics import HTTP_REQUEST_DURATION, HTTP_REQUESTS_TOTAL
+from infra.observability.tracer import setup_tracing
 from infra.storage.database import ensure_runtime_schema
 
 logger = get_logger(__name__)
@@ -59,6 +63,12 @@ async def lifespan(_: FastAPI):
     from agents.bootstrap import register_builtin_agents
 
     register_builtin_agents()
+    if settings.trace_enabled:
+        setup_tracing(
+            service_name=settings.otel_service_name,
+            otlp_endpoint=settings.otel_exporter_otlp_endpoint,
+            enabled=True,
+        )
     await ensure_runtime_schema()
     yield
 
@@ -96,13 +106,23 @@ except Exception as exc:
 async def request_context_middleware(request: Request, call_next):
     request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
     request.state.request_id = request_id
-    t0 = time.time()
+    t0 = time.monotonic()
+    status_code = 500
     try:
         response = await call_next(request)
-    except Exception:
-        raise
+        status_code = response.status_code
+    finally:
+        route = request.scope.get("route")
+        endpoint = str(getattr(route, "path", "__unmatched__"))
+        duration = max(0.0, time.monotonic() - t0)
+        HTTP_REQUESTS_TOTAL.labels(
+            method=request.method,
+            endpoint=endpoint,
+            status=str(status_code),
+        ).inc()
+        HTTP_REQUEST_DURATION.labels(method=request.method, endpoint=endpoint).observe(duration)
     response.headers["x-request-id"] = request_id
-    response.headers["x-response-time-ms"] = str(int((time.time() - t0) * 1000))
+    response.headers["x-response-time-ms"] = str(int(duration * 1000))
     return response
 
 
@@ -162,8 +182,10 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(prometheus.router, prefix="/api/v1", tags=["observability"])
 app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
+app.include_router(data_governance.router, prefix="/api/v1", tags=["data-governance"])
 app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
 app.include_router(responses.router, prefix="/api/v2", tags=["responses"])
+app.include_router(interoperability.router, prefix="/api/v2", tags=["interoperability"])
 app.include_router(response_aux.router, prefix="/api/v2", tags=["response-resources"])
 app.include_router(agent_resources.router, prefix="/api/v2", tags=["agent-resources"])
 app.include_router(workbench.router, prefix="/api/v2", tags=["enterprise-workbench"])

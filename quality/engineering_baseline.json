@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "broad_exceptions": 720,
+  "silent_pass_handlers": 115,
+  "large_file_budgets": {
+    "frontend/src/api/client.ts": {
+      "max_lines": 2675,
+      "target_lines": 1800
+    },
+    "kernel/agent_loop/runner.py": {
+      "max_lines": 2472,
+      "target_lines": 1600
+    },
+    "infra/storage/models.py": {
+      "max_lines": 2455,
+      "target_lines": 1800
+    },
+    "agents/data_agent_v2/supervisor.py": {
+      "max_lines": 1678,
+      "target_lines": 1200
+    },
+    "kernel/agent_loop/context.py": {
+      "max_lines": 957,
+      "target_lines": 700
+    }
+  }
+}

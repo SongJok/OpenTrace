@@ -90,3 +90,15 @@ Worker 与 in-process dispatch 在 `kernel_agent_runtime_v3_enabled=true` 时走
 | `data_knowledge` | data + knowledge + web_intelligence + vision（默认） |
 
 旧 `KERNEL_AGENT_*_ENABLED` 字段只为滚动升级和紧急熔断保留，不再作为推荐配置面。实验例外见 `docs/FEATURE_FLAG_REGISTRY.md`。
+
+## 企业部署附加约束
+
+| 配置 | development | staging | production |
+|---|---|---|---|
+| `OBJECT_STORAGE_BACKEND` | `database`（仅兼容）/`local` | `local` 或 `s3` | 推荐 `s3`，禁止 `database` |
+| `ENTERPRISE_TENANT_RLS_ENABLED` | false | 灰度 true | true（非 owner 应用角色） |
+| `WORKER_ROLE` | `all` | 按四类能力池拆分 | 按四类能力池拆分并独立 HPA |
+| `IDENTITY_OIDC_ENABLED` | false | 企业 IdP 验证 | 企业 IdP + 撤销/轮换演练 |
+| MCP/A2A | false | allowlist 灰度 | 通过互操作矩阵后按租户开启 |
+
+受管环境使用对象存储、KMS/Vault 和独立数据库角色；Compose 仅用于开发，不代表生产高可用拓扑。

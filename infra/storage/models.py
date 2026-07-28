@@ -54,6 +54,7 @@ class User(Base):
         String(20), nullable=False, default="pending"
     )  # pending | active | disabled
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="user")  # admin | user
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -2327,6 +2328,12 @@ class Attachment(Base):
     user_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     file_size: Mapped[int] = mapped_column(Integer, default=0)
     mime_type: Mapped[str] = mapped_column(String(255), nullable=True)
@@ -2340,6 +2347,9 @@ class Attachment(Base):
     media_base64: Mapped[str | None] = mapped_column(Text, nullable=True)
     media_mime: Mapped[str | None] = mapped_column(String(100), nullable=True)
     media_kind: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    storage_backend: Mapped[str] = mapped_column(String(20), nullable=False, default="database")
+    object_key: Mapped[str | None] = mapped_column(String(1024), nullable=True, unique=True)
+    object_etag: Mapped[str | None] = mapped_column(String(128), nullable=True)
     message_id: Mapped[str] = mapped_column(String(50), nullable=True)
     duplicate_of: Mapped[str] = mapped_column(String(36), nullable=True)
     scope: Mapped[str] = mapped_column(String(20), nullable=False, default="session")
@@ -2386,3 +2396,60 @@ class SystemSetting(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LegalHold(Base):
+    """阻止保留清理和租户删除的数据保全指令。"""
+
+    __tablename__ = "legal_holds"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    resource_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active", index=True)
+    created_by: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    released_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DataDeletionJob(Base):
+    """可审计、可暂停、可重试的租户/工作区删除传播任务。"""
+
+    __tablename__ = "data_deletion_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    requested_by: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False, default="grace_period")
+    progress: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execute_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class RevokedToken(Base):
+    """JWT jti 撤销记录；只保存哈希，避免 token 内容落库。"""
+
+    __tablename__ = "revoked_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    reason: Mapped[str] = mapped_column(String(128), nullable=False, default="logout")
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

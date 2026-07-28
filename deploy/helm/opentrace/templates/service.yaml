@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "opentrace.fullname" . }}
+  labels:
+    {{- include "opentrace.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector: {app.kubernetes.io/name: {{ include "opentrace.name" . }}, app.kubernetes.io/component: api}
+  ports: [{name: http, port: {{ .Values.service.port }}, targetPort: http, protocol: TCP}]

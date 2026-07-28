@@ -1,0 +1,44 @@
+{{- range $role, $pool := .Values.workerPools }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "opentrace.fullname" $ }}-worker-{{ $role }}
+  labels:
+    {{- include "opentrace.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: worker-{{ $role }}
+spec:
+  replicas: {{ $pool.replicas }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: {{ include "opentrace.name" $ }}, app.kubernetes.io/component: worker-{{ $role }}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: {{ include "opentrace.name" $ }}, app.kubernetes.io/component: worker-{{ $role }}}
+      annotations: {prometheus.io/scrape: "true", prometheus.io/port: "9464", prometheus.io/path: "/metrics"}
+    spec:
+      serviceAccountName: {{ include "opentrace.serviceAccountName" $ }}
+      terminationGracePeriodSeconds: 120
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: worker
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["python", "-m", "agents.worker"]
+          ports: [{name: metrics, containerPort: 9464, protocol: TCP}]
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: {{ $.Values.secret.existingSecret }}, key: {{ $.Values.config.workerDatabaseUrlSecretKey }}}}
+            {{- include "opentrace.env" $ | nindent 12 }}
+            - {name: WORKER_ROLE, value: {{ $role | quote }}}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+          resources:
+            {{- toYaml $.Values.worker.resources | nindent 12 }}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {}}]
+      nodeSelector:
+        {{- toYaml $.Values.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml $.Values.tolerations | nindent 8 }}
+      affinity:
+        {{- toYaml $.Values.affinity | nindent 8 }}
+---
+{{- end }}

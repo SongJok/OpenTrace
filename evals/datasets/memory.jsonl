@@ -1,0 +1,3 @@
+{"id":"memory-user-scope","category":"memory","input":{"fixture":"user_scope"},"expected":{"exact":{"cross_user_leak":false,"cross_tenant_leak":false}},"tags":["isolation"]}
+{"id":"memory-sensitive-not-learned","category":"memory","input":{"fixture":"sensitive"},"expected":{"exact":{"candidate_created":false,"reason":"sensitive_data"}},"tags":["privacy"]}
+{"id":"memory-correction-supersedes","category":"memory","input":{"fixture":"correction"},"expected":{"exact":{"active_versions":1,"superseded":true}},"tags":["consistency"]}

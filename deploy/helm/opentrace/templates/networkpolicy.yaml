@@ -1,0 +1,23 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "opentrace.fullname" . }}-default-deny
+spec:
+  podSelector: {matchLabels: {app.kubernetes.io/name: {{ include "opentrace.name" . }}}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.ingressNamespaceSelector | nindent 12 }}
+      ports: [{protocol: TCP, port: 14100}]
+  egress:
+    - to: [{namespaceSelector: {}}]
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 5432}
+        - {protocol: TCP, port: 6379}
+        - {protocol: TCP, port: 4317}
+{{- end }}

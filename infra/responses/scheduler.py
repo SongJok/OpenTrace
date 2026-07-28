@@ -23,6 +23,7 @@ from infra.storage.models import (
     TaskRun,
     UserMemory,
 )
+from tenant.tenant_rls import set_worker_session
 
 logger = get_logger(__name__)
 
@@ -172,6 +173,7 @@ def task_schedule_bounds(task: TaskDefinition) -> tuple[datetime | None, datetim
 async def enqueue_due_tasks(*, limit: int = 20) -> int:
     now = datetime.now(UTC)
     async with AsyncSessionLocal() as db:
+        await set_worker_session(db)
         tasks = (
             (
                 await db.execute(
@@ -357,6 +359,7 @@ async def expire_transient_state(*, limit: int = 200) -> tuple[int, int]:
     """Expire temporary conversations and learned memories in bounded batches."""
     now = datetime.now(UTC)
     async with AsyncSessionLocal() as db:
+        await set_worker_session(db)
         sessions = (
             (
                 await db.execute(

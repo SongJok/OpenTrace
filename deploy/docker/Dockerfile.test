@@ -1,6 +1,7 @@
 ARG OPENTRACE_IMAGE=opentrace-app:local
 FROM ${OPENTRACE_IMAGE}
 
+USER root
 ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ARG PIP_EXTRA_INDEX_URL=
 
@@ -10,3 +11,5 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}" \
     pip install --prefer-binary --disable-pip-version-check \
     --require-hashes -r /tmp/requirements-dev.lock
+
+USER 10001:10001

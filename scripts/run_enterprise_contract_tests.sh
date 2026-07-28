@@ -37,5 +37,17 @@ python -m pytest \
   tests/test_turn_metering_contract.py \
   tests/test_finalize_turn_contract.py \
   tests/test_stream_enterprise_metadata_contract.py \
+  tests/test_enterprise_evaluation_contract.py \
+  tests/test_enterprise_slo_contract.py \
+  tests/test_enterprise_deployment_contract.py \
+  tests/test_enterprise_resilience_contract.py \
+  tests/test_enterprise_governance_contract.py \
+  tests/test_enterprise_object_storage_contract.py \
+  tests/test_enterprise_identity_contract.py \
+  tests/test_enterprise_interoperability_contract.py \
+  tests/test_enterprise_protocol_server_contract.py \
+  tests/test_enterprise_refactoring_contract.py \
+  tests/test_enterprise_worker_metrics_contract.py \
+  tests/test_enterprise_trace_contract.py \
   -q --tb=short "$@"
 echo "=== Enterprise contracts OK ==="

@@ -128,3 +128,20 @@ python scripts/check_migration_policy.py
 ```
 
 已提交迁移（包括文件名为 2026-07-25 至 2026-08-03 的历史文件）不重命名、不改写。新 revision 使用 `rNNNN_slug`，发布信息单独记录在 `alembic/revision_releases.json`。
+
+## 企业运行时与数据面
+
+| 变量 | 生产要求 | 说明 |
+|---|---|---|
+| `OBJECT_STORAGE_BACKEND` | `local` 或 `s3`，禁止 `database` | 图片/音视频原始字节不再写 PostgreSQL |
+| `IDENTITY_OIDC_ENABLED` | 按企业 IdP 开启 | 开启时 issuer/audience/JWKS 必填；SAML 经企业 OIDC bridge 接入 |
+| `ENTERPRISE_TOKEN_REVOCATION_ENABLED` | `true` | JWT `jti` 撤销；改密递增 token version |
+| `WORKER_ROLE` | 独立部署四类池 | `responses` / `agents` / `knowledge` / `scheduler` |
+| `RESPONSE_WORKER_CONCURRENCY` | 容量测试后设定 | 单 Worker 全局并发 |
+| `RESPONSE_WORKER_TENANT_CONCURRENCY` | 按租户公平性设定 | 单租户并发上限 |
+| `RESPONSE_WORKER_MAX_QUEUE_DEPTH` | 与 SLO 告警一致 | 达阈值停止 Outbox 扩散，由 DB claim 排空 |
+| `MCP_SERVER_ENABLED` / `A2A_PROTOCOL_ENABLED` | 默认关闭、灰度开启 | 调用必须转换为 durable Response，不得旁路审批和账本 |
+
+Helm Secret 使用三条独立连接：`API_DATABASE_URL`、`WORKER_DATABASE_URL`、
+`MIGRATION_DATABASE_URL`。API/Worker 角色不得是表 owner 或 superuser；角色初始化见
+`deploy/postgres_roles.sql`。

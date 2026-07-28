@@ -24,6 +24,15 @@
 | `enterprise_tenant_rls_enabled` | false | experimental | security | 0.1.0 | 核心事实表 RLS 与跨租户负向测试全部进入发布门禁 | 0.3.0 | tenant-isolation | — |
 | `web_fetch_enabled` | false | experimental | security | 0.1.0 | 独立网络出口、域名白名单、凭据隔离和配额全部落地 | 0.3.0 | network-egress | — |
 
+## 企业协议上线控制（自动生成）
+
+| Control | 默认 | 阶段 | Owner | 引入版本 | 退出条件 | 最晚删除版本 | 影响面 |
+|---|---:|---|---|---|---|---|---|
+| `identity_oidc_enabled` | false | experimental | security | 0.1.0 | 完成两个受支持 IdP 的 JWKS、撤销和故障切换互操作认证 | 0.3.0 | authentication |
+| `mcp_client_enabled` | false | experimental | runtime | 0.1.0 | 工具 allowlist、审批和幂等账本互操作矩阵全部通过 | 0.3.0 | interoperability |
+| `mcp_server_enabled` | false | experimental | runtime | 0.1.0 | MCP 兼容矩阵和 durable Responses 适配连续两个版本稳定 | 0.3.0 | interoperability |
+| `a2a_protocol_enabled` | false | experimental | runtime | 0.1.0 | 服务身份、租户绑定、防重放与端到端互操作测试全部通过 | 0.3.0 | interoperability |
+
 ## 治理规则
 
 - 新能力优先加入现有 Profile，不新增布尔开关。

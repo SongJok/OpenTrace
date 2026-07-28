@@ -29,6 +29,7 @@ from governance.chat_constitution import (
     load_effective_chat_constitution,
 )
 from infra.errors import AppException, ErrorCodes
+from infra.observability.metrics import RESPONSE_CREATED_TOTAL
 from infra.responses.repository import TERMINAL_STATUSES, add_outbox, append_event
 from infra.security.resource_scope import get_accessible_data_source
 from infra.storage.database import AsyncSessionLocal
@@ -44,6 +45,7 @@ from infra.storage.models import (
     ResponseRecord,
     User,
 )
+from tenant.tenant_rls import set_session_scope
 
 router = APIRouter()
 
@@ -557,6 +559,11 @@ async def create_response(
 ):
     query = extract_user_input(request.input)
     tenant = build_tenant_metadata(http_request, user_id=current_user.id)
+    await set_session_scope(
+        db,
+        tenant_id=str(tenant.get("tenant_id") or "default"),
+        workspace_id=str(tenant.get("workspace_id") or "default"),
+    )
     tenant_id = str(tenant.get("tenant_id") or "default")
     workspace_id = str(tenant.get("workspace_id") or "default")
     org_id = str(tenant.get("org_id") or "default")
@@ -701,6 +708,7 @@ async def create_response(
     session.active_response_id = response_id
     session.branch_root_response_id = session.branch_root_response_id or parent_id or response_id
     await db.commit()
+    RESPONSE_CREATED_TOTAL.labels(mode=record.mode).inc()
 
     if request.stream:
         return StreamingResponse(
@@ -726,6 +734,11 @@ async def get_response(
     db: AsyncSession = Depends(get_db),
 ):
     scope = build_tenant_metadata(http_request, user_id=current_user.id)
+    await set_session_scope(
+        db,
+        tenant_id=str(scope.get("tenant_id") or "default"),
+        workspace_id=str(scope.get("workspace_id") or "default"),
+    )
     tenant_id = str(scope.get("tenant_id") or "default")
     workspace_id = str(scope.get("workspace_id") or "default")
     record = await _load_response(db, response_id, current_user, tenant_id, workspace_id)
@@ -759,6 +772,11 @@ async def get_response_events(
     db: AsyncSession = Depends(get_db),
 ) -> list[ResponseEventOut]:
     scope = build_tenant_metadata(http_request, user_id=current_user.id)
+    await set_session_scope(
+        db,
+        tenant_id=str(scope.get("tenant_id") or "default"),
+        workspace_id=str(scope.get("workspace_id") or "default"),
+    )
     tenant_id = str(scope.get("tenant_id") or "default")
     workspace_id = str(scope.get("workspace_id") or "default")
     await _load_response(db, response_id, current_user, tenant_id, workspace_id)
@@ -795,6 +813,11 @@ async def list_response_siblings(
     db: AsyncSession = Depends(get_db),
 ):
     scope = build_tenant_metadata(http_request, user_id=current_user.id)
+    await set_session_scope(
+        db,
+        tenant_id=str(scope.get("tenant_id") or "default"),
+        workspace_id=str(scope.get("workspace_id") or "default"),
+    )
     tenant_id = str(scope.get("tenant_id") or "default")
     workspace_id = str(scope.get("workspace_id") or "default")
     source = await _load_response(db, response_id, current_user, tenant_id, workspace_id)
@@ -836,6 +859,11 @@ async def retry_response(
     db: AsyncSession = Depends(get_db),
 ):
     scope = build_tenant_metadata(http_request, user_id=current_user.id)
+    await set_session_scope(
+        db,
+        tenant_id=str(scope.get("tenant_id") or "default"),
+        workspace_id=str(scope.get("workspace_id") or "default"),
+    )
     tenant_id = str(scope.get("tenant_id") or "default")
     workspace_id = str(scope.get("workspace_id") or "default")
     source = await _load_response(db, response_id, current_user, tenant_id, workspace_id)
@@ -864,6 +892,11 @@ async def cancel_response(
     db: AsyncSession = Depends(get_db),
 ):
     scope = build_tenant_metadata(http_request, user_id=current_user.id)
+    await set_session_scope(
+        db,
+        tenant_id=str(scope.get("tenant_id") or "default"),
+        workspace_id=str(scope.get("workspace_id") or "default"),
+    )
     tenant_id = str(scope.get("tenant_id") or "default")
     workspace_id = str(scope.get("workspace_id") or "default")
     record = await _load_response(db, response_id, current_user, tenant_id, workspace_id)

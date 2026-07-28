@@ -103,7 +103,9 @@ class AgentWorker:
         await self.bus.publish_result(task.task_id, res.model_dump(mode="json"))
 
     async def _consume_pubsub(self, agent_type: str) -> None:
-        r = await __import__("infra.cache.redis_client", fromlist=["get_pubsub_redis"]).get_pubsub_redis()
+        r = await __import__(
+            "infra.cache.redis_client", fromlist=["get_pubsub_redis"]
+        ).get_pubsub_redis()
         ps = r.pubsub()
         ch = self.bus.task_channel(agent_type)
         await ps.subscribe(ch)
@@ -120,7 +122,9 @@ class AgentWorker:
     async def _reclaim_pending(self, r, stream: str, agent_type: str) -> None:
         idle_ms = int(getattr(settings, "kernel_agent_bus_reclaim_idle_ms", 30000))
         reclaim_count = int(getattr(settings, "kernel_agent_bus_reclaim_count", 20))
-        pending = await r.xpending_range(stream, self.bus.group, min='-', max='+', count=reclaim_count)
+        pending = await r.xpending_range(
+            stream, self.bus.group, min="-", max="+", count=reclaim_count
+        )
         if not pending:
             return
         ids = []
@@ -131,7 +135,9 @@ class AgentWorker:
                 ids.append(msg_id)
         if not ids:
             return
-        claimed = await r.xclaim(stream, self.bus.group, self.bus.consumer, min_idle_time=idle_ms, message_ids=ids)
+        claimed = await r.xclaim(
+            stream, self.bus.group, self.bus.consumer, min_idle_time=idle_ms, message_ids=ids
+        )
         for msg_id, fields in claimed:
             data = fields.get("data")
             if not isinstance(data, str):
@@ -208,21 +214,36 @@ class AgentWorker:
         from infra.response_worker import response_job_loop
         from infra.responses.scheduler import scheduler_loop
         from knowledge.jobs import knowledge_job_loop
+        from services.data_governance import deletion_job_loop
         from skills.catalog import skillhub_sync_loop
 
-        await asyncio.gather(
-            self._heartbeat(),
-            knowledge_job_loop(),
-            response_job_loop(),
-            scheduler_loop(),
-            alert_scheduler_loop(),
-            skillhub_sync_loop(),
-            memory_event_subscriber.start(),
-            *(self._consume(k) for k in consumers),
-        )
+        role = str(settings.worker_role or "all")
+        tasks = [self._heartbeat()]
+        if role in {"all", "responses"}:
+            tasks.append(response_job_loop())
+        if role in {"all", "knowledge"}:
+            tasks.extend((knowledge_job_loop(), skillhub_sync_loop()))
+        if role in {"all", "scheduler"}:
+            tasks.extend((scheduler_loop(), alert_scheduler_loop(), deletion_job_loop()))
+        if role in {"all", "agents"}:
+            tasks.append(memory_event_subscriber.start())
+            tasks.extend(self._consume(agent_type) for agent_type in consumers)
+        await asyncio.gather(*tasks)
 
 
 async def main() -> None:
+    if int(settings.worker_metrics_port) > 0:
+        from prometheus_client import start_http_server
+
+        start_http_server(int(settings.worker_metrics_port))
+    if settings.trace_enabled:
+        from infra.observability.tracer import setup_tracing
+
+        setup_tracing(
+            service_name=f"{settings.otel_service_name}-worker-{settings.worker_role}",
+            otlp_endpoint=settings.otel_exporter_otlp_endpoint,
+            enabled=True,
+        )
     worker = AgentWorker()
     await worker.run_forever()
 

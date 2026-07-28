@@ -7,10 +7,21 @@ import socket
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from infra.cache.redis_client import get_queue_redis
+from infra.config.settings import settings
 from infra.observability.logger import get_logger
+from infra.observability.metrics import (
+    RESPONSE_COMPLETED_TOTAL,
+    RESPONSE_END_TO_END_DURATION,
+    RESPONSE_FIRST_EVENT_DURATION,
+    RESPONSE_LEASE_RECOVERY_TOTAL,
+    RESPONSE_OUTBOX_PENDING,
+    RESPONSE_QUEUE_DEPTH,
+    WORKER_ITERATION_FAILURES_TOTAL,
+)
+from infra.observability.tracer import get_tracer
 from infra.responses.repository import (
     add_outbox,
     append_event,
@@ -33,11 +44,23 @@ from infra.storage.models import (
 )
 from kernel.agent_loop.memory_learner import MemoryLearner
 from kernel.agent_loop.runner import AgentLoop
+from tenant.tenant_rls import set_worker_session
 
 logger = get_logger(__name__)
+tracer = get_tracer(__name__)
 STREAM = "opentrace:responses:v2"
 GROUP = "opentrace-response-workers"
 OWNER = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+_TENANT_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
+
+
+def _tenant_semaphore(tenant_id: str) -> asyncio.Semaphore:
+    key = tenant_id or "default"
+    semaphore = _TENANT_SEMAPHORES.get(key)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(max(1, int(settings.response_worker_tenant_concurrency)))
+        _TENANT_SEMAPHORES[key] = semaphore
+    return semaphore
 
 
 async def _update_task_run(
@@ -95,6 +118,26 @@ async def dispatch_outbox(*, limit: int = 100) -> int:
     """Publish committed jobs. PostgreSQL remains authoritative on failure."""
     now = datetime.now(UTC)
     async with AsyncSessionLocal() as db:
+        await set_worker_session(db)
+        queue_depth = int(
+            await db.scalar(
+                select(func.count(ResponseRecord.id)).where(
+                    ResponseRecord.status.in_(("queued", "in_progress"))
+                )
+            )
+            or 0
+        )
+        pending_outbox = int(
+            await db.scalar(
+                select(func.count(ResponseOutbox.id)).where(ResponseOutbox.status == "pending")
+            )
+            or 0
+        )
+        RESPONSE_QUEUE_DEPTH.set(queue_depth)
+        RESPONSE_OUTBOX_PENDING.set(pending_outbox)
+        if queue_depth >= max(1, int(settings.response_worker_max_queue_depth)):
+            logger.warning("response_worker_backpressure", queue_depth=queue_depth)
+            return 0
         rows = (
             (
                 await db.execute(
@@ -138,6 +181,7 @@ async def dispatch_outbox(*, limit: int = 100) -> int:
 
 async def execute_response(response_id: str | None = None) -> bool:
     async with AsyncSessionLocal() as db:
+        await set_worker_session(db)
         response = await claim_response(db, owner=OWNER, response_id=response_id)
         if response is None:
             return False
@@ -149,10 +193,17 @@ async def execute_response(response_id: str | None = None) -> bool:
             payload={"status": "in_progress", "attempt": response.attempt_count},
         )
         await db.commit()
+        if response.created_at:
+            RESPONSE_FIRST_EVENT_DURATION.observe(
+                max(0.0, (datetime.now(UTC) - response.created_at).total_seconds())
+            )
 
     heartbeat = asyncio.create_task(_heartbeat(response_id))
+    tenant_limit = _tenant_semaphore(response.tenant_id)
+    await tenant_limit.acquire()
     try:
         async with AsyncSessionLocal() as db:
+            await set_worker_session(db)
             response = await db.get(ResponseRecord, response_id, with_for_update=True)
             if response is None or response.lease_owner != OWNER or response.status == "cancelled":
                 return False
@@ -193,7 +244,11 @@ async def execute_response(response_id: str | None = None) -> bool:
                 )
                 await db.commit()
 
-            result = await AgentLoop().run(db, response=response, emit=emit)
+            with tracer.start_as_current_span("response.agent_loop") as span:
+                span.set_attribute("opentrace.response.id", response.id)
+                span.set_attribute("opentrace.tenant.id", response.tenant_id)
+                span.set_attribute("opentrace.response.attempt", response.attempt_count)
+                result = await AgentLoop().run(db, response=response, emit=emit)
             if result.status == "requires_action":
                 if response.goal_id:
                     goal = await db.get(GoalRun, response.goal_id)
@@ -300,8 +355,20 @@ async def execute_response(response_id: str | None = None) -> bool:
                 finished=True,
             )
             await db.commit()
+            attempt_bucket = (
+                "1" if response.attempt_count <= 1 else "2" if response.attempt_count == 2 else "3+"
+            )
+            RESPONSE_COMPLETED_TOTAL.labels(
+                status=response.status,
+                attempt_bucket=attempt_bucket,
+            ).inc()
+            if response.created_at and response.completed_at:
+                RESPONSE_END_TO_END_DURATION.labels(status=response.status).observe(
+                    max(0.0, (response.completed_at - response.created_at).total_seconds())
+                )
         try:
             async with AsyncSessionLocal() as summary_db:
+                await set_worker_session(summary_db)
                 from kernel.agent_loop.summarizer import ConversationSummarizer
 
                 summary_response = await summary_db.get(ResponseRecord, response_id)
@@ -311,6 +378,7 @@ async def execute_response(response_id: str | None = None) -> bool:
             logger.warning("conversation_summary_failed", response_id=response_id, error=str(exc))
         try:
             async with AsyncSessionLocal() as memory_db:
+                await set_worker_session(memory_db)
                 memory_response = await memory_db.get(ResponseRecord, response_id)
                 if memory_response:
                     await MemoryLearner().learn(memory_db, response=memory_response)
@@ -324,6 +392,7 @@ async def execute_response(response_id: str | None = None) -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.exception("response_execution_failed", response_id=response_id, error=str(exc))
         async with AsyncSessionLocal() as db:
+            await set_worker_session(db)
             response = await db.get(ResponseRecord, response_id, with_for_update=True)
             if response and response.status not in {"cancelled", "completed", "requires_action"}:
                 response.status = (
@@ -362,6 +431,7 @@ async def execute_response(response_id: str | None = None) -> bool:
                 await db.commit()
         return False
     finally:
+        tenant_limit.release()
         heartbeat.cancel()
         try:
             await heartbeat
@@ -373,6 +443,7 @@ async def _heartbeat(response_id: str) -> None:
     while True:
         await asyncio.sleep(30)
         async with AsyncSessionLocal() as db:
+            await set_worker_session(db)
             if not await renew_lease(db, response_id, OWNER):
                 return
 
@@ -436,6 +507,8 @@ async def _reclaim_pending(redis, *, idle_ms: int = 150_000, count: int = 20) ->
         message_ids=message_ids,
     )
     processed = 0
+    if claimed:
+        RESPONSE_LEASE_RECOVERY_TOTAL.inc(len(claimed))
     for message_id, fields in claimed:
         data = json.loads(str(fields.get("data") or "{}"))
         await execute_response(str(data.get("response_id") or "") or None)
@@ -444,11 +517,22 @@ async def _reclaim_pending(redis, *, idle_ms: int = 150_000, count: int = 20) ->
     return processed
 
 
+async def _process_stream_message(
+    redis, message_id: str, fields: dict, semaphore: asyncio.Semaphore
+) -> bool:
+    async with semaphore:
+        data = json.loads(str(fields.get("data") or "{}"))
+        await execute_response(str(data.get("response_id") or "") or None)
+        await redis.xack(STREAM, GROUP, message_id)
+        return True
+
+
 async def response_worker_loop() -> None:
     try:
         await _ensure_group()
     except Exception as exc:  # noqa: BLE001
         logger.warning("response_stream_setup_failed_using_db_poll", error=str(exc))
+    semaphore = asyncio.Semaphore(max(1, int(settings.response_worker_concurrency)))
     while True:
         try:
             await dispatch_outbox()
@@ -458,14 +542,20 @@ async def response_worker_loop() -> None:
                 if await _reclaim_pending(redis):
                     processed = True
                 rows = await redis.xreadgroup(
-                    GROUP, OWNER, streams={STREAM: ">"}, count=10, block=1000
+                    GROUP,
+                    OWNER,
+                    streams={STREAM: ">"},
+                    count=max(1, int(settings.response_worker_batch_size)),
+                    block=1000,
                 )
-                for _, entries in rows:
-                    for message_id, fields in entries:
-                        data = json.loads(str(fields.get("data") or "{}"))
-                        await execute_response(str(data.get("response_id") or "") or None)
-                        await redis.xack(STREAM, GROUP, message_id)
-                        processed = True
+                tasks = [
+                    _process_stream_message(redis, message_id, fields, semaphore)
+                    for _, entries in rows
+                    for message_id, fields in entries
+                ]
+                if tasks:
+                    await asyncio.gather(*tasks)
+                    processed = True
             except Exception as exc:  # noqa: BLE001
                 logger.debug("response_stream_read_failed", error=str(exc))
             # DB claim is the recovery path for lost Redis messages and Redis outages.
@@ -474,5 +564,6 @@ async def response_worker_loop() -> None:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
+            WORKER_ITERATION_FAILURES_TOTAL.labels(worker_type="responses").inc()
             logger.warning("response_worker_iteration_failed", error=str(exc))
             await asyncio.sleep(1)

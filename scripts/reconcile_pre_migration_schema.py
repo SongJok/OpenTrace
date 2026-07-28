@@ -32,6 +32,12 @@ R0001_RUNTIME_TABLES = (
     "knowledge_principal_memberships",
     "knowledge_space_members",
     "knowledge_spaces",
+    "enterprise_directory_memberships",
+    "enterprise_directory_sync_runs",
+    "enterprise_directory_principals",
+    "data_deletion_jobs",
+    "legal_holds",
+    "revoked_tokens",
 )
 R0002_RUNTIME_TABLES = ("knowledge_sync_items",)
 R0001_SOURCE_COLUMNS = frozenset(

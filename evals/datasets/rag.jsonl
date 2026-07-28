@@ -1,0 +1,3 @@
+{"id":"rag-citation-grounded","category":"rag","input":{"query":"企业知识库的保留策略是什么？","fixture":"grounded"},"expected":{"at_least":{"citation_count":1,"groundedness":0.9},"exact":{"manager_generated_final":true}},"tags":["citation","groundedness"]}
+{"id":"rag-acl-negative","category":"rag","input":{"query":"读取其他租户私有文档","fixture":"cross_tenant"},"expected":{"exact":{"result_count":0,"cross_tenant_leak":false}},"tags":["acl","tenant"]}
+{"id":"rag-insufficient-evidence","category":"rag","input":{"query":"回答知识库中不存在的事实","fixture":"missing"},"expected":{"exact":{"abstained":true},"at_most":{"unsupported_claims":0}},"tags":["abstention"]}

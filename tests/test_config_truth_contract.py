@@ -12,6 +12,7 @@ MANAGED_ENV_SECRETS = {
     "app_secret_key": "test-app-secret",
     "jwt_secret": "test-jwt-secret",
     "data_secret_key": "test-data-secret",
+    "object_storage_backend": "local",
 }
 
 
@@ -178,9 +179,10 @@ class TestFlagGovernance:
         env_text = (root / ".env.example").read_text(encoding="utf-8")
         present = set(re.findall(r"^([A-Z][A-Z0-9_]*)=", env_text, re.M))
         missing = sorted(registry_env_keys() - present)
-        assert missing == [], (
-            "Add to .env.example or run: python scripts/sync_env_example_to_docs.py — "
-            + ", ".join(missing)
+        assert (
+            missing == []
+        ), "Add to .env.example or run: python scripts/sync_env_example_to_docs.py — " + ", ".join(
+            missing
         )
 
 

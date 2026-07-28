@@ -45,6 +45,7 @@ def test_staging_profile_keeps_learning_in_shadow():
         app_secret_key="test-app-secret",
         jwt_secret="test-jwt-secret",
         data_secret_key="test-data-secret",
+        object_storage_backend="local",
     )
     assert s.app_env == "staging"
     assert s.kernel_agent_learning_auto_apply is False

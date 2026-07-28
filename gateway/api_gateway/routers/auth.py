@@ -4,13 +4,14 @@ Auth router — login, register, me, logout.
 
 from __future__ import annotations
 
+import hashlib
 import random
 import string
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import jwt
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jwt import InvalidTokenError
 from passlib.context import CryptContext
@@ -25,8 +26,10 @@ from infra.notifications.mailer import (
     schedule_email_notification,
 )
 from infra.observability.logger import get_logger
+from infra.security.identity import decode_access_token
 from infra.storage.database import db_session_dependency as get_db
-from infra.storage.models import User
+from infra.storage.models import RevokedToken, User
+from tenant.tenant_rls import set_session_scope
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -93,13 +96,25 @@ def _verify(plain: str | None, hashed: str | None) -> bool:
     return pwd_ctx.verify(plain, hashed)
 
 
-def _create_token(user_id: str, email: str) -> str:
-    expire = datetime.utcnow() + timedelta(minutes=settings.jwt_expire_minutes)
+def _create_token(user_id: str, email: str, token_version: int = 1) -> str:
+    now = datetime.now(UTC)
+    expire = now + timedelta(minutes=settings.jwt_expire_minutes)
     return jwt.encode(
-        {"sub": user_id, "email": email, "exp": expire},
+        {
+            "sub": user_id,
+            "email": email,
+            "iat": now,
+            "exp": expire,
+            "jti": str(uuid.uuid4()),
+            "ver": int(token_version),
+        },
         settings.jwt_secret,
         algorithm=settings.jwt_algorithm,
     )
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _generate_temp_password() -> str:
@@ -122,18 +137,38 @@ def _validate_email_domain(email: str) -> None:
 
 
 async def get_current_user(
+    request: Request,
     token: str = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     try:
-        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-        user_id: str = payload.get("sub", "")
-    except InvalidTokenError:
-        raise AppException(ErrorCodes.AUTH_INVALID_TOKEN.code)
+        payload = decode_access_token(token)
+        user_id = str(payload.get("sub") or "")
+    except InvalidTokenError as exc:
+        raise AppException(ErrorCodes.AUTH_INVALID_TOKEN.code) from exc
+    if settings.enterprise_token_revocation_enabled:
+        revoked = await db.scalar(
+            select(RevokedToken.token_hash).where(RevokedToken.token_hash == _token_hash(token))
+        )
+        if revoked:
+            raise AppException(ErrorCodes.AUTH_INVALID_TOKEN.code)
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
+    if user is None and payload.get("email"):
+        user = await db.scalar(select(User).where(User.email == str(payload["email"]).lower()))
     if not user or user.status != "active":
         raise AppException(ErrorCodes.AUTH_INVALID_TOKEN.code)
+    token_version = int(payload.get("ver", user.token_version) or 0)
+    if token_version != int(user.token_version or 1):
+        raise AppException(ErrorCodes.AUTH_INVALID_TOKEN.code)
+    from gateway.api_gateway.tenant_middleware import build_tenant_metadata
+
+    scope = build_tenant_metadata(request, user_id=user.id)
+    await set_session_scope(
+        db,
+        tenant_id=str(scope.get("tenant_id") or "default"),
+        workspace_id=str(scope.get("workspace_id") or "default"),
+    )
     return user
 
 
@@ -216,7 +251,7 @@ async def login(
     _check_user_active(user)
     if not _verify(form.password, user.hashed_password):
         raise AppException(ErrorCodes.AUTH_INVALID_CREDENTIALS.code)
-    token = _create_token(user.id, user.email)
+    token = _create_token(user.id, user.email, user.token_version)
     logger.info("User logged in", email=user.email)
     return LoginResponse(
         access_token=token,
@@ -241,7 +276,7 @@ async def login_json(
     _check_user_active(user)
     if not _verify(req.password, user.hashed_password):
         raise AppException(ErrorCodes.AUTH_INVALID_CREDENTIALS.code)
-    token = _create_token(user.id, user.email)
+    token = _create_token(user.id, user.email, user.token_version)
     return LoginResponse(
         access_token=token,
         user_id=user.id,
@@ -264,6 +299,27 @@ async def me(current_user: User = Depends(get_current_user)) -> UserMe:
     )
 
 
+@router.post("/auth/logout")
+async def logout(
+    token: str = Depends(oauth2_scheme),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    payload = decode_access_token(token)
+    expires_at = datetime.fromtimestamp(int(payload["exp"]), tz=UTC)
+    if settings.enterprise_token_revocation_enabled:
+        db.add(
+            RevokedToken(
+                token_hash=_token_hash(token),
+                user_id=current_user.id,
+                reason="logout",
+                expires_at=expires_at,
+            )
+        )
+        await db.commit()
+    return {"message": "已安全退出"}
+
+
 @router.post("/auth/change-password")
 async def change_password(
     req: ChangePasswordRequest,
@@ -282,6 +338,7 @@ async def change_password(
         )
 
     current_user.hashed_password = _hash(req.new_password)
+    current_user.token_version = int(getattr(current_user, "token_version", 1) or 1) + 1
     await db.commit()
     logger.info("User password changed", user_id=current_user.id)
     return {"message": "密码修改成功"}

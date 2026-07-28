@@ -13,16 +13,22 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --prefer-binary --disable-pip-version-check --require-hashes -r requirements.lock
 
 COPY . .
+RUN groupadd --gid 10001 opentrace \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin opentrace \
+    && mkdir -p /app/skills/installed /var/lib/opentrace/objects \
+    && chown -R 10001:10001 /app /var/lib/opentrace
 
 ARG OPENTRACE_BUILD_FINGERPRINT=unknown
 LABEL org.opentrace.build-fingerprint="${OPENTRACE_BUILD_FINGERPRINT}"
 
 ENV PYTHONPATH=/app
+ENV HOME=/home/opentrace
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PIP_DEFAULT_TIMEOUT=120
 
 EXPOSE 14100
+USER 10001:10001
 
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:14100/api/v1/health', timeout=5)"

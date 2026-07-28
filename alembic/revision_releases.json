@@ -9,6 +9,9 @@
     },
     "r0003_enterprise_directory_and_operations": {
       "release": "unreleased"
+    },
+    "r0004_enterprise_runtime_governance": {
+      "release": "2026-07-27"
     }
   }
 }

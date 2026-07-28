@@ -1,0 +1,48 @@
+name: opentrace-enterprise-readiness
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  enterprise-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+      - run: |
+          python -m pip install uv==0.8.24
+          uv pip install --system --require-hashes -r requirements-dev.lock
+          uv pip install --system --no-deps -e .
+      - name: Enterprise debt and architecture boundary
+        run: python scripts/check_enterprise_boundaries.py
+      - name: Golden Dataset contract
+        run: python scripts/run_enterprise_evals.py --minimum-pass-rate 1.0 --output artifacts/evals.json
+      - name: Enterprise implementation contracts
+        run: python -m pytest -q tests/test_enterprise_*_contract.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: enterprise-evaluation-report
+          path: artifacts/evals.json
+
+  helm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: |
+          helm lint deploy/helm/opentrace
+          helm template opentrace deploy/helm/opentrace > /tmp/opentrace.yaml
+          grep -q 'kind: Deployment' /tmp/opentrace.yaml
+          grep -q 'kind: NetworkPolicy' /tmp/opentrace.yaml

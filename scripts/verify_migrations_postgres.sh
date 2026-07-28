@@ -2,6 +2,7 @@
 # 在两个一次性真实 PostgreSQL 数据库上验证重复执行、单步降级和生产基线升级。
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"
 
 : "${MIGRATION_TEST_DATABASE_URL:?必须设置 MIGRATION_TEST_DATABASE_URL，且必须指向一次性测试库}"
 if [[ "$MIGRATION_TEST_DATABASE_URL" != *migration_test* ]] && [[ "${ALLOW_DESTRUCTIVE_MIGRATION_TEST:-false}" != "true" ]]; then

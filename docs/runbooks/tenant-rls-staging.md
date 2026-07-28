@@ -39,3 +39,10 @@ SELECT policyname FROM pg_policies WHERE tablename = 'tenants';
 `20260611_billing_invoice` 创建 `billing_ledger` / `billing_invoices`。  
 回合收尾经 `finalize_turn` → `record_turn_billing` → 可选 `persist_ledger_entry`。  
 对账：`BillingManager.persist_snapshot_as_invoice(tenant_id)`。
+
+## 生产角色分离
+
+生产禁止 API/Worker 使用表 owner 或 superuser。使用 `deploy/postgres_roles.sql` 创建独立
+`opentrace_api`、`opentrace_worker` 与 `opentrace_migration`，Helm Secret 分别提供
+`API_DATABASE_URL`、`WORKER_DATABASE_URL`、`MIGRATION_DATABASE_URL`。发布门禁执行
+`scripts/verify_tenant_rls_postgres.py`，必须证明 tenant-a 无法读取 tenant-b。

@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "opentrace.fullname" . }}-api
+  labels:
+    {{- include "opentrace.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.replicaCount.api }}
+  selector:
+    matchLabels: {app.kubernetes.io/name: {{ include "opentrace.name" . }}, app.kubernetes.io/component: api}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: {{ include "opentrace.name" . }}, app.kubernetes.io/component: api}
+    spec:
+      serviceAccountName: {{ include "opentrace.serviceAccountName" . }}
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "uvicorn", "gateway.api_gateway.main:app", "--host", "0.0.0.0", "--port", "14100"]
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: {{ .Values.secret.existingSecret }}, key: {{ .Values.config.databaseUrlSecretKey }}}}
+            {{- include "opentrace.env" . | nindent 12 }}
+          ports: [{name: http, containerPort: 14100, protocol: TCP}]
+          readinessProbe: {httpGet: {path: /api/v1/health/deps, port: http}, periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 6}
+          livenessProbe: {httpGet: {path: /api/v1/health, port: http}, periodSeconds: 20, timeoutSeconds: 5, failureThreshold: 3}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts: [{name: tmp, mountPath: /tmp}]
+      volumes: [{name: tmp, emptyDir: {}}]
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}

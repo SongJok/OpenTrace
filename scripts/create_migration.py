@@ -6,8 +6,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,10 +29,11 @@ def main() -> int:
     policy = json.loads(POLICY.read_text(encoding="utf-8"))
     sequence = int(policy["next_sequence"])
     revision = f"r{sequence:04d}_{slug}"
+    alembic_cli = shutil.which("alembic")
+    if not alembic_cli:
+        parser.error("未找到 alembic CLI；请先安装开发依赖")
     command = [
-        sys.executable,
-        "-m",
-        "alembic",
+        alembic_cli,
         "revision",
         "--rev-id",
         revision,

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: opentrace
+description: OpenTrace Responses API and durable Agent Worker
+version: 0.1.0
+appVersion: "0.1.0"
+type: application

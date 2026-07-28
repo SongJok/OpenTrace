@@ -1,0 +1,25 @@
+{{- if .Values.migration.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "opentrace.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "opentrace.labels" . | nindent 4 }}
+  annotations: {"helm.sh/hook": pre-install,pre-upgrade, "helm.sh/hook-delete-policy": before-hook-creation}
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "opentrace.serviceAccountName" . }}
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command: ["python", "-m", "alembic", "upgrade", "head"]
+          env:
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: {{ .Values.secret.existingSecret }}, key: {{ .Values.config.migrationDatabaseUrlSecretKey }}}}
+            {{- include "opentrace.env" . | nindent 12 }}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+{{- end }}
