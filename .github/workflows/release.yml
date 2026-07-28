@@ -29,6 +29,6 @@ jobs:
           tags: ghcr.io/songjok/opentrace:${{ github.ref_name }}
           provenance: true
           sbom: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
