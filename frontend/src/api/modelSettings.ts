@@ -66,3 +66,27 @@ export async function apiPatchModelSettings(
   if (!response.ok) throw new Error(await errorMessage(response, '保存大模型配置失败'))
   return response.json()
 }
+export function withSelectedModel(
+  settings: UserModelSettings,
+  profile: ModelProfileSource,
+  model?: string,
+): UserModelSettings {
+  if (profile === 'environment') return { ...settings, active_profile: profile }
+  const endpoint = settings[profile]
+  const selected = model || endpoint.model
+  if (!endpoint.models.includes(selected)) throw new Error('所选模型不在候选列表中')
+  return { ...settings, active_profile: profile, [profile]: { ...endpoint, model: selected } }
+}
+
+export async function apiSelectModelSettings(
+  token: string,
+  profile: ModelProfileSource,
+  model?: string,
+): Promise<UserModelSettings> {
+  const response = await modelSettingsFetch('/users/model-settings/selection', token, {
+    method: 'PATCH',
+    body: JSON.stringify({ profile, ...(model ? { model } : {}) }),
+  })
+  if (!response.ok) throw new Error(await errorMessage(response, '切换大模型失败'))
+  return response.json()
+}

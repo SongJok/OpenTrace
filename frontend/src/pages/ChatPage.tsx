@@ -5,6 +5,7 @@ import MessageList, { type MessageListHandle } from '../components/MessageList'
 import ChatInput from '../components/ChatInput'
 import WelcomeScreen from '../components/WelcomeScreen'
 import { apiCreateConversationShare, apiDeleteConversation, apiListAssistantProfiles, apiListConversations, apiListDatabases, apiListProjects, apiUpdateConversation, type AssistantProfileItem, type DataSourceItem, type ProjectItem } from '../api/client'
+import { apiGetModelSettings } from '../api/modelSettings'
 import { useAuthStore } from '../store/auth'
 import { useChatStore } from '../store/chat'
 import { getShowAvatars, setShowAvatars } from '../store/theme'
@@ -64,6 +65,7 @@ export default function ChatPage() {
   const [projects, setProjects] = useState<ProjectItem[]>([])
   const [dataSources, setDataSources] = useState<DataSourceItem[]>([])
   const [showProfileMenu, setShowProfileMenu] = useState(false)
+  const [activeModel, setActiveModel] = useState('')
   const [showMoreMenu, setShowMoreMenu] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
 
@@ -71,6 +73,15 @@ export default function ChatPage() {
     setProfile(next)
     setShowProfileMenu(false)
   }
+
+  useEffect(() => {
+    void apiGetModelSettings(token)
+      .then((settings) => {
+        const endpoint = settings.active_profile === 'environment' ? settings.environment : settings[settings.active_profile]
+        setActiveModel(endpoint.model)
+      })
+      .catch(() => setActiveModel(''))
+  }, [token])
 
   useEffect(() => {
     void apiListAssistantProfiles(token).then((items) => {
@@ -194,10 +205,11 @@ export default function ChatPage() {
                 <Menu size={17} />
               </button>
               <div className="relative min-w-0">
-              <button type="button" onClick={() => setShowProfileMenu((v) => !v)} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--text)] hover:bg-[var(--surface)]" aria-label="选择模型">
+              <button type="button" onClick={() => setShowProfileMenu((v) => !v)} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--text)] hover:bg-[var(--surface)]" aria-label="选择推理模式">
                 <Sparkles size={16} className="text-[var(--accent)]" />
                 <span>OpenTrace</span>
-                <span className="hidden text-[var(--text-secondary)] sm:inline">· {profile === 'auto' ? '自动' : profile === 'fast' ? '快速' : '深度思考'}</span>
+                <span className="hidden max-w-52 truncate text-[var(--text-secondary)] sm:inline">· {activeModel || '默认模型'}</span>
+                <span className="hidden text-[var(--text-secondary)] lg:inline">· {profile === 'auto' ? '自动' : profile === 'fast' ? '快速' : '深度思考'}</span>
                 <ChevronDown size={14} className="text-[var(--text-secondary)]" />
               </button>
               {showProfileMenu && <div className="absolute left-0 top-10 z-30 w-36 rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] p-1 shadow-lg">{([['auto','自动'], ['fast','快速'], ['deep','深度思考']] as const).map(([value, label]) => <button key={value} onClick={() => selectProfile(value)} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)]">{label}</button>)}</div>}

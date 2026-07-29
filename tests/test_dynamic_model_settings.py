@@ -93,3 +93,42 @@ def test_relay_environment_names_are_supported(monkeypatch):
     assert cfg.other_llm_minshort_api_key == "sk-test"
     assert cfg.other_llm_model1 == "gpt-5.6-sol"
     assert cfg.other_llm_model2 == "kimi-k3-kimi"
+
+
+def test_model_selection_endpoint_is_atomic_and_scoped():
+    from pathlib import Path
+
+    source = Path("gateway/api_gateway/routers/ui_settings.py").read_text(encoding="utf-8")
+    assert '@router.patch("/users/model-settings/selection")' in source
+    assert "UserModelSettings.user_id == current_user.id" in source
+    assert "UserModelSettings.tenant_id == tenant_id" in source
+    assert "UserModelSettings.workspace_id == workspace_id" in source
+    assert "所选模型不在当前服务的候选列表中" in source
+
+
+def test_kimi_k3_temperature_is_normalized_for_relay_compatibility():
+    from model.llm_adapter.base import LLMConfig
+    from model.llm_adapter.openai_adapter import OpenAICompatibleAdapter
+
+    kimi = OpenAICompatibleAdapter(
+        LLMConfig(
+            provider="relay",
+            model="kimi-k3-kimi",
+            base_url="https://relay.example/v1",
+            api_key="sk-test",
+            temperature=0.7,
+        )
+    )
+    other = OpenAICompatibleAdapter(
+        LLMConfig(
+            provider="relay",
+            model="gpt-5.6-sol",
+            base_url="https://relay.example/v1",
+            api_key="sk-test",
+            temperature=0.7,
+        )
+    )
+
+    assert kimi._request_temperature({}) == 1.0
+    assert kimi._request_temperature({"temperature": 0.2}) == 1.0
+    assert other._request_temperature({}) == 0.7

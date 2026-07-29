@@ -5,7 +5,7 @@ import { useThemeStore, type AccentMode, type ThemeMode } from '../store/theme'
 import { useAuthStore } from '../store/auth'
 import { apiChangePassword, apiGetCustomInstructions, apiGetUiSettings, apiPatchUiSettings, apiSetCustomInstructions } from '../api/client'
 import { CardShell } from '../components/CardShell'
-import { apiGetModelSettings, apiPatchModelSettings, type ModelEndpointSettings, type ModelProfileSource, type UserModelSettings } from '../api/modelSettings'
+import { apiGetModelSettings, apiPatchModelSettings, apiSelectModelSettings, withSelectedModel, type ModelEndpointSettings, type ModelProfileSource, type UserModelSettings } from '../api/modelSettings'
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; description: string; icon: ReactNode }[] = [
   { value: 'light', label: 'Light', description: '更适合白底阅读', icon: <Sun size={16} /> },
@@ -39,7 +39,10 @@ function ModelEndpointEditor({
   endpoint,
   apiKey,
   clearApiKey,
+  active,
+  saving,
   onEndpointChange,
+  onModelSelect,
   onApiKeyChange,
   onClearApiKeyChange,
 }: {
@@ -48,7 +51,10 @@ function ModelEndpointEditor({
   endpoint: ModelEndpointSettings
   apiKey: string
   clearApiKey: boolean
+  active: boolean
+  saving: boolean
   onEndpointChange: (next: ModelEndpointSettings) => void
+  onModelSelect: (model: string) => void
   onApiKeyChange: (value: string) => void
   onClearApiKeyChange: (value: boolean) => void
 }) {
@@ -60,9 +66,12 @@ function ModelEndpointEditor({
           <div className="text-sm font-semibold text-[var(--text)]">{title}</div>
           <div className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{description}</div>
         </div>
-        <span className={clsx('rounded-full px-2 py-1 text-[10px]', endpoint.has_api_key ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400')}>
-          {endpoint.has_api_key ? `Key: ${endpoint.api_key_source}` : '缺少 Key'}
-        </span>
+        <div className="flex flex-col items-end gap-1.5">
+          {active ? <span className="rounded-full bg-[var(--accent-dim)] px-2 py-1 text-[10px] font-medium text-[var(--accent)]">当前启用</span> : null}
+          <span className={clsx('rounded-full px-2 py-1 text-[10px]', endpoint.has_api_key ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400')}>
+            {endpoint.has_api_key ? `Key: ${endpoint.api_key_source}` : '缺少 Key'}
+          </span>
+        </div>
       </div>
       <div className="mt-4 grid gap-3 md:grid-cols-2">
         <label className="text-xs text-[var(--text-secondary)]">
@@ -82,15 +91,32 @@ function ModelEndpointEditor({
         Base URL
         <input value={endpoint.base_url} onChange={(event) => onEndpointChange({ ...endpoint, base_url: event.target.value })} placeholder="https://provider.example.com/v1" className={inputClass} />
       </label>
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
+      <div className="mt-3">
+        <div className="text-xs text-[var(--text-secondary)]">点击模型后立即启用，并用于下一条新消息</div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {endpoint.models.map((model) => (
+            <button
+              key={model}
+              type="button"
+              disabled={saving}
+              aria-label={`立即使用模型 ${model}`}
+              onClick={() => onModelSelect(model)}
+              className={clsx(
+                'rounded-xl border px-3 py-2 text-xs font-medium transition-colors disabled:opacity-50',
+                active && endpoint.model === model
+                  ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
+                  : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:border-[var(--accent-border)]',
+              )}
+            >
+              {model}
+              {active && endpoint.model === model ? ' · 使用中' : ''}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="mt-3">
         <label className="text-xs text-[var(--text-secondary)]">
-          当前模型
-          <select value={endpoint.model} onChange={(event) => onEndpointChange({ ...endpoint, model: event.target.value })} className={inputClass}>
-            {endpoint.models.map((model) => <option key={model} value={model}>{model}</option>)}
-          </select>
-        </label>
-        <label className="text-xs text-[var(--text-secondary)]">
-          可选模型（逗号分隔）
+          可选模型（逗号分隔；新增后先保存配置）
           <input
             value={endpoint.models.join(', ')}
             onChange={(event) => {
@@ -290,40 +316,68 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
     setModelSettings((current) => current ? { ...current, [key]: endpoint } : current)
   }
 
+  const modelSettingsPayload = (settings: UserModelSettings) => ({
+    active_profile: settings.active_profile,
+    official: {
+      provider: settings.official.provider,
+      base_url: settings.official.base_url,
+      model: settings.official.model,
+      models: settings.official.models,
+      api_mode: settings.official.api_mode,
+      ...(officialApiKey ? { api_key: officialApiKey } : {}),
+      clear_api_key: clearOfficialApiKey,
+    },
+    relay: {
+      provider: settings.relay.provider,
+      base_url: settings.relay.base_url,
+      model: settings.relay.model,
+      models: settings.relay.models,
+      api_mode: settings.relay.api_mode,
+      ...(relayApiKey ? { api_key: relayApiKey } : {}),
+      clear_api_key: clearRelayApiKey,
+    },
+  })
+
   const saveModelSettings = async () => {
-    if (!modelSettings) return
+    if (!modelSettings || modelSettingsSaving) return
     setModelSettingsSaving(true)
     setModelSettingsMessage(null)
     try {
-      const saved = await apiPatchModelSettings(token, {
-        active_profile: modelSettings.active_profile,
-        official: {
-          provider: modelSettings.official.provider,
-          base_url: modelSettings.official.base_url,
-          model: modelSettings.official.model,
-          models: modelSettings.official.models,
-          api_mode: modelSettings.official.api_mode,
-          ...(officialApiKey ? { api_key: officialApiKey } : {}),
-          clear_api_key: clearOfficialApiKey,
-        },
-        relay: {
-          provider: modelSettings.relay.provider,
-          base_url: modelSettings.relay.base_url,
-          model: modelSettings.relay.model,
-          models: modelSettings.relay.models,
-          api_mode: modelSettings.relay.api_mode,
-          ...(relayApiKey ? { api_key: relayApiKey } : {}),
-          clear_api_key: clearRelayApiKey,
-        },
-      })
+      const saved = await apiPatchModelSettings(token, modelSettingsPayload(modelSettings))
       setModelSettings(saved)
       setOfficialApiKey('')
       setRelayApiKey('')
       setClearOfficialApiKey(false)
       setClearRelayApiKey(false)
-      setModelSettingsMessage({ type: 'success', text: '大模型配置已保存，新建 Response 将立即使用该配置。' })
+      setModelSettingsMessage({ type: 'success', text: '端点配置已保存；当前启用模型会用于下一条新消息。' })
     } catch (error) {
       setModelSettingsMessage({ type: 'error', text: error instanceof Error ? error.message : '保存大模型配置失败' })
+    } finally {
+      setModelSettingsSaving(false)
+    }
+  }
+
+  const activateModel = async (profile: ModelProfileSource, model?: string) => {
+    if (!modelSettings || modelSettingsSaving) return
+    const previous = modelSettings
+    let optimistic: UserModelSettings
+    try {
+      optimistic = withSelectedModel(modelSettings, profile, model)
+    } catch (error) {
+      setModelSettingsMessage({ type: 'error', text: error instanceof Error ? error.message : '模型不可用' })
+      return
+    }
+    setModelSettings(optimistic)
+    setModelSettingsSaving(true)
+    setModelSettingsMessage({ type: 'success', text: `正在切换到 ${profile === 'environment' ? optimistic.environment.model : optimistic[profile].model}…` })
+    try {
+      const saved = await apiSelectModelSettings(token, profile, model)
+      setModelSettings(saved)
+      const activeModel = saved.active_profile === 'environment' ? saved.environment.model : saved[saved.active_profile].model
+      setModelSettingsMessage({ type: 'success', text: `已切换到 ${activeModel}，下一条新消息将使用该模型。` })
+    } catch (error) {
+      setModelSettings(previous)
+      setModelSettingsMessage({ type: 'error', text: error instanceof Error ? error.message : '切换大模型失败' })
     } finally {
       setModelSettingsSaving(false)
     }
@@ -462,9 +516,10 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
                     <button
                       key={value}
                       type="button"
-                      onClick={() => setModelSettings({ ...modelSettings, active_profile: value })}
+                      disabled={modelSettingsSaving}
+                      onClick={() => void activateModel(value, value === 'environment' ? undefined : modelSettings[value].model)}
                       className={clsx(
-                        'rounded-2xl border p-4 text-left transition-colors',
+                        'rounded-2xl border p-4 text-left transition-colors disabled:opacity-50',
                         modelSettings.active_profile === value ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--accent-border)]',
                       )}
                     >
@@ -490,7 +545,10 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
                   endpoint={modelSettings.official}
                   apiKey={officialApiKey}
                   clearApiKey={clearOfficialApiKey}
+                  active={modelSettings.active_profile === 'official'}
+                  saving={modelSettingsSaving}
                   onEndpointChange={(endpoint) => updateModelEndpoint('official', endpoint)}
+                  onModelSelect={(model) => void activateModel('official', model)}
                   onApiKeyChange={setOfficialApiKey}
                   onClearApiKeyChange={setClearOfficialApiKey}
                 />
@@ -500,14 +558,17 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
                   endpoint={modelSettings.relay}
                   apiKey={relayApiKey}
                   clearApiKey={clearRelayApiKey}
+                  active={modelSettings.active_profile === 'relay'}
+                  saving={modelSettingsSaving}
                   onEndpointChange={(endpoint) => updateModelEndpoint('relay', endpoint)}
+                  onModelSelect={(model) => void activateModel('relay', model)}
                   onApiKeyChange={setRelayApiKey}
                   onClearApiKeyChange={setClearRelayApiKey}
                 />
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className={clsx('text-xs', modelSettingsMessage?.type === 'success' ? 'text-emerald-400' : 'text-red-400')}>{modelSettingsMessage?.text || '保存后仅影响新建或重试的 Response；运行中的 Response 保持本轮配置。'}</p>
+                  <p className={clsx('text-xs', modelSettingsMessage?.type === 'success' ? 'text-emerald-400' : 'text-red-400')}>{modelSettingsMessage?.text || '点击模型会立即切换；地址、Key 和候选列表修改后请保存配置。'}</p>
                   <button type="button" disabled={modelSettingsSaving} onClick={() => void saveModelSettings()} className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--accent-foreground)] disabled:opacity-60">
-                    {modelSettingsSaving ? '保存中…' : '保存大模型配置'}
+                    {modelSettingsSaving ? '处理中…' : '保存端点配置'}
                   </button>
                 </div>
               </div>

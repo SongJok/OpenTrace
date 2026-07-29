@@ -124,6 +124,11 @@ class ModelSettingsPayload(BaseModel):
     relay: ModelEndpointPayload
 
 
+class ModelSelectionPayload(BaseModel):
+    profile: Literal["environment", "official", "relay"]
+    model: str | None = Field(default=None, max_length=255)
+
+
 def _endpoint_view(
     *,
     provider: str,
@@ -307,5 +312,74 @@ async def patch_model_settings(
                 ErrorCodes.PARAM_INVALID.code, message="第三方中转站尚未配置 API Key"
             )
 
+    await db.commit()
+    return _settings_view(row, tenant_id=tenant_id, workspace_id=workspace_id)
+
+
+@router.patch("/users/model-settings/selection")
+async def select_active_model(
+    request: Request,
+    req: ModelSelectionPayload,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """点击模型后原子切换；不覆盖设置页中尚未保存的端点编辑。"""
+    scope = build_tenant_metadata(request, user_id=current_user.id)
+    tenant_id = str(scope.get("tenant_id") or "default")
+    workspace_id = str(scope.get("workspace_id") or "default")
+    row = await db.scalar(
+        select(UserModelSettings).where(
+            UserModelSettings.user_id == current_user.id,
+            UserModelSettings.tenant_id == tenant_id,
+            UserModelSettings.workspace_id == workspace_id,
+        )
+    )
+    if req.profile == "environment":
+        if row is not None:
+            row.active_profile = "environment"
+            await db.commit()
+        return _settings_view(row, tenant_id=tenant_id, workspace_id=workspace_id)
+
+    if row is None:
+        row = UserModelSettings(
+            id=str(uuid.uuid4()),
+            user_id=current_user.id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        db.add(row)
+        await db.flush()
+
+    current = _settings_view(row, tenant_id=tenant_id, workspace_id=workspace_id)
+    endpoint = current[req.profile]
+    selected_model = str(req.model or endpoint.get("model") or "").strip()
+    if not selected_model or selected_model not in set(endpoint.get("models") or []):
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message="所选模型不在当前服务的候选列表中，请先保存模型候选。",
+        )
+    if not endpoint.get("has_api_key"):
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message="当前模型服务尚未配置 API Key。",
+        )
+    try:
+        normalized_base_url = validate_base_url(str(endpoint.get("base_url") or ""))
+    except ValueError as exc:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
+
+    row.active_profile = req.profile
+    if req.profile == "official":
+        row.official_provider = str(endpoint.get("provider") or "")
+        row.official_base_url = normalized_base_url
+        row.official_model = selected_model
+        row.official_models = list(endpoint.get("models") or [])
+        row.official_api_mode = str(endpoint.get("api_mode") or "auto")
+    else:
+        row.relay_provider = str(endpoint.get("provider") or "")
+        row.relay_base_url = normalized_base_url
+        row.relay_model = selected_model
+        row.relay_models = list(endpoint.get("models") or [])
+        row.relay_api_mode = str(endpoint.get("api_mode") or "chat_completions")
     await db.commit()
     return _settings_view(row, tenant_id=tenant_id, workspace_id=workspace_id)

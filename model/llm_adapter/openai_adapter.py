@@ -52,6 +52,12 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
         self._client = None
         self._http_client = None
 
+    def _request_temperature(self, kwargs: dict[str, Any]) -> float:
+        """归一化不同 OpenAI-compatible 模型的采样参数约束。"""
+        if "kimi-k3" in str(self.config.model or "").lower():
+            return 1.0
+        return float(kwargs.get("temperature", self.config.temperature))
+
     def _get_client(self):
         if self._client is None:
             import httpx
@@ -121,7 +127,7 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
             resp = await client.chat.completions.create(
                 model=self.config.model,
                 messages=oai_msgs,
-                temperature=kwargs.get("temperature", self.config.temperature),
+                temperature=self._request_temperature(kwargs),
                 max_tokens=kwargs.get(
                     "max_tokens", kwargs.get("max_output_tokens", self.config.max_tokens)
                 ),
@@ -435,7 +441,7 @@ class OpenAICompatibleAdapter(BaseLLMAdapter):
                 stream = await client.chat.completions.create(
                     model=self.config.model,
                     messages=oai_msgs,
-                    temperature=kwargs.get("temperature", self.config.temperature),
+                    temperature=self._request_temperature(kwargs),
                     max_tokens=kwargs.get(
                         "max_tokens", kwargs.get("max_output_tokens", self.config.max_tokens)
                     ),
