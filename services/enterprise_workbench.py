@@ -222,10 +222,12 @@ async def enterprise_workbench_overview(
     tenant_id: str,
     workspace_id: str,
     recent_limit: int = 6,
+    attention_limit: int = 10,
 ) -> dict[str, Any]:
     """返回当前员工在当前企业空间内的统一工作台投影。"""
 
     recent_limit = max(3, min(recent_limit, 20))
+    attention_limit = max(5, min(attention_limit, 100))
     scope = (
         Project.user_id == user.id,
         Project.tenant_id == tenant_id,
@@ -291,7 +293,7 @@ async def enterprise_workbench_overview(
                 .join(ResponseRecord, ResponseApproval.response_id == ResponseRecord.id)
                 .where(ResponseApproval.status == "pending", *response_scope)
                 .order_by(ResponseApproval.created_at.desc())
-                .limit(10)
+                .limit(attention_limit)
             )
         ).scalars()
     )
@@ -370,7 +372,7 @@ async def enterprise_workbench_overview(
                         TaskNotification.read.is_(False),
                     )
                     .order_by(TaskNotification.created_at.desc())
-                    .limit(5)
+                    .limit(attention_limit)
                 )
             ).scalars()
         )
@@ -388,7 +390,7 @@ async def enterprise_workbench_overview(
                         AlertEvent.acknowledged_at.is_(None),
                     )
                     .order_by(AlertEvent.created_at.desc())
-                    .limit(50)
+                    .limit(attention_limit)
                 )
             ).scalars()
         )
@@ -463,7 +465,7 @@ async def enterprise_workbench_overview(
                 "created_at": _iso(notification.created_at),
             }
         )
-    for approval in pending_approvals[:5]:
+    for approval in pending_approvals:
         attention_items.append(
             {
                 "id": approval.id,
@@ -476,7 +478,7 @@ async def enterprise_workbench_overview(
                 "created_at": _iso(approval.created_at),
             }
         )
-    for event in alert_events[:5]:
+    for event in alert_events:
         attention_items.append(
             {
                 "id": event.id,
@@ -520,7 +522,7 @@ async def enterprise_workbench_overview(
                 "created_at": datetime.now(UTC).isoformat(),
             }
         )
-    attention_items = _sort_by_created_at(attention_items)[:10]
+    attention_items = _sort_by_created_at(attention_items)[:attention_limit]
 
     recent_activity: list[dict[str, Any]] = []
     for response in responses[:recent_limit]:

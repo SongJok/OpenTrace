@@ -1459,8 +1459,14 @@ export interface EnterpriseWorkbenchOverview {
   recent_activity: WorkbenchActivityItem[]
 }
 
-export async function apiGetEnterpriseWorkbench(token: string, recentLimit = 6): Promise<EnterpriseWorkbenchOverview> {
-  const res = await apiFetchResponses(`/workbench/overview?recent_limit=${recentLimit}`, { headers: authHeaders(token) })
+export async function apiGetEnterpriseWorkbench(
+  token: string,
+  recentLimit = 6,
+  attentionLimit?: number,
+): Promise<EnterpriseWorkbenchOverview> {
+  const query = new URLSearchParams({ recent_limit: String(recentLimit) })
+  if (attentionLimit !== undefined) query.set('attention_limit', String(attentionLimit))
+  const res = await apiFetchResponses(`/workbench/overview?${query.toString()}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取企业 AI 工作台失败'))
   return res.json()
 }

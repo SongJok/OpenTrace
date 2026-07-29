@@ -24,6 +24,7 @@ import {
   Workflow,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
+import { WorkbenchActionCenter } from '../components/WorkbenchActionCenter'
 import {
   apiCreateAssistantProfile,
   apiCreateGoal,
@@ -42,7 +43,7 @@ import {
   type ProjectItem,
 } from '../api/client'
 
-type WorkbenchTab = 'overview' | 'projects' | 'profiles' | 'goals'
+type WorkbenchTab = 'overview' | 'inbox' | 'projects' | 'profiles' | 'goals'
 type AssistantPersonality = AssistantProfileItem['personality']
 
 export const ASSISTANT_PERSONALITY_OPTIONS: Array<{
@@ -93,7 +94,7 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedTab = searchParams.get('tab') as WorkbenchTab | null
-  const activeTab: WorkbenchTab = requestedTab && ['overview', 'projects', 'profiles', 'goals'].includes(requestedTab)
+  const activeTab: WorkbenchTab = requestedTab && ['overview', 'inbox', 'projects', 'profiles', 'goals'].includes(requestedTab)
     ? requestedTab
     : 'overview'
 
@@ -121,7 +122,7 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
     setError('')
     try {
       const [nextOverview, nextProjects, nextGoals, nextProfiles, nextDataSources] = await Promise.all([
-        apiGetEnterpriseWorkbench(token),
+        apiGetEnterpriseWorkbench(token, 12, 50),
         apiListProjects(token),
         apiListGoals(token),
         apiListAssistantProfiles(token),
@@ -222,6 +223,7 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
   const projectNames = useMemo(() => new Map(projects.map((project) => [project.id, project.name])), [projects])
   const tabs: Array<{ id: WorkbenchTab; label: string }> = [
     { id: 'overview', label: '总览' },
+    { id: 'inbox', label: overview?.summary.unread_notifications ? `行动中心 ${overview.summary.unread_notifications}` : '行动中心' },
     { id: 'projects', label: 'Projects' },
     { id: 'profiles', label: 'AI 角色' },
     { id: 'goals', label: 'Goals' },
@@ -249,6 +251,7 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
         {loading && !overview ? <div className="grid min-h-[50vh] place-items-center text-sm text-[var(--text-secondary)]"><div className="flex items-center gap-2"><RefreshCw size={16} className="animate-spin" />正在汇总企业工作状态…</div></div> : null}
 
         {activeTab === 'overview' && overview && <OverviewPanel overview={overview} displayName={displayName} navigate={navigate} />}
+        {activeTab === 'inbox' && overview && <WorkbenchActionCenter overview={overview} onRefresh={() => load(true)} />}
 
         {activeTab === 'projects' && <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
           <section className="h-fit rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-5">

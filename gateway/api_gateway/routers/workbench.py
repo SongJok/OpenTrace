@@ -21,6 +21,7 @@ router = APIRouter()
 async def get_workbench_overview(
     request: Request,
     recent_limit: int = Query(default=6, ge=3, le=20),
+    attention_limit: int = Query(default=10, ge=5, le=100),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -33,4 +34,5 @@ async def get_workbench_overview(
         tenant_id=tenant_id,
         workspace_id=workspace_id,
         recent_limit=recent_limit,
+        attention_limit=attention_limit,
     )

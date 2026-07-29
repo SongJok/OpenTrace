@@ -22,6 +22,7 @@ def test_workbench_api_is_exposed_on_v2_main_path() -> None:
     operation = paths["/api/v2/workbench/overview"]["get"]
     assert operation["tags"] == ["enterprise-workbench"]
     assert any(parameter["name"] == "recent_limit" for parameter in operation["parameters"])
+    assert any(parameter["name"] == "attention_limit" for parameter in operation["parameters"])
 
 
 def test_enterprise_readiness_is_explainable_and_actionable() -> None:
@@ -109,3 +110,9 @@ def test_workbench_is_a_projection_not_a_second_execution_plane() -> None:
     assert "background" not in source
     assert "db.commit" not in source
     assert "db.add" not in source
+
+
+def test_workbench_attention_queue_has_a_bounded_enterprise_limit() -> None:
+    source = (ROOT / "services/enterprise_workbench.py").read_text(encoding="utf-8")
+    assert "attention_limit = max(5, min(attention_limit, 100))" in source
+    assert "attention_items = _sort_by_created_at(attention_items)[:attention_limit]" in source
