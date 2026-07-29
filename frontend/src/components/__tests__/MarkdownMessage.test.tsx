@@ -37,6 +37,28 @@ describe('MarkdownMessage', () => {
     expect(screen.getByText('已复制')).toBeInTheDocument()
   })
 
+  it('previews fenced HTML in an isolated sandbox after user confirmation', () => {
+    const html = '<!doctype html><html><body><button>演示按钮</button><script>document.body.dataset.ready = "true"</script></body></html>'
+    render(<MarkdownMessage content={`\`\`\`html\n${html}\n\`\`\``} />)
+
+    expect(screen.queryByRole('dialog', { name: 'HTML 效果预览' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '查看 HTML 效果' }))
+
+    expect(screen.getByRole('dialog', { name: 'HTML 效果预览' })).toBeInTheDocument()
+    const frame = screen.getByTitle('HTML 效果预览画布')
+    expect(frame).toHaveAttribute('srcdoc', html)
+    expect(frame).toHaveAttribute('sandbox', 'allow-scripts')
+    expect(frame.getAttribute('sandbox')).not.toContain('allow-same-origin')
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭 HTML 预览' }))
+    expect(screen.queryByRole('dialog', { name: 'HTML 效果预览' })).not.toBeInTheDocument()
+  })
+
+  it('does not show the effect preview action for non-HTML code', () => {
+    render(<MarkdownMessage content={'```ts\nconst ready = true\n```'} />)
+    expect(screen.queryByRole('button', { name: '查看 HTML 效果' })).not.toBeInTheDocument()
+  })
+
   it('renders LaTeX formulas', () => {
     const { container } = render(<MarkdownMessage content={'质能方程：$E = mc^2$'} />)
     expect(container.querySelector('.katex')).not.toBeNull()

@@ -1,9 +1,10 @@
-import { Children, isValidElement, type ReactNode, useState } from 'react'
+import { Children, isValidElement, type ReactNode, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
-import { Check, Copy, ExternalLink } from 'lucide-react'
+import { Check, Copy, ExternalLink, Eye, X } from 'lucide-react'
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter'
 import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash'
 import csharp from 'react-syntax-highlighter/dist/esm/languages/prism/csharp'
@@ -83,10 +84,64 @@ function nodeText(value: ReactNode): string {
     .join('')
 }
 
+function HtmlPreviewDialog({ code, onClose }: { code: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-3 backdrop-blur-sm sm:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="html-preview-title"
+      onClick={onClose}
+    >
+      <div
+        className="flex h-[min(88vh,900px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-raised)] shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center gap-3 border-b border-[var(--border)] px-4 py-3">
+          <div className="min-w-0">
+            <h2 id="html-preview-title" className="text-sm font-semibold text-[var(--text)]">HTML 效果预览</h2>
+            <p className="mt-0.5 text-xs text-[var(--text-secondary)]">内容在隔离沙箱中运行，与 OpenTrace 页面相互隔离。</p>
+          </div>
+          <button
+            type="button"
+            autoFocus
+            onClick={onClose}
+            className="ml-auto inline-flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+            aria-label="关闭 HTML 预览"
+            title="关闭"
+          >
+            <X size={17} aria-hidden="true" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 bg-white">
+          <iframe
+            title="HTML 效果预览画布"
+            srcDoc={code}
+            sandbox="allow-scripts"
+            referrerPolicy="no-referrer"
+            className="h-full w-full border-0 bg-white"
+          />
+        </div>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 function CodeBlock({ code, language }: { code: string; language?: string }) {
   const [copied, setCopied] = useState(false)
+  const [showPreview, setShowPreview] = useState(false)
   const normalizedLanguage = normalizeLanguage(language)
   const highlightLanguage = REGISTERED_LANGUAGES.has(normalizedLanguage) ? normalizedLanguage : undefined
+  const canPreview = normalizedLanguage === 'markup'
 
   const copy = async () => {
     try {
@@ -99,39 +154,55 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
   }
 
   return (
-    <div className="markdown-code-block not-prose" data-language={normalizedLanguage}>
-      <div className="markdown-code-header">
-        <span>{readableLanguage(language)}</span>
-        <button type="button" onClick={() => void copy()} aria-label="复制代码" title={copied ? '已复制' : '复制代码'}>
-          {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
-          <span>{copied ? '已复制' : '复制代码'}</span>
-        </button>
+    <>
+      <div className="markdown-code-block not-prose" data-language={normalizedLanguage}>
+        <div className="markdown-code-header">
+          <span>{readableLanguage(language)}</span>
+          <div className="markdown-code-actions">
+            {canPreview && (
+              <button
+                type="button"
+                onClick={() => setShowPreview(true)}
+                aria-label="查看 HTML 效果"
+                title="查看效果"
+              >
+                <Eye size={14} aria-hidden="true" />
+                <span>查看效果</span>
+              </button>
+            )}
+            <button type="button" onClick={() => void copy()} aria-label="复制代码" title={copied ? '已复制' : '复制代码'}>
+              {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+              <span>{copied ? '已复制' : '复制代码'}</span>
+            </button>
+          </div>
+        </div>
+        <SyntaxHighlighter
+          language={highlightLanguage}
+          style={oneDark}
+          PreTag="div"
+          customStyle={{
+            background: 'transparent',
+            border: 0,
+            borderRadius: 0,
+            fontSize: '13px',
+            lineHeight: '1.65',
+            margin: 0,
+            overflowX: 'auto',
+            padding: '16px 18px 18px',
+          }}
+          codeTagProps={{
+            className: 'markdown-code-source',
+            style: {
+              fontFamily: "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
+            },
+          }}
+          wrapLongLines={false}
+        >
+          {code}
+        </SyntaxHighlighter>
       </div>
-      <SyntaxHighlighter
-        language={highlightLanguage}
-        style={oneDark}
-        PreTag="div"
-        customStyle={{
-          background: 'transparent',
-          border: 0,
-          borderRadius: 0,
-          fontSize: '13px',
-          lineHeight: '1.65',
-          margin: 0,
-          overflowX: 'auto',
-          padding: '16px 18px 18px',
-        }}
-        codeTagProps={{
-          className: 'markdown-code-source',
-          style: {
-            fontFamily: "'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace",
-          },
-        }}
-        wrapLongLines={false}
-      >
-        {code}
-      </SyntaxHighlighter>
-    </div>
+      {showPreview && <HtmlPreviewDialog code={code} onClose={() => setShowPreview(false)} />}
+    </>
   )
 }
 

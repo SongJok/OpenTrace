@@ -300,6 +300,11 @@ textarea[data-chat-message-input]:focus-visible {
   padding: 0 9px 0 16px;
   text-transform: lowercase;
 }
+.markdown-code-actions {
+  align-items: center;
+  display: flex;
+  gap: 2px;
+}
 .markdown-code-header button {
   align-items: center;
   border-radius: 7px;
