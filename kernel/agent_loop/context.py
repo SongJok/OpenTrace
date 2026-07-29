@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +38,12 @@ from memory.constitution import (
     parse_memory_metadata,
 )
 from memory.graph import memory_graph_boosts
+from services.calendar import (
+    DEFAULT_CALENDAR_TIMEZONE,
+    CalendarValidationError,
+    ensure_timezone,
+    upcoming_calendar_context,
+)
 
 
 @dataclass
@@ -90,6 +97,10 @@ class ContextAssembler:
     ) -> AssembledContext:
         session = await db.get(ChatSession, response.conversation_id)
         extension = dict(request_payload.get("opentrace") or {})
+        try:
+            calendar_timezone = ensure_timezone(str(extension.get("timezone") or ""))
+        except CalendarValidationError:
+            calendar_timezone = DEFAULT_CALENDAR_TIMEZONE
         project_id = (
             str(extension.get("project_id") or getattr(session, "project_id", None) or "") or None
         )
@@ -111,6 +122,38 @@ class ContextAssembler:
                 tenant_policy=tenant_policy,
             )
         )
+        calendar_context_error: str | None = None
+        try:
+            calendar_events = await upcoming_calendar_context(
+                db,
+                user_id=response.user_id,
+                tenant_id=response.tenant_id,
+                workspace_id=response.workspace_id,
+                timezone_name=calendar_timezone,
+                days=14,
+            )
+        except Exception as exc:  # noqa: BLE001
+            calendar_events = []
+            calendar_context_error = type(exc).__name__
+        calendar_now = datetime.now(ZoneInfo(calendar_timezone))
+        calendar_lines = [
+            f"当前本地时间：{calendar_now.strftime('%Y-%m-%d %H:%M %A')}（{calendar_timezone}）。",
+            "用户日历是经过确认的时间型记忆。用户询问今天、明天或未来两周安排时，"
+            "直接依据下面的日历回答；其它日期范围调用 list_calendar_events。",
+        ]
+        if calendar_events:
+            calendar_lines.extend(
+                f"- {item['local_start_at']} 至 {item['local_end_at']} | {item['title']}"
+                + (f" | 地点：{item['location']}" if item.get("location") else "")
+                for item in calendar_events
+            )
+        elif calendar_context_error:
+            calendar_lines.append(
+                "- 日历上下文当前不可用；如用户询问日程，请调用 list_calendar_events 重试。"
+            )
+        else:
+            calendar_lines.append("- 未来两周暂无已确认日程。")
+        system_blocks.append("个人日历（一级记忆来源）：\n" + "\n".join(calendar_lines))
         disabled_session_skills = set(getattr(session, "disabled_skills", None) or [])
         enabled_session_skills = [
             str(item)
@@ -504,6 +547,10 @@ class ContextAssembler:
                 "memory_relation_count": memory_relation_count,
                 "memory_learning_enabled": memory_learning_enabled,
                 "attachment_count": len(attachment_ids),
+                "calendar_event_count": len(calendar_events),
+                "calendar_timezone": calendar_timezone,
+                "calendar_context_available": calendar_context_error is None,
+                "calendar_context_error": calendar_context_error,
             }
         )
         return AssembledContext(

@@ -106,6 +106,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
         project_id: projectId ?? undefined,
         data_source_ids: dataSourceId ? [dataSourceId] : [],
         attachment_ids: attachmentIds,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
       },
     )
   }

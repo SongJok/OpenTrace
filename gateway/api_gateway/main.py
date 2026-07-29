@@ -19,6 +19,7 @@ from gateway.api_gateway.routers import (
     analytical_skills,
     audit,
     auth,
+    calendar,
     chat,
     cognitive,
     connectors,
@@ -188,6 +189,7 @@ app.include_router(responses.router, prefix="/api/v2", tags=["responses"])
 app.include_router(interoperability.router, prefix="/api/v2", tags=["interoperability"])
 app.include_router(response_aux.router, prefix="/api/v2", tags=["response-resources"])
 app.include_router(agent_resources.router, prefix="/api/v2", tags=["agent-resources"])
+app.include_router(calendar.router, prefix="/api/v2", tags=["calendar"])
 app.include_router(workbench.router, prefix="/api/v2", tags=["enterprise-workbench"])
 app.include_router(alerts.router, prefix="/api/v2", tags=["alerts"])
 app.include_router(resource_permissions.router, prefix="/api/v2", tags=["resource-permissions"])

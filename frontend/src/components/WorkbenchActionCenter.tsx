@@ -112,7 +112,7 @@ export function WorkbenchActionCenter({
       severity: item.level,
       title: item.title,
       description: item.body || '新的企业主动工作通知等待查看。',
-      route: item.kind === 'alert' ? '/alerts' : '/tasks',
+      route: item.kind === 'alert' ? '/alerts' : item.kind === 'calendar' ? '/calendar' : '/tasks',
       resource_id: item.task_id,
       created_at: item.created_at,
       read: item.read,

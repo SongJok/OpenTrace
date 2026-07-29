@@ -2159,6 +2159,10 @@ class AgentLoop:
                 "create_scheduled_task",
                 "list_data_alerts",
                 "create_data_alert",
+                "list_calendar_events",
+                "create_calendar_event",
+                "update_calendar_event",
+                "cancel_calendar_event",
             }:
                 extension = dict((response.request_payload or {}).get("opentrace") or {})
                 tool_arguments.update(
@@ -2168,6 +2172,12 @@ class AgentLoop:
                         "workspace_id": response.workspace_id,
                         "project_id": str(extension.get("project_id") or "") or None,
                         "conversation_id": response.conversation_id,
+                        "response_id": response.id,
+                        "timezone": str(
+                            extension.get("timezone")
+                            or tool_arguments.get("timezone")
+                            or "Asia/Shanghai"
+                        ),
                     }
                 )
             executor = get_tool_executor()

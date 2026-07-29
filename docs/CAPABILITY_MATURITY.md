@@ -8,7 +8,7 @@
 | Agent Loop 与持久化审批 | **Alpha** | Golden Dataset、Trace Grading、副作用 reconciliation 演练 |
 | DataAgent / Text2SQL | **Alpha** | 脱敏评测集、方言黑盒覆盖、跨租户负向测试 |
 | RAG 与知识发布 | **Alpha** | 发布治理评测、引用准确率基线、生产规模召回测试 |
-| Memory / Goal / Task / Alert | **Alpha** | 一致性、恢复、租户隔离和运维告警覆盖 |
+| Memory / Calendar / Goal / Task / Alert | **Alpha** | 日历共享与外部同步、一致性、恢复、租户隔离和运维告警覆盖 |
 | Agent Bus 与专家 Agent | **Alpha** | 独立 Worker Pool、背压、DLQ 运维和容量基线 |
 | 旧 Cognitive Runtime | **compatibility / experimental** | 不进入当前产品主路径；仅维护兼容合约 |
 | MCP / A2A | **未对外支持** | 完成真实协议、授权、审批、隔离与互操作测试 |

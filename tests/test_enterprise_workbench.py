@@ -84,6 +84,7 @@ def test_workbench_queries_keep_user_tenant_and_workspace_boundaries() -> None:
         "ResponseRecord",
         "TaskDefinition",
         "AlertRule",
+        "CalendarEvent",
         "KnowledgeSource",
     ):
         assert f"{model}.tenant_id == tenant_id" in source
@@ -95,6 +96,7 @@ def test_workbench_queries_keep_user_tenant_and_workspace_boundaries() -> None:
         "ResponseRecord",
         "TaskDefinition",
         "AlertRule",
+        "CalendarEvent",
     ):
         assert f"{model}.user_id == user.id" in source
     assert "accessible_data_sources_statement" in source

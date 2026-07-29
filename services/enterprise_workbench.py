@@ -19,6 +19,7 @@ from infra.storage.models import (
     AlertEvent,
     AlertRule,
     AssistantProfile,
+    CalendarEvent,
     GoalRun,
     KnowledgeSource,
     Project,
@@ -348,7 +349,18 @@ async def enterprise_workbench_overview(
         ).scalars()
     )
     alert_ids = [row.id for row in alerts]
-    notification_subject_ids = task_ids + alert_ids
+    calendar_ids = list(
+        (
+            await db.execute(
+                select(CalendarEvent.id).where(
+                    CalendarEvent.user_id == user.id,
+                    CalendarEvent.tenant_id == tenant_id,
+                    CalendarEvent.workspace_id == workspace_id,
+                )
+            )
+        ).scalars()
+    )
+    notification_subject_ids = task_ids + alert_ids + calendar_ids
     unread_notifications = 0
     unread_notification_rows: list[TaskNotification] = []
     if notification_subject_ids:
@@ -451,8 +463,10 @@ async def enterprise_workbench_overview(
 
     attention_items: list[dict[str, Any]] = []
     alert_id_set = set(alert_ids)
+    calendar_id_set = set(calendar_ids)
     for notification in unread_notification_rows:
         is_alert = notification.task_id in alert_id_set
+        is_calendar = notification.task_id in calendar_id_set
         attention_items.append(
             {
                 "id": notification.id,
@@ -460,7 +474,7 @@ async def enterprise_workbench_overview(
                 "severity": notification.level,
                 "title": notification.title,
                 "description": notification.body or "新的企业主动工作通知等待查看。",
-                "route": "/alerts" if is_alert else "/tasks",
+                "route": "/alerts" if is_alert else "/calendar" if is_calendar else "/tasks",
                 "resource_id": notification.task_id,
                 "created_at": _iso(notification.created_at),
             }

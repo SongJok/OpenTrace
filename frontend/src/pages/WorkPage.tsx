@@ -22,6 +22,7 @@ import {
   Sparkles,
   Target,
   Workflow,
+  CalendarDays,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 import { WorkbenchActionCenter } from '../components/WorkbenchActionCenter'
@@ -316,7 +317,7 @@ function OverviewPanel({ overview, displayName, navigate }: { overview: Enterpri
 
     <section><div className="mb-3 flex items-center justify-between"><div><h2 className="font-medium">最近工作</h2><p className="text-xs text-[var(--text-secondary)]">Responses 与 Goal 的持久化活动投影。</p></div><Clock3 size={16} className="text-[var(--text-secondary)]" /></div><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{overview.recent_activity.map((item) => <button key={`${item.type}-${item.id}`} onClick={() => navigate(item.route)} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-left hover:border-[var(--accent)]/40"><div className="flex items-center justify-between gap-3"><span className="inline-flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)]">{item.type === 'goal' ? <Target size={12} /> : <Workflow size={12} />}{item.type === 'goal' ? 'Goal' : 'Response'}</span><span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px]">{statusLabel[item.status] || item.status}</span></div><h3 className="mt-3 line-clamp-2 text-sm font-medium">{item.title}</h3><p className="mt-2 text-xs text-[var(--text-secondary)]">{item.description}</p><p className="mt-3 text-[10px] text-[var(--text-secondary)]">{formatTime(item.created_at)}</p></button>)}{overview.recent_activity.length === 0 && <EmptyState title="还没有工作记录" description="从一次企业问答或长期 Goal 开始。" />}</div></section>
 
-    <section className="grid gap-3 sm:grid-cols-3"><QuickLink icon={BellRing} title="定时任务" description={`${overview.summary.scheduled_tasks} 个正在运行`} route="/tasks" navigate={navigate} /><QuickLink icon={Activity} title="主动预警" description={`${overview.summary.unacknowledged_alerts} 个待确认`} route="/alerts" navigate={navigate} /><QuickLink icon={BookOpen} title="企业知识库" description={`${overview.summary.knowledge_spaces} 个授权空间`} route="/knowledge-base" navigate={navigate} /></section>
+    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><QuickLink icon={CalendarDays} title="我的日历" description="时间型记忆与个人安排" route="/calendar" navigate={navigate} /><QuickLink icon={BellRing} title="定时任务" description={`${overview.summary.scheduled_tasks} 个正在运行`} route="/tasks" navigate={navigate} /><QuickLink icon={Activity} title="主动预警" description={`${overview.summary.unacknowledged_alerts} 个待确认`} route="/alerts" navigate={navigate} /><QuickLink icon={BookOpen} title="企业知识库" description={`${overview.summary.knowledge_spaces} 个授权空间`} route="/knowledge-base" navigate={navigate} /></section>
   </div>
 }
 

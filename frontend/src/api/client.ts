@@ -1645,7 +1645,7 @@ export interface NotificationItem {
   id: string
   task_id: string
   run_id?: string | null
-  kind: 'scheduled_task' | 'alert'
+  kind: 'scheduled_task' | 'alert' | 'calendar'
   level: 'info' | 'success' | 'warning' | 'error' | string
   title: string
   body?: string | null
@@ -1940,6 +1940,7 @@ export async function apiChatStream(
             data_source_ids: Array.isArray(payload?.data_source_ids) ? payload.data_source_ids : [],
             assistant_profile_id: typeof payload?.assistant_profile_id === 'string' ? payload.assistant_profile_id : undefined,
             attachment_ids: Array.isArray(payload?.attachment_ids) ? payload.attachment_ids : [],
+            timezone: typeof payload?.timezone === 'string' ? payload.timezone : Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
           },
           ...(typeof payload?.model === 'string' && payload.model.trim() ? { model: payload.model.trim() } : {}),
         }),
@@ -2678,4 +2679,82 @@ export async function apiDeleteCustomInstructions(token: string): Promise<{ dele
   })
   if (!res.ok) throw new Error('Failed to delete custom instructions')
   return res.json()
+}
+
+export interface CalendarEventItem {
+  id: string
+  occurrence_id: string
+  title: string
+  description: string
+  location: string
+  event_type: 'event' | 'meeting' | 'focus' | 'reminder'
+  start_at: string
+  end_at: string
+  local_start_at: string
+  local_end_at: string
+  timezone: string
+  view_timezone: string
+  all_day: boolean
+  recurrence_rule?: string | null
+  reminder_minutes: number[]
+  status: string
+  source: 'manual' | 'assistant' | string
+  source_response_id?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface CalendarEventPayload {
+  title: string
+  description?: string
+  location?: string
+  event_type?: CalendarEventItem['event_type']
+  start_at: string
+  end_at: string
+  timezone: string
+  all_day?: boolean
+  recurrence_rule?: string | null
+  reminder_minutes?: number[]
+}
+
+export async function apiListCalendarEvents(
+  token: string,
+  start: string,
+  end: string,
+  timezone: string,
+): Promise<CalendarEventItem[]> {
+  const query = new URLSearchParams({ start, end, timezone, limit: '200' })
+  const res = await apiFetchResponses(`/calendar/events?${query.toString()}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取日历失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiCreateCalendarEvent(
+  token: string,
+  payload: CalendarEventPayload,
+): Promise<CalendarEventItem> {
+  const res = await apiFetchResponses('/calendar/events', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '创建日程失败'))
+  return res.json()
+}
+
+export async function apiUpdateCalendarEvent(
+  token: string,
+  eventId: string,
+  payload: Partial<CalendarEventPayload>,
+): Promise<CalendarEventItem> {
+  const res = await apiFetchResponses(`/calendar/events/${encodeURIComponent(eventId)}`, {
+    method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '更新日程失败'))
+  return res.json()
+}
+
+export async function apiCancelCalendarEvent(token: string, eventId: string): Promise<void> {
+  const res = await apiFetchResponses(`/calendar/events/${encodeURIComponent(eventId)}`, {
+    method: 'DELETE', headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '取消日程失败'))
 }

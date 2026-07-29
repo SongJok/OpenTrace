@@ -91,6 +91,7 @@ class OpenTraceOptions(BaseModel):
     data_source_ids: list[str] = Field(default_factory=list)
     attachment_ids: list[str] = Field(default_factory=list, max_length=10)
     goal_id: str | None = None
+    timezone: str = Field(default="Asia/Shanghai", max_length=64)
 
 
 class ResponseCreateRequest(BaseModel):

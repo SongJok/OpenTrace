@@ -22,6 +22,7 @@ from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
     AlertRule,
     AssistantProfile,
+    CalendarEvent,
     ChatSession,
     GoalCheckpoint,
     GoalRun,
@@ -1047,6 +1048,13 @@ def _owned_notification_subjects(
                 AlertRule.workspace_id == workspace_id,
             )
         )
+        .union(
+            select(CalendarEvent.id).where(
+                CalendarEvent.user_id == user_id,
+                CalendarEvent.tenant_id == tenant_id,
+                CalendarEvent.workspace_id == workspace_id,
+            )
+        )
     )
 
 
@@ -1099,6 +1107,19 @@ async def list_notifications(
         .scalars()
         .all()
     )
+    calendar_ids = set(
+        (
+            await db.execute(
+                select(CalendarEvent.id).where(
+                    CalendarEvent.user_id == current_user.id,
+                    CalendarEvent.tenant_id == tenant_id,
+                    CalendarEvent.workspace_id == workspace_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     return {
         "unread_count": int(unread_count or 0),
         "items": [
@@ -1106,7 +1127,11 @@ async def list_notifications(
                 "id": row.id,
                 "task_id": row.task_id,
                 "run_id": row.run_id,
-                "kind": "alert" if row.task_id in alert_ids else "scheduled_task",
+                "kind": (
+                    "alert"
+                    if row.task_id in alert_ids
+                    else "calendar" if row.task_id in calendar_ids else "scheduled_task"
+                ),
                 "level": row.level,
                 "title": row.title,
                 "body": row.body,

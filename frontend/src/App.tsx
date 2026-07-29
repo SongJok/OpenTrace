@@ -23,6 +23,7 @@ const SharedConversationPage = lazy(() => import('./pages/SharedConversationPage
 const WorkPage = lazy(() => import('./pages/WorkPage'))
 const AlertsPage = lazy(() => import('./pages/AlertsPage'))
 const EnterpriseAdminPage = lazy(() => import('./pages/EnterpriseAdminPage'))
+const CalendarPage = lazy(() => import('./pages/CalendarPage'))
 
 function RouteLoading() {
   return (
@@ -112,6 +113,11 @@ function EnterpriseAdminRoute() {
   return <EnterpriseAdminPage onBack={() => navigate('/work')} />
 }
 
+function CalendarRoute() {
+  const navigate = useNavigate()
+  return <CalendarPage onBack={() => navigate('/chat')} />
+}
+
 
 export default function App() {
   const token = useAuthStore((s) => s.token)
@@ -140,6 +146,7 @@ export default function App() {
         <Route path="/documents" element={<Protected><DocumentsRoute /></Protected>} />
         <Route path="/settings" element={<Protected><SettingsRoute /></Protected>} />
         <Route path="/tasks" element={<Protected><TasksRoute /></Protected>} />
+        <Route path="/calendar" element={<Protected><CalendarRoute /></Protected>} />
         <Route path="/work" element={<Protected><WorkRoute /></Protected>} />
         <Route path="/audit" element={<Protected><AuditRoute /></Protected>} />
         <Route path="/memories" element={<Protected><MemoryRoute /></Protected>} />

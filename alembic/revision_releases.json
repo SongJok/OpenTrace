@@ -15,6 +15,9 @@
     },
     "r0005_user_model_settings": {
       "release": "unreleased"
+    },
+    "r0006_calendar_events": {
+      "release": "unreleased"
     }
   }
 }

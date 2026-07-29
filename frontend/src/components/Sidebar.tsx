@@ -28,6 +28,7 @@ import {
   CheckCheck,
   Building2,
   X,
+  CalendarDays,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
@@ -111,7 +112,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
       setUnreadCount((count) => Math.max(0, count - 1))
     }
     setShowNotifications(false)
-    navigate(notification.kind === 'alert' ? '/alerts' : '/tasks')
+    navigate(notification.kind === 'alert' ? '/alerts' : notification.kind === 'calendar' ? '/calendar' : '/tasks')
     onMobileClose?.()
   }
 
@@ -509,6 +510,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           <NavButton icon={<Database size={15} className="cartoon-icon icon-database" />} label="数据库" onClick={() => navigate('/databases')} />
           <NavButton icon={<Brain size={15} className="cartoon-icon icon-memory" />} label={t('nav.memories')} onClick={() => navigate('/memories')} />
           <NavButton icon={<Bell size={15} className="cartoon-icon icon-task" />} label={t('nav.tasks')} onClick={() => navigate('/tasks')} />
+          <NavButton icon={<CalendarDays size={15} />} label="我的日历" onClick={() => navigate('/calendar')} />
           <NavButton icon={<Activity size={15} />} label="主动预警" onClick={() => navigate('/alerts')} />
           <NavButton icon={<ShieldAlert size={15} className="cartoon-icon icon-audit" />} label={t('nav.audit')} onClick={() => navigate('/audit')} />
           <NavButton icon={<Plug size={15} className="cartoon-icon icon-integrations" />} label={t('nav.integrations')} onClick={() => navigate('/integrations')} />

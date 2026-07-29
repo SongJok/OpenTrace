@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -13,7 +14,17 @@ from sqlalchemy import select
 from infra.responses.scheduler import next_occurrence, parse_schedule_expression
 from infra.security.resource_scope import get_accessible_data_source
 from infra.storage.database import AsyncSessionLocal
-from infra.storage.models import AlertRule, ChatSession, Project, TaskDefinition
+from infra.storage.models import AlertRule, CalendarEvent, ChatSession, Project, TaskDefinition
+from services.calendar import (
+    CalendarValidationError,
+    ensure_timezone,
+    normalize_recurrence_rule,
+    parse_calendar_datetime,
+    validate_event_window,
+)
+from services.calendar import (
+    list_calendar_events as query_calendar_events,
+)
 from tools.registry.registry import registry
 
 
@@ -343,3 +354,255 @@ async def create_data_alert(
                 "next_run_at": row.next_run_at.isoformat() if row.next_run_at else None,
             },
         }
+
+
+@registry.tool(
+    name="list_calendar_events",
+    description=(
+        "查询当前用户个人日历。用户询问今天、明天、本周、下周安排或空闲时间时调用；"
+        "start_at 和 end_at 使用 ISO-8601，未提供时查询未来 14 天。"
+    ),
+    tags=["日历", "日程", "安排", "今天", "明天", "本周", "calendar", "agenda"],
+    parameters={
+        "type": "object",
+        "properties": {
+            "start_at": {"type": "string", "description": "查询开始时间 ISO-8601"},
+            "end_at": {"type": "string", "description": "查询结束时间 ISO-8601"},
+            "timezone": {"type": "string", "description": "IANA 时区，如 Asia/Shanghai"},
+        },
+        "required": [],
+    },
+)
+async def list_calendar_events_tool(
+    start_at: str = "",
+    end_at: str = "",
+    timezone: str = "Asia/Shanghai",
+    user_id: str = "",
+    tenant_id: str = "default",
+    workspace_id: str = "default",
+    **_: Any,
+) -> dict[str, Any]:
+    timezone = ensure_timezone(timezone)
+    now = datetime.now(ZoneInfo(timezone))
+    start = parse_calendar_datetime(start_at, timezone) if start_at else now.astimezone(UTC)
+    end = (
+        parse_calendar_datetime(end_at, timezone)
+        if end_at
+        else (now + timedelta(days=14)).astimezone(UTC)
+    )
+    async with AsyncSessionLocal() as db:
+        items = await query_calendar_events(
+            db,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            start_at=start,
+            end_at=end,
+            timezone_name=timezone,
+            limit=100,
+        )
+    return {"status": "success", "timezone": timezone, "items": items}
+
+
+@registry.tool(
+    name="create_calendar_event",
+    description=(
+        "在当前用户个人日历中创建日程。仅当用户明确说“记录、添加到日历、提醒我、安排”"
+        "时调用；这是持久化写操作，执行前必须由用户审批。相对日期必须先按当前日期和 timezone "
+        "换算成明确 ISO-8601 时间。"
+    ),
+    tags=["添加日历", "记录日程", "提醒我", "安排会议", "明天要做", "calendar", "create event"],
+    side_effect="write",
+    supports_parallel=False,
+    max_retries=0,
+    parameters={
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "start_at": {"type": "string", "description": "开始时间 ISO-8601"},
+            "end_at": {"type": "string", "description": "结束时间 ISO-8601；省略时默认 1 小时"},
+            "timezone": {"type": "string", "description": "IANA 时区"},
+            "description": {"type": "string"},
+            "location": {"type": "string"},
+            "event_type": {"type": "string", "enum": ["event", "meeting", "focus", "reminder"]},
+            "all_day": {"type": "boolean"},
+            "recurrence_rule": {"type": "string", "description": "可选 RFC5545 RRULE"},
+            "reminder_minutes": {"type": "array", "items": {"type": "integer"}},
+        },
+        "required": ["title", "start_at"],
+    },
+)
+async def create_calendar_event_tool(
+    title: str,
+    start_at: str,
+    end_at: str = "",
+    timezone: str = "Asia/Shanghai",
+    description: str = "",
+    location: str = "",
+    event_type: str = "event",
+    all_day: bool = False,
+    recurrence_rule: str = "",
+    reminder_minutes: list[int] | None = None,
+    user_id: str = "",
+    tenant_id: str = "default",
+    workspace_id: str = "default",
+    response_id: str | None = None,
+    **_: Any,
+) -> dict[str, Any]:
+    timezone = ensure_timezone(timezone)
+    description = str(description or "")
+    location = str(location or "")
+    event_type = str(event_type or "event")
+    recurrence_rule = str(recurrence_rule or "")
+    all_day = bool(all_day)
+    start = parse_calendar_datetime(start_at, timezone)
+    end = (
+        parse_calendar_datetime(end_at, timezone)
+        if end_at
+        else start + (timedelta(days=1) if all_day else timedelta(hours=1))
+    )
+    validate_event_window(start, end, all_day=all_day, timezone_name=timezone)
+    if event_type not in {"event", "meeting", "focus", "reminder"}:
+        raise CalendarValidationError("invalid_event_type")
+    reminders = sorted(
+        {int(value) for value in (reminder_minutes or [15]) if 0 <= int(value) <= 10080}
+    )[:5]
+    async with AsyncSessionLocal() as db:
+        row = CalendarEvent(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            title=title.strip()[:255],
+            description=description.strip(),
+            location=location.strip()[:512],
+            event_type=event_type,
+            start_at=start,
+            end_at=end,
+            timezone=timezone,
+            all_day=all_day,
+            recurrence_rule=normalize_recurrence_rule(recurrence_rule),
+            reminder_minutes=reminders,
+            status="confirmed",
+            source="assistant",
+            source_response_id=response_id,
+        )
+        db.add(row)
+        await db.commit()
+        return {
+            "status": "success",
+            "event": {
+                "id": row.id,
+                "title": row.title,
+                "start_at": row.start_at.isoformat(),
+                "end_at": row.end_at.isoformat(),
+                "timezone": row.timezone,
+                "all_day": row.all_day,
+                "source": row.source,
+            },
+        }
+
+
+@registry.tool(
+    name="update_calendar_event",
+    description="更新当前用户个人日历中的已有日程；必须先查询并取得 event_id。写操作需要用户审批。",
+    tags=["修改日程", "改时间", "日历更新", "reschedule", "calendar update"],
+    side_effect="write",
+    supports_parallel=False,
+    max_retries=0,
+    parameters={
+        "type": "object",
+        "properties": {
+            "event_id": {"type": "string"},
+            "title": {"type": "string"},
+            "start_at": {"type": "string"},
+            "end_at": {"type": "string"},
+            "timezone": {"type": "string"},
+            "description": {"type": "string"},
+            "location": {"type": "string"},
+        },
+        "required": ["event_id"],
+    },
+)
+async def update_calendar_event_tool(
+    event_id: str,
+    title: str = "",
+    start_at: str = "",
+    end_at: str = "",
+    timezone: str = "Asia/Shanghai",
+    description: str = "",
+    location: str = "",
+    user_id: str = "",
+    tenant_id: str = "default",
+    workspace_id: str = "default",
+    **_: Any,
+) -> dict[str, Any]:
+    timezone = ensure_timezone(timezone)
+    title = str(title or "")
+    start_at = str(start_at or "")
+    end_at = str(end_at or "")
+    description = str(description or "")
+    location = str(location or "")
+    async with AsyncSessionLocal() as db:
+        row = await db.scalar(
+            select(CalendarEvent).where(
+                CalendarEvent.id == event_id,
+                CalendarEvent.user_id == user_id,
+                CalendarEvent.tenant_id == tenant_id,
+                CalendarEvent.workspace_id == workspace_id,
+                CalendarEvent.status != "cancelled",
+            )
+        )
+        if row is None:
+            raise ValueError("calendar_event_not_found")
+        start = parse_calendar_datetime(start_at, timezone) if start_at else row.start_at
+        end = parse_calendar_datetime(end_at, timezone) if end_at else row.end_at
+        validate_event_window(start, end, all_day=row.all_day, timezone_name=timezone)
+        row.start_at = start
+        row.end_at = end
+        row.timezone = timezone
+        if title.strip():
+            row.title = title.strip()[:255]
+        if description.strip():
+            row.description = description.strip()
+        if location.strip():
+            row.location = location.strip()[:512]
+        await db.commit()
+        return {"status": "success", "event_id": row.id, "title": row.title}
+
+
+@registry.tool(
+    name="cancel_calendar_event",
+    description="取消当前用户个人日历中的日程；必须先查询并取得 event_id。写操作需要用户审批。",
+    tags=["删除日程", "取消日程", "calendar cancel", "calendar delete"],
+    side_effect="destructive",
+    supports_parallel=False,
+    max_retries=0,
+    parameters={
+        "type": "object",
+        "properties": {"event_id": {"type": "string"}},
+        "required": ["event_id"],
+    },
+)
+async def cancel_calendar_event_tool(
+    event_id: str,
+    user_id: str = "",
+    tenant_id: str = "default",
+    workspace_id: str = "default",
+    **_: Any,
+) -> dict[str, Any]:
+    async with AsyncSessionLocal() as db:
+        row = await db.scalar(
+            select(CalendarEvent).where(
+                CalendarEvent.id == event_id,
+                CalendarEvent.user_id == user_id,
+                CalendarEvent.tenant_id == tenant_id,
+                CalendarEvent.workspace_id == workspace_id,
+                CalendarEvent.status != "cancelled",
+            )
+        )
+        if row is None:
+            raise ValueError("calendar_event_not_found")
+        row.status = "cancelled"
+        await db.commit()
+        return {"status": "success", "event_id": row.id, "event_status": "cancelled"}

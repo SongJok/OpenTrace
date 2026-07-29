@@ -1684,6 +1684,62 @@ class GoalCheckpoint(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class CalendarEvent(Base):
+    """用户个人日历事件；重复事件按 RFC5545 规则在查询时展开。"""
+
+    __tablename__ = "calendar_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    location: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False, default="event")
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Shanghai")
+    all_day: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    recurrence_rule: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    reminder_minutes: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=lambda: [15])
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="confirmed", index=True)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
+    source_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CalendarReminderDelivery(Base):
+    """日历提醒投递账本，防止 Worker 重启或并发轮询造成重复通知。"""
+
+    __tablename__ = "calendar_reminder_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "event_id",
+            "occurrence_start",
+            "reminder_minutes",
+            name="uq_calendar_reminder_delivery",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    event_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("calendar_events.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    occurrence_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reminder_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    delivered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class MemoryCandidate(Base):
     __tablename__ = "memory_candidates"
 
