@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gateway.api_gateway.resource_scope import get_accessible_data_source
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
+from infra.assistant_profiles import BUILT_IN_ASSISTANT_PROFILES
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
@@ -46,7 +47,9 @@ class ProjectPayload(BaseModel):
 
 class AssistantProfilePayload(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    personality: str = Field(default="none", pattern="^(none|friendly|pragmatic)$")
+    personality: str = Field(
+        default="none", pattern="^(none|friendly|pragmatic|cute|romantic|funny)$"
+    )
     instructions: str = Field(default="", max_length=16_000)
     default_model_profile: str = Field(default="auto", pattern="^(auto|fast|deep)$")
     tool_policy: dict[str, Any] = Field(default_factory=dict)
@@ -124,25 +127,31 @@ def _profile(row: AssistantProfile) -> dict[str, Any]:
 
 
 async def _seed_profiles(db: AsyncSession, user: User, tenant_id: str, workspace_id: str) -> None:
-    existing = await db.scalar(
-        select(AssistantProfile.id)
-        .where(
-            AssistantProfile.user_id == user.id,
-            AssistantProfile.tenant_id == tenant_id,
-            AssistantProfile.workspace_id == workspace_id,
-            AssistantProfile.built_in.is_(True),
-        )
-        .limit(1)
-    )
-    if existing:
-        return
-    for index, (name, personality) in enumerate(
+    rows = (
         (
-            ("默认", "none"),
-            ("友好", "friendly"),
-            ("务实", "pragmatic"),
+            await db.execute(
+                select(AssistantProfile).where(
+                    AssistantProfile.user_id == user.id,
+                    AssistantProfile.tenant_id == tenant_id,
+                    AssistantProfile.workspace_id == workspace_id,
+                )
+            )
         )
-    ):
+        .scalars()
+        .all()
+    )
+    by_name = {row.name: row for row in rows}
+    has_default = any(row.is_default for row in rows)
+    changed = False
+    for index, (name, personality) in enumerate(BUILT_IN_ASSISTANT_PROFILES):
+        existing = by_name.get(name)
+        if existing:
+            # 兼容升级前已由用户创建的同名角色，避免唯一约束阻断内置角色补齐。
+            if not existing.built_in:
+                existing.built_in = True
+                existing.personality = personality
+                changed = True
+            continue
         db.add(
             AssistantProfile(
                 id=str(uuid.uuid4()),
@@ -152,10 +161,12 @@ async def _seed_profiles(db: AsyncSession, user: User, tenant_id: str, workspace
                 name=name,
                 personality=personality,
                 built_in=True,
-                is_default=index == 0,
+                is_default=index == 0 and not has_default,
             )
         )
-    await db.commit()
+        changed = True
+    if changed:
+        await db.commit()
 
 
 async def _validate_project_bindings(

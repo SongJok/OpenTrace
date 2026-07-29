@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from infra.assistant_profiles import personality_instruction
 from infra.config.settings import settings
 from infra.observability.tracer import traced_async
 from infra.security.resource_scope import accessible_data_sources_statement
@@ -193,11 +194,7 @@ class ContextAssembler:
                 )
             )
             if profile:
-                personality = {
-                    "friendly": "语气友好、自然，但保持清晰和诚实。",
-                    "pragmatic": "直接给出结论和可执行内容，避免不必要铺垫。",
-                    "none": "使用中性、清晰的表达。",
-                }.get(profile.personality, "")
+                personality = personality_instruction(profile.personality)
                 system_blocks.append(
                     "助手角色：\n"
                     + "\n".join(x for x in (personality, profile.instructions.strip()) if x)

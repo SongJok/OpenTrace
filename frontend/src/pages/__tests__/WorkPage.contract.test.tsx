@@ -13,6 +13,18 @@ describe('enterprise AI workbench contracts', () => {
     expect(source).toContain('apiListGoals')
   })
 
+  it('offers all six assistant personality styles when creating a role', async () => {
+    const { ASSISTANT_PERSONALITY_OPTIONS } = await import('../WorkPage')
+    expect(ASSISTANT_PERSONALITY_OPTIONS).toEqual([
+      { value: 'none', label: '中性' },
+      { value: 'friendly', label: '友好' },
+      { value: 'pragmatic', label: '务实' },
+      { value: 'cute', label: '可爱' },
+      { value: 'romantic', label: '浪漫' },
+      { value: 'funny', label: '搞笑' },
+    ])
+  })
+
   it('reads the durable v2 workbench projection', async () => {
     const payload = {
       generated_at: '2026-07-27T00:00:00Z',

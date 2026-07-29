@@ -1493,10 +1493,12 @@ export async function apiUpdateProject(token: string, projectId: string, payload
   return res.json()
 }
 
+export type AssistantPersonality = 'none' | 'friendly' | 'pragmatic' | 'cute' | 'romantic' | 'funny'
+
 export interface AssistantProfileItem {
   id: string
   name: string
-  personality: 'none' | 'friendly' | 'pragmatic'
+  personality: AssistantPersonality
   instructions: string
   default_model_profile: 'auto' | 'fast' | 'deep'
   built_in: boolean

@@ -35,6 +35,7 @@ import {
   apiListGoals,
   apiListProjects,
   apiUpdateProject,
+  type AssistantPersonality,
   type AssistantProfileItem,
   type DataSourceItem,
   type EnterpriseWorkbenchOverview,
@@ -43,6 +44,22 @@ import {
 } from '../api/client'
 
 type WorkbenchTab = 'overview' | 'projects' | 'profiles' | 'goals'
+
+export const ASSISTANT_PERSONALITY_OPTIONS: Array<{
+  value: AssistantPersonality
+  label: string
+}> = [
+  { value: 'none', label: '中性' },
+  { value: 'friendly', label: '友好' },
+  { value: 'pragmatic', label: '务实' },
+  { value: 'cute', label: '可爱' },
+  { value: 'romantic', label: '浪漫' },
+  { value: 'funny', label: '搞笑' },
+]
+
+const ASSISTANT_PERSONALITY_LABELS = Object.fromEntries(
+  ASSISTANT_PERSONALITY_OPTIONS.map((item) => [item.value, item.label]),
+) as Record<AssistantPersonality, string>
 
 const statusLabel: Record<string, string> = {
   queued: '排队中',
@@ -97,7 +114,7 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
   const [projectId, setProjectId] = useState('')
   const [profileName, setProfileName] = useState('')
   const [profileInstructions, setProfileInstructions] = useState('')
-  const [personality, setPersonality] = useState<'none' | 'friendly' | 'pragmatic'>('none')
+  const [personality, setPersonality] = useState<AssistantPersonality>('none')
 
   const load = useCallback(async (quiet = false) => {
     quiet ? setRefreshing(true) : setLoading(true)
@@ -248,8 +265,8 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
         </div>}
 
         {activeTab === 'profiles' && <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
-          <section className="h-fit rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="mb-4 flex items-center gap-2"><Bot size={18} /><div><h2 className="font-medium">新建 AI 角色</h2><p className="text-xs text-[var(--text-secondary)]">定义稳定的沟通风格与执行偏好。</p></div></div><div className="space-y-3"><input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="角色名称" className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm" /><select value={personality} onChange={(event) => setPersonality(event.target.value as typeof personality)} className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm"><option value="none">中性</option><option value="friendly">友好</option><option value="pragmatic">务实</option></select><textarea value={profileInstructions} onChange={(event) => setProfileInstructions(event.target.value)} rows={5} placeholder="角色职责、语气和输出要求" className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm" /><button disabled={!profileName.trim()} onClick={() => void createProfile()} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm text-[var(--accent-foreground)] disabled:opacity-40"><Plus size={15} />创建角色</button></div></section>
-          <section><div className="mb-3"><h2 className="font-medium">可用角色</h2><p className="text-xs text-[var(--text-secondary)]">角色策略由 Manager Agent Loop 在运行时应用。</p></div><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{profiles.map((profile) => <article key={profile.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-start justify-between gap-3"><div className="grid h-10 w-10 place-items-center rounded-xl bg-[var(--accent-dim)] text-[var(--accent)]"><Bot size={18} /></div>{profile.built_in && <span className="text-[10px] text-[var(--text-secondary)]">平台内置</span>}</div><h3 className="mt-4 font-medium">{profile.name}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{profile.personality} · {profile.default_model_profile}</p><p className="mt-3 line-clamp-3 text-xs text-[var(--text-secondary)]">{profile.instructions || '遵循平台默认企业助手规范。'}</p></article>)}</div></section>
+          <section className="h-fit rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="mb-4 flex items-center gap-2"><Bot size={18} /><div><h2 className="font-medium">新建 AI 角色</h2><p className="text-xs text-[var(--text-secondary)]">定义稳定的沟通风格与执行偏好。</p></div></div><div className="space-y-3"><input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="角色名称" className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm" /><select value={personality} onChange={(event) => setPersonality(event.target.value as typeof personality)} className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm">{ASSISTANT_PERSONALITY_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><textarea value={profileInstructions} onChange={(event) => setProfileInstructions(event.target.value)} rows={5} placeholder="角色职责、语气和输出要求" className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm" /><button disabled={!profileName.trim()} onClick={() => void createProfile()} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm text-[var(--accent-foreground)] disabled:opacity-40"><Plus size={15} />创建角色</button></div></section>
+          <section><div className="mb-3"><h2 className="font-medium">可用角色</h2><p className="text-xs text-[var(--text-secondary)]">角色策略由 Manager Agent Loop 在运行时应用。</p></div><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{profiles.map((profile) => <article key={profile.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-start justify-between gap-3"><div className="grid h-10 w-10 place-items-center rounded-xl bg-[var(--accent-dim)] text-[var(--accent)]"><Bot size={18} /></div>{profile.built_in && <span className="text-[10px] text-[var(--text-secondary)]">平台内置</span>}</div><h3 className="mt-4 font-medium">{profile.name}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{ASSISTANT_PERSONALITY_LABELS[profile.personality]} · {profile.default_model_profile}</p><p className="mt-3 line-clamp-3 text-xs text-[var(--text-secondary)]">{profile.instructions || '遵循平台默认企业助手规范。'}</p></article>)}</div></section>
         </div>}
 
         {activeTab === 'goals' && <div className="grid gap-6 lg:grid-cols-[400px_1fr]">
