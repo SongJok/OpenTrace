@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { BarChart3, ChevronDown, Database, FileWarning, FileText, Menu, Package, User, Share2, MoreHorizontal, Sparkles, type LucideIcon } from 'lucide-react'
+import { BarChart3, ChevronDown, Copy, Database, FileWarning, FileText, Menu, Package, User, Share2, MoreHorizontal, Sparkles, type LucideIcon } from 'lucide-react'
 import Sidebar from '../components/Sidebar'
 import MessageList, { type MessageListHandle } from '../components/MessageList'
 import ChatInput from '../components/ChatInput'
@@ -10,6 +10,7 @@ import { useAuthStore } from '../store/auth'
 import { useChatStore } from '../store/chat'
 import { getShowAvatars, setShowAvatars } from '../store/theme'
 import { useChatPreferences } from '../store/chatPreferences'
+import { copyTextToClipboard, formatConversationForCopy } from '../utils/clipboard'
 
 const QUICK_TAGS: Array<{ label: string; prefix: string; icon: LucideIcon }> = [
   { label: '总结一段文字', prefix: '请总结以下内容：', icon: FileText },
@@ -134,8 +135,16 @@ export default function ChatPage() {
   const shareConversation = async () => {
     if (!activeId) return
     const shared = await apiCreateConversationShare(token, activeId)
-    await navigator.clipboard?.writeText(`${window.location.origin}${shared.url}`)
-    window.alert('分享链接已复制到剪贴板')
+    const copied = await copyTextToClipboard(`${window.location.origin}${shared.url}`)
+    window.alert(copied ? '分享链接已复制到剪贴板' : '分享链接已生成，但当前浏览器不允许写入剪贴板，请手动复制')
+  }
+
+  const copyConversation = async () => {
+    if (!activeId) return
+    const text = formatConversationForCopy(messages)
+    const copied = await copyTextToClipboard(text)
+    window.alert(copied ? '整个会话已复制到剪贴板' : '复制失败，请检查浏览器剪贴板权限')
+    setShowMoreMenu(false)
   }
 
   const moreAction = async (action: 'rename' | 'pin' | 'delete') => {
@@ -222,7 +231,7 @@ export default function ChatPage() {
                   {assistantProfiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select>
                 <button type="button" onClick={() => void shareConversation()} aria-label="分享对话" title="分享对话" className="rounded-lg p-2 text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Share2 size={16} /></button>
-                <div className="relative"><button type="button" onClick={() => setShowMoreMenu((v) => !v)} aria-label="更多操作" title="更多操作" className="rounded-lg p-2 text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><MoreHorizontal size={18} /></button>{showMoreMenu && <div className="absolute right-0 top-10 z-30 w-32 rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] p-1 shadow-lg"><button onClick={() => void moreAction('rename')} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)]">重命名</button><button onClick={() => void moreAction('pin')} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)]">置顶/取消置顶</button><button onClick={() => void moreAction('delete')} className="w-full rounded-lg px-3 py-2 text-left text-sm text-red-500 hover:bg-[var(--surface)]">删除</button></div>}</div>
+                <div className="relative"><button type="button" onClick={() => setShowMoreMenu((v) => !v)} aria-label="更多操作" title="更多操作" className="rounded-lg p-2 text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><MoreHorizontal size={18} /></button>{showMoreMenu && <div className="absolute right-0 top-10 z-30 w-40 rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] p-1 shadow-lg"><button onClick={() => void copyConversation()} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)]"><Copy size={14} />复制整个会话</button><button onClick={() => void moreAction('rename')} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)]">重命名</button><button onClick={() => void moreAction('pin')} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)]">置顶/取消置顶</button><button onClick={() => void moreAction('delete')} className="w-full rounded-lg px-3 py-2 text-left text-sm text-red-500 hover:bg-[var(--surface)]">删除</button></div>}</div>
                 <button
                   type="button"
                   onClick={toggleAvatars}

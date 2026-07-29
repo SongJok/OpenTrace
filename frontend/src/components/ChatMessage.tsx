@@ -3,6 +3,7 @@ import { Check, ChevronDown, Copy, FileText, GitBranch, RefreshCw, ThumbsDown, T
 import type { Message } from '../store/chat'
 import { useChatStore } from '../store/chat'
 import { useAuthStore } from '../store/auth'
+import { copyTextToClipboard } from '../utils/clipboard'
 import { apiBranchConversation, apiGetMessages, apiListConversations, apiListResponseSiblings, apiResolveResponseApproval, apiResumeResponse, apiSetActiveResponse, apiSubmitFeedback } from '../api/client'
 import { useChatCommands } from '../store/chatCommands'
 
@@ -196,7 +197,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
   const copyMessage = async () => {
     if (!visibleContent) return
     try {
-      await navigator.clipboard.writeText(visibleContent)
+      if (!(await copyTextToClipboard(visibleContent))) return
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1400)
     } catch {
