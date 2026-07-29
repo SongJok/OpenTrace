@@ -35,7 +35,6 @@ import {
   apiListGoals,
   apiListProjects,
   apiUpdateProject,
-  type AssistantPersonality,
   type AssistantProfileItem,
   type DataSourceItem,
   type EnterpriseWorkbenchOverview,
@@ -44,6 +43,7 @@ import {
 } from '../api/client'
 
 type WorkbenchTab = 'overview' | 'projects' | 'profiles' | 'goals'
+type AssistantPersonality = AssistantProfileItem['personality']
 
 export const ASSISTANT_PERSONALITY_OPTIONS: Array<{
   value: AssistantPersonality

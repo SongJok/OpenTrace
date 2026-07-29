@@ -1,4 +1,7 @@
+import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -65,3 +68,38 @@ def test_mysql_driver_is_platform_independent_and_security_maintained():
 
     assert "aiomysql>=0.2.0" in requirements
     assert "asyncmy" not in requirements
+
+
+@pytest.mark.parametrize(
+    "pid_path",
+    ("/run/nginx.pid", "/var/run/nginx.pid", "/custom/runtime/nginx.pid"),
+)
+def test_frontend_rootless_nginx_pid_rewrite_supports_old_and_new_images(
+    tmp_path: Path, pid_path: str
+):
+    config = tmp_path / "nginx.conf"
+    config.write_text(f"user nginx;\npid {pid_path};\nevents {{}}\n", encoding="utf-8")
+
+    subprocess.run(
+        ["sh", str(ROOT / "frontend/configure-nginx-rootless.sh"), str(config)],
+        check=True,
+    )
+
+    rewritten = config.read_text(encoding="utf-8")
+    assert "pid /tmp/nginx.pid;" in rewritten
+    assert pid_path not in rewritten
+
+
+def test_frontend_rootless_nginx_pid_rewrite_fails_when_base_config_has_no_pid(tmp_path: Path):
+    config = tmp_path / "nginx.conf"
+    config.write_text("user nginx;\nevents {}\n", encoding="utf-8")
+
+    result = subprocess.run(
+        ["sh", str(ROOT / "frontend/configure-nginx-rootless.sh"), str(config)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "/tmp/nginx.pid" in result.stderr
