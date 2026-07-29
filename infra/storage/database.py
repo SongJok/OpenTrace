@@ -90,6 +90,7 @@ async def init_db() -> None:
         await _ensure_enterprise_tenant_tables(conn)
         await _ensure_responses_columns(conn)
         await _ensure_ui_settings_columns(conn)
+        await _ensure_user_model_settings_table(conn)
         await _ensure_unified_runtime_columns(conn)
     logger.info("Database tables initialised")
 
@@ -111,6 +112,7 @@ async def ensure_runtime_schema() -> None:
             await _ensure_documents_tenant_columns(conn)
             await _ensure_responses_columns(conn)
             await _ensure_ui_settings_columns(conn)
+            await _ensure_user_model_settings_table(conn)
             await _ensure_unified_runtime_columns(conn)
     except Exception as exc:  # noqa: BLE001
         if settings.app_env in {"staging", "production"}:
@@ -164,6 +166,16 @@ async def _verify_runtime_schema(conn) -> None:
             "flow_cards_default_expanded",
             "theme_mode",
             "theme_accent",
+        },
+        "user_model_settings": {
+            "user_id",
+            "tenant_id",
+            "workspace_id",
+            "active_profile",
+            "official_api_key_encrypted",
+            "relay_api_key_encrypted",
+            "official_model",
+            "relay_model",
         },
         "projects": {"memory_mode"},
         "user_memories": {
@@ -340,6 +352,45 @@ async def _ensure_ui_settings_columns(conn) -> None:
     ]
     for stmt in statements:
         await conn.execute(text(stmt))
+
+
+async def _ensure_user_model_settings_table(conn) -> None:
+    """本地开发兼容：正式环境仍必须执行 Alembic。"""
+    await conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS public.user_model_settings (
+                id VARCHAR(36) PRIMARY KEY,
+                user_id VARCHAR(36) NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+                tenant_id VARCHAR(128) NOT NULL DEFAULT 'default',
+                workspace_id VARCHAR(128) NOT NULL DEFAULT 'default',
+                active_profile VARCHAR(20) NOT NULL DEFAULT 'environment',
+                official_provider VARCHAR(128) NOT NULL DEFAULT '',
+                official_base_url TEXT NOT NULL DEFAULT '',
+                official_api_key_encrypted TEXT,
+                official_model VARCHAR(255) NOT NULL DEFAULT '',
+                official_models JSON NOT NULL DEFAULT '[]'::json,
+                official_api_mode VARCHAR(32) NOT NULL DEFAULT 'auto',
+                relay_provider VARCHAR(128) NOT NULL DEFAULT '',
+                relay_base_url TEXT NOT NULL DEFAULT '',
+                relay_api_key_encrypted TEXT,
+                relay_model VARCHAR(255) NOT NULL DEFAULT '',
+                relay_models JSON NOT NULL DEFAULT '[]'::json,
+                relay_api_mode VARCHAR(32) NOT NULL DEFAULT 'chat_completions',
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_user_model_settings_scope
+                    UNIQUE (user_id, tenant_id, workspace_id)
+            )
+            """
+        )
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_user_model_settings_user_id ON public.user_model_settings (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_user_model_settings_tenant_id ON public.user_model_settings (tenant_id)",
+        "CREATE INDEX IF NOT EXISTS ix_user_model_settings_workspace_id ON public.user_model_settings (workspace_id)",
+    ):
+        await conn.execute(text(statement))
 
 
 async def _ensure_chat_sessions_columns(conn) -> None:

@@ -2,6 +2,7 @@
 Model Gateway — single entry point for all LLM calls.
 Upgraded with per-role circuit breaker to prevent cascading failures.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -26,6 +27,7 @@ from kernel.identity.system_identity import (
 )
 from model.llm_adapter.base import BaseLLMAdapter, LLMConfig, LLMMessage, LLMResponse
 from model.llm_adapter.openai_adapter import OpenAICompatibleAdapter
+from model.model_gateway.runtime_config import get_runtime_llm_profile
 
 logger = get_logger(__name__)
 tracer = get_tracer(__name__)
@@ -73,44 +75,55 @@ def _post_process_identity_response(messages: list[LLMMessage], content: str) ->
 
 
 def _offline_fallback_response(messages: list[LLMMessage], role: LLMRole) -> LLMResponse:
-    user_text = (last_user_text(messages) or '').strip()
+    user_text = (last_user_text(messages) or "").strip()
     if role == LLMRole.ROUTER:
         content = '{"route": "complex", "difficulty": "simple"}'
     elif role == LLMRole.IDENTITY:
         content = CANONICAL_IDENTITY_RESPONSE
     elif role == LLMRole.FAST:
-        content = '我目前处于离线降级模式，暂时无法提供完整回答。请稍后重试或换一种更具体的问法。'
+        content = "我目前处于离线降级模式，暂时无法提供完整回答。请稍后重试或换一种更具体的问法。"
     elif role == LLMRole.CHEAP_CRITIC:
         content = '{"verdict": "pass", "confidence": 0.5, "issues": []}'
     elif role == LLMRole.KNOWLEDGE:
-        content = '我目前处于离线降级模式，暂时无法查询知识库。请稍后重试。'
+        content = "我目前处于离线降级模式，暂时无法查询知识库。请稍后重试。"
     elif role == LLMRole.PLANNING:
-        content = '{"subtasks": [{"agent_type": "tool", "query": "' + user_text.replace('"', '\\"')[:120] + '"}], "merge_strategy": "prioritized", "max_parallel": 1}'
-    elif any(k in user_text for k in ['你是谁', '你叫什么', 'who are you', 'identity']):
+        content = (
+            '{"subtasks": [{"agent_type": "tool", "query": "'
+            + user_text.replace('"', '\\"')[:120]
+            + '"}], "merge_strategy": "prioritized", "max_parallel": 1}'
+        )
+    elif any(k in user_text for k in ["你是谁", "你叫什么", "who are you", "identity"]):
         content = CANONICAL_IDENTITY_RESPONSE
-    elif any(k in user_text for k in ['你能做什么', '有什么能力', '怎么用', '如何使用', 'help', '功能', '能力']):
-        content = '我是 OpenTrace，一个基于认知内核构建的 AI 系统。\n\n我可以帮你进行：\n- 对话问答\n- 文档检索与总结\n- 数据库查询与分析\n- 任务与记忆管理\n- 集成与技能管理\n- 审计、追踪与调试\n\n如果你告诉我具体目标，我可以直接帮你操作。'
-    elif any(k in user_text for k in ['时间', '几点', '现在几点', '日期', '今天几号']):
-        content = '当前模型服务暂时不可用，但我可以建议你直接查看系统时间，或者告诉我你所在时区/地区，我会帮你组织查询方式。'
-    elif any(k in user_text for k in ['天气', 'weather']):
-        content = '当前模型服务暂时不可用，但我可以帮你整理天气查询所需的城市/地点信息，或者接入天气工具后再自动查询。'
-    elif any(k in user_text for k in ['总结', '概括', '归纳', '文档']):
-        content = '当前模型服务暂时不可用，但我可以先给你一个离线模式的简要回复：请提供文档或更具体的问题，我会尽力整理。'
+    elif any(
+        k in user_text
+        for k in ["你能做什么", "有什么能力", "怎么用", "如何使用", "help", "功能", "能力"]
+    ):
+        content = "我是 OpenTrace，一个基于认知内核构建的 AI 系统。\n\n我可以帮你进行：\n- 对话问答\n- 文档检索与总结\n- 数据库查询与分析\n- 任务与记忆管理\n- 集成与技能管理\n- 审计、追踪与调试\n\n如果你告诉我具体目标，我可以直接帮你操作。"
+    elif any(k in user_text for k in ["时间", "几点", "现在几点", "日期", "今天几号"]):
+        content = "当前模型服务暂时不可用，但我可以建议你直接查看系统时间，或者告诉我你所在时区/地区，我会帮你组织查询方式。"
+    elif any(k in user_text for k in ["天气", "weather"]):
+        content = "当前模型服务暂时不可用，但我可以帮你整理天气查询所需的城市/地点信息，或者接入天气工具后再自动查询。"
+    elif any(k in user_text for k in ["总结", "概括", "归纳", "文档"]):
+        content = "当前模型服务暂时不可用，但我可以先给你一个离线模式的简要回复：请提供文档或更具体的问题，我会尽力整理。"
     else:
-        content = '我目前处于离线降级模式，暂时无法调用模型服务，但仍可以基于已有上下文回答。请稍后重试，或换一种更具体的问法。'
-    return LLMResponse(content=content, model='offline-fallback', raw={'fallback': True, 'role': role.value, 'user_text': user_text})
+        content = "我目前处于离线降级模式，暂时无法调用模型服务，但仍可以基于已有上下文回答。请稍后重试，或换一种更具体的问法。"
+    return LLMResponse(
+        content=content,
+        model="offline-fallback",
+        raw={"fallback": True, "role": role.value, "user_text": user_text},
+    )
 
 
 class LLMRole(str, Enum):
     QUERY = "query"
     COMPRESS = "compress"
     PLANNING = "planning"
-    ROUTER = "router"             # JuniorShort 1.7B — L1 classification
-    FAST = "fast"                 # MiddleShort 8B — simple answers
-    CHEAP_CRITIC = "cheap_critic" # SeniorShort 14B — lightweight critique
-    KNOWLEDGE = "knowledge"       # SeniorShort 14B — knowledge Q&A
-    IDENTITY = "identity"         # MinShort 0.6B — personalized identity response
-    VISION = "vision"             # Vision-capable — image/chart interpretation
+    ROUTER = "router"  # JuniorShort 1.7B — L1 classification
+    FAST = "fast"  # MiddleShort 8B — simple answers
+    CHEAP_CRITIC = "cheap_critic"  # SeniorShort 14B — lightweight critique
+    KNOWLEDGE = "knowledge"  # SeniorShort 14B — knowledge Q&A
+    IDENTITY = "identity"  # MinShort 0.6B — personalized identity response
+    VISION = "vision"  # Vision-capable — image/chart interpretation
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +181,7 @@ class CircuitBreaker:
 # ---------------------------------------------------------------------------
 # Config builder
 # ---------------------------------------------------------------------------
-def _build_config(role: LLMRole) -> LLMConfig:
+def _build_environment_config(role: LLMRole) -> LLMConfig:
     s = settings
     if role == LLMRole.QUERY:
         return LLMConfig(
@@ -247,6 +260,21 @@ def _build_config(role: LLMRole) -> LLMConfig:
     )
 
 
+def _build_config(role: LLMRole) -> LLMConfig:
+    base = _build_environment_config(role)
+    profile = get_runtime_llm_profile()
+    if profile is None or role == LLMRole.VISION:
+        return base
+    return dataclasses.replace(
+        base,
+        provider=profile.provider,
+        model=profile.model,
+        base_url=profile.base_url,
+        api_key=profile.api_key,
+        api_mode=profile.api_mode,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Gateway
 # ---------------------------------------------------------------------------
@@ -269,10 +297,29 @@ class ModelGateway:
         self._failure_threshold = failure_threshold
         self._recovery_timeout = recovery_timeout
 
-    def _get_adapter(self, role: LLMRole) -> BaseLLMAdapter:
+    def _get_adapter(self, role: LLMRole, model_override: str = "") -> BaseLLMAdapter:
+        profile = get_runtime_llm_profile()
+        requested_model = str(model_override or "").strip()
+        if profile is not None:
+            # 原有多模态模型仍使用环境变量中的专用端点；动态设置只接管文本角色。
+            if requested_model == settings.default_llm_vision_model:
+                config = _build_environment_config(LLMRole.VISION)
+            elif requested_model == settings.default_llm_omni_model:
+                config = _build_environment_config(LLMRole.QUERY)
+            else:
+                config = _build_config(role)
+                requested_model = profile.resolve_model(requested_model)
+            if requested_model:
+                config = dataclasses.replace(config, model=requested_model)
+            return OpenAICompatibleAdapter(config)
+
         key = role.value
+        if requested_model:
+            return OpenAICompatibleAdapter(
+                dataclasses.replace(_build_environment_config(role), model=requested_model)
+            )
         if key not in self._adapters:
-            self._adapters[key] = OpenAICompatibleAdapter(_build_config(role))
+            self._adapters[key] = OpenAICompatibleAdapter(_build_environment_config(role))
         return self._adapters[key]
 
     def _classify_exception(self, exc: Exception) -> str:
@@ -307,7 +354,18 @@ class ModelGateway:
             return "rate_limit"
         if any(k in msg for k in ["timeout", "timed out", "read timeout", "connect timeout"]):
             return "timeout"
-        if any(k in msg for k in ["name or service not known", "nodename", "dns", "resolve", "connection error", "connect error", "proxy"]):
+        if any(
+            k in msg
+            for k in [
+                "name or service not known",
+                "nodename",
+                "dns",
+                "resolve",
+                "connection error",
+                "connect error",
+                "proxy",
+            ]
+        ):
             return "connectivity"
         if any(k in msg for k in ["model not found", "404", "not found"]):
             return "model_not_found"
@@ -323,7 +381,9 @@ class ModelGateway:
             return True, 0.6
         return True, 0.4
 
-    async def _complete_with_retry(self, adapter: BaseLLMAdapter, messages: list[LLMMessage], **kwargs) -> LLMResponse:
+    async def _complete_with_retry(
+        self, adapter: BaseLLMAdapter, messages: list[LLMMessage], **kwargs
+    ) -> LLMResponse:
         last_exc: Exception | None = None
         max_attempts = int(kwargs.pop("max_attempts", 3))
         for attempt in range(max_attempts):
@@ -334,12 +394,15 @@ class ModelGateway:
                 should_retry, base_delay = self._retry_policy(exc)
                 if attempt >= max_attempts - 1 or not should_retry:
                     break
-                await asyncio.sleep(base_delay * (2 ** attempt))
+                await asyncio.sleep(base_delay * (2**attempt))
         assert last_exc is not None
         raise last_exc
 
     def _get_cb(self, role: LLMRole) -> CircuitBreaker:
+        profile = get_runtime_llm_profile()
         key = role.value
+        if profile is not None:
+            key = f"{key}:{profile.source}:{profile.base_url}:{profile.model}"
         if key not in self._circuit_breakers:
             self._circuit_breakers[key] = CircuitBreaker(
                 failure_threshold=self._failure_threshold,
@@ -360,7 +423,9 @@ class ModelGateway:
             # Qwen is the deployment's primary model family. Role fallbacks
             # provide observable model-tier degradation within that family.
             candidates = [role] + (
-                fallback_roles if fallback_roles is not None else ([LLMRole.KNOWLEDGE] if role == LLMRole.QUERY else [])
+                fallback_roles
+                if fallback_roles is not None
+                else ([LLMRole.KNOWLEDGE] if role == LLMRole.QUERY else [])
             )
             last_exc: Exception | None = None
 
@@ -376,11 +441,9 @@ class ModelGateway:
                     )
                     continue
                 try:
-                    adapter = self._get_adapter(candidate)
-                    if model_override and candidate == role:
-                        adapter = OpenAICompatibleAdapter(
-                            dataclasses.replace(adapter.config, model=model_override)
-                        )
+                    adapter = self._get_adapter(
+                        candidate, model_override if candidate == role else ""
+                    )
                     t0 = time.monotonic()
                     result = await self._complete_with_retry(adapter, prepared_messages, **kwargs)
                     result.content = enforce_identity_output(result.content, user_text)
@@ -412,7 +475,7 @@ class ModelGateway:
                         pass
                     return result
                 except Exception as exc:  # noqa: BLE001
-                    latency_ms = int((time.monotonic() - t0) * 1000) if 't0' in locals() else 0
+                    latency_ms = int((time.monotonic() - t0) * 1000) if "t0" in locals() else 0
                     cb.record_failure()
                     logger.warning(
                         "Model call failed",
@@ -433,10 +496,18 @@ class ModelGateway:
                 candidates=[r.value for r in candidates],
                 error=str(last_exc) if last_exc else None,
             )
-            if bool(getattr(settings, "kernel_all_questions_require_model", True)) and role == LLMRole.QUERY and self._classify_exception(last_exc) not in {"auth", "model_not_found"}:
+            if (
+                bool(getattr(settings, "kernel_all_questions_require_model", True))
+                and role == LLMRole.QUERY
+                and self._classify_exception(last_exc) not in {"auth", "model_not_found"}
+            ):
                 raise RuntimeError("primary_model_unavailable") from last_exc
             if is_identity_user_query(user_text):
-                return LLMResponse(content=CANONICAL_IDENTITY_RESPONSE, model='identity-fallback', raw={'fallback': True, 'role': role.value, 'user_text': user_text})
+                return LLMResponse(
+                    content=CANONICAL_IDENTITY_RESPONSE,
+                    model="identity-fallback",
+                    raw={"fallback": True, "role": role.value, "user_text": user_text},
+                )
             return _offline_fallback_response(prepared_messages, role)
 
     async def stream(
@@ -450,8 +521,13 @@ class ModelGateway:
         user_text = last_user_text(prepared_messages)
         cb = self._get_cb(role)
         if not cb.allow_request():
-            logger.warning("Circuit breaker open; using offline fallback when policy allows", role=role.value)
-            if bool(getattr(settings, "kernel_all_questions_require_model", True)) and role == LLMRole.QUERY:
+            logger.warning(
+                "Circuit breaker open; using offline fallback when policy allows", role=role.value
+            )
+            if (
+                bool(getattr(settings, "kernel_all_questions_require_model", True))
+                and role == LLMRole.QUERY
+            ):
                 raise RuntimeError("primary_model_circuit_open")
             fallback = _offline_fallback_response(prepared_messages, role).content
             if fallback:
@@ -459,11 +535,7 @@ class ModelGateway:
                 for i in range(0, len(fallback), step):
                     yield fallback[i : i + step]
             return
-        adapter = self._get_adapter(role)
-        if model_override:
-            adapter = OpenAICompatibleAdapter(
-                dataclasses.replace(adapter.config, model=model_override)
-            )
+        adapter = self._get_adapter(role, model_override)
         t0 = time.monotonic()
         buf: list[str] = []
         max_attempts = int(kwargs.pop("max_attempts", 3))
@@ -483,10 +555,7 @@ class ModelGateway:
 
                     tc = TokenCounter()
                     est_prompt = tc.count(
-                        "\n".join(
-                            str(getattr(m, "content", "") or "")
-                            for m in prepared_messages
-                        )
+                        "\n".join(str(getattr(m, "content", "") or "") for m in prepared_messages)
                     )
                     est_completion = tc.count(full_text)
                     add_llm_usage(
@@ -510,8 +579,19 @@ class ModelGateway:
                 if attempt >= max_attempts - 1 or not should_retry:
                     latency_ms = int((time.monotonic() - t0) * 1000)
                     cb.record_failure()
-                    logger.warning("LLM stream failed; using offline fallback when policy allows", role=role.value, error=str(exc), error_class=self._classify_exception(exc), latency_ms=latency_ms, cb_state=cb.state)
-                    if bool(getattr(settings, "kernel_all_questions_require_model", True)) and role == LLMRole.QUERY and self._classify_exception(exc) not in {"auth", "model_not_found"}:
+                    logger.warning(
+                        "LLM stream failed; using offline fallback when policy allows",
+                        role=role.value,
+                        error=str(exc),
+                        error_class=self._classify_exception(exc),
+                        latency_ms=latency_ms,
+                        cb_state=cb.state,
+                    )
+                    if (
+                        bool(getattr(settings, "kernel_all_questions_require_model", True))
+                        and role == LLMRole.QUERY
+                        and self._classify_exception(exc) not in {"auth", "model_not_found"}
+                    ):
                         raise RuntimeError("primary_model_unavailable") from exc
                     fallback = _offline_fallback_response(prepared_messages, role).content
                     if fallback:
@@ -519,7 +599,7 @@ class ModelGateway:
                         for i in range(0, len(fallback), step):
                             yield fallback[i : i + step]
                     return
-                await asyncio.sleep(base_delay * (2 ** attempt))
+                await asyncio.sleep(base_delay * (2**attempt))
                 buf = []
 
 

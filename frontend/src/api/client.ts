@@ -2404,13 +2404,13 @@ export async function apiAutoExtractSemantic(token: string, dataSourceId: string
 }
 
 export async function apiGetUiSettings(token: string): Promise<any> {
-  const res = await apiFetch('/ui/settings', { headers: authHeaders(token) })
+  const res = await apiFetch('/users/ui-settings', { headers: authHeaders(token) })
   if (!res.ok) throw new Error('Failed to get UI settings')
   return res.json()
 }
 
 export async function apiPatchUiSettings(token: string, payload: any): Promise<any> {
-  const res = await apiFetch('/ui/settings', { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload) })
+  const res = await apiFetch('/users/ui-settings', { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload) })
   if (!res.ok) throw new Error('Failed to patch UI settings')
   return res.json()
 }

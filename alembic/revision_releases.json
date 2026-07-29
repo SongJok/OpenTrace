@@ -12,6 +12,9 @@
     },
     "r0004_enterprise_runtime_governance": {
       "release": "2026-07-27"
+    },
+    "r0005_user_model_settings": {
+      "release": "unreleased"
     }
   }
 }

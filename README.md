@@ -135,6 +135,12 @@ DEFAULT_LLM_MIDDLESHORT_API_KEY=your-provider-key
 DEFAULT_LLM_JUNIORSHORT_API_KEY=your-provider-key
 DEFAULT_LLM_MINSHORT_API_KEY=your-provider-key
 DEFAULT_LLM_VISION_API_KEY=your-provider-key
+
+# 可选：设置页中的第三方 OpenAI-compatible 中转站默认值
+OTHER_LLM_MINSHORT_BASE_URL=https://relay.example.com/v1
+OTHER_LLM_MINSHORT_API_KEY=your-relay-key
+OTHER_LLM_MODEL1=model-a
+OTHER_LLM_MODEL2=model-b
 ```
 
 Embedding and reranking may share `DASHSCOPE_API_KEY` or use separate keys. Staging and production

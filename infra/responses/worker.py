@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 
 from infra.cache.redis_client import get_queue_redis
 from infra.config.settings import settings
+from infra.model_settings import load_runtime_llm_profile
 from infra.observability.logger import get_logger
 from infra.observability.metrics import (
     RESPONSE_COMPLETED_TOTAL,
@@ -44,6 +45,7 @@ from infra.storage.models import (
 )
 from kernel.agent_loop.memory_learner import MemoryLearner
 from kernel.agent_loop.runner import AgentLoop
+from model.model_gateway.runtime_config import use_runtime_llm_profile
 from tenant.tenant_rls import set_worker_session
 
 logger = get_logger(__name__)
@@ -244,11 +246,30 @@ async def execute_response(response_id: str | None = None) -> bool:
                 )
                 await db.commit()
 
-            with tracer.start_as_current_span("response.agent_loop") as span:
-                span.set_attribute("opentrace.response.id", response.id)
-                span.set_attribute("opentrace.tenant.id", response.tenant_id)
-                span.set_attribute("opentrace.response.attempt", response.attempt_count)
-                result = await AgentLoop().run(db, response=response, emit=emit)
+            runtime_profile = await load_runtime_llm_profile(
+                db,
+                user_id=response.user_id,
+                tenant_id=response.tenant_id,
+                workspace_id=response.workspace_id,
+            )
+            if runtime_profile is not None:
+                await emit(
+                    "opentrace.model.configuration",
+                    {
+                        "source": runtime_profile.source,
+                        "provider": runtime_profile.provider,
+                        "model": runtime_profile.model,
+                    },
+                )
+            with use_runtime_llm_profile(runtime_profile):
+                with tracer.start_as_current_span("response.agent_loop") as span:
+                    span.set_attribute("opentrace.response.id", response.id)
+                    span.set_attribute("opentrace.tenant.id", response.tenant_id)
+                    span.set_attribute("opentrace.response.attempt", response.attempt_count)
+                    if runtime_profile is not None:
+                        span.set_attribute("opentrace.llm.source", runtime_profile.source)
+                        span.set_attribute("opentrace.llm.model", runtime_profile.model)
+                    result = await AgentLoop().run(db, response=response, emit=emit)
             if result.status == "requires_action":
                 if response.goal_id:
                     goal = await db.get(GoalRun, response.goal_id)
@@ -373,7 +394,10 @@ async def execute_response(response_id: str | None = None) -> bool:
 
                 summary_response = await summary_db.get(ResponseRecord, response_id)
                 if summary_response:
-                    await ConversationSummarizer().summarize(summary_db, response=summary_response)
+                    with use_runtime_llm_profile(runtime_profile):
+                        await ConversationSummarizer().summarize(
+                            summary_db, response=summary_response
+                        )
         except Exception as exc:  # noqa: BLE001
             logger.warning("conversation_summary_failed", response_id=response_id, error=str(exc))
         try:
@@ -381,7 +405,8 @@ async def execute_response(response_id: str | None = None) -> bool:
                 await set_worker_session(memory_db)
                 memory_response = await memory_db.get(ResponseRecord, response_id)
                 if memory_response:
-                    await MemoryLearner().learn(memory_db, response=memory_response)
+                    with use_runtime_llm_profile(runtime_profile):
+                        await MemoryLearner().learn(memory_db, response=memory_response)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "response_memory_learning_failed", response_id=response_id, error=str(exc)

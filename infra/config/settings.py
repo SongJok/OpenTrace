@@ -125,6 +125,17 @@ class LLMSettings(BaseSettings):
     # credentials and endpoint unless the caller explicitly selects another model.
     default_llm_omni_model: str = "qwen3.5-omni-flash"
 
+    # Optional OpenAI-compatible relay defaults. These values only become active
+    # after the user selects the relay profile in Settings.
+    other_llm_minshort_provider: str = "第三方中转站(OpenAI Compatible)"
+    other_llm_minshort_base_url: str = ""
+    other_llm_minshort_api_key: str = ""
+    other_llm_minshort_api_mode: Literal["auto", "responses", "chat_completions"] = (
+        "chat_completions"
+    )
+    other_llm_model1: str = ""
+    other_llm_model2: str = ""
+
 
 class EmbeddingSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -236,6 +247,9 @@ class AppSettings(BaseSettings):
     web_fetch_max_response_bytes: int = 1_000_000
     connector_allowed_redirect_origins: str = "http://localhost:14108,http://127.0.0.1:14108"
     connector_oauth_state_ttl_seconds: int = 600
+    # Disabled by default to prevent authenticated users from turning model
+    # endpoint configuration into access to loopback/private network services.
+    dynamic_llm_allow_private_base_urls: bool = False
     github_connector_client_id: str = ""
     github_connector_client_secret: str = ""
     slack_connector_client_id: str = ""
