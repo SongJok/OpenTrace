@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   apiGetEnterpriseOperations,
+  apiListEnterpriseCognitiveEntities,
   apiListDirectoryPrincipals,
+  apiPublishEnterpriseCognitiveDraft,
+  apiSaveEnterpriseCognitiveDraft,
   apiSyncEnterpriseDirectory,
+  apiUpsertEnterpriseCognitiveEntity,
 } from '../../api/client'
 
 describe('enterprise admin center contracts', () => {
@@ -16,6 +20,8 @@ describe('enterprise admin center contracts', () => {
     expect(page).toContain('apiGetEnterpriseOperations')
     expect(page).toContain('apiSyncEnterpriseDirectory')
     expect(page).toContain('同步并投影 ACL')
+    expect(page).toContain('成为企业级的工作台、最懂公司的 AI')
+    expect(page).toContain('企业认知')
     expect(sidebar).toContain('企业运营中心')
     expect(app).toContain('/enterprise-admin')
   })
@@ -52,5 +58,28 @@ describe('enterprise admin center contracts', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/admin/enterprise/operations/overview')
     expect(fetchMock.mock.calls[1][0]).toContain('/api/v1/admin/enterprise/directory/principals')
     expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/admin/enterprise/directory/sync')
+  })
+
+  it('uses draft and publish governance for company cognition', async () => {
+    const entity = { id: 'company-1', entity_type: 'company', entity_key: 'org-a', display_name: '示例科技', status: 'active' }
+    const version = { id: 'version-1', entity_id: 'company-1', version: 1, status: 'draft', classification: 'internal', summary: '企业简介', mission: '企业使命', vision: '', values: [], responsibilities: [], products_services: [], operating_principles: [], terminology: {}, key_contacts: [], source_refs: ['knowledge:company'] }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ vision: '成为企业级的工作台、最懂公司的 AI', items: [entity] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(entity), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(version), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...version, status: 'published' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect((await apiListEnterpriseCognitiveEntities('token'))[0].id).toBe('company-1')
+    await apiUpsertEnterpriseCognitiveEntity('token', { entity_type: 'company', display_name: '示例科技' })
+    await apiSaveEnterpriseCognitiveDraft('token', 'company-1', {
+      classification: 'internal', summary: '企业简介', mission: '企业使命', vision: '', values: [], responsibilities: [], products_services: [], operating_principles: [], terminology: {}, key_contacts: [], source_refs: ['knowledge:company'],
+    })
+    await apiPublishEnterpriseCognitiveDraft('token', 'company-1')
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/admin/enterprise/cognition/entities')
+    expect(fetchMock.mock.calls[1][1]?.method).toBe('POST')
+    expect(fetchMock.mock.calls[2][1]?.method).toBe('PUT')
+    expect(fetchMock.mock.calls[3][0]).toContain('/company-1/publish')
   })
 })

@@ -18,6 +18,9 @@
     },
     "r0006_calendar_events": {
       "release": "unreleased"
+    },
+    "r0007_enterprise_cognition": {
+      "release": "unreleased"
     }
   }
 }

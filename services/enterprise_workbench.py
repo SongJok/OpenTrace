@@ -31,6 +31,7 @@ from infra.storage.models import (
 )
 from knowledge.access import accessible_source_predicate, resolve_access_context
 from knowledge.governance import knowledge_governance_health
+from services.enterprise_cognition import load_enterprise_context
 
 ACTIVE_RESPONSE_STATUSES = {"queued", "in_progress", "requires_action"}
 ACTIVE_GOAL_STATUSES = {"queued", "in_progress", "requires_action", "paused"}
@@ -82,6 +83,8 @@ def build_enterprise_readiness(
     critical_alert_count: int,
     failed_response_count: int,
     knowledge_health: dict[str, Any],
+    cognitive_entity_count: int = 0,
+    published_company_context: bool = False,
 ) -> dict[str, Any]:
     """生成可解释的企业 AI 就绪度，而不是黑盒总分。"""
 
@@ -93,11 +96,13 @@ def build_enterprise_readiness(
 
     context_score = min(
         100,
-        20
-        + (35 if projects else 0)
-        + (20 if configured_projects else 0)
-        + (15 if bound_projects else 0)
-        + (10 if custom_profiles else 0),
+        10
+        + (30 if published_company_context else 0)
+        + (15 if cognitive_entity_count > 1 else 0)
+        + (20 if projects else 0)
+        + (15 if configured_projects else 0)
+        + (5 if bound_projects else 0)
+        + (5 if custom_profiles else 0),
     )
     knowledge_score = min(
         100,
@@ -140,6 +145,15 @@ def build_enterprise_readiness(
     )
 
     blockers: list[dict[str, str]] = []
+    if not published_company_context:
+        blockers.append(
+            {
+                "code": "enterprise_cognition_missing",
+                "title": "发布公司基础认知",
+                "description": "建立公司使命、业务、术语和治理来源，让每次问答理解企业语境。",
+                "route": "/enterprise-admin",
+            }
+        )
     if not projects:
         blockers.append(
             {
@@ -222,6 +236,7 @@ async def enterprise_workbench_overview(
     user: User,
     tenant_id: str,
     workspace_id: str,
+    org_id: str = "default",
     recent_limit: int = 6,
     attention_limit: int = 10,
 ) -> dict[str, Any]:
@@ -440,6 +455,14 @@ async def enterprise_workbench_overview(
         tenant_id=tenant_id,
         workspace_id=workspace_id,
     )
+    cognitive_context = await load_enterprise_context(
+        db,
+        user_id=user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        org_id=org_id,
+        query="公司和部门概况",
+    )
 
     active_goals = [row for row in goals if row.status in ACTIVE_GOAL_STATUSES]
     active_tasks = [row for row in tasks if row.status == "active"]
@@ -459,6 +482,10 @@ async def enterprise_workbench_overview(
         critical_alert_count=len(critical_alerts),
         failed_response_count=failed_response_count,
         knowledge_health=knowledge_health,
+        cognitive_entity_count=len(cognitive_context.entities),
+        published_company_context=any(
+            item.get("entity_type") == "company" for item in cognitive_context.entities
+        ),
     )
 
     attention_items: list[dict[str, Any]] = []
@@ -581,6 +608,10 @@ async def enterprise_workbench_overview(
             "accessible_data_sources": len(data_sources),
             "knowledge_spaces": len(knowledge_context.accessible_space_ids),
             "published_knowledge": published_knowledge_count,
+            "enterprise_cognitive_entities": len(cognitive_context.entities),
+            "company_context_ready": any(
+                item.get("entity_type") == "company" for item in cognitive_context.entities
+            ),
         },
         "knowledge_health": knowledge_health,
         "attention_items": attention_items,

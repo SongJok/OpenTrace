@@ -27,6 +27,9 @@ durable capabilities into one actionable employee home.
 - **Governance by default:** tenant, workspace, user, Project, and data-source boundaries are
   checked across the API, Agent runtime, and background jobs. Write and destructive tools pause
   at durable approval checkpoints.
+- **Governed company understanding:** versioned company and department cognitive profiles bind
+  the enterprise directory to governed knowledge spaces, so Responses understand authorized
+  organizational context without turning employee chat into company facts.
 - **From data questions to proactive alerts:** DataAgent and Text2SQL generate read-only SQL.
   Alerts reuse the same authorization scope and retain thresholds, SQL, result previews,
   confidence, and other governance evidence.

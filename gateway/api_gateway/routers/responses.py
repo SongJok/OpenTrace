@@ -683,6 +683,7 @@ async def create_response(
         request_payload=payload,
         response_metadata={
             "opentrace": request.opentrace.model_dump(mode="json"),
+            "org_id": org_id,
             "tenant_policy": _json_safe(tenant.get("tenant_policy") or {}),
         },
         goal_id=request.opentrace.goal_id,

@@ -1312,6 +1312,9 @@ export interface EnterpriseOperationsOverview {
     stale_knowledge: number
     pending_reviews: number
     unresolved_feedback: number
+    cognitive_entities: number
+    published_cognition: number
+    due_cognitive_reviews: number
   }
   directory: { principals: number; memberships: number; last_sync?: DirectorySyncRunItem | null }
   alerts: { unacknowledged: number; critical: number }
@@ -1381,6 +1384,62 @@ export interface DirectorySyncPayload {
   }>
 }
 
+export interface EnterpriseCognitiveVersionItem {
+  id: string
+  entity_id: string
+  version: number
+  status: 'draft' | 'published' | 'archived'
+  classification: 'public' | 'internal' | 'confidential' | 'restricted'
+  summary: string
+  mission: string
+  vision: string
+  values: string[]
+  responsibilities: string[]
+  products_services: string[]
+  operating_principles: string[]
+  terminology: Record<string, string>
+  key_contacts: string[]
+  source_refs: string[]
+  metadata: Record<string, unknown>
+  effective_from?: string | null
+  effective_to?: string | null
+  review_due_at?: string | null
+  published_at?: string | null
+}
+
+export interface EnterpriseCognitiveEntityItem {
+  id: string
+  entity_type: 'company' | 'department'
+  entity_key: string
+  display_name: string
+  directory_principal_id?: string | null
+  department_external_id?: string | null
+  department_name?: string | null
+  knowledge_space_id?: string | null
+  knowledge_space_name?: string | null
+  status: 'active' | 'archived'
+  current_version?: EnterpriseCognitiveVersionItem | null
+  draft_version?: EnterpriseCognitiveVersionItem | null
+}
+
+export interface EnterpriseCognitiveDraftPayload {
+  classification: EnterpriseCognitiveVersionItem['classification']
+  summary: string
+  mission: string
+  vision: string
+  values: string[]
+  responsibilities: string[]
+  products_services: string[]
+  operating_principles: string[]
+  terminology: Record<string, string>
+  key_contacts: string[]
+  source_refs: string[]
+  metadata?: Record<string, unknown>
+  effective_from?: string | null
+  effective_to?: string | null
+  review_due_at?: string | null
+}
+
 export async function apiGetEnterpriseOperations(token: string): Promise<EnterpriseOperationsOverview> {
   const res = await apiFetch('/admin/enterprise/operations/overview', { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取企业运营中心失败'))
@@ -1408,6 +1467,47 @@ export async function apiListDirectorySyncRuns(token: string): Promise<Directory
 export async function apiSyncEnterpriseDirectory(token: string, payload: DirectorySyncPayload): Promise<DirectorySyncRunItem> {
   const res = await apiFetch('/admin/enterprise/directory/sync', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
   if (!res.ok) throw new Error(await readApiError(res, '同步企业目录失败'))
+  return res.json()
+}
+
+export async function apiListEnterpriseCognitiveEntities(token: string): Promise<EnterpriseCognitiveEntityItem[]> {
+  const res = await apiFetch('/admin/enterprise/cognition/entities', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取企业认知失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiUpsertEnterpriseCognitiveEntity(token: string, payload: {
+  entity_type: 'company' | 'department'
+  display_name: string
+  department_external_id?: string | null
+  knowledge_space_id?: string | null
+}): Promise<EnterpriseCognitiveEntityItem> {
+  const res = await apiFetch('/admin/enterprise/cognition/entities', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '创建企业认知实体失败'))
+  return res.json()
+}
+
+export async function apiSaveEnterpriseCognitiveDraft(token: string, entityId: string, payload: EnterpriseCognitiveDraftPayload): Promise<EnterpriseCognitiveVersionItem> {
+  const res = await apiFetch(`/admin/enterprise/cognition/entities/${encodeURIComponent(entityId)}/draft`, { method: 'PUT', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '保存企业认知草稿失败'))
+  return res.json()
+}
+
+export async function apiPublishEnterpriseCognitiveDraft(token: string, entityId: string): Promise<EnterpriseCognitiveVersionItem> {
+  const res = await apiFetch(`/admin/enterprise/cognition/entities/${encodeURIComponent(entityId)}/publish`, { method: 'POST', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '发布企业认知失败'))
+  return res.json()
+}
+
+export async function apiListEnterpriseCognitiveVersions(token: string, entityId: string): Promise<EnterpriseCognitiveVersionItem[]> {
+  const res = await apiFetch(`/admin/enterprise/cognition/entities/${encodeURIComponent(entityId)}/versions`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取企业认知版本失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiArchiveEnterpriseCognitiveEntity(token: string, entityId: string): Promise<EnterpriseCognitiveEntityItem> {
+  const res = await apiFetch(`/admin/enterprise/cognition/entities/${encodeURIComponent(entityId)}/archive`, { method: 'POST', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '归档企业认知实体失败'))
   return res.json()
 }
 
@@ -1453,6 +1553,8 @@ export interface EnterpriseWorkbenchOverview {
     accessible_data_sources: number
     knowledge_spaces: number
     published_knowledge: number
+    enterprise_cognitive_entities?: number
+    company_context_ready?: boolean
   }
   knowledge_health: KnowledgeGovernanceHealth
   attention_items: WorkbenchAttentionItem[]

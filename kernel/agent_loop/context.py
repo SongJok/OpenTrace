@@ -44,6 +44,7 @@ from services.calendar import (
     ensure_timezone,
     upcoming_calendar_context,
 )
+from services.enterprise_cognition import load_enterprise_context
 
 
 @dataclass
@@ -122,6 +123,20 @@ class ContextAssembler:
                 tenant_policy=tenant_policy,
             )
         )
+        enterprise_context = await load_enterprise_context(
+            db,
+            user_id=response.user_id,
+            tenant_id=response.tenant_id,
+            workspace_id=response.workspace_id,
+            org_id=str(
+                (response.response_metadata or {}).get("org_id")
+                or getattr(session, "org_id", None)
+                or response.tenant_id
+            ),
+            query=user_query,
+        )
+        if enterprise_context.prompt:
+            system_blocks.append(enterprise_context.prompt)
         calendar_context_error: str | None = None
         try:
             calendar_events = await upcoming_calendar_context(
@@ -551,6 +566,7 @@ class ContextAssembler:
                 "calendar_timezone": calendar_timezone,
                 "calendar_context_available": calendar_context_error is None,
                 "calendar_context_error": calendar_context_error,
+                "enterprise_context": enterprise_context.manifest(),
             }
         )
         return AssembledContext(

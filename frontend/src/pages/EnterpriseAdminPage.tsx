@@ -3,7 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import {
   Activity,
   AlertTriangle,
+  Archive,
   ArrowRight,
+  BookOpen,
+  BrainCircuit,
   Building2,
   CheckCircle2,
   ChevronLeft,
@@ -11,6 +14,8 @@ import {
   Database,
   Network,
   RefreshCw,
+  Rocket,
+  Save,
   ServerCog,
   ShieldCheck,
   Users,
@@ -19,17 +24,27 @@ import {
 import { useAuthStore } from '../store/auth'
 import {
   apiGetEnterpriseOperations,
+  apiArchiveEnterpriseCognitiveEntity,
+  apiListEnterpriseCognitiveEntities,
+  apiListEnterpriseCognitiveVersions,
   apiListDirectoryMemberships,
   apiListDirectoryPrincipals,
   apiListDirectorySyncRuns,
+  apiListKnowledgeSpaces,
+  apiPublishEnterpriseCognitiveDraft,
+  apiSaveEnterpriseCognitiveDraft,
   apiSyncEnterpriseDirectory,
+  apiUpsertEnterpriseCognitiveEntity,
   type DirectoryMembershipItem,
   type DirectoryPrincipalItem,
   type DirectorySyncRunItem,
+  type EnterpriseCognitiveEntityItem,
+  type EnterpriseCognitiveVersionItem,
   type EnterpriseOperationsOverview,
+  type KnowledgeSpaceItem,
 } from '../api/client'
 
-type AdminTab = 'overview' | 'directory'
+type AdminTab = 'overview' | 'directory' | 'cognition'
 
 function formatTime(value?: string | null) {
   if (!value) return '—'
@@ -44,6 +59,7 @@ function tone(score: number) {
 }
 
 export default function EnterpriseAdminPage({ onBack }: { onBack: () => void }) {
+  const productVision = '成为企业级的工作台、最懂公司的 AI'
   const token = useAuthStore((state) => state.token)!
   const navigate = useNavigate()
   const [tab, setTab] = useState<AdminTab>('overview')
@@ -51,6 +67,8 @@ export default function EnterpriseAdminPage({ onBack }: { onBack: () => void }) 
   const [principals, setPrincipals] = useState<DirectoryPrincipalItem[]>([])
   const [memberships, setMemberships] = useState<DirectoryMembershipItem[]>([])
   const [syncRuns, setSyncRuns] = useState<DirectorySyncRunItem[]>([])
+  const [cognitiveEntities, setCognitiveEntities] = useState<EnterpriseCognitiveEntityItem[]>([])
+  const [knowledgeSpaces, setKnowledgeSpaces] = useState<KnowledgeSpaceItem[]>([])
   const [loading, setLoading] = useState(true)
   const [working, setWorking] = useState(false)
   const [error, setError] = useState('')
@@ -65,16 +83,20 @@ export default function EnterpriseAdminPage({ onBack }: { onBack: () => void }) 
     setLoading(true)
     setError('')
     try {
-      const [nextOverview, nextPrincipals, nextMemberships, nextRuns] = await Promise.all([
+      const [nextOverview, nextPrincipals, nextMemberships, nextRuns, nextCognition, nextSpaces] = await Promise.all([
         apiGetEnterpriseOperations(token),
         apiListDirectoryPrincipals(token),
         apiListDirectoryMemberships(token),
         apiListDirectorySyncRuns(token),
+        apiListEnterpriseCognitiveEntities(token),
+        apiListKnowledgeSpaces(token),
       ])
       setOverview(nextOverview)
       setPrincipals(nextPrincipals)
       setMemberships(nextMemberships)
       setSyncRuns(nextRuns)
+      setCognitiveEntities(nextCognition)
+      setKnowledgeSpaces(nextSpaces)
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : '企业运营中心加载失败')
     } finally {
@@ -133,7 +155,7 @@ export default function EnterpriseAdminPage({ onBack }: { onBack: () => void }) 
         <div className="min-w-0 flex-1"><h1 className="text-sm font-semibold">企业运营中心</h1><p className="truncate text-xs text-[var(--text-secondary)]">租户采用、执行质量、知识资产、风险与组织目录的统一控制面。</p></div>
         <button onClick={() => void load()} disabled={loading} className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2 text-xs disabled:opacity-50"><RefreshCw size={14} className={loading ? 'animate-spin' : ''} />刷新</button>
       </div>
-      <div className="mx-auto flex w-full max-w-7xl gap-1 px-4 pb-3 sm:px-6">{([{ id: 'overview', label: '运营总览' }, { id: 'directory', label: '企业目录' }] as const).map((item) => <button key={item.id} onClick={() => setTab(item.id)} className={`rounded-lg px-3 py-1.5 text-xs ${tab === item.id ? 'bg-[var(--accent-dim)] font-medium text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--surface)]'}`}>{item.label}</button>)}</div>
+      <div className="mx-auto flex w-full max-w-7xl gap-1 px-4 pb-3 sm:px-6">{([{ id: 'overview', label: '运营总览' }, { id: 'directory', label: '企业目录' }, { id: 'cognition', label: '企业认知' }] as const).map((item) => <button key={item.id} onClick={() => setTab(item.id)} className={`rounded-lg px-3 py-1.5 text-xs ${tab === item.id ? 'bg-[var(--accent-dim)] font-medium text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--surface)]'}`}>{item.label}</button>)}</div>
     </header>
     <main className="mx-auto w-full max-w-7xl flex-1 p-4 sm:p-6">
       {error && <div role="alert" className="mb-5 rounded-2xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-500">{error}</div>}
@@ -147,6 +169,7 @@ export default function EnterpriseAdminPage({ onBack }: { onBack: () => void }) 
         </div>
         <section><div className="mb-3"><h2 className="font-medium">目录同步审计</h2><p className="text-xs text-[var(--text-secondary)]">记录来源、游标、权威同步模式和处理统计。</p></div><div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)]"><table className="w-full min-w-[760px] text-left text-xs"><thead className="border-b border-[var(--border)] text-[var(--text-secondary)]"><tr><th className="px-4 py-3">时间</th><th className="px-4 py-3">来源</th><th className="px-4 py-3">状态</th><th className="px-4 py-3">主体</th><th className="px-4 py-3">成员</th><th className="px-4 py-3">未解析</th></tr></thead><tbody>{syncRuns.map((run) => <tr key={run.id} className="border-b border-[var(--border)] last:border-0"><td className="px-4 py-3">{formatTime(run.completed_at || run.started_at)}</td><td className="px-4 py-3">{run.provider}{run.authoritative ? ' · 权威' : ''}</td><td className="px-4 py-3">{run.status}</td><td className="px-4 py-3">+{run.stats.principals_created || 0} / 更新 {run.stats.principals_updated || 0}</td><td className="px-4 py-3">+{run.stats.memberships_created || 0} / 更新 {run.stats.memberships_updated || 0}</td><td className="px-4 py-3">用户 {run.stats.unresolved_users || 0} / 主体 {run.stats.unresolved_principals || 0}</td></tr>)}</tbody></table></div></section>
       </div>}
+      {tab === 'cognition' && <CognitionPanel vision={productVision} token={token} entities={cognitiveEntities} principals={groupedPrincipals.department} spaces={knowledgeSpaces} working={working} setWorking={setWorking} setError={setError} reload={load} />}
     </main>
   </div>
 }
@@ -203,13 +226,185 @@ function OperationsOverview({ data, navigate }: { data: EnterpriseOperationsOver
         </section>
         <section>
           <div className="mb-3"><h2 className="font-medium">企业资产与自动化</h2><p className="text-xs text-[var(--text-secondary)]">数据、知识、目录和主动工作覆盖度。</p></div>
-          <div className="grid grid-cols-2 gap-3"><Metric label="有效数据源" value={`${data.assets.active_data_sources}/${data.assets.data_sources}`} /><Metric label="知识空间" value={data.assets.knowledge_spaces} /><Metric label="定时任务" value={data.adoption.scheduled_tasks} /><Metric label="主动预警" value={data.adoption.active_alerts} /><Metric label="待处理反馈" value={data.assets.unresolved_feedback} /><Metric label="未确认预警" value={data.alerts.unacknowledged} /></div>
+          <div className="grid grid-cols-2 gap-3"><Metric label="有效数据源" value={`${data.assets.active_data_sources}/${data.assets.data_sources}`} /><Metric label="知识空间" value={data.assets.knowledge_spaces} /><Metric label="已发布企业认知" value={`${data.assets.published_cognition ?? 0}/${data.assets.cognitive_entities ?? 0}`} /><Metric label="主动预警" value={data.adoption.active_alerts} /><Metric label="待处理反馈" value={data.assets.unresolved_feedback} /><Metric label="未确认预警" value={data.alerts.unacknowledged} /></div>
           <button onClick={() => navigate('/work')} className="mt-3 inline-flex items-center gap-1 text-xs text-[var(--accent)]">进入员工工作台<ArrowRight size={12} /></button>
         </section>
       </div>
     </div>
   )
 }
+
+function CognitionPanel({ vision: productVision, token, entities, principals, spaces, working, setWorking, setError, reload }: {
+  vision: string
+  token: string
+  entities: EnterpriseCognitiveEntityItem[]
+  principals: DirectoryPrincipalItem[]
+  spaces: KnowledgeSpaceItem[]
+  working: boolean
+  setWorking: (value: boolean) => void
+  setError: (value: string) => void
+  reload: () => Promise<void>
+}) {
+  const [selectedId, setSelectedId] = useState('')
+  const [entityType, setEntityType] = useState<'company' | 'department'>('company')
+  const [entityName, setEntityName] = useState('')
+  const [departmentId, setDepartmentId] = useState('')
+  const [spaceId, setSpaceId] = useState('')
+  const [classification, setClassification] = useState<EnterpriseCognitiveVersionItem['classification']>('internal')
+  const [summary, setSummary] = useState('')
+  const [mission, setMission] = useState('')
+  const [vision, setVision] = useState('')
+  const [values, setValues] = useState('')
+  const [responsibilities, setResponsibilities] = useState('')
+  const [productsServices, setProductsServices] = useState('')
+  const [operatingPrinciples, setOperatingPrinciples] = useState('')
+  const [terminology, setTerminology] = useState('')
+  const [keyContacts, setKeyContacts] = useState('')
+  const [sourceRefs, setSourceRefs] = useState('')
+  const [versions, setVersions] = useState<EnterpriseCognitiveVersionItem[]>([])
+
+  const selected = entities.find((item) => item.id === selectedId) ?? null
+  const editable = selected?.draft_version ?? selected?.current_version ?? null
+
+  useEffect(() => {
+    if (!selectedId && entities.length > 0) setSelectedId(entities[0].id)
+  }, [entities, selectedId])
+
+  useEffect(() => {
+    if (!selected) return
+    setEntityType(selected.entity_type)
+    setEntityName(selected.display_name)
+    setDepartmentId(selected.department_external_id || '')
+    setSpaceId(selected.knowledge_space_id || '')
+    setClassification(editable?.classification || 'internal')
+    setSummary(editable?.summary || '')
+    setMission(editable?.mission || '')
+    setVision(editable?.vision || '')
+    setValues((editable?.values || []).join('\n'))
+    setResponsibilities((editable?.responsibilities || []).join('\n'))
+    setProductsServices((editable?.products_services || []).join('\n'))
+    setOperatingPrinciples((editable?.operating_principles || []).join('\n'))
+    setTerminology(Object.entries(editable?.terminology || {}).map(([key, value]) => `${key}=${value}`).join('\n'))
+    setKeyContacts((editable?.key_contacts || []).join('\n'))
+    setSourceRefs((editable?.source_refs || []).join('\n'))
+  }, [editable, selected])
+
+  useEffect(() => {
+    if (!selectedId) { setVersions([]); return }
+    void apiListEnterpriseCognitiveVersions(token, selectedId).then(setVersions).catch(() => setVersions([]))
+  }, [selectedId, token, entities])
+
+  const createEntity = async () => {
+    const selectedDepartment = principals.find((item) => item.external_id === departmentId)
+    const displayName = entityName.trim() || selectedDepartment?.display_name || ''
+    if (!displayName || (entityType === 'department' && !departmentId)) return
+    setWorking(true)
+    setError('')
+    try {
+      const created = await apiUpsertEnterpriseCognitiveEntity(token, {
+        entity_type: entityType,
+        display_name: displayName,
+        department_external_id: entityType === 'department' ? departmentId : null,
+        knowledge_space_id: spaceId || null,
+      })
+      setSelectedId(created.id)
+      await reload()
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : '创建企业认知实体失败')
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const saveDraft = async () => {
+    if (!selected) return
+    setWorking(true)
+    setError('')
+    try {
+      await apiSaveEnterpriseCognitiveDraft(token, selected.id, {
+        classification,
+        summary: summary.trim(),
+        mission: mission.trim(),
+        vision: vision.trim(),
+        values: splitLines(values),
+        responsibilities: splitLines(responsibilities),
+        products_services: splitLines(productsServices),
+        operating_principles: splitLines(operatingPrinciples),
+        terminology: parseTerminology(terminology),
+        key_contacts: splitLines(keyContacts),
+        source_refs: splitLines(sourceRefs),
+        metadata: { editor: 'enterprise_admin_ui' },
+      })
+      await reload()
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : '保存企业认知草稿失败')
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const publishDraft = async () => {
+    if (!selected) return
+    setWorking(true)
+    setError('')
+    try {
+      await apiPublishEnterpriseCognitiveDraft(token, selected.id)
+      await reload()
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : '发布企业认知失败')
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const archiveEntity = async () => {
+    if (!selected) return
+    setWorking(true)
+    setError('')
+    try {
+      await apiArchiveEnterpriseCognitiveEntity(token, selected.id)
+      await reload()
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : '归档企业认知实体失败')
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const matchingSpaces = spaces.filter((item) => item.space_type === entityType && item.status === 'active')
+  return <div className="space-y-6">
+    <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-6">
+      <div className="flex items-start gap-4">
+        <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[var(--accent-dim)] text-[var(--accent)]"><BrainCircuit size={23} /></div>
+        <div><p className="text-xs font-medium text-[var(--accent)]">企业工作台愿景</p><h2 className="mt-1 text-2xl font-semibold">{productVision}</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--text-secondary)]">公司与部门是稳定认知实体；只有审核发布的版本会按员工组织关系、密级和有效期进入 Responses 上下文。制度细节继续从绑定的企业知识空间检索并保留引用。</p></div>
+      </div>
+    </section>
+    <div className="grid gap-6 xl:grid-cols-[340px_1fr]">
+      <div className="space-y-5">
+        <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-5">
+          <h3 className="font-medium">认知实体</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">公司实体按 org_id 唯一；部门实体必须绑定企业目录。</p>
+          <div className="mt-4 space-y-2">{entities.map((item) => <button key={item.id} onClick={() => setSelectedId(item.id)} className={`w-full rounded-2xl border p-3 text-left ${selectedId === item.id ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)] hover:border-[var(--accent)]/40'}`}><div className="flex items-center justify-between gap-2"><span className="truncate text-sm font-medium">{item.display_name}</span><span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px]">{item.entity_type === 'company' ? '公司' : '部门'}</span></div><div className="mt-1 flex gap-2 text-[11px] text-[var(--text-secondary)]"><span>{item.current_version ? `已发布 v${item.current_version.version}` : '未发布'}</span>{item.draft_version && <span>· 草稿 v{item.draft_version.version}</span>}</div></button>)}{entities.length === 0 && <Empty title="尚未建立企业认知" description="先创建公司认知实体，再逐步补充部门认知。" />}</div>
+        </section>
+        <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-5">
+          <h3 className="font-medium">创建或更新实体绑定</h3>
+          <div className="mt-4 space-y-3"><select value={entityType} onChange={(event) => { setEntityType(event.target.value as typeof entityType); setSpaceId('') }} className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm"><option value="company">公司</option><option value="department">部门</option></select>{entityType === 'department' && <select value={departmentId} onChange={(event) => { const value = event.target.value; setDepartmentId(value); const department = principals.find((item) => item.external_id === value); if (department) setEntityName(department.display_name) }} className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm"><option value="">选择目录部门</option>{principals.filter((item) => item.status === 'active').map((item) => <option key={item.id} value={item.external_id}>{item.display_name}</option>)}</select>}<input value={entityName} onChange={(event) => setEntityName(event.target.value)} placeholder="实体显示名称" className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm" /><select value={spaceId} onChange={(event) => setSpaceId(event.target.value)} className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm"><option value="">暂不绑定知识空间</option>{matchingSpaces.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button onClick={() => void createEntity()} disabled={working || !entityName.trim() || (entityType === 'department' && !departmentId)} className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm disabled:opacity-50"><BookOpen size={15} />保存实体绑定</button></div>
+        </section>
+      </div>
+      <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-5">
+        {!selected ? <Empty title="选择认知实体" description="选择左侧公司或部门后编辑受治理的认知版本。" /> : <div>
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-lg font-semibold">{selected.display_name}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{selected.knowledge_space_name ? `绑定知识空间：${selected.knowledge_space_name}` : '尚未绑定知识空间'} · {selected.current_version ? `当前发布 v${selected.current_version.version}` : '尚未发布'}</p></div><select value={classification} onChange={(event) => setClassification(event.target.value as typeof classification)} className="rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-xs"><option value="public">公开</option><option value="internal">内部</option><option value="confidential">机密</option><option value="restricted">受限</option></select></div>
+          <div className="mt-5 grid gap-4"><Field label="简介" value={summary} onChange={setSummary} placeholder="公司或部门的稳定事实摘要" /><div className="grid gap-4 md:grid-cols-2"><Field label="使命" value={mission} onChange={setMission} placeholder="为什么存在、为谁创造什么价值" /><Field label="愿景" value={vision} onChange={setVision} placeholder="希望成为怎样的组织" /></div><div className="grid gap-4 md:grid-cols-2"><Field label="价值观（每行一项）" value={values} onChange={setValues} /><Field label="职责边界（每行一项）" value={responsibilities} onChange={setResponsibilities} /></div><div className="grid gap-4 md:grid-cols-2"><Field label="产品与服务（每行一项）" value={productsServices} onChange={setProductsServices} /><Field label="经营原则（每行一项）" value={operatingPrinciples} onChange={setOperatingPrinciples} /></div><div className="grid gap-4 md:grid-cols-2"><Field label="企业术语（术语=解释）" value={terminology} onChange={setTerminology} /><Field label="关键联系人（每行一项）" value={keyContacts} onChange={setKeyContacts} /></div><Field label="来源引用（每行一个 URL、文档 ID 或知识来源）" value={sourceRefs} onChange={setSourceRefs} /></div>
+          <div className="mt-5 flex flex-wrap justify-between gap-2"><button onClick={() => void archiveEntity()} disabled={working || selected.status === 'archived'} className="inline-flex items-center gap-2 rounded-xl border border-red-500/30 px-4 py-2.5 text-sm text-red-500 disabled:opacity-50"><Archive size={15} />归档实体</button><div className="flex gap-2"><button onClick={() => void saveDraft()} disabled={working || selected.status === 'archived'} className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm disabled:opacity-50"><Save size={15} />保存草稿</button><button onClick={() => void publishDraft()} disabled={working || selected.status === 'archived' || !selected.draft_version} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm text-[var(--accent-foreground)] disabled:opacity-50"><Rocket size={15} />审核发布</button></div></div>
+          <div className="mt-6 border-t border-[var(--border)] pt-5"><h4 className="text-sm font-medium">版本历史</h4><div className="mt-3 grid gap-2 sm:grid-cols-2">{versions.map((version) => <div key={version.id} className="rounded-xl border border-[var(--border)] p-3 text-xs"><div className="flex items-center justify-between"><span className="font-medium">v{version.version}</span><span className="rounded-full border border-[var(--border)] px-2 py-0.5">{version.status}</span></div><p className="mt-2 line-clamp-2 text-[var(--text-secondary)]">{version.summary || version.mission || '未填写摘要'}</p><p className="mt-2 text-[10px] text-[var(--text-secondary)]">{version.published_at ? `发布于 ${formatTime(version.published_at)}` : '尚未发布'}</p></div>)}</div></div>
+        </div>}
+      </section>
+    </div>
+  </div>
+}
+
+function Field({ label, value, onChange, placeholder = '' }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string }) { return <label className="block"><span className="mb-1.5 block text-xs font-medium">{label}</span><textarea value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} rows={3} className="w-full resize-y rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm leading-6" /></label> }
+function splitLines(value: string): string[] { return value.split('\n').map((item) => item.trim()).filter(Boolean) }
+function parseTerminology(value: string): Record<string, string> { return Object.fromEntries(splitLines(value).map((item) => { const index = item.indexOf('='); return index > 0 ? [item.slice(0, index).trim(), item.slice(index + 1).trim()] : [item, item] })) }
 
 function Metric({ label, value }: { label: string; value: string | number }) { return <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="text-xl font-semibold">{value}</div><div className="mt-1 text-xs text-[var(--text-secondary)]">{label}</div></div> }
 function DirectoryStat({ icon: Icon, label, value }: { icon: typeof Building2; label: string; value: number }) { return <div className="flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="grid h-10 w-10 place-items-center rounded-xl bg-[var(--accent-dim)] text-[var(--accent)]"><Icon size={18} /></div><div><div className="text-2xl font-semibold">{value}</div><div className="text-xs text-[var(--text-secondary)]">{label}</div></div></div> }

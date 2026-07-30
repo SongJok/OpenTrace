@@ -40,6 +40,8 @@
 
 `KnowledgeSpace` 独立于 Project。公司、部门、岗位、个人空间长期存在；Project 通过 `KnowledgeSpaceProject` 挂载空间。员工查询可以使用公司/部门/岗位空间以及当前 Project 挂载空间，Project 结束不会删除企业知识。
 
+公司和部门知识空间可以绑定到[企业认知实体](enterprise_cognition.md)。认知实体只保存适合每轮装配的稳定骨架，知识空间继续保存有来源、版本、ACL 和 citation 的详细事实；二者不能复制维护同一份全文内容。
+
 空间角色依次为 `viewer → contributor → reviewer → publisher → admin`。授权主体支持用户、部门、用户组、岗位和 Project；`KnowledgePrincipalMembership` 可由 SCIM/HR 同步。来源系统 ACL 写入 `KnowledgeSourcePermission`，查询权限是空间访问权与来源 ACL 的交集。
 
 密级为 `public → internal → confidential → restricted`。查询在召回前过滤密级、租户、工作区、空间、来源 ACL、有效期和撤回状态；Session 热证据也必须重新授权。
