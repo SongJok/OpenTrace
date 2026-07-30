@@ -2,7 +2,12 @@ import { type ChangeEvent, type KeyboardEvent, useEffect, useRef, useState } fro
 import { ArrowUp, FileText, LoaderCircle, Paperclip, Square, X } from 'lucide-react'
 import clsx from 'clsx'
 import { apiCancelResponse, apiChatStream, apiCreateConversation, apiDeleteAttachment, apiUploadAttachment, type AttachmentItem, type ReasoningStep } from '../api/client'
-import { useAuthStore } from '../store/auth'
+import {
+  getAuthSessionSnapshot,
+  isAuthSessionCurrent,
+  type AuthSessionSnapshot,
+  useAuthStore,
+} from '../store/auth'
 import { useChatCommands } from '../store/chatCommands'
 import { useChatPreferences } from '../store/chatPreferences'
 import { useChatStore } from '../store/chat'
@@ -14,6 +19,7 @@ type ChatInputVariant = 'default' | 'welcome'
 
 export default function ChatInput({ variant = 'default' }: { variant?: ChatInputVariant }) {
   const token = useAuthStore((state) => state.token)!
+  const sessionGeneration = useAuthStore((state) => state.sessionGeneration)
   const store = useChatStore()
   const activeId = useChatStore((state) => state.activeId)
   const streaming = useChatStore((state) => state.streaming)
@@ -34,6 +40,14 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
+    abortRef.current?.abort()
+    abortRef.current = null
+    setText('')
+    setAttachments([])
+    setError(null)
+  }, [sessionGeneration, token])
+
+  useEffect(() => {
     if (prefillText === null) return
     setText(prefillText)
     consumePrefill()
@@ -46,7 +60,10 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
     assistantMessageId: string,
     retryResponseId?: string,
     attachmentIds: string[] = [],
+    authSession: AuthSessionSnapshot = getAuthSessionSnapshot(),
   ) => {
+    if (authSession.token !== token || !isAuthSessionCurrent(authSession)) return
+    const isCurrentSession = () => isAuthSessionCurrent(authSession)
     const controller = new AbortController()
     abortRef.current = controller
     store.appendAssistantStreamingMessage(conversationId, { id: assistantMessageId })
@@ -59,32 +76,46 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
       query,
       {
         onResponseCreated: (payload) => {
+          if (!isCurrentSession()) return
           const responseId = String(payload?.response_id || payload?.id || '')
           if (!responseId) return
           store.setActiveResponseId(responseId)
           store.setMessageResponseId(conversationId, assistantMessageId, responseId)
         },
-        onReasoningStep: (step: ReasoningStep) => store.addReasoningStep(conversationId, step),
+        onReasoningStep: (step: ReasoningStep) => {
+          if (isCurrentSession()) store.addReasoningStep(conversationId, step)
+        },
         onThinking: (payload) => {
+          if (!isCurrentSession()) return
           const stage = String(payload?.stage || payload?.intent?.task_type || '')
           if (stage) store.appendThinking(conversationId, stage)
         },
-        onDelta: (chunk) => store.appendStreamingChunk(conversationId, chunk),
-        onToolCall: (payload) => store.updateToolStatus(conversationId, {
-          tool_name: String(payload?.name || payload?.tool_name || 'tool'),
-          status: 'running',
-          node_id: payload?.call_id,
-        }),
-        onToolResult: (payload) => store.updateToolResult(conversationId, {
-          tool_name: String(payload?.name || payload?.tool_name || 'tool'),
-          node_id: payload?.call_id,
-          preview: JSON.stringify(payload?.result ?? payload),
-        }),
+        onDelta: (chunk) => {
+          if (isCurrentSession()) store.appendStreamingChunk(conversationId, chunk)
+        },
+        onToolCall: (payload) => {
+          if (!isCurrentSession()) return
+          store.updateToolStatus(conversationId, {
+            tool_name: String(payload?.name || payload?.tool_name || 'tool'),
+            status: 'running',
+            node_id: payload?.call_id,
+          })
+        },
+        onToolResult: (payload) => {
+          if (!isCurrentSession()) return
+          store.updateToolResult(conversationId, {
+            tool_name: String(payload?.name || payload?.tool_name || 'tool'),
+            node_id: payload?.call_id,
+            preview: JSON.stringify(payload?.result ?? payload),
+          })
+        },
         onApprovalRequired: (approvals) => {
+          if (!isCurrentSession()) return
           store.setMessageApprovals(conversationId, assistantMessageId, approvals)
           store.setActiveResponseId(null)
         },
         onFinalAnswer: (envelope) => {
+          if (!isCurrentSession()) return
           store.finishLastAssistantMessage(conversationId, envelope.content || '（空响应）')
           if (envelope.citations?.length) store.setLastAssistantCitations(conversationId, envelope.citations as any)
           if (envelope.annotations?.length) store.setLastAssistantAnnotations(conversationId, envelope.annotations as any)
@@ -92,6 +123,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
           store.setActiveResponseId(null)
         },
         onError: (streamError) => {
+          if (!isCurrentSession()) return
           const message = streamError instanceof Error ? streamError.message : String(streamError)
           store.failLastAssistantMessage(conversationId, message)
           setError(message)
@@ -111,10 +143,12 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
     )
   }
 
-  const ensureConversation = async () => {
+  const ensureConversation = async (authSession: AuthSessionSnapshot) => {
+    if (authSession.token !== token || !isAuthSessionCurrent(authSession)) return null
     const current = useChatStore.getState().activeId
     if (current) return current
     const conversation = await apiCreateConversation(token)
+    if (!isAuthSessionCurrent(authSession)) return null
     store.addConversation(conversation)
     store.setActiveId(conversation.id)
     store.setMessages(conversation.id, [])
@@ -122,16 +156,21 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   }
 
   const selectFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     const files = Array.from(event.target.files ?? []).slice(0, Math.max(0, 10 - attachments.length))
     event.target.value = ''
     if (!files.length) return
     try {
-      const conversationId = await ensureConversation()
+      const conversationId = await ensureConversation(authSession)
+      if (!conversationId || !isAuthSessionCurrent(authSession)) return
       for (const file of files) {
+        if (!isAuthSessionCurrent(authSession)) return
         const localId = createClientId('attachment_')
         setAttachments((items) => [...items, { id: localId, file, name: file.name, size: file.size, status: 'uploading' }])
         try {
           const uploaded = await apiUploadAttachment(token, file, conversationId)
+          if (!isAuthSessionCurrent(authSession)) return
           setAttachments((items) => items.map((item) => item.id === localId ? {
             ...item,
             status: 'done',
@@ -142,6 +181,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
             ingestStatus: uploaded.ingest_status,
           } : item))
         } catch (uploadError) {
+          if (!isAuthSessionCurrent(authSession)) return
           setAttachments((items) => items.map((item) => item.id === localId ? {
             ...item,
             status: 'error',
@@ -150,6 +190,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
         }
       }
     } catch (conversationError) {
+      if (!isAuthSessionCurrent(authSession)) return
       setError(conversationError instanceof Error ? conversationError.message : String(conversationError))
     }
   }
@@ -160,12 +201,15 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   }
 
   const send = async () => {
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     const query = text.trim()
     const readyAttachments = attachments.filter((item) => item.status === 'done' && item.serverId)
     if ((!query && !readyAttachments.length) || streaming || attachments.some((item) => item.status === 'uploading')) return
     let conversationId = activeId
     if (!conversationId) {
       const conversation = await apiCreateConversation(token)
+      if (!isAuthSessionCurrent(authSession)) return
       store.addConversation(conversation)
       store.setActiveId(conversation.id)
       store.setMessages(conversation.id, [])
@@ -181,32 +225,48 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
     setText('')
     setAttachments([])
     try {
-      await runResponse(conversationId, displayText, `assistant_${Date.now()}`, undefined, readyAttachments.map((item) => item.serverId!))
+      await runResponse(
+        conversationId,
+        displayText,
+        `assistant_${Date.now()}`,
+        undefined,
+        readyAttachments.map((item) => item.serverId!),
+        authSession,
+      )
     } catch (sendError) {
+      if (!isAuthSessionCurrent(authSession)) return
       if (!(sendError instanceof DOMException && sendError.name === 'AbortError')) {
         const message = sendError instanceof Error ? sendError.message : String(sendError)
         store.failLastAssistantMessage(conversationId, message)
         setError(message)
       }
     } finally {
-      store.setStreaming(false)
-      abortRef.current = null
+      if (isAuthSessionCurrent(authSession)) {
+        store.setStreaming(false)
+        abortRef.current = null
+      }
     }
   }
 
   useEffect(() => {
     if (!regenerate || !activeId || streaming) return
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     const request = regenerate
     consumeRegenerate()
-    void runResponse(activeId, request.input ?? '', `assistant_${Date.now()}`, request.responseId)
+    void runResponse(activeId, request.input ?? '', `assistant_${Date.now()}`, request.responseId, [], authSession)
       .finally(() => {
+        if (!isAuthSessionCurrent(authSession)) return
         store.setStreaming(false)
         abortRef.current = null
       })
-  }, [regenerate, activeId, streaming])
+  }, [regenerate, activeId, streaming, token])
 
   const stop = async () => {
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     if (activeResponseId) await apiCancelResponse(token, activeResponseId).catch(() => undefined)
+    if (!isAuthSessionCurrent(authSession)) return
     abortRef.current?.abort()
     abortRef.current = null
     if (activeId) store.stopLastAssistantMessage(activeId)

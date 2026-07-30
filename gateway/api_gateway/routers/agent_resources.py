@@ -1046,14 +1046,12 @@ def _owned_notification_subjects(
                 AlertRule.user_id == user_id,
                 AlertRule.tenant_id == tenant_id,
                 AlertRule.workspace_id == workspace_id,
-            )
-        )
-        .union(
+            ),
             select(CalendarEvent.id).where(
                 CalendarEvent.user_id == user_id,
                 CalendarEvent.tenant_id == tenant_id,
                 CalendarEvent.workspace_id == workspace_id,
-            )
+            ),
         )
     )
 

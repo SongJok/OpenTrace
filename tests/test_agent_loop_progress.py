@@ -83,6 +83,144 @@ def test_direct_tool_embedded_error_is_promoted_to_failure():
 
 
 @pytest.mark.asyncio
+async def test_approved_deterministic_calendar_completion_skips_model(monkeypatch):
+    spec = ToolSpec(
+        name="create_calendar_event",
+        description="创建个人日历日程",
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "start_at": {"type": "string"},
+                "end_at": {"type": "string"},
+                "timezone": {"type": "string"},
+                "reminder_minutes": {"type": "array", "items": {"type": "integer"}},
+            },
+        },
+        side_effect=SideEffect.WRITE,
+    )
+    intent = IntentPlan(
+        goal="创建日程",
+        capabilities=("create_calendar_event",),
+        risk=SideEffect.WRITE,
+    )
+    plan = ExecutionPlan(
+        goal=intent.goal,
+        steps=(ExecutionStep("step-calendar", "创建日程", "create_calendar_event"),),
+    )
+    context = AssembledContext(
+        messages=[
+            {"role": "system", "content": "系统指令"},
+            {"role": "user", "content": "明天上午开发 OpenTrace，帮我记录下来"},
+        ],
+        memory_ids=[],
+        attachment_ids=[],
+        attachment_context="",
+        contains_images=False,
+        project_id=None,
+        assistant_profile_id=None,
+        profile_execution_default="auto",
+        tool_policy={},
+        memory_policy={},
+        modality_counts={"text": 1, "image": 0, "audio": 0, "video": 0},
+        context_manifest={"estimated_input_tokens": 10, "max_input_tokens": 100_000},
+    )
+    arguments = {
+        "title": "开发 OpenTrace",
+        "start_at": "2026-07-31T09:50:00+08:00",
+        "end_at": "2026-07-31T11:50:00+08:00",
+        "timezone": "Asia/Shanghai",
+        "reminder_minutes": [15],
+    }
+    approval = SimpleNamespace(
+        id="approval-calendar",
+        status="approved",
+        call_id="call_deterministic_calendar",
+        tool_name="create_calendar_event",
+        arguments=arguments,
+    )
+
+    class FakeContextAssembler:
+        async def assemble(self, *args, **kwargs):
+            return context
+
+    class FakeDB:
+        async def scalar(self, *args, **kwargs):
+            return approval
+
+        async def flush(self):
+            return None
+
+    class FailIfCalledGateway:
+        async def complete(self, *args, **kwargs):
+            raise AssertionError("审批后的确定性日历回执不应调用模型")
+
+    loop = AgentLoop(context_assembler=FakeContextAssembler())
+    response = SimpleNamespace(
+        id="response-calendar",
+        status="in_progress",
+        response_metadata={},
+        request_payload={
+            "input": "明天上午开发 OpenTrace，帮我记录下来",
+            "opentrace": {"timezone": "Asia/Shanghai"},
+        },
+    )
+    events = []
+
+    async def emit(event_type, payload):
+        events.append((event_type, payload))
+
+    async def restore_decision(*args, **kwargs):
+        return PlanningDecision(intent=intent, execution_plan=plan)
+
+    async def restore_plan(*args, **kwargs):
+        return kwargs["proposed"]
+
+    async def plan_runtime(*args, **kwargs):
+        return {"step-calendar": "requires_action"}, 0
+
+    async def no_op(*args, **kwargs):
+        return None
+
+    async def restore_tools(*args, **kwargs):
+        return [
+            (
+                "create_calendar_event",
+                {
+                    "status": "completed",
+                    "parameters": arguments,
+                    "result": {
+                        "status": "success",
+                        "event": {"title": "开发 OpenTrace"},
+                    },
+                },
+            )
+        ]
+
+    monkeypatch.setattr(loop, "_available_tool_specs", lambda payload: [spec])
+    monkeypatch.setattr(loop, "_existing_deterministic_approval", no_op)
+    monkeypatch.setattr(loop, "_restore_planning_decision", restore_decision)
+    monkeypatch.setattr(loop, "_restore_or_persist_execution_plan", restore_plan)
+    monkeypatch.setattr(loop, "_execution_plan_runtime", plan_runtime)
+    monkeypatch.setattr(loop, "_persist_execution_plan_runtime", no_op)
+    monkeypatch.setattr(loop, "_restore_tool_history", restore_tools)
+    monkeypatch.setattr("kernel.agent_loop.runner.get_model_gateway", FailIfCalledGateway)
+
+    async def existing_approval(*args, **kwargs):
+        return approval
+
+    monkeypatch.setattr(loop, "_existing_deterministic_approval", existing_approval)
+
+    result = await loop.run(FakeDB(), response=response, emit=emit)
+
+    assert result.status == "completed"
+    assert result.model == "opentrace-calendar-projection"
+    assert "已记录" in result.content
+    assert result.metadata["calendar_action_completed"] is True
+    assert any(event_type == "response.output_text.done" for event_type, _ in events)
+
+
+@pytest.mark.asyncio
 async def test_agent_loop_finalizes_without_tools_after_two_no_progress_rounds(monkeypatch):
     spec = ToolSpec(
         name="web_search",

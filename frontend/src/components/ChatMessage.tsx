@@ -1,10 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronDown, Copy, FileText, GitBranch, RefreshCw, ThumbsDown, ThumbsUp } from 'lucide-react'
+import { CalendarDays, Check, ChevronDown, Copy, FileText, GitBranch, RefreshCw, ThumbsDown, ThumbsUp } from 'lucide-react'
 import type { Message } from '../store/chat'
 import { useChatStore } from '../store/chat'
-import { useAuthStore } from '../store/auth'
+import { getAuthSessionSnapshot, isAuthSessionCurrent, useAuthStore } from '../store/auth'
 import { copyTextToClipboard } from '../utils/clipboard'
-import { apiBranchConversation, apiGetMessages, apiListConversations, apiListResponseSiblings, apiResolveResponseApproval, apiResumeResponse, apiSetActiveResponse, apiSubmitFeedback } from '../api/client'
+import { apiBranchConversation, apiGetMessages, apiGetResponse, apiListConversations, apiListResponseSiblings, apiResolveResponseApproval, apiResumeResponseWithRetry, apiSetActiveResponse, apiSubmitFeedback } from '../api/client'
 import { useChatCommands } from '../store/chatCommands'
 
 const MarkdownMessage = lazy(() => import('./MarkdownMessage'))
@@ -147,6 +147,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
   const [showCitations, setShowCitations] = useState(false)
   const [copied, setCopied] = useState(false)
   const [resolvingApproval, setResolvingApproval] = useState<string | null>(null)
+  const [approvalError, setApprovalError] = useState<string | null>(null)
   const token = useAuthStore((state) => state.token)
   const activeConversationId = useChatStore((state) => state.activeId)
   const store = useChatStore()
@@ -173,24 +174,108 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
 
   const resolveApproval = async (approvalId: string, approved: boolean) => {
     if (!token || !message?.response_id || !message?.id || !activeConversationId) return
+    const conversationId = activeConversationId
+    const responseId = message.response_id
+    const messageId = message.id
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
+    const isCurrentConversation = () => (
+      isAuthSessionCurrent(authSession)
+      && useChatStore.getState().activeId === conversationId
+    )
+    const isCurrentApproval = () => (
+      isCurrentConversation()
+      && useChatStore.getState().activeResponseId === responseId
+    )
+    const isCalendarCreation = Boolean(
+      approved && message.approvals?.some((approval) => approval.id === approvalId && approval.tool_name === 'create_calendar_event'),
+    )
+    let approvalResolved = false
+    let calendarCreated = false
     setResolvingApproval(approvalId)
+    setApprovalError(null)
     try {
-      const resolution = await apiResolveResponseApproval(token, message.response_id, approvalId, approved)
-      store.resumeAssistantMessage(activeConversationId, message.id)
-      await apiResumeResponse(token, message.response_id, Number(resolution?.starting_after ?? -1), {
-        onDelta: (text) => store.appendMessageStreamingChunk(activeConversationId, message.id, text),
-        onReasoningStep: (step) => store.addReasoningStep(activeConversationId, step),
-        onToolCall: (payload) => store.updateToolStatus(activeConversationId, payload),
-        onToolResult: (payload) => store.updateToolResult(activeConversationId, payload),
-        onApprovalRequired: (approvals) => store.setMessageApprovals(activeConversationId, message.id, approvals),
-        onFinalAnswer: (envelope) => {
-          store.finishAssistantMessage(activeConversationId, message.id, envelope.content || '（空响应）')
-          store.setStreaming(false)
+      const resolution = await apiResolveResponseApproval(token, responseId, approvalId, approved)
+      if (!isCurrentConversation()) return
+      approvalResolved = true
+      store.resumeAssistantMessage(conversationId, messageId)
+      store.setActiveResponseId(responseId)
+      const callbacks: NonNullable<Parameters<typeof apiResumeResponseWithRetry>[3]> = {
+        onDelta: (text) => {
+          if (isCurrentApproval()) store.appendMessageStreamingChunk(conversationId, messageId, text)
         },
-        onError: (error) => store.failAssistantMessage(activeConversationId, message.id, error instanceof Error ? error.message : String(error)),
-      })
+        onReasoningStep: (step) => {
+          if (isCurrentApproval()) store.addReasoningStep(conversationId, step)
+        },
+        onToolCall: (payload) => {
+          if (isCurrentApproval()) store.updateToolStatus(conversationId, payload)
+        },
+        onToolResult: (payload) => {
+          if (!isCurrentApproval()) return
+          store.updateToolResult(conversationId, payload)
+          if (
+            isCalendarCreation
+            && String(payload?.name || payload?.tool_name || '') === 'create_calendar_event'
+            && ['success', 'completed'].includes(String(payload?.result?.status || payload?.status || '').toLowerCase())
+          ) {
+            calendarCreated = true
+          }
+        },
+        onApprovalRequired: (approvals) => {
+          if (isCurrentApproval()) store.setMessageApprovals(conversationId, messageId, approvals)
+        },
+        onFinalAnswer: (envelope) => {
+          if (!isCurrentApproval()) return
+          store.finishAssistantMessage(conversationId, messageId, envelope.content || '（空响应）')
+          store.setStreaming(false)
+          store.setActiveResponseId(null)
+          if (calendarCreated) store.markCalendarActionCompleted(conversationId, messageId)
+        },
+        onError: (error) => {
+          if (isCurrentApproval()) store.failAssistantMessage(conversationId, messageId, error instanceof Error ? error.message : String(error))
+        },
+      }
+      await apiResumeResponseWithRetry(
+        token,
+        responseId,
+        Number(resolution.starting_after),
+        callbacks,
+      )
+    } catch (error) {
+      if (approvalResolved ? !isCurrentApproval() : !isCurrentConversation()) return
+      const text = error instanceof Error ? error.message : String(error)
+      setApprovalError(text)
+      if (approvalResolved) {
+        try {
+          const [responseState, messages] = await Promise.all([
+            apiGetResponse(token, responseId),
+            apiGetMessages(token, conversationId),
+          ])
+          if (!isCurrentApproval()) return
+          store.setMessages(conversationId, messages)
+          if (['queued', 'in_progress'].includes(String(responseState?.status || ''))) {
+            const persistedMessage = [...messages].reverse().find((item) =>
+              item.role === 'assistant' && item.response_id === responseId
+            )
+            const persistedMessageId = String(persistedMessage?.id || messageId)
+            store.keepAssistantResponseRunning(conversationId, persistedMessageId)
+            store.setActiveResponseId(responseId)
+            setApprovalError('审批已提交，响应仍在后台执行；可稍后重新打开该会话查看结果。')
+            return
+          }
+        } catch {
+          if (!isCurrentApproval()) return
+          store.failAssistantMessage(conversationId, messageId, `审批已提交，但状态同步失败：${text}`)
+        }
+        store.setStreaming(false)
+      } else {
+        store.restoreAssistantApproval(conversationId, messageId)
+      }
+      store.setActiveResponseId(null)
     } finally {
-      setResolvingApproval(null)
+      if (isAuthSessionCurrent(authSession) && useChatStore.getState().activeId === conversationId) {
+        setResolvingApproval(null)
+      }
     }
   }
 
@@ -212,12 +297,15 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
 
   const switchVersion = async () => {
     if (!token || !activeConversationId || !message?.response_id) return
+    const authSession = getAuthSessionSnapshot()
     const siblings = await apiListResponseSiblings(token, message.response_id)
+    if (!isAuthSessionCurrent(authSession)) return
     if (siblings.length < 2) return
     const current = siblings.findIndex((item) => item.active)
     const next = siblings[(current + 1) % siblings.length]
     await apiSetActiveResponse(token, activeConversationId, next.id)
-    store.setMessages(activeConversationId, await apiGetMessages(token, activeConversationId))
+    const messages = await apiGetMessages(token, activeConversationId)
+    if (isAuthSessionCurrent(authSession)) store.setMessages(activeConversationId, messages)
   }
 
   const feedback = async (value: 'like' | 'dislike') => {
@@ -227,12 +315,19 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
 
   const branch = async () => {
     if (!token || !activeConversationId || !message?.id) return
+    const authSession = getAuthSessionSnapshot()
     const result = await apiBranchConversation(token, activeConversationId, message.id)
+    if (!isAuthSessionCurrent(authSession)) return
     const conversationId = String(result.conversation_id || result.id || '')
     if (!conversationId) return
     store.setActiveId(conversationId)
-    store.setMessages(conversationId, await apiGetMessages(token, conversationId))
-    store.setConversations(await apiListConversations(token))
+    const [messages, conversations] = await Promise.all([
+      apiGetMessages(token, conversationId),
+      apiListConversations(token),
+    ])
+    if (!isAuthSessionCurrent(authSession)) return
+    store.setMessages(conversationId, messages)
+    store.setConversations(conversations)
   }
 
   useEffect(() => {
@@ -289,9 +384,15 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
                       <button disabled={Boolean(resolvingApproval)} onClick={() => void resolveApproval(approval.id, true)} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm text-[var(--accent-foreground)] disabled:opacity-50">允许</button>
                       <button disabled={Boolean(resolvingApproval)} onClick={() => void resolveApproval(approval.id, false)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm disabled:opacity-50">拒绝</button>
                     </div>
+                    {approvalError && <p role="alert" className="mt-3 text-xs text-red-500">{approvalError}</p>}
                   </div>
                 ))}
               </div>
+            )}
+            {!isUser && message?.calendar_action_completed && !message?.approvals?.length && (
+              <a href="/calendar" className="mt-3 inline-flex items-center gap-2 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
+                <CalendarDays size={14} />查看我的日历
+              </a>
             )}
             {!isUser && annotations?.[0]?.annotation?.confidence !== undefined && (
               <div className="mt-2 text-xs text-[var(--text-secondary)]">

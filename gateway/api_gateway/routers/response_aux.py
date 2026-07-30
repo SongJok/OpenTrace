@@ -11,21 +11,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
-from infra.responses.repository import add_outbox, append_event
+from infra.responses.repository import TERMINAL_STATUSES, append_event
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
     Attachment,
     ChatSession,
     Feedback,
     ResponseApproval,
+    ResponseEvent,
     ResponseItem,
+    ResponseOutbox,
     ResponseRecord,
     ResponseToolExecution,
     User,
@@ -350,16 +352,211 @@ async def _owned_response(
     response_id: str,
     user: User,
     request: Request,
+    for_update: bool = False,
 ) -> ResponseRecord | None:
     tenant_id, workspace_id = _scope(request, user)
-    return await db.scalar(
-        select(ResponseRecord).where(
-            ResponseRecord.id == response_id,
-            ResponseRecord.user_id == user.id,
-            ResponseRecord.tenant_id == tenant_id,
-            ResponseRecord.workspace_id == workspace_id,
+    statement = select(ResponseRecord).where(
+        ResponseRecord.id == response_id,
+        ResponseRecord.user_id == user.id,
+        ResponseRecord.tenant_id == tenant_id,
+        ResponseRecord.workspace_id == workspace_id,
+    )
+    if for_update:
+        statement = statement.with_for_update().execution_options(populate_existing=True)
+    return await db.scalar(statement)
+
+
+def _prepare_response_for_approval_resume(response: ResponseRecord) -> None:
+    """重新排队审批结果，并保证 Worker 至少还能领取一次。"""
+
+    response.status = "queued"
+    response.completed_at = None
+    response.lease_owner = None
+    response.lease_expires_at = None
+    response.heartbeat_at = None
+    response.max_attempts = max(
+        int(response.max_attempts or 0),
+        int(response.attempt_count or 0) + 1,
+    )
+
+
+async def _ensure_approval_resume_outbox(
+    db: AsyncSession,
+    *,
+    response_id: str,
+    approval_id: str,
+) -> ResponseOutbox:
+    """复用审批唤醒记录，避免网络重试触发唯一键冲突。"""
+
+    event_key = f"response.execute:{response_id}:approval-{approval_id}"
+    existing = await db.scalar(
+        select(ResponseOutbox)
+        .where(ResponseOutbox.event_key == event_key)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if existing is not None:
+        if existing.status != "pending":
+            existing.status = "pending"
+            existing.available_at = datetime.now(UTC)
+            existing.published_at = None
+            existing.last_error = None
+        return existing
+    row = ResponseOutbox(
+        id=f"outbox_{uuid.uuid4().hex}",
+        event_key=event_key,
+        aggregate_id=response_id,
+        aggregate_type="response",
+        event_type="response.execute",
+        payload={"response_id": response_id},
+    )
+    db.add(row)
+    return row
+
+
+def _raise_approval_state_conflict(
+    *,
+    response: ResponseRecord,
+    approval: ResponseApproval,
+    requested_status: str,
+    message: str,
+) -> None:
+    raise AppException(
+        ErrorCodes.RESOURCE_EXISTS.code,
+        message=message,
+        details={
+            "response_status": response.status,
+            "approval_status": approval.status,
+            "requested_status": requested_status,
+        },
+    )
+
+
+async def _resolve_response_tool_approval(
+    *,
+    response_id: str,
+    request: Request,
+    payload: dict,
+    current_user: User,
+    db: AsyncSession,
+    call_id: str | None = None,
+    approval_id: str | None = None,
+) -> dict:
+    response = await _owned_response(
+        db,
+        response_id=response_id,
+        user=current_user,
+        request=request,
+        for_update=True,
+    )
+    if response is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Response 不存在或无权限")
+
+    approval_statement = select(ResponseApproval).where(ResponseApproval.response_id == response_id)
+    if approval_id is not None:
+        approval_statement = approval_statement.where(ResponseApproval.id == approval_id)
+    else:
+        approval_statement = approval_statement.where(ResponseApproval.call_id == call_id)
+    approval = await db.scalar(
+        approval_statement.with_for_update().execution_options(populate_existing=True)
+    )
+    if approval is None:
+        message = "审批记录不存在" if approval_id is not None else "工具审批记录不存在"
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message=message)
+
+    approved = bool(payload.get("approved", False))
+    requested_status = "approved" if approved else "rejected"
+    if response.status in TERMINAL_STATUSES:
+        _raise_approval_state_conflict(
+            response=response,
+            approval=approval,
+            requested_status=requested_status,
+            message="Response 已结束，不能再处理旧审批",
+        )
+
+    if approval.status in {"approved", "rejected"}:
+        if approval.status != requested_status:
+            _raise_approval_state_conflict(
+                response=response,
+                approval=approval,
+                requested_status=requested_status,
+                message="审批已经完成，不能更改决定",
+            )
+        latest_sequence = await db.scalar(
+            select(func.max(ResponseEvent.sequence_number)).where(
+                ResponseEvent.response_id == response_id
+            )
+        )
+        if approval.status == "approved" and response.status == "requires_action":
+            _prepare_response_for_approval_resume(response)
+            await _ensure_approval_resume_outbox(
+                db,
+                response_id=response_id,
+                approval_id=approval.id,
+            )
+            await db.commit()
+        return {
+            "approved": approval.status == "approved",
+            "status": approval.status,
+            "call_id": approval.call_id,
+            "approval_id": approval.id,
+            "starting_after": int(latest_sequence if latest_sequence is not None else -1),
+        }
+
+    if approval.status != "pending":
+        _raise_approval_state_conflict(
+            response=response,
+            approval=approval,
+            requested_status=requested_status,
+            message="审批状态不允许处理",
+        )
+    if response.status != "requires_action":
+        _raise_approval_state_conflict(
+            response=response,
+            approval=approval,
+            requested_status=requested_status,
+            message="Response 当前不在等待审批状态",
+        )
+
+    approval.status = requested_status
+    approval.reason = None if approved else str(payload.get("reason") or "user rejected tool call")
+    approval.resolved_by = current_user.id
+    approval.resolved_at = datetime.now(UTC)
+    tool = await db.scalar(
+        select(ResponseToolExecution).where(
+            ResponseToolExecution.response_id == response_id,
+            ResponseToolExecution.call_id == approval.call_id,
         )
     )
+    if tool:
+        tool.status = approval.status
+        tool.error_message = approval.reason
+    resolved_event = await append_event(
+        db,
+        response_id=response_id,
+        event_type="opentrace.approval.resolved",
+        payload={
+            "approval_id": approval.id,
+            "call_id": approval.call_id,
+            "approved": approved,
+            "status": approval.status,
+        },
+    )
+    # 批准和拒绝都恢复 Manager；拒绝会作为类型化工具结果进入后续解释。
+    _prepare_response_for_approval_resume(response)
+    await _ensure_approval_resume_outbox(
+        db,
+        response_id=response_id,
+        approval_id=approval.id,
+    )
+    await db.commit()
+    return {
+        "approved": approved,
+        "status": approval.status,
+        "call_id": approval.call_id,
+        "approval_id": approval.id,
+        "starting_after": resolved_event.sequence_number,
+    }
 
 
 @router.post("/responses/{response_id}/tool-approvals")
@@ -377,64 +574,15 @@ async def approve_response_tool(
     """
     call_id = str(payload.get("call_id") or "")
     if not call_id:
-        return {"approved": False, "error": "call_id is required"}
-    response = await _owned_response(
-        db, response_id=response_id, user=current_user, request=request
-    )
-    if response is None:
-        return {"approved": False, "error": "response not found"}
-    approval = await db.scalar(
-        select(ResponseApproval).where(
-            ResponseApproval.response_id == response_id,
-            ResponseApproval.call_id == call_id,
-        )
-    )
-    if approval is None:
-        return {"approved": False, "error": "tool call not found"}
-    approved = bool(payload.get("approved", False))
-    if approval.status in {"approved", "rejected"}:
-        return {
-            "approved": approval.status == "approved",
-            "status": approval.status,
-            "call_id": call_id,
-        }
-    approval.status = "approved" if approved else "rejected"
-    approval.reason = None if approved else str(payload.get("reason") or "user rejected tool call")
-    approval.resolved_by = current_user.id
-    approval.resolved_at = datetime.now(UTC)
-    tool = await db.scalar(
-        select(ResponseToolExecution).where(
-            ResponseToolExecution.response_id == response_id,
-            ResponseToolExecution.call_id == call_id,
-        )
-    )
-    if tool:
-        tool.status = approval.status
-        tool.error_message = approval.reason
-    resolved_event = await append_event(
-        db,
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="缺少工具调用标识")
+    return await _resolve_response_tool_approval(
         response_id=response_id,
-        event_type="opentrace.approval.resolved",
-        payload={
-            "approval_id": approval.id,
-            "call_id": call_id,
-            "approved": approved,
-            "status": approval.status,
-        },
+        request=request,
+        payload=payload,
+        current_user=current_user,
+        db=db,
+        call_id=call_id,
     )
-    # Both decisions resume the manager. Rejections become typed tool results,
-    # allowing the assistant to explain alternatives instead of cancelling the turn.
-    response.status = "queued"
-    response.completed_at = None
-    add_outbox(db, response_id=response_id, suffix=f"approval-{approval.id}")
-    await db.commit()
-    return {
-        "approved": approved,
-        "status": approval.status,
-        "call_id": call_id,
-        "approval_id": approval.id,
-        "starting_after": resolved_event.sequence_number,
-    }
 
 
 @router.post("/responses/{response_id}/approvals/{approval_id}/resolve")
@@ -446,25 +594,13 @@ async def resolve_response_approval(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    response = await _owned_response(
-        db, response_id=response_id, user=current_user, request=request
-    )
-    if response is None:
-        return {"approved": False, "error": "response not found"}
-    approval = await db.scalar(
-        select(ResponseApproval).where(
-            ResponseApproval.id == approval_id,
-            ResponseApproval.response_id == response_id,
-        )
-    )
-    if approval is None:
-        return {"approved": False, "error": "approval not found"}
-    return await approve_response_tool(
-        response_id,
-        request,
-        {**payload, "call_id": approval.call_id},
-        current_user,
-        db,
+    return await _resolve_response_tool_approval(
+        response_id=response_id,
+        request=request,
+        payload=payload,
+        current_user=current_user,
+        db=db,
+        approval_id=approval_id,
     )
 
 

@@ -114,6 +114,56 @@ def _conversation_out(session: ChatSession) -> ConversationOut:
     )
 
 
+def _approval_payloads(approvals: list[ResponseApproval]) -> list[dict]:
+    return [
+        {
+            "id": item.id,
+            "call_id": item.call_id,
+            "tool_name": item.tool_name,
+            "side_effect": item.side_effect_level,
+            "arguments": dict(item.arguments or {}),
+        }
+        for item in approvals
+    ]
+
+
+def _project_response_approvals(
+    response: ResponseRecord,
+    response_messages: list[MessageOut],
+    approvals: list[dict],
+    *,
+    version_index: int,
+    sibling_count: int,
+) -> list[MessageOut]:
+    for index in range(len(response_messages) - 1, -1, -1):
+        if response_messages[index].role != "assistant":
+            continue
+        if approvals:
+            response_messages[index] = response_messages[index].model_copy(
+                update={"approvals": approvals}
+            )
+        return response_messages
+    if response.status not in {"queued", "in_progress", "requires_action"}:
+        return response_messages
+    response_messages.append(
+        MessageOut(
+            id=f"pending_{response.id}",
+            role="assistant",
+            content="",
+            created_at=response.created_at.isoformat(),
+            model=response.model,
+            status=response.status,
+            response_id=response.id,
+            parent_response_id=response.parent_response_id,
+            version=response.version,
+            version_index=version_index,
+            sibling_count=sibling_count,
+            approvals=approvals,
+        )
+    )
+    return response_messages
+
+
 def _scope(request: Request, user_id: str) -> tuple[str, str, str]:
     metadata = build_tenant_metadata(request, user_id=user_id)
     return (
@@ -219,12 +269,16 @@ async def _items_for(db: AsyncSession, response_ids: list[str]) -> dict[str, lis
     if not response_ids:
         return {}
     rows = (
-        await db.execute(
-            select(ResponseItem)
-            .where(ResponseItem.response_id.in_(response_ids))
-            .order_by(ResponseItem.created_at, ResponseItem.sequence_number)
+        (
+            await db.execute(
+                select(ResponseItem)
+                .where(ResponseItem.response_id.in_(response_ids))
+                .order_by(ResponseItem.created_at, ResponseItem.sequence_number)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     result: dict[str, list[ResponseItem]] = {}
     for item in rows:
         result.setdefault(item.response_id, []).append(item)
@@ -249,7 +303,9 @@ async def list_conversations(
         ChatSession.tenant_id == tenant_id,
         ChatSession.workspace_id == workspace_id,
     ]
-    clauses.append(ChatSession.archived_at.isnot(None) if archived else ChatSession.archived_at.is_(None))
+    clauses.append(
+        ChatSession.archived_at.isnot(None) if archived else ChatSession.archived_at.is_(None)
+    )
     if not archived:
         clauses.append(ChatSession.is_temporary.is_(False))
     if query.strip():
@@ -267,13 +323,17 @@ async def list_conversations(
             )
         )
     sessions = (
-        await db.execute(
-            select(ChatSession)
-            .where(and_(*clauses))
-            .order_by(desc(ChatSession.pinned), desc(ChatSession.last_active))
-            .limit(200)
+        (
+            await db.execute(
+                select(ChatSession)
+                .where(and_(*clauses))
+                .order_by(desc(ChatSession.pinned), desc(ChatSession.last_active))
+                .limit(200)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [_conversation_out(session) for session in sessions]
 
 
@@ -415,9 +475,7 @@ async def delete_conversation(
         UserMemory.scope_type == "conversation",
         UserMemory.scope_id == session.id,
     )
-    await db.execute(
-        delete(MemoryEvidence).where(MemoryEvidence.memory_id.in_(scoped_memories))
-    )
+    await db.execute(delete(MemoryEvidence).where(MemoryEvidence.memory_id.in_(scoped_memories)))
     await db.execute(
         delete(UserMemory).where(
             UserMemory.user_id == current_user.id,
@@ -453,7 +511,9 @@ async def edit_message_and_branch(
         )
     )
     if item is None or item.item_type != "input_message":
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="Only user input can create an edited branch")
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code, message="Only user input can create an edited branch"
+        )
     source = await db.get(ResponseRecord, item.response_id)
     content = str(payload.get("content") or "").strip()
     if source is None or not content:
@@ -489,7 +549,12 @@ async def edit_message_and_branch(
             payload={"edited_from": item.id},
         )
     )
-    await append_event(db, response_id=new_id, event_type="response.created", payload={"response_id": new_id, "status": "queued"})
+    await append_event(
+        db,
+        response_id=new_id,
+        event_type="response.created",
+        payload={"response_id": new_id, "status": "queued"},
+    )
     add_outbox(db, response_id=new_id, suffix="edit")
     session = await db.get(ChatSession, source.conversation_id)
     if session:
@@ -507,7 +572,9 @@ async def branch_conversation(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
-    source_session = await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
+    source_session = await _owned_session(
+        db, conversation_id, current_user.id, tenant_id, workspace_id
+    )
     message_id = str(payload.get("message_id") or "")
     item = await db.scalar(
         select(ResponseItem)
@@ -546,22 +613,22 @@ async def branch_conversation(
         copied_id = f"resp_{uuid.uuid4().hex}"
         id_map[source.id] = copied_id
         copied_response = ResponseRecord(
-                id=copied_id,
-                conversation_id=new_session.id,
-                user_id=source.user_id,
-                tenant_id=source.tenant_id,
-                workspace_id=source.workspace_id,
-                parent_response_id=id_map.get(source.parent_response_id or ""),
-                request_id=str(uuid.uuid4()),
-                status=source.status,
-                mode=source.mode,
-                model=source.model,
-                error_code=source.error_code,
-                error_message=source.error_message,
-                request_payload=dict(source.request_payload or {}),
-                response_metadata={**dict(source.response_metadata or {}), "branched_from": source.id},
-                version=source.version,
-                completed_at=source.completed_at,
+            id=copied_id,
+            conversation_id=new_session.id,
+            user_id=source.user_id,
+            tenant_id=source.tenant_id,
+            workspace_id=source.workspace_id,
+            parent_response_id=id_map.get(source.parent_response_id or ""),
+            request_id=str(uuid.uuid4()),
+            status=source.status,
+            mode=source.mode,
+            model=source.model,
+            error_code=source.error_code,
+            error_message=source.error_message,
+            request_payload=dict(source.request_payload or {}),
+            response_metadata={**dict(source.response_metadata or {}), "branched_from": source.id},
+            version=source.version,
+            completed_at=source.completed_at,
         )
         db.add(copied_response)
         # ResponseItem 只持有纯外键，没有 ORM relationship 可推断插入顺序。
@@ -581,7 +648,11 @@ async def branch_conversation(
     new_session.active_response_id = id_map.get(item.response_id)
     new_session.branch_root_response_id = id_map.get(chain[0].id) if chain else None
     await db.commit()
-    return {"conversation_id": new_session.id, "branched_from": conversation_id, "up_to_message_id": message_id}
+    return {
+        "conversation_id": new_session.id,
+        "branched_from": conversation_id,
+        "up_to_message_id": message_id,
+    }
 
 
 @router.post("/conversations/{conversation_id}/active-response")
@@ -624,7 +695,10 @@ async def create_share(
     messages: list[dict] = []
     for response in chain:
         for item in by_response.get(response.id, []):
-            if item.item_type not in {"input_message", "message"} or item.role not in {"user", "assistant"}:
+            if item.item_type not in {"input_message", "message"} or item.role not in {
+                "user",
+                "assistant",
+            }:
                 continue
             item_payload = dict(item.payload or {})
             messages.append(
@@ -641,7 +715,10 @@ async def create_share(
             )
     await db.execute(
         ConversationShare.__table__.update()
-        .where(ConversationShare.conversation_id == conversation_id, ConversationShare.revoked_at.is_(None))
+        .where(
+            ConversationShare.conversation_id == conversation_id,
+            ConversationShare.revoked_at.is_(None),
+        )
         .values(revoked_at=datetime.now(UTC))
     )
     token = secrets.token_urlsafe(24)
@@ -653,7 +730,10 @@ async def create_share(
             user_id=current_user.id,
             public_id=public_id,
             token_hash=_share_token_hash(token),
-            snapshot={"title": session.display_title or session.title or "OpenTrace 对话", "messages": messages},
+            snapshot={
+                "title": session.display_title or session.title or "OpenTrace 对话",
+                "messages": messages,
+            },
         )
     )
     await db.commit()
@@ -711,12 +791,19 @@ async def get_messages(
     chain = await _active_chain(db, session, current_user.id)
     by_response = await _items_for(db, [row.id for row in chain])
     all_rows = (
-        await db.execute(
-            select(ResponseRecord)
-            .where(ResponseRecord.conversation_id == conversation_id, ResponseRecord.user_id == current_user.id)
-            .order_by(ResponseRecord.created_at)
+        (
+            await db.execute(
+                select(ResponseRecord)
+                .where(
+                    ResponseRecord.conversation_id == conversation_id,
+                    ResponseRecord.user_id == current_user.id,
+                )
+                .order_by(ResponseRecord.created_at)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     siblings: dict[str | None, list[ResponseRecord]] = {}
     for row in all_rows:
         siblings.setdefault(row.parent_response_id, []).append(row)
@@ -724,8 +811,7 @@ async def get_messages(
         str(attachment_id)
         for response in chain
         for attachment_id in (
-            (response.request_payload or {}).get("opentrace", {}).get("attachment_ids")
-            or []
+            (response.request_payload or {}).get("opentrace", {}).get("attachment_ids") or []
         )
     }
     attachment_rows = (
@@ -748,11 +834,11 @@ async def get_messages(
     messages: list[MessageOut] = []
     for response in chain:
         versions = siblings.get(response.parent_response_id, [])
-        version_index = next((index + 1 for index, row in enumerate(versions) if row.id == response.id), 1)
-        has_assistant_message = False
+        version_index = next(
+            (index + 1 for index, row in enumerate(versions) if row.id == response.id), 1
+        )
         response_attachment_ids = list(
-            (response.request_payload or {}).get("opentrace", {}).get("attachment_ids")
-            or []
+            (response.request_payload or {}).get("opentrace", {}).get("attachment_ids") or []
         )
         response_attachments = [
             {
@@ -766,18 +852,38 @@ async def get_messages(
             for attachment_id in response_attachment_ids
             if (row := attachments_by_id.get(str(attachment_id))) is not None
         ]
-        for item in by_response.get(response.id, []):
+        pending_approvals = (
+            (
+                await db.execute(
+                    select(ResponseApproval).where(
+                        ResponseApproval.response_id == response.id,
+                        ResponseApproval.status == "pending",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+            if response.status == "requires_action"
+            else []
+        )
+        approval_payloads = _approval_payloads(list(pending_approvals))
+        response_items = by_response.get(response.id, [])
+        response_messages: list[MessageOut] = []
+        for item in response_items:
             if item.item_type not in {"input_message", "message"}:
                 continue
             item_payload = dict(item.payload or {})
             role = item.role or ("user" if item.item_type == "input_message" else "assistant")
-            has_assistant_message = has_assistant_message or role == "assistant"
-            messages.append(
+            response_messages.append(
                 MessageOut(
                     id=item.id,
                     role=role,
                     content=item.content or "",
-                    created_at=item.created_at.isoformat() if item.created_at else response.created_at.isoformat(),
+                    created_at=(
+                        item.created_at.isoformat()
+                        if item.created_at
+                        else response.created_at.isoformat()
+                    ),
                     model=response.model,
                     status=response.status,
                     metadata=item_payload,
@@ -791,48 +897,13 @@ async def get_messages(
                     attachments=response_attachments if role == "user" else [],
                 )
             )
-        if not has_assistant_message and response.status in {
-            "queued",
-            "in_progress",
-            "requires_action",
-        }:
-            approvals = (
-                (
-                    await db.execute(
-                        select(ResponseApproval).where(
-                            ResponseApproval.response_id == response.id,
-                            ResponseApproval.status == "pending",
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-                if response.status == "requires_action"
-                else []
+        messages.extend(
+            _project_response_approvals(
+                response,
+                response_messages,
+                approval_payloads,
+                version_index=version_index,
+                sibling_count=len(versions),
             )
-            messages.append(
-                MessageOut(
-                    id=f"pending_{response.id}",
-                    role="assistant",
-                    content="",
-                    created_at=response.created_at.isoformat(),
-                    model=response.model,
-                    status=response.status,
-                    response_id=response.id,
-                    parent_response_id=response.parent_response_id,
-                    version=response.version,
-                    version_index=version_index,
-                    sibling_count=len(versions),
-                    approvals=[
-                        {
-                            "id": item.id,
-                            "call_id": item.call_id,
-                            "tool_name": item.tool_name,
-                            "side_effect": item.side_effect_level,
-                            "arguments": dict(item.arguments or {}),
-                        }
-                        for item in approvals
-                    ],
-                )
-            )
+        )
     return messages

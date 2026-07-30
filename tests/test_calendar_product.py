@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.api_gateway.main import app
+from gateway.api_gateway.routers.agent_resources import _owned_notification_subjects
 from services.calendar import (
     CalendarValidationError,
     _expanded_occurrences,
@@ -137,3 +138,13 @@ def test_calendar_reminders_join_worker_and_notification_center() -> None:
     assert "calendar_reminder_loop" in worker
     assert "select(CalendarEvent.id)" in notifications
     assert '"calendar"' in notifications
+
+
+def test_notification_ownership_query_builds_three_way_union() -> None:
+    statement = _owned_notification_subjects(
+        user_id="user-a",
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+    )
+
+    assert str(statement).upper().count(" UNION ") == 2

@@ -34,4 +34,78 @@ describe('chat progress channel', () => {
 
     expect(useChatStore.getState().messages['session-1'][0].progress).toEqual(['调用工具'])
   })
+
+  it('keeps approval content on resolve failure and removes only the resolved card while resuming', () => {
+    useChatStore.setState({
+      messages: {
+        'session-1': [{
+          id: 'assistant-1',
+          role: 'assistant',
+          status: 'done',
+          streamText: '',
+          finalText: '请确认日程',
+          approvals: [{
+            id: 'approval-1',
+            call_id: 'call-1',
+            tool_name: 'create_calendar_event',
+            side_effect: 'write',
+            arguments: { title: '客户复盘' },
+          }],
+        }],
+      },
+    })
+
+    const store = useChatStore.getState()
+    store.resumeAssistantMessage('session-1', 'assistant-1')
+    let message = useChatStore.getState().messages['session-1'][0]
+    expect(message.status).toBe('streaming')
+    expect(message.approvals).toEqual([])
+
+    useChatStore.setState({
+      messages: {
+        'session-1': [{ ...message, approvals: [{
+          id: 'approval-1',
+          call_id: 'call-1',
+          tool_name: 'create_calendar_event',
+          side_effect: 'write',
+          arguments: { title: '客户复盘' },
+        }] }],
+      },
+    })
+    useChatStore.getState().restoreAssistantApproval('session-1', 'assistant-1')
+    message = useChatStore.getState().messages['session-1'][0]
+    expect(message.status).toBe('done')
+    expect(message.finalText).toBe('请确认日程')
+    expect(message.approvals).toHaveLength(1)
+  })
+
+  it('keeps an approved response in the running state after stream recovery is exhausted', () => {
+    useChatStore.setState({
+      messages: {
+        'session-1': [{
+          id: 'assistant-1',
+          role: 'assistant',
+          status: 'done',
+          streamText: '',
+          finalText: '请确认日程',
+          approvals: [{
+            id: 'approval-1',
+            call_id: 'call-1',
+            tool_name: 'create_calendar_event',
+            side_effect: 'write',
+            arguments: { title: '客户复盘' },
+          }],
+        }],
+      },
+    })
+
+    useChatStore.getState().keepAssistantResponseRunning('session-1', 'assistant-1')
+
+    const state = useChatStore.getState()
+    const message = state.messages['session-1'][0]
+    expect(message.status).toBe('streaming')
+    expect(message.approvals).toEqual([])
+    expect(state.streaming).toBe(true)
+    expect(state.activeReasoningMessageId['session-1']).toBe('assistant-1')
+  })
 })

@@ -32,7 +32,8 @@ export interface ModelEndpointUpdate {
 
 const API_ROOT = '/api/v1'
 const ENV_API = (import.meta as any)?.env?.VITE_API_URL as string | undefined
-const DIRECT_ROOT = `${ENV_API?.trim() || 'http://localhost:14100'}/api/v1`
+const CONFIGURED_API = ENV_API?.trim() || ''
+const DIRECT_ROOT = `${CONFIGURED_API}/api/v1`
 
 async function modelSettingsFetch(path: string, token: string, init?: RequestInit) {
   const request = {
@@ -43,6 +44,7 @@ async function modelSettingsFetch(path: string, token: string, init?: RequestIni
     return await fetch(`${API_ROOT}${path}`, request)
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error
+    if (!CONFIGURED_API) throw error
     return fetch(`${DIRECT_ROOT}${path}`, request)
   }
 }

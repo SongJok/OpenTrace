@@ -21,6 +21,13 @@ from infra.storage.models import (
     ResponseRecord,
     ResponseToolExecution,
 )
+from kernel.agent_loop.calendar_planning import (
+    deterministic_calendar_arguments,
+    deterministic_calendar_completion,
+    deterministic_write_call,
+    existing_deterministic_approval,
+    supplement_deterministic_calendar_decision,
+)
 from kernel.agent_loop.context import ContextAssembler
 from kernel.agent_loop.contracts import (
     AgentLoopResult,
@@ -34,9 +41,13 @@ from kernel.agent_loop.contracts import (
     parse_tool_specs,
 )
 from kernel.agent_loop.discovery import CapabilityDiscovery
+from kernel.agent_loop.write_intent import (
+    is_affirmative_follow_up,
+    is_contextual_follow_up,
+    is_explicit_write_request,
+)
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, capture_model_calls, get_model_gateway
-from services.calendar_intent import parse_calendar_create_intent
 
 EventEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
 _SENSITIVE_KEYS = {
@@ -322,6 +333,21 @@ class AgentLoop:
         available_specs = self._apply_tool_policy(
             self._available_tool_specs(payload), context.tool_policy
         )
+        existing_deterministic_approval = await self._existing_deterministic_approval(
+            db,
+            response=response,
+            tool_specs=available_specs,
+        )
+        calendar_write_arguments = (
+            dict(existing_deterministic_approval.arguments or {})
+            if existing_deterministic_approval is not None
+            else self._deterministic_calendar_arguments(
+                query=query,
+                response=response,
+                extension=extension,
+                tool_specs=available_specs,
+            )
+        )
         planning_context = self._planning_context(
             context.messages,
             current_message_count=context.current_message_count,
@@ -337,6 +363,11 @@ class AgentLoop:
         pinned_names = set(client_tool_names)
         if pending_action and self._is_affirmative_follow_up(query):
             pinned_names.add(str(pending_action["name"]))
+        deterministic_calendar_enabled = bool(
+            calendar_write_arguments and str(payload.get("tool_choice") or "auto") != "none"
+        )
+        if deterministic_calendar_enabled:
+            pinned_names.add("create_calendar_event")
         discovery_query = query
         if planning_context and self._is_contextual_follow_up(query):
             discovery_query = f"{planning_context}\n当前追问：{query}"
@@ -367,6 +398,16 @@ class AgentLoop:
                     pending_action=pending_action,
                 )
             model_calls.extend(planning_calls)
+        if deterministic_calendar_enabled:
+            calendar_spec = next(
+                (spec for spec in tool_specs if spec.name == "create_calendar_event"),
+                None,
+            )
+            if calendar_spec is not None:
+                decision = self._supplement_deterministic_calendar_decision(
+                    decision,
+                    spec=calendar_spec,
+                )
         intent = decision.intent
         execution_plan = await self._restore_or_persist_execution_plan(
             db,
@@ -444,6 +485,8 @@ class AgentLoop:
             extension=extension,
             tool_specs=tool_specs,
             pending_action=pending_action,
+            calendar_arguments=calendar_write_arguments,
+            existing_approval=existing_deterministic_approval,
         )
         if deterministic_write and str(payload.get("tool_choice") or "auto") != "none":
             call, spec = deterministic_write
@@ -635,6 +678,38 @@ class AgentLoop:
                 response=response,
                 statuses=plan_statuses,
                 replan_count=replan_count,
+            )
+        calendar_completion = deterministic_calendar_completion(
+            approval=existing_deterministic_approval,
+            restored_tools=restored_tools,
+        )
+        if calendar_completion:
+            await self._emit_text(emit, calendar_completion)
+            await self._complete_remaining_plan(emit, execution_plan, plan_statuses)
+            await self._persist_execution_plan_runtime(
+                db,
+                response=response,
+                statuses=plan_statuses,
+                replan_count=replan_count,
+            )
+            return AgentLoopResult(
+                status="completed",
+                content=calendar_completion,
+                model="opentrace-calendar-projection",
+                intent=intent,
+                metadata={
+                    "model_calls": model_calls,
+                    "model_call_count": len(model_calls),
+                    "memory_ids": context.memory_ids,
+                    "attachment_ids": context.attachment_ids,
+                    "execution_profile": profile.value,
+                    "execution_plan": execution_plan.to_dict(),
+                    "execution_plan_status": dict(plan_statuses),
+                    "execution_plan_replan_count": replan_count,
+                    "context_manifest": context.context_manifest,
+                    "deterministic_tool_completion": "create_calendar_event",
+                    "calendar_action_completed": True,
+                },
             )
         if execution_plan.steps:
             messages.append(
@@ -1553,121 +1628,15 @@ class AgentLoop:
             and spec_by_name[step.capability].side_effect != SideEffect.READ
         }
 
-    @classmethod
-    def _deterministic_write_call(
-        cls,
-        *,
-        query: str,
-        response: ResponseRecord,
-        extension: dict[str, Any],
-        tool_specs: list[ToolSpec],
-        pending_action: dict[str, Any] | None,
-    ) -> tuple[dict[str, Any], ToolSpec] | None:
-        spec_by_name = {spec.name: spec for spec in tool_specs}
-        name = ""
-        arguments: dict[str, Any] | None = None
-        if pending_action and cls._is_affirmative_follow_up(query):
-            name = str(pending_action.get("name") or "")
-            arguments = dict(pending_action.get("arguments") or {})
-        elif cls._is_explicit_write_request(query):
-            name = "create_calendar_event"
-            if name in spec_by_name:
-                arguments = parse_calendar_create_intent(
-                    query,
-                    timezone_name=str(extension.get("timezone") or "Asia/Shanghai"),
-                )
-        spec = spec_by_name.get(name)
-        if spec is None or spec.side_effect == SideEffect.READ or not arguments:
-            return None
-        fingerprint = json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)
-        call_id = (
-            "call_deterministic_"
-            + hashlib.sha256(f"{response.id}:{name}:{fingerprint}".encode()).hexdigest()[:24]
-        )
-        call = _normalize_tool_call(
-            {
-                "id": call_id,
-                "call_id": call_id,
-                "name": name,
-                "arguments": arguments,
-            },
-            spec,
-        )
-        return call, spec
-
-    @staticmethod
-    def _is_affirmative_follow_up(query: str) -> bool:
-        normalized = re.sub(r"[\s，。！？,.!?]", "", (query or "").lower())
-        if not normalized or len(normalized) > 24:
-            return False
-        markers = (
-            "确认",
-            "确认创建",
-            "继续",
-            "执行",
-            "可以",
-            "好的",
-            "好",
-            "同意",
-            "批准",
-            "是的",
-            "就这样",
-            "按这个",
-            "创建吧",
-            "confirm",
-            "continue",
-            "proceed",
-            "approve",
-            "yes",
-        )
-        return any(normalized == marker or normalized.startswith(marker) for marker in markers)
-
-    @classmethod
-    def _is_contextual_follow_up(cls, query: str) -> bool:
-        if cls._is_affirmative_follow_up(query):
-            return True
-        normalized = re.sub(r"\s+", "", query or "")
-        return len(normalized) <= 24 and any(
-            marker in normalized
-            for marker in ("这个", "那个", "刚才", "上一个", "上一条", "照此", "按上述")
-        )
-
-    @classmethod
-    def _is_explicit_write_request(
-        cls,
-        query: str,
-        *,
-        pending_action: dict[str, Any] | None = None,
-    ) -> bool:
-        if pending_action and cls._is_affirmative_follow_up(query):
-            return True
-        normalized = re.sub(r"\s+", "", query or "")
-        direct_markers = (
-            "记录下来",
-            "添加到日历",
-            "加入日历",
-            "创建日程",
-            "创建任务",
-            "创建预警",
-            "提醒我",
-            "取消日程",
-            "删除日程",
-            "修改日程",
-            "更新日程",
-            "改到",
-            "reschedule",
-            "addtocalendar",
-            "createevent",
-            "canceltheevent",
-        )
-        if any(marker in normalized.lower() for marker in direct_markers):
-            return True
-        return bool(
-            re.search(
-                r"(?:帮我|请|麻烦|给我).{0,12}" r"(?:记录|添加|创建|安排|提醒|取消|删除|修改|更新)",
-                normalized,
-            )
-        )
+    _deterministic_calendar_arguments = staticmethod(deterministic_calendar_arguments)
+    _existing_deterministic_approval = staticmethod(existing_deterministic_approval)
+    _supplement_deterministic_calendar_decision = staticmethod(
+        supplement_deterministic_calendar_decision
+    )
+    _deterministic_write_call = staticmethod(deterministic_write_call)
+    _is_affirmative_follow_up = staticmethod(is_affirmative_follow_up)
+    _is_contextual_follow_up = staticmethod(is_contextual_follow_up)
+    _is_explicit_write_request = staticmethod(is_explicit_write_request)
 
     @classmethod
     def _apply_side_effect_intent_policy(

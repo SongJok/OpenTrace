@@ -8,6 +8,7 @@ interface ChatPreferencesState {
   projectId: string | null
   dataSourceId: string | null
   prefillText: string | null
+  resetUserState: () => void
   setExecutionProfile: (profile: ExecutionProfile) => void
   setAssistantProfileId: (id: string | null) => void
   setProjectId: (id: string | null) => void
@@ -22,6 +23,12 @@ export const useChatPreferences = create<ChatPreferencesState>((set) => ({
   projectId: null,
   dataSourceId: null,
   prefillText: null,
+  resetUserState: () => set({
+    assistantProfileId: null,
+    projectId: null,
+    dataSourceId: null,
+    prefillText: null,
+  }),
   setExecutionProfile: (executionProfile) => set({ executionProfile }),
   setAssistantProfileId: (assistantProfileId) => set({ assistantProfileId }),
   setProjectId: (projectId) => set({ projectId }),

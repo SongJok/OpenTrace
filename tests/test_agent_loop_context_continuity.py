@@ -5,10 +5,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from kernel.agent_loop.calendar_planning import deterministic_calendar_completion
 from kernel.agent_loop.contracts import (
     ExecutionPlan,
     ExecutionProfile,
     ExecutionStep,
+    IntentPlan,
+    PlanningDecision,
     SideEffect,
     ToolSpec,
 )
@@ -204,6 +207,8 @@ def test_read_only_calendar_question_cannot_expand_into_write_intent() -> None:
 
     assert AgentLoop._is_explicit_write_request("我明天上午安排了什么？") is False
     assert AgentLoop._is_explicit_write_request("帮我记录到日历") is True
+    assert AgentLoop._is_explicit_write_request("帮我记录一下") is True
+    assert AgentLoop._is_explicit_write_request("帮我新增到日历") is True
     assert governed["capabilities"] == ["list_calendar_events"]
     assert [step["id"] for step in governed["steps"]] == ["read"]
 
@@ -235,9 +240,214 @@ def test_explicit_calendar_request_is_deterministically_prepared_for_approval() 
     }
 
 
+def test_single_chinese_calendar_time_defaults_to_one_hour() -> None:
+    parsed = parse_calendar_create_intent(
+        "明天下午三点客户复盘，帮我记录到日历",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is not None
+    assert parsed["title"] == "客户复盘"
+    assert parsed["start_at"] == "2026-07-31T15:00:00+08:00"
+    assert parsed["end_at"] == "2026-07-31T16:00:00+08:00"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "明天下午三点提醒我检查数据",
+        "请明天下午三点提醒我检查数据",
+    ],
+)
+def test_calendar_reminder_preserves_the_requested_title(query: str) -> None:
+    parsed = parse_calendar_create_intent(
+        query,
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is not None
+    assert parsed["title"] == "检查数据"
+    assert parsed["start_at"] == "2026-07-31T15:00:00+08:00"
+    assert parsed["end_at"] == "2026-07-31T16:00:00+08:00"
+
+
+def test_calendar_reminder_preserves_title_after_time_clause() -> None:
+    parsed = parse_calendar_create_intent(
+        "明天下午三点，提醒我检查数据",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is not None
+    assert parsed["title"] == "检查数据"
+
+
+def test_calendar_early_midnight_is_not_parsed_as_noon() -> None:
+    parsed = parse_calendar_create_intent(
+        "明天凌晨十二点提醒我发布版本",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is not None
+    assert parsed["start_at"] == "2026-07-31T00:00:00+08:00"
+    assert parsed["end_at"] == "2026-07-31T01:00:00+08:00"
+
+
+def test_calendar_noon_and_end_of_day_midnight_use_expected_dates() -> None:
+    now = datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    noon = parse_calendar_create_intent(
+        "明天上午十二点提醒我午间发布",
+        timezone_name="Asia/Shanghai",
+        now=now,
+    )
+    end_of_day = parse_calendar_create_intent(
+        "明天晚上十二点提醒我夜间发布",
+        timezone_name="Asia/Shanghai",
+        now=now,
+    )
+
+    assert noon is not None
+    assert noon["start_at"] == "2026-07-31T12:00:00+08:00"
+    assert end_of_day is not None
+    assert end_of_day["start_at"] == "2026-08-01T00:00:00+08:00"
+
+
+def test_calendar_time_range_can_cross_midnight() -> None:
+    parsed = parse_calendar_create_intent(
+        "明天晚上十一点到凌晨一点值班，帮我记录到日历",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is not None
+    assert parsed["title"] == "值班"
+    assert parsed["start_at"] == "2026-07-31T23:00:00+08:00"
+    assert parsed["end_at"] == "2026-08-01T01:00:00+08:00"
+
+
+def test_chinese_calendar_time_range_is_not_reduced_to_single_hour() -> None:
+    parsed = parse_calendar_create_intent(
+        "明天下午三点半到五点客户复盘，帮我记录到日历",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is not None
+    assert parsed["start_at"] == "2026-07-31T15:30:00+08:00"
+    assert parsed["end_at"] == "2026-07-31T17:00:00+08:00"
+
+
+def test_calendar_time_without_date_remains_ambiguous() -> None:
+    parsed = parse_calendar_create_intent(
+        "下午三点客户复盘，帮我记录到日历",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is None
+
+
+def test_calendar_parser_requires_calendar_specific_write_intent() -> None:
+    parsed = parse_calendar_create_intent(
+        "明天下午三点创建数据预警，帮我记录下来",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is None
+
+
+def test_calendar_parser_requires_an_explicit_calendar_write_marker() -> None:
+    parsed = parse_calendar_create_intent(
+        "明天下午三点客户复盘",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is None
+
+
+def test_read_only_calendar_question_is_not_parsed_as_write() -> None:
+    parsed = parse_calendar_create_intent(
+        "明天上午九点日历里有什么安排",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["监控系统评审会", "工单流程复盘", "审批规则评审", "待办功能验收"],
+)
+def test_business_terms_in_calendar_title_are_not_treated_as_competing_intents(
+    title: str,
+) -> None:
+    parsed = parse_calendar_create_intent(
+        f"明天下午三点{title}，帮我记录到日历",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is not None
+    assert parsed["title"] == title
+
+
+def test_calendar_parser_does_not_capture_scheduled_task_request() -> None:
+    parsed = parse_calendar_create_intent(
+        "明天下午三点创建定时任务，帮我记录到日历",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is None
+
+
+def test_calendar_date_without_year_rolls_forward_across_new_year() -> None:
+    parsed = parse_calendar_create_intent(
+        "1月2日上午九点年度启动会，帮我记录到日历",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 12, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is not None
+    assert parsed["start_at"] == "2027-01-02T09:00:00+08:00"
+
+
+def test_compact_english_calendar_write_marker_is_reachable() -> None:
+    parsed = parse_calendar_create_intent(
+        "明天下午三点发布评审，create event",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is not None
+    assert parsed["title"] == "发布评审"
+
+
+@pytest.mark.parametrize(
+    "marker",
+    ["记录一下", "记一下", "新增到日历", "创建日历事件"],
+)
+def test_common_calendar_write_markers_are_supported(marker: str) -> None:
+    parsed = parse_calendar_create_intent(
+        f"明天下午三点客户复盘，帮我{marker}",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 30, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is not None
+    assert parsed["title"] == "客户复盘"
+
+
 def test_deterministic_calendar_call_is_stable_and_schema_scoped(monkeypatch) -> None:
     monkeypatch.setattr(
-        "kernel.agent_loop.runner.parse_calendar_create_intent",
+        "kernel.agent_loop.calendar_planning.parse_calendar_create_intent",
         lambda *args, **kwargs: {
             "title": "开发 OpenTrace",
             "start_at": "2026-07-31T09:50:00+08:00",
@@ -273,6 +483,336 @@ def test_deterministic_calendar_call_is_stable_and_schema_scoped(monkeypatch) ->
     assert selected_spec is spec
     assert call["call_id"].startswith("call_deterministic_")
     assert call["arguments"]["all_day"] is False
+
+
+def test_deterministic_calendar_call_anchors_relative_date_to_response_creation(
+    monkeypatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_parse(*args, **kwargs):
+        observed.update(kwargs)
+        return {
+            "title": "开发 OpenTrace",
+            "start_at": "2026-07-31T09:50:00+08:00",
+            "end_at": "2026-07-31T11:50:00+08:00",
+        }
+
+    monkeypatch.setattr(
+        "kernel.agent_loop.calendar_planning.parse_calendar_create_intent", fake_parse
+    )
+    created_at = datetime(2026, 7, 30, 15, 59, tzinfo=ZoneInfo("UTC"))
+
+    prepared = AgentLoop._deterministic_write_call(
+        query="我明天上午要开发OpenTrace，上午9:50-11:50，帮我记录下来",
+        response=SimpleNamespace(id="resp-midnight", created_at=created_at),
+        extension={"timezone": "Asia/Shanghai"},
+        tool_specs=[_spec("create_calendar_event", "创建日程", SideEffect.WRITE)],
+        pending_action=None,
+    )
+
+    assert prepared is not None
+    assert observed["now"] == created_at
+
+
+def test_deterministic_calendar_call_keeps_same_date_across_midnight() -> None:
+    spec = ToolSpec(
+        name="create_calendar_event",
+        description="创建日程",
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "start_at": {"type": "string"},
+                "end_at": {"type": "string"},
+                "timezone": {"type": "string"},
+            },
+        },
+        side_effect=SideEffect.WRITE,
+    )
+    response = SimpleNamespace(
+        id="resp-midnight",
+        created_at=datetime(2026, 7, 30, 15, 59, tzinfo=ZoneInfo("UTC")),
+    )
+
+    prepared = AgentLoop._deterministic_write_call(
+        query="我明天上午要开发OpenTrace，上午9:50-11:50，帮我记录下来",
+        response=response,
+        extension={"timezone": "Asia/Shanghai"},
+        tool_specs=[spec],
+        pending_action=None,
+    )
+
+    assert prepared is not None
+    assert prepared[0]["arguments"]["start_at"] == "2026-07-31T09:50:00+08:00"
+
+
+def test_deterministic_calendar_recovery_reuses_existing_approval() -> None:
+    spec = ToolSpec(
+        name="create_calendar_event",
+        description="创建日程",
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "start_at": {"type": "string"},
+                "end_at": {"type": "string"},
+            },
+        },
+        side_effect=SideEffect.WRITE,
+    )
+    stored_arguments = {
+        "title": "开发 OpenTrace",
+        "start_at": "2026-07-31T09:50:00+08:00",
+        "end_at": "2026-07-31T11:50:00+08:00",
+    }
+    approval = SimpleNamespace(
+        call_id="call_deterministic_existing",
+        tool_name="create_calendar_event",
+        arguments=stored_arguments,
+    )
+
+    prepared = AgentLoop._deterministic_write_call(
+        query="我明天上午要开发OpenTrace，上午9:50-11:50，帮我记录下来",
+        response=SimpleNamespace(
+            id="resp-midnight",
+            created_at=datetime(2026, 7, 31, 16, 1, tzinfo=ZoneInfo("UTC")),
+        ),
+        extension={"timezone": "Asia/Shanghai"},
+        tool_specs=[spec],
+        pending_action=None,
+        calendar_arguments={
+            "title": "错误的新日期",
+            "start_at": "2026-08-02T09:50:00+08:00",
+            "end_at": "2026-08-02T11:50:00+08:00",
+        },
+        existing_approval=approval,
+    )
+
+    assert prepared is not None
+    assert prepared[0]["call_id"] == approval.call_id
+    assert prepared[0]["arguments"] == stored_arguments
+
+
+def test_deterministic_calendar_supplements_planner_omission() -> None:
+    decision = PlanningDecision(
+        intent=IntentPlan(
+            goal="记录日程",
+            capabilities=("list_calendar_events",),
+            execution_profile=ExecutionProfile.AUTO,
+        ),
+        execution_plan=ExecutionPlan(
+            goal="记录日程",
+            steps=(ExecutionStep("read", "查询日历", "list_calendar_events"),),
+        ),
+    )
+    spec = _spec("create_calendar_event", "创建个人日历日程", SideEffect.WRITE)
+
+    supplemented = AgentLoop._supplement_deterministic_calendar_decision(
+        decision,
+        spec=spec,
+    )
+
+    assert supplemented.intent.capabilities == ("create_calendar_event",)
+    assert supplemented.intent.risk == SideEffect.WRITE
+    assert [step.capability for step in supplemented.execution_plan.steps] == [
+        "create_calendar_event",
+    ]
+
+
+def test_deterministic_calendar_completion_does_not_require_model() -> None:
+    approval = SimpleNamespace(
+        status="approved",
+        call_id="call_deterministic_calendar",
+        tool_name="create_calendar_event",
+        arguments={
+            "title": "开发 OpenTrace",
+            "start_at": "2026-07-31T09:50:00+08:00",
+            "end_at": "2026-07-31T11:50:00+08:00",
+            "timezone": "Asia/Shanghai",
+            "reminder_minutes": [15],
+        },
+    )
+
+    content = deterministic_calendar_completion(
+        approval=approval,
+        restored_tools=[
+            (
+                "create_calendar_event",
+                {
+                    "status": "completed",
+                    "result": {
+                        "status": "success",
+                        "event": {"title": "开发 OpenTrace"},
+                    },
+                },
+            )
+        ],
+    )
+
+    assert content is not None
+    assert "已记录" in content
+    assert "2026年7月31日 09:50–11:50" in content
+    assert "提前 15 分钟" in content
+    assert "[查看我的日历](/calendar)" in content
+
+
+def test_deterministic_calendar_respects_denied_tool_policy() -> None:
+    specs = AgentLoop._apply_tool_policy(
+        [_spec("create_calendar_event", "创建日程", SideEffect.WRITE)],
+        {"denied_tools": ["create_calendar_event"]},
+    )
+
+    arguments = AgentLoop._deterministic_calendar_arguments(
+        query="明天下午三点客户复盘，帮我记录到日历",
+        response=SimpleNamespace(
+            id="resp-denied",
+            created_at=datetime(2026, 7, 30, 3, 0, tzinfo=ZoneInfo("UTC")),
+        ),
+        extension={"timezone": "Asia/Shanghai"},
+        tool_specs=specs,
+    )
+
+    assert arguments is None
+
+
+def test_deterministic_calendar_requires_write_enabled_tool() -> None:
+    arguments = AgentLoop._deterministic_calendar_arguments(
+        query="明天下午三点客户复盘，帮我记录到日历",
+        response=SimpleNamespace(
+            id="resp-read-only",
+            created_at=datetime(2026, 7, 30, 3, 0, tzinfo=ZoneInfo("UTC")),
+        ),
+        extension={"timezone": "Asia/Shanghai"},
+        tool_specs=[_spec("create_calendar_event", "创建日程", SideEffect.READ)],
+    )
+
+    assert arguments is None
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_prepares_calendar_approval_when_planner_omits_tool(
+    monkeypatch,
+) -> None:
+    query = "明天下午三点客户复盘，帮我记录到日历"
+    context = SimpleNamespace(
+        messages=[
+            {"role": "system", "content": "系统指令"},
+            {"role": "user", "content": query},
+        ],
+        current_message_count=1,
+        attachment_context="",
+        profile_execution_default="auto",
+        tool_policy={},
+        memory_policy={},
+        memory_ids=[],
+        attachment_ids=[],
+        project_id=None,
+        assistant_profile_id=None,
+        modality_counts={"text": 1, "image": 0, "audio": 0, "video": 0},
+        context_manifest={"estimated_input_tokens": 10, "max_input_tokens": 100_000},
+    )
+
+    class FakeContextAssembler:
+        async def assemble(self, *args, **kwargs):
+            return context
+
+    class FakeDB:
+        def __init__(self):
+            self.added = []
+
+        async def scalar(self, *args, **kwargs):
+            return None
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            return None
+
+        def add(self, item):
+            self.added.append(item)
+
+    calendar_spec = ToolSpec(
+        name="create_calendar_event",
+        description="创建日程",
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "start_at": {"type": "string"},
+                "end_at": {"type": "string"},
+                "timezone": {"type": "string"},
+            },
+        },
+        side_effect=SideEffect.WRITE,
+    )
+    planner_decision = PlanningDecision(
+        intent=IntentPlan(goal="回复用户"),
+        execution_plan=ExecutionPlan(
+            goal="回复用户",
+            steps=(ExecutionStep("answer", "直接回复用户"),),
+        ),
+    )
+    response = SimpleNamespace(
+        id="resp-planner-omission",
+        status="in_progress",
+        response_metadata={},
+        request_payload={"input": query, "opentrace": {"timezone": "Asia/Shanghai"}},
+        created_at=datetime(2026, 7, 30, 3, 0, tzinfo=ZoneInfo("UTC")),
+    )
+    approval_calls: list[dict] = []
+    events: list[tuple[str, dict]] = []
+    loop = AgentLoop(context_assembler=FakeContextAssembler())
+
+    async def restore_decision(*args, **kwargs):
+        return planner_decision
+
+    async def restore_plan(*args, **kwargs):
+        return kwargs["proposed"]
+
+    async def plan_runtime(*args, **kwargs):
+        plan = kwargs["plan"]
+        return {step.id: "pending" for step in plan.steps}, 0
+
+    async def no_op(*args, **kwargs):
+        return None
+
+    async def next_sequence(*args, **kwargs):
+        return 1
+
+    async def ensure_approval(*args, **kwargs):
+        call = kwargs["call"]
+        spec = kwargs["spec"]
+        approval_calls.append(call)
+        return SimpleNamespace(
+            id="approval-calendar",
+            call_id=call["call_id"],
+            tool_name=spec.name,
+            side_effect_level=spec.side_effect.value,
+            arguments=call["arguments"],
+            status="pending",
+        )
+
+    async def emit(event_type, payload):
+        events.append((event_type, payload))
+
+    monkeypatch.setattr(loop, "_available_tool_specs", lambda payload: [calendar_spec])
+    monkeypatch.setattr(loop, "_existing_deterministic_approval", no_op)
+    monkeypatch.setattr(loop, "_restore_planning_decision", restore_decision)
+    monkeypatch.setattr(loop, "_restore_or_persist_execution_plan", restore_plan)
+    monkeypatch.setattr(loop, "_execution_plan_runtime", plan_runtime)
+    monkeypatch.setattr(loop, "_persist_execution_plan_runtime", no_op)
+    monkeypatch.setattr(loop, "_next_item_sequence", next_sequence)
+    monkeypatch.setattr(loop, "_ensure_approval", ensure_approval)
+
+    result = await loop.run(FakeDB(), response=response, emit=emit)
+
+    assert result.status == "requires_action"
+    assert result.intent is not None
+    assert result.intent.capabilities == ("create_calendar_event",)
+    assert approval_calls[0]["arguments"]["start_at"] == "2026-07-31T15:00:00+08:00"
+    assert any(event_type == "response.requires_action" for event_type, _ in events)
 
 
 @pytest.mark.asyncio

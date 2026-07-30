@@ -1,44 +1,23 @@
 // API client — all backend calls go through here
 import { normalizeFinalAnswerEnvelope, type TurnMetaEnvelope } from '../utils/streamEnvelope'
-import { useAuthStore } from '../store/auth'
-
-const BASE = '/api/v1'
-const RESPONSES_BASE = '/api/v2'
+import {
+  streamSseResponse,
+  trackResponseStream,
+  type ApprovalRequest,
+  type ReasoningStep,
+  type ResponseStreamCallbacks,
+} from './responseStream'
+import { apiFetch, apiFetchResponses, authHeaders, RESPONSES_BASE } from './transport'
 
 export type { TurnMetaEnvelope }
-const ENV_API = (import.meta as any)?.env?.VITE_API_URL as string | undefined
-const BACKEND_DIRECT = `${(ENV_API && ENV_API.trim()) ? ENV_API.trim() : 'http://localhost:14100'}/api/v1`
-const RESPONSES_BACKEND_DIRECT = `${(ENV_API && ENV_API.trim()) ? ENV_API.trim() : 'http://localhost:14100'}/api/v2`
-
-if (typeof window !== 'undefined') {
-  const configured = (ENV_API && ENV_API.trim()) ? ENV_API.trim() : '(unset)'
-  console.info('[OpenTrace] API config:', {
-    VITE_API_URL: configured,
-    base: BASE,
-    backendDirect: BACKEND_DIRECT,
-    fallbackUsed: configured === '(unset)',
-  })
-  if (configured === '(unset)') {
-    console.warn('[OpenTrace] VITE_API_URL 未设置，当前使用默认 http://localhost:14100')
-  }
-}
-
-export type ReasoningStage = 'ROUTE' | 'REASON' | 'DECIDE' | 'EXECUTE' | 'OBSERVE' | 'REFLECT' | 'PLAN' | 'ACT' | 'DRAFT' | 'CRITIC' | 'REWRITE' | 'FINAL' | 'FUSION' | 'EVIDENCE' | 'STEP'
-export type ReasoningStatus = 'pending' | 'running' | 'done'
-export type ToolRunStatus = 'idle' | 'running' | 'success' | 'error'
-
-export interface ReasoningStep {
-  id: string
-  stage: ReasoningStage
-  content: string
-  status: ReasoningStatus
-  node_id?: string
-  tool?: {
-    name: string
-    status: ToolRunStatus
-    preview?: string
-  }
-}
+export { streamSseResponse }
+export type {
+  ApprovalRequest,
+  ReasoningStage,
+  ReasoningStatus,
+  ReasoningStep,
+  ToolRunStatus,
+} from './responseStream'
 
 export interface ConversationItem {
   id: string
@@ -54,7 +33,7 @@ export interface ConversationItem {
 
 export interface MessageItem {
   id: string
-  conversation_id: string
+  conversation_id?: string
   role: string
   content: string
   created_at?: string
@@ -62,6 +41,8 @@ export interface MessageItem {
   parent_response_id?: string | null
   version_index?: number
   sibling_count?: number
+  status?: ResponseStatus | 'streaming' | 'interrupted'
+  approvals?: ApprovalRequest[]
 }
 
 export interface MemorySettings {
@@ -75,44 +56,6 @@ async function readApiError(res: Response, fallback: string): Promise<string> {
   const err = (await res.json().catch(() => ({}))) as ApiErr
   if (res.status === 413) return '上传内容超过服务允许的大小，请压缩或拆分后重试'
   return err.message || err.detail || fallback
-}
-
-function authHeaders(token: string): Record<string, string> {
-  return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-}
-
-function handleUnauthorized(res: Response, init?: RequestInit): Response {
-  const hasAuthorization = new Headers(init?.headers).has('Authorization')
-  if (res.status === 401 && hasAuthorization) {
-    useAuthStore.getState().logout()
-  }
-  return res
-}
-
-async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  try {
-    const res = await fetch(`${BASE}${path}`, init)
-    return handleUnauthorized(res, init)
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      throw error
-    }
-    const res = await fetch(`${BACKEND_DIRECT}${path}`, init)
-    return handleUnauthorized(res, init)
-  }
-}
-
-async function apiFetchResponses(path: string, init?: RequestInit): Promise<Response> {
-  try {
-    const res = await fetch(`${RESPONSES_BASE}${path}`, init)
-    return handleUnauthorized(res, init)
-  } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      throw error
-    }
-    const res = await fetch(`${RESPONSES_BACKEND_DIRECT}${path}`, init)
-    return handleUnauthorized(res, init)
-  }
 }
 
 export type ResponseStatus = 'queued' | 'in_progress' | 'requires_action' | 'completed' | 'failed' | 'incomplete' | 'cancelled'
@@ -137,14 +80,6 @@ export interface OpenTraceResponse {
   output?: ResponseOutputItem[]
   metadata?: Record<string, unknown>
   error?: { code?: string; message?: string } | null
-}
-
-export interface ApprovalRequest {
-  id: string
-  call_id: string
-  tool_name: string
-  side_effect: 'write' | 'destructive'
-  arguments: Record<string, unknown>
 }
 
 // ... keep existing content unchanged until Documents section ...
@@ -1153,8 +1088,15 @@ export async function apiListConversations(token: string, filters?: { query?: st
   return res.json()
 }
 
-export async function apiGetMessages(token: string, conversationId: string): Promise<MessageItem[]> {
-  const res = await apiFetchResponses(`/conversations/${conversationId}/messages`, { headers: authHeaders(token) })
+export async function apiGetMessages(
+  token: string,
+  conversationId: string,
+  signal?: AbortSignal,
+): Promise<MessageItem[]> {
+  const res = await apiFetchResponses(`/conversations/${conversationId}/messages`, {
+    headers: authHeaders(token),
+    signal,
+  })
   if (!res.ok) throw new Error('Failed to get messages')
   return res.json()
 }
@@ -1254,7 +1196,7 @@ export async function apiResumeResponse(
   token: string,
   responseId: string,
   startingAfter = -1,
-  callbacks: Parameters<typeof streamSseResponse>[1] = {},
+  callbacks: ResponseStreamCallbacks = {},
   signal?: AbortSignal,
 ): Promise<void> {
   const res = await apiFetchResponses(`/responses/${encodeURIComponent(responseId)}?stream=true&starting_after=${startingAfter}`, {
@@ -1263,6 +1205,22 @@ export async function apiResumeResponse(
   })
   if (!res.ok) throw new Error(await readApiError(res, '恢复响应失败'))
   await streamSseResponse(res, callbacks, signal)
+}
+
+export async function apiResumeResponseWithRetry(
+  token: string,
+  responseId: string,
+  startingAfter = -1,
+  callbacks: ResponseStreamCallbacks = {},
+  signal?: AbortSignal,
+): Promise<void> {
+  const tracker = trackResponseStream(callbacks, startingAfter)
+  try {
+    await apiResumeResponse(token, responseId, tracker.cursor(), tracker.callbacks, signal)
+  } catch (error) {
+    if (signal?.aborted || tracker.lifecycle() !== 'active') throw error
+    await apiResumeResponse(token, responseId, tracker.cursor(), tracker.callbacks, signal)
+  }
 }
 
 export async function apiCancelResponse(token: string, responseId: string): Promise<any> {
@@ -1287,7 +1245,17 @@ export async function apiResolveResponseApproval(
     body: JSON.stringify({ approved, reason }),
   })
   if (!res.ok) throw new Error(await readApiError(res, '审批失败'))
-  return res.json()
+  const result = await res.json().catch(() => null) as any
+  if (!result || result.error || !['approved', 'rejected'].includes(String(result.status || ''))) {
+    throw new Error(String(result?.error || '审批失败'))
+  }
+  if (String(result.status) === 'approved' && result.approved !== true) {
+    throw new Error('审批状态不一致，请刷新后重试')
+  }
+  if (!result.approval_id || !Number.isFinite(Number(result.starting_after))) {
+    throw new Error('审批响应不完整，请刷新后重试')
+  }
+  return result
 }
 
 export interface EnterpriseOperationsOverview {
@@ -1872,142 +1840,6 @@ export async function apiAcknowledgeAlertEvent(token: string, eventId: string): 
   if (!res.ok) throw new Error(await readApiError(res, '确认预警事件失败'))
 }
 
-function parseSseEventBlock(block: string): { sequence_number?: number; type: string; data: any } | null {
-  const lines = block.split(/\r?\n/).filter(Boolean)
-  const dataLines = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart())
-  if (!dataLines.length) return null
-  const raw = dataLines.join('\n')
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return { type: 'message', data: raw }
-  }
-}
-
-/** SSE parser — exported for stream protocol contract tests. */
-export async function streamSseResponse(
-  res: Response,
-  callbacks: {
-    onEvent?: (event: { sequence_number?: number; type?: string; data?: any }) => void
-    onResponseCreated?: (payload: any) => void
-    onReasoningStep?: (step: ReasoningStep) => void
-    onThinking?: (payload: any) => void
-    onDelta?: (text: string) => void
-    onToolCall?: (payload: any) => void
-    onToolResult?: (payload: any) => void
-    onApprovalRequired?: (approvals: ApprovalRequest[]) => void
-    onFinalAnswer?: (envelope: TurnMetaEnvelope) => void | Promise<void>
-    onError?: (err: any) => void | Promise<void>
-  },
-  signal?: AbortSignal,
-) {
-  const reader = res.body?.getReader()
-  if (!reader) throw new Error('Streaming response unavailable')
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  try {
-    while (true) {
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-      const { done, value } = await reader.read()
-      if (done) {
-        if (!buffer.trim()) break
-        buffer += '\n\n'
-      } else {
-        buffer += decoder.decode(value, { stream: true })
-      }
-      let splitIndex: number
-      while ((splitIndex = buffer.indexOf('\n\n')) >= 0) {
-        const chunk = buffer.slice(0, splitIndex).trim()
-        buffer = buffer.slice(splitIndex + 2)
-        if (!chunk || chunk.startsWith(':')) continue
-        const event = parseSseEventBlock(chunk)
-        if (!event) continue
-        const type = String(event.type || '')
-        const data = event.data ?? {}
-        callbacks.onEvent?.(event)
-
-        if (type === 'response.output_text.delta') {
-          callbacks.onDelta?.(String(data.delta ?? ''))
-          continue
-        }
-        if (type === 'response.created') {
-          callbacks.onResponseCreated?.(data)
-          continue
-        }
-        if (type === 'opentrace.plan.created') {
-          const steps = Array.isArray(data?.plan?.steps) ? data.plan.steps : []
-          const statuses = (data?.statuses && typeof data.statuses === 'object') ? data.statuses : {}
-          for (const step of steps) {
-            const durableStatus = String(statuses[String(step.id)] || 'pending')
-            callbacks.onReasoningStep?.({
-              id: String(step.id),
-              node_id: String(step.id),
-              stage: 'PLAN',
-              content: String(step.objective || ''),
-              status: durableStatus === 'running'
-                ? 'running'
-                : durableStatus === 'completed' || durableStatus === 'failed' || durableStatus === 'skipped'
-                  ? 'done'
-                  : 'pending',
-            })
-          }
-          continue
-        }
-        if (type.startsWith('opentrace.plan.step.')) {
-          const step = data?.step || {}
-          callbacks.onReasoningStep?.({
-            id: String(step.id || `plan-${event.sequence_number ?? Date.now()}`),
-            node_id: String(step.id || ''),
-            stage: 'PLAN',
-            content: String(step.objective || ''),
-            status: type.endsWith('.started')
-              ? 'running'
-              : type.endsWith('.deferred')
-                ? 'pending'
-                : 'done',
-          })
-          continue
-        }
-        if (type.startsWith('opentrace.intent.') || type.startsWith('opentrace.context.') || type.startsWith('opentrace.model.') || type.startsWith('opentrace.capabilities.') || type === 'opentrace.plan.replanned') {
-          callbacks.onThinking?.(data)
-          continue
-        }
-        if (type === 'response.reasoning_summary_text.done') {
-          callbacks.onReasoningStep?.({ id: `summary-${event.sequence_number ?? Date.now()}`, stage: 'FINAL', content: String(data.text ?? ''), status: 'done' })
-          continue
-        }
-        if (type === 'opentrace.tool.started') {
-          callbacks.onToolCall?.(data)
-          continue
-        }
-        if (type === 'opentrace.tool.completed' || type === 'opentrace.tool.failed') {
-          callbacks.onToolResult?.(data)
-          continue
-        }
-        if (type === 'response.requires_action') {
-          callbacks.onApprovalRequired?.(Array.isArray(data.approvals) ? data.approvals : [])
-          continue
-        }
-        if (type === 'response.completed' || type === 'response.incomplete') {
-          const envelope = normalizeFinalAnswerEnvelope(data)
-          await callbacks.onFinalAnswer?.(envelope)
-          continue
-        }
-        if (type === 'response.cancelled') {
-          throw new DOMException('Aborted', 'AbortError')
-        }
-        if (type === 'error' || type === 'response.failed') {
-          throw new Error(data?.message ? String(data.message) : 'Streaming error')
-        }
-      }
-      if (done) break
-    }
-  } finally {
-    reader.releaseLock()
-  }
-}
-
 export async function apiChatStream(
   token: string,
   sessionId: string,
@@ -2099,21 +1931,25 @@ export async function apiChatStream(
     }
 
     let responseId: string | null = null
-    let cursor = -1
-    const streamCallbacks = {
+    const tracker = trackResponseStream({
       ...callbacks,
       onEvent: (event: { sequence_number?: number; type?: string; data?: any }) => {
-        if (typeof event.sequence_number === 'number') cursor = Math.max(cursor, event.sequence_number)
         responseId = String(event.data?.response_id || event.data?.id || responseId || '') || responseId
         callbacks.onEvent?.(event)
       },
-    }
+    })
     try {
-      await streamSseResponse(res, streamCallbacks, signal)
+      await streamSseResponse(res, tracker.callbacks, signal)
     } catch (streamError) {
-      if (!signal?.aborted && responseId) {
+      if (!signal?.aborted && tracker.lifecycle() === 'active' && responseId) {
         try {
-          await apiResumeResponse(token, responseId, cursor, streamCallbacks, signal)
+          await apiResumeResponseWithRetry(
+            token,
+            responseId,
+            tracker.cursor(),
+            tracker.callbacks,
+            signal,
+          )
           return
         } catch {
           // Fall through to the regular error path after one deterministic resume.

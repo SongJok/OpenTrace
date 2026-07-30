@@ -1,11 +1,15 @@
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.api_gateway.routers.conversations import (
+    MessageOut,
     UpdateConversationRequest,
     _active_chain,
+    _project_response_approvals,
     _validate_conversation_bindings,
 )
 from infra.errors import AppException
@@ -95,3 +99,59 @@ def test_conversation_delete_rejects_in_flight_response_cascade() -> None:
     assert 'ResponseRecord.status.in_(("queued", "in_progress"))' in delete_source
     assert "ResponseRecord.lease_owner.isnot(None)" in delete_source
     assert "ErrorCodes.RESOURCE_EXISTS.code" in delete_source
+
+
+def test_pending_approval_is_attached_to_latest_assistant_message() -> None:
+    messages = [
+        MessageOut(
+            id="assistant-old",
+            role="assistant",
+            content="旧消息",
+            created_at="2026-07-30T10:00:00+00:00",
+        ),
+        MessageOut(
+            id="assistant-latest",
+            role="assistant",
+            content="等待审批",
+            created_at="2026-07-30T10:01:00+00:00",
+        ),
+    ]
+    response = SimpleNamespace(status="requires_action")
+    approvals = [{"id": "approval-1", "tool_name": "create_calendar_event"}]
+
+    projected = _project_response_approvals(
+        response,
+        messages,
+        approvals,
+        version_index=1,
+        sibling_count=1,
+    )
+
+    assert projected[0].approvals == []
+    assert projected[1].approvals == approvals
+
+
+def test_pending_approval_creates_synthetic_assistant_message_when_missing() -> None:
+    response = SimpleNamespace(
+        id="response-1",
+        status="requires_action",
+        created_at=datetime(2026, 7, 30, 10, 0, tzinfo=UTC),
+        model=None,
+        parent_response_id=None,
+        version=1,
+    )
+    approvals = [{"id": "approval-1", "tool_name": "create_calendar_event"}]
+
+    projected = _project_response_approvals(
+        response,
+        [],
+        approvals,
+        version_index=2,
+        sibling_count=3,
+    )
+
+    assert len(projected) == 1
+    assert projected[0].id == "pending_response-1"
+    assert projected[0].approvals == approvals
+    assert projected[0].version_index == 2
+    assert projected[0].sibling_count == 3

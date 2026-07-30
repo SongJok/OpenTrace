@@ -6,6 +6,8 @@ import { WorkbenchActionCenter } from '../WorkbenchActionCenter'
 
 vi.mock('../../store/auth', () => ({
   useAuthStore: (selector: (state: { token: string }) => unknown) => selector({ token: 'token' }),
+  getAuthSessionSnapshot: () => ({ token: 'token', userId: 'user-a', generation: 1 }),
+  isAuthSessionCurrent: () => true,
 }))
 
 const overview: EnterpriseWorkbenchOverview = {

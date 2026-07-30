@@ -765,7 +765,7 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
           <SectionCard eyebrow="System" title="System Info" meta="运行环境与版本信息">
             <div className="divide-y divide-[var(--border)] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg-secondary)]">
               {[
-                { label: 'API Endpoint', value: ((import.meta as any).env?.VITE_API_URL || 'http://localhost:14100') },
+                { label: 'API Endpoint', value: ((import.meta as any).env?.VITE_API_URL || window.location.origin) },
                 { label: 'Version', value: '0.1.0' },
                 { label: 'Kernel', value: 'responses-agent-loop' },
               ].map(({ label, value }) => (

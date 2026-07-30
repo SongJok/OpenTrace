@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { t } from '../i18n'
 import {
   BookOpen,
@@ -33,7 +33,7 @@ import {
 import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
 import { useChatStore, type Conversation } from '../store/chat'
-import { useAuthStore } from '../store/auth'
+import { getAuthSessionSnapshot, isAuthSessionCurrent, useAuthStore } from '../store/auth'
 import {
   apiListConversations,
   apiCreateConversation,
@@ -42,7 +42,7 @@ import {
   apiListNotifications,
   apiReadAllNotifications,
   apiReadNotification,
-  apiResumeResponse,
+  apiResumeResponseWithRetry,
   apiRenameConversation,
   apiArchiveConversation,
   type NotificationItem,
@@ -64,6 +64,8 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
   const [showNotifications, setShowNotifications] = useState(false)
+  const selectionGenerationRef = useRef(0)
+  const selectionAbortRef = useRef<AbortController | null>(null)
 
   const token = useAuthStore((s) => s.token)!
   const displayName = useAuthStore((s) => s.displayName)
@@ -79,10 +81,13 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
   }, [search, store.conversations])
 
   async function refreshConversations() {
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     const convs = await apiListConversations(token, {
       query: search,
       archived: showArchived,
     })
+    if (!isAuthSessionCurrent(authSession)) return
     store.setConversations(convs)
     if (convs.length > 0 && !store.activeId) {
       await selectConversation(convs[0])
@@ -91,11 +96,17 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
 
   useEffect(() => {
     void refreshConversations().catch(console.error)
-  }, [showArchived])
+  }, [showArchived, token])
 
   useEffect(() => {
+    setNotifications([])
+    setUnreadCount(0)
+    setShowNotifications(false)
     const refreshNotifications = () => {
+      const authSession = getAuthSessionSnapshot()
+      if (authSession.token !== token) return
       void apiListNotifications(token, 30).then((result) => {
+        if (!isAuthSessionCurrent(authSession)) return
         setNotifications(result.items)
         setUnreadCount(result.unread_count)
       }).catch(() => undefined)
@@ -106,8 +117,11 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
   }, [token])
 
   async function openNotification(notification: NotificationItem) {
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     if (!notification.read) {
       await apiReadNotification(token, notification.id)
+      if (!isAuthSessionCurrent(authSession)) return
       setNotifications((items) => items.map((item) => item.id === notification.id ? { ...item, read: true } : item))
       setUnreadCount((count) => Math.max(0, count - 1))
     }
@@ -117,93 +131,149 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
   }
 
   async function readAllNotifications() {
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     await apiReadAllNotifications(token)
+    if (!isAuthSessionCurrent(authSession)) return
     setNotifications((items) => items.map((item) => ({ ...item, read: true })))
     setUnreadCount(0)
   }
 
   async function selectConversation(conv: Conversation) {
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
+    const selectionGeneration = selectionGenerationRef.current + 1
+    selectionGenerationRef.current = selectionGeneration
+    selectionAbortRef.current?.abort()
+    const controller = new AbortController()
+    selectionAbortRef.current = controller
+    const isCurrentSelection = () => (
+      isAuthSessionCurrent(authSession)
+      && selectionGenerationRef.current === selectionGeneration
+      && useChatStore.getState().activeId === conv.id
+      && !controller.signal.aborted
+    )
     try {
       store.setActiveId(conv.id)
       store.setStreaming(false)
-      if (!store.messages[conv.id]) {
-        const msgs = await apiGetMessages(token, conv.id)
-        store.setMessages(conv.id, msgs)
-        const pending = [...msgs].reverse().find((message: any) =>
-          ['queued', 'in_progress'].includes(String(message?.status || ''))
-          && typeof message?.response_id === 'string'
-          && message?.role === 'assistant'
-        ) as any
-        if (pending?.response_id) {
-          store.setStreaming(true)
-          store.setActiveResponseId(pending.response_id)
-          store.resetReasoning(conv.id, String(pending.id))
-          void apiResumeResponse(token, pending.response_id, -1, {
-            onDelta: (text) => store.appendStreamingChunk(conv.id, text),
-            onReasoningStep: (step) => store.addReasoningStep(conv.id, step),
-            onThinking: (payload) => {
-              const stage = String(payload?.stage || payload?.intent?.task_type || '')
-              if (stage) store.appendThinking(conv.id, stage)
-            },
-            onToolCall: (payload) => store.updateToolStatus(conv.id, { tool_name: String(payload?.name || payload?.tool_name || 'tool'), status: 'running', node_id: payload?.call_id }),
-            onToolResult: (payload) => store.updateToolResult(conv.id, { tool_name: String(payload?.name || payload?.tool_name || 'tool'), node_id: payload?.call_id, preview: JSON.stringify(payload?.result ?? payload) }),
-            onApprovalRequired: (approvals) => store.setMessageApprovals(conv.id, String(pending.id), approvals),
-            onFinalAnswer: (envelope) => {
-              store.finishLastAssistantMessage(conv.id, envelope.content || '（空响应）')
-              store.setActiveResponseId(null)
-            },
-            onError: (error) => store.failLastAssistantMessage(conv.id, error instanceof Error ? error.message : String(error)),
-          }).catch(() => undefined)
-        }
+      store.setActiveResponseId(null)
+      const msgs = await apiGetMessages(token, conv.id, controller.signal)
+      if (!isCurrentSelection()) return
+      store.setMessages(conv.id, msgs)
+      const pending = [...msgs].reverse().find((message) =>
+        ['queued', 'in_progress'].includes(String(message?.status || ''))
+        && typeof message?.response_id === 'string'
+        && message?.role === 'assistant'
+      )
+      if (pending?.response_id) {
+        if (!isCurrentSelection()) return
+        store.setStreaming(true)
+        store.setActiveResponseId(pending.response_id)
+        store.resetReasoning(conv.id, String(pending.id))
+        void apiResumeResponseWithRetry(token, pending.response_id, -1, {
+          onDelta: (text) => {
+            if (isCurrentSelection()) store.appendMessageStreamingChunk(conv.id, String(pending.id), text)
+          },
+          onReasoningStep: (step) => {
+            if (isCurrentSelection()) store.addReasoningStep(conv.id, step)
+          },
+          onThinking: (payload) => {
+            if (!isCurrentSelection()) return
+            const stage = String(payload?.stage || payload?.intent?.task_type || '')
+            if (stage) store.appendThinking(conv.id, stage)
+          },
+          onToolCall: (payload) => {
+            if (!isCurrentSelection()) return
+            store.updateToolStatus(conv.id, { tool_name: String(payload?.name || payload?.tool_name || 'tool'), status: 'running', node_id: payload?.call_id })
+          },
+          onToolResult: (payload) => {
+            if (!isCurrentSelection()) return
+            store.updateToolResult(conv.id, { tool_name: String(payload?.name || payload?.tool_name || 'tool'), node_id: payload?.call_id, preview: JSON.stringify(payload?.result ?? payload) })
+          },
+          onApprovalRequired: (approvals) => {
+            if (isCurrentSelection()) store.setMessageApprovals(conv.id, String(pending.id), approvals)
+          },
+          onFinalAnswer: (envelope) => {
+            if (!isCurrentSelection()) return
+            store.finishAssistantMessage(conv.id, String(pending.id), envelope.content || '（空响应）')
+            store.setActiveResponseId(null)
+          },
+          onError: (error) => {
+            if (isCurrentSelection()) store.failAssistantMessage(conv.id, String(pending.id), error instanceof Error ? error.message : String(error))
+          },
+        }, controller.signal).catch(() => undefined)
       }
+      if (!isCurrentSelection()) return
       navigate('/chat')
       onMobileClose?.()
     } catch (e: any) {
+      if (!isCurrentSelection()) return
       alert(e?.message || '加载会话失败')
     }
   }
 
+  useEffect(() => () => {
+    selectionGenerationRef.current += 1
+    selectionAbortRef.current?.abort()
+  }, [])
+
   async function newChat() {
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     try {
       const conv = await apiCreateConversation(token)
+      if (!isAuthSessionCurrent(authSession)) return
       store.addConversation(conv)
       store.setActiveId(conv.id)
       store.setMessages(conv.id, [])
       navigate('/chat')
       onMobileClose?.()
     } catch (e: any) {
+      if (!isAuthSessionCurrent(authSession)) return
       alert(e?.message || '创建会话失败')
     }
   }
 
   async function newTemporaryChat() {
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     try {
       const conv = await apiCreateConversation(token, undefined, true)
+      if (!isAuthSessionCurrent(authSession)) return
       store.setActiveId(conv.id)
       store.setMessages(conv.id, [])
       navigate('/chat')
       onMobileClose?.()
     } catch (e: any) {
+      if (!isAuthSessionCurrent(authSession)) return
       alert(e?.message || '创建临时聊天失败')
     }
   }
 
   async function deleteConv(e: React.MouseEvent, id: string) {
     e.stopPropagation()
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     try {
       await apiDeleteConversation(token, id)
+      if (!isAuthSessionCurrent(authSession)) return
       store.removeConversation(id)
     } catch (e: any) {
+      if (!isAuthSessionCurrent(authSession)) return
       alert(e?.message || '删除会话失败')
     }
   }
 
   async function toggleArchive(e: React.MouseEvent, id: string, archived: boolean) {
     e.stopPropagation()
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     try {
       await apiArchiveConversation(token, id, archived)
+      if (!isAuthSessionCurrent(authSession)) return
       await refreshConversations()
     } catch (err: any) {
+      if (!isAuthSessionCurrent(authSession)) return
       alert(err?.message || '归档操作失败')
     }
   }
@@ -214,12 +284,16 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
       setEditingId(null)
       return
     }
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     try {
       const updated = await apiRenameConversation(token, id, title)
+      if (!isAuthSessionCurrent(authSession)) return
       store.updateConversationMeta(updated)
       setEditingId(null)
       setEditingTitle('')
     } catch (err: any) {
+      if (!isAuthSessionCurrent(authSession)) return
       alert(err?.message || '重命名失败')
     }
   }

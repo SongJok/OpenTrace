@@ -6,7 +6,7 @@ import ChatInput from '../components/ChatInput'
 import WelcomeScreen from '../components/WelcomeScreen'
 import { apiCreateConversationShare, apiDeleteConversation, apiListAssistantProfiles, apiListConversations, apiListDatabases, apiListProjects, apiUpdateConversation, type AssistantProfileItem, type DataSourceItem, type ProjectItem } from '../api/client'
 import { apiGetModelSettings } from '../api/modelSettings'
-import { useAuthStore } from '../store/auth'
+import { getAuthSessionSnapshot, isAuthSessionCurrent, useAuthStore } from '../store/auth'
 import { useChatStore } from '../store/chat'
 import { getShowAvatars, setShowAvatars } from '../store/theme'
 import { useChatPreferences } from '../store/chatPreferences'
@@ -76,27 +76,53 @@ export default function ChatPage() {
   }
 
   useEffect(() => {
+    const authSession = getAuthSessionSnapshot()
+    setActiveModel('')
     void apiGetModelSettings(token)
       .then((settings) => {
+        if (!isAuthSessionCurrent(authSession)) return
         const endpoint = settings.active_profile === 'environment' ? settings.environment : settings[settings.active_profile]
         setActiveModel(endpoint.model)
       })
-      .catch(() => setActiveModel(''))
+      .catch(() => {
+        if (isAuthSessionCurrent(authSession)) setActiveModel('')
+      })
   }, [token])
 
   useEffect(() => {
+    let cancelled = false
+    const authSession = getAuthSessionSnapshot()
+    setAssistantProfiles([])
     void apiListAssistantProfiles(token).then((items) => {
+      if (cancelled || !isAuthSessionCurrent(authSession)) return
       setAssistantProfiles(items)
-      if (!assistantProfileId) setAssistantProfileId(items.find((item) => item.is_default)?.id ?? items[0]?.id ?? null)
+      const selectedProfileId = useChatPreferences.getState().assistantProfileId
+      if (!selectedProfileId || !items.some((item) => item.id === selectedProfileId)) {
+        setAssistantProfileId(items.find((item) => item.is_default)?.id ?? items[0]?.id ?? null)
+      }
+    }).catch(() => {
+      if (cancelled || !isAuthSessionCurrent(authSession)) return
+      setAssistantProfiles([])
+      setAssistantProfileId(null)
+    })
+    return () => { cancelled = true }
+  }, [token])
+
+  useEffect(() => {
+    const authSession = getAuthSessionSnapshot()
+    setProjects([])
+    void apiListProjects(token).then((items) => {
+      if (isAuthSessionCurrent(authSession)) setProjects(items)
+    }).catch(() => {
+      if (isAuthSessionCurrent(authSession)) setProjects([])
     })
   }, [token])
 
   useEffect(() => {
-    void apiListProjects(token).then(setProjects)
-  }, [token])
-
-  useEffect(() => {
+    const authSession = getAuthSessionSnapshot()
+    setDataSources([])
     void apiListDatabases(token).then((items) => {
+      if (!isAuthSessionCurrent(authSession)) return
       const active = items.filter((item) => !item.status || item.status === 'active')
       setDataSources(active)
       if (dataSourceId && active.some((item) => item.id === dataSourceId)) return
@@ -106,7 +132,9 @@ export default function ChatPage() {
       } catch {
         setDataSourceId(null)
       }
-    }).catch(() => setDataSources([]))
+    }).catch(() => {
+      if (isAuthSessionCurrent(authSession)) setDataSources([])
+    })
   }, [token])
 
   const selectedProject = projects.find((item) => item.id === projectId)
@@ -130,12 +158,20 @@ export default function ChatPage() {
     setDataSourceId(bound.length === 1 ? bound[0].id : null)
   }
 
-  const refreshConversations = async () => setConversations(await apiListConversations(token))
+  const refreshConversations = async () => {
+    const authSession = getAuthSessionSnapshot()
+    const items = await apiListConversations(token)
+    if (isAuthSessionCurrent(authSession)) setConversations(items)
+  }
 
   const shareConversation = async () => {
     if (!activeId) return
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     const shared = await apiCreateConversationShare(token, activeId)
+    if (!isAuthSessionCurrent(authSession)) return
     const copied = await copyTextToClipboard(`${window.location.origin}${shared.url}`)
+    if (!isAuthSessionCurrent(authSession)) return
     window.alert(copied ? '分享链接已复制到剪贴板' : '分享链接已生成，但当前浏览器不允许写入剪贴板，请手动复制')
   }
 
@@ -149,16 +185,21 @@ export default function ChatPage() {
 
   const moreAction = async (action: 'rename' | 'pin' | 'delete') => {
     if (!activeId) return
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
     if (action === 'rename') {
       const title = window.prompt('输入对话名称')
       if (title?.trim()) await apiUpdateConversation(token, activeId, { title: title.trim() })
     } else if (action === 'pin') {
       const current = (await apiListConversations(token)).find((item) => item.id === activeId)
+      if (!isAuthSessionCurrent(authSession)) return
       await apiUpdateConversation(token, activeId, { pinned: !current?.pinned })
     } else if (window.confirm('确定删除此对话吗？此操作无法撤销。')) {
       await apiDeleteConversation(token, activeId)
+      if (!isAuthSessionCurrent(authSession)) return
       setActiveId(null)
     }
+    if (!isAuthSessionCurrent(authSession)) return
     setShowMoreMenu(false)
     await refreshConversations()
   }
