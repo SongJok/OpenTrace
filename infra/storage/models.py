@@ -628,6 +628,105 @@ class EnterpriseDirectorySyncRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class EnterpriseCognitiveEntity(Base):
+    """公司或部门的一等认知实体，负责绑定目录主体与治理知识空间。"""
+
+    __tablename__ = "enterprise_cognitive_entities"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "workspace_id",
+            "entity_type",
+            "entity_key",
+            name="uq_enterprise_cognitive_entity_scope_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    entity_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    entity_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    directory_principal_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("enterprise_directory_principals.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    knowledge_space_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("knowledge_spaces.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active", index=True)
+    created_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class EnterpriseCognitiveVersion(Base):
+    """企业认知的可审核版本；只有 published 版本会进入 Responses 上下文。"""
+
+    __tablename__ = "enterprise_cognitive_versions"
+    __table_args__ = (
+        UniqueConstraint("entity_id", "version", name="uq_enterprise_cognitive_entity_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    entity_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("enterprise_cognitive_entities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", index=True)
+    classification: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="internal", index=True
+    )
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    mission: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    vision: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    values: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    responsibilities: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    products_services: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    operating_principles: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    terminology: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    key_contacts: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    source_refs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    context_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    effective_from: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    effective_to: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    review_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    created_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    published_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class KnowledgePrincipalMembership(Base):
     """用户到部门、组和岗位主体的映射，可由 SCIM/HR 系统同步。"""
 

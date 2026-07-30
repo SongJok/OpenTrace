@@ -13,6 +13,8 @@ from infra.storage.models import (
     AlertEvent,
     AlertRule,
     DataSource,
+    EnterpriseCognitiveEntity,
+    EnterpriseCognitiveVersion,
     EnterpriseDirectoryMembership,
     EnterpriseDirectoryPrincipal,
     EnterpriseDirectorySyncRun,
@@ -168,6 +170,38 @@ async def enterprise_operations_overview(
             )
         ).scalars()
     )
+    cognitive_entities = int(
+        await db.scalar(
+            select(func.count(EnterpriseCognitiveEntity.id)).where(
+                EnterpriseCognitiveEntity.tenant_id == tenant_id,
+                EnterpriseCognitiveEntity.workspace_id == workspace_id,
+                EnterpriseCognitiveEntity.status == "active",
+            )
+        )
+        or 0
+    )
+    published_cognition = int(
+        await db.scalar(
+            select(func.count(EnterpriseCognitiveVersion.id)).where(
+                EnterpriseCognitiveVersion.tenant_id == tenant_id,
+                EnterpriseCognitiveVersion.workspace_id == workspace_id,
+                EnterpriseCognitiveVersion.status == "published",
+            )
+        )
+        or 0
+    )
+    due_cognitive_reviews = int(
+        await db.scalar(
+            select(func.count(EnterpriseCognitiveVersion.id)).where(
+                EnterpriseCognitiveVersion.tenant_id == tenant_id,
+                EnterpriseCognitiveVersion.workspace_id == workspace_id,
+                EnterpriseCognitiveVersion.status == "published",
+                EnterpriseCognitiveVersion.review_due_at.is_not(None),
+                EnterpriseCognitiveVersion.review_due_at <= now,
+            )
+        )
+        or 0
+    )
     pending_reviews = int(
         await db.scalar(
             select(func.count(KnowledgeReviewTask.id)).where(
@@ -282,13 +316,17 @@ async def enterprise_operations_overview(
             + unresolved_feedback * 3,
         ),
     )
-    knowledge_score = max(0, 100 - min(100, due_reviews * 5 + stale_knowledge * 6))
+    knowledge_score = max(
+        0,
+        100 - min(100, due_reviews * 5 + stale_knowledge * 6 + due_cognitive_reviews * 8),
+    )
     adoption_score = min(
         100,
         active_users_30d * 10
         + min(30, active_goals * 5 + scheduled_tasks * 5)
         + (20 if any(row.status == "active" for row in data_sources) else 0)
-        + (20 if any(row.status == "published" for row in knowledge_sources) else 0),
+        + (20 if any(row.status == "published" for row in knowledge_sources) else 0)
+        + (10 if published_cognition else 0),
     )
     health_score = round(
         reliability_score * 0.35
@@ -313,6 +351,20 @@ async def enterprise_operations_overview(
             "/knowledge",
         ),
         ("knowledge_feedback", "warning", unresolved_feedback, "未处理知识反馈", "/knowledge"),
+        (
+            "enterprise_cognition_missing",
+            "warning",
+            int(published_cognition == 0),
+            "公司与部门认知尚未发布",
+            "/enterprise-admin",
+        ),
+        (
+            "enterprise_cognition_reviews",
+            "warning",
+            due_cognitive_reviews,
+            "企业认知到期复审",
+            "/enterprise-admin",
+        ),
     ):
         if count:
             risks.append(
@@ -369,6 +421,9 @@ async def enterprise_operations_overview(
             "stale_knowledge": stale_knowledge,
             "pending_reviews": pending_reviews,
             "unresolved_feedback": unresolved_feedback,
+            "cognitive_entities": cognitive_entities,
+            "published_cognition": published_cognition,
+            "due_cognitive_reviews": due_cognitive_reviews,
         },
         "directory": {
             "principals": directory_principals,

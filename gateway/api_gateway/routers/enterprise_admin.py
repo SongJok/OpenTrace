@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.routers.admin import get_current_admin_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
+from infra.errors import AppException, ErrorCodes
 from infra.security.resource_scope import normalized_tenant_scope
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
@@ -19,6 +20,17 @@ from infra.storage.models import (
     EnterpriseDirectoryPrincipal,
     EnterpriseDirectorySyncRun,
     User,
+)
+from services.enterprise_cognition import (
+    archive_cognitive_entity,
+    cognitive_entity_payload,
+    cognitive_version_payload,
+    create_cognitive_entity,
+    get_scoped_cognitive_entity,
+    list_cognitive_entities,
+    list_cognitive_versions,
+    publish_cognitive_version,
+    save_cognitive_draft,
 )
 from services.enterprise_directory import (
     directory_membership_payload,
@@ -58,8 +70,61 @@ class DirectorySyncRequest(BaseModel):
     memberships: list[DirectoryMembershipInput] = Field(default_factory=list, max_length=5000)
 
 
+class CognitiveEntityInput(BaseModel):
+    entity_type: Literal["company", "department"]
+    display_name: str = Field(min_length=1, max_length=255)
+    department_external_id: str | None = Field(default=None, max_length=128)
+    knowledge_space_id: str | None = Field(default=None, max_length=36)
+
+
+class CognitiveDraftInput(BaseModel):
+    classification: Literal["public", "internal", "confidential", "restricted"] = "internal"
+    summary: str = Field(default="", max_length=12_000)
+    mission: str = Field(default="", max_length=8_000)
+    vision: str = Field(default="", max_length=8_000)
+    values: list[str] = Field(default_factory=list, max_length=100)
+    responsibilities: list[str] = Field(default_factory=list, max_length=200)
+    products_services: list[str] = Field(default_factory=list, max_length=200)
+    operating_principles: list[str] = Field(default_factory=list, max_length=200)
+    terminology: dict[str, str] = Field(default_factory=dict)
+    key_contacts: list[str] = Field(default_factory=list, max_length=100)
+    source_refs: list[str] = Field(default_factory=list, max_length=200)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
+    review_due_at: datetime | None = None
+
+
 def _scope(request: Request, user: User) -> tuple[str, str]:
     return normalized_tenant_scope(build_tenant_metadata(request, user_id=user.id))
+
+
+def _org_id(request: Request, user: User) -> str:
+    metadata = build_tenant_metadata(request, user_id=user.id)
+    return str(metadata.get("org_id") or metadata.get("tenant_id") or "default")
+
+
+def _cognition_error(exc: ValueError) -> AppException:
+    reason = str(exc)
+    messages = {
+        "unsupported_cognitive_entity_type": "不支持的企业认知实体类型",
+        "department_external_id_required": "部门认知实体必须绑定企业目录部门",
+        "department_principal_not_found": "未找到当前租户工作区内的有效部门",
+        "knowledge_space_not_found": "未找到当前租户工作区内的有效知识空间",
+        "knowledge_space_type_mismatch": "知识空间类型必须与公司或部门认知实体一致",
+        "cognitive_entity_not_found": "企业认知实体不存在",
+        "cognitive_entity_archived": "企业认知实体已归档，请先重新激活实体绑定",
+        "cognitive_draft_not_found": "请先保存企业认知草稿",
+        "cognitive_profile_requires_summary_or_mission": "发布前必须填写简介或使命",
+        "cognitive_profile_requires_provenance": "发布前必须绑定知识空间或填写来源引用",
+        "cognitive_effective_range_invalid": "认知版本失效时间必须晚于生效时间",
+        "unsupported_cognitive_classification": "不支持的企业认知密级",
+    }
+    return AppException(
+        ErrorCodes.PARAM_INVALID.code,
+        message=messages.get(reason, "企业认知数据校验失败"),
+        details={"reason": reason},
+    )
 
 
 @router.get("/admin/enterprise/operations/overview")
@@ -194,6 +259,164 @@ async def sync_directory(
     await db.commit()
     await db.refresh(run)
     return directory_sync_run_payload(run)
+
+
+@router.get("/admin/enterprise/cognition/entities")
+async def get_cognitive_entities(
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = _scope(request, current_user)
+    return {
+        "vision": "成为企业级的工作台、最懂公司的 AI",
+        "items": await list_cognitive_entities(
+            db,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            org_id=_org_id(request, current_user),
+        ),
+    }
+
+
+@router.post("/admin/enterprise/cognition/entities", status_code=201)
+async def upsert_cognitive_entity(
+    request: Request,
+    payload: CognitiveEntityInput,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = _scope(request, current_user)
+    try:
+        entity = await create_cognitive_entity(
+            db,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            org_id=_org_id(request, current_user),
+            actor=current_user,
+            entity_type=payload.entity_type,
+            display_name=payload.display_name,
+            department_external_id=payload.department_external_id,
+            knowledge_space_id=payload.knowledge_space_id,
+        )
+    except ValueError as exc:
+        raise _cognition_error(exc) from exc
+    await db.commit()
+    await db.refresh(entity)
+    return cognitive_entity_payload(entity)
+
+
+@router.put("/admin/enterprise/cognition/entities/{entity_id}/draft")
+async def put_cognitive_draft(
+    entity_id: str,
+    request: Request,
+    payload: CognitiveDraftInput,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = _scope(request, current_user)
+    entity = await get_scoped_cognitive_entity(
+        db,
+        entity_id=entity_id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    if entity is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="企业认知实体不存在")
+    values = payload.model_dump()
+    values["context_metadata"] = values.pop("metadata")
+    try:
+        version = await save_cognitive_draft(
+            db,
+            entity=entity,
+            actor=current_user,
+            values=values,
+        )
+    except ValueError as exc:
+        raise _cognition_error(exc) from exc
+    await db.commit()
+    await db.refresh(version)
+    return cognitive_version_payload(version) or {}
+
+
+@router.get("/admin/enterprise/cognition/entities/{entity_id}/versions")
+async def get_cognitive_versions(
+    entity_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = _scope(request, current_user)
+    entity = await get_scoped_cognitive_entity(
+        db,
+        entity_id=entity_id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    if entity is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="企业认知实体不存在")
+    return {
+        "items": await list_cognitive_versions(
+            db,
+            entity_id=entity.id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+    }
+
+
+@router.post("/admin/enterprise/cognition/entities/{entity_id}/archive")
+async def archive_cognitive_profile(
+    entity_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = _scope(request, current_user)
+    entity = await get_scoped_cognitive_entity(
+        db,
+        entity_id=entity_id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    if entity is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="企业认知实体不存在")
+    try:
+        archived = await archive_cognitive_entity(db, entity=entity, actor=current_user)
+    except ValueError as exc:
+        raise _cognition_error(exc) from exc
+    await db.commit()
+    await db.refresh(archived)
+    return cognitive_entity_payload(archived)
+
+
+@router.post("/admin/enterprise/cognition/entities/{entity_id}/publish")
+async def publish_cognitive_draft(
+    entity_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = _scope(request, current_user)
+    entity = await get_scoped_cognitive_entity(
+        db,
+        entity_id=entity_id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    if entity is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="企业认知实体不存在")
+    try:
+        version = await publish_cognitive_version(
+            db,
+            entity=entity,
+            actor=current_user,
+        )
+    except ValueError as exc:
+        raise _cognition_error(exc) from exc
+    await db.commit()
+    await db.refresh(version)
+    return cognitive_version_payload(version) or {}
 
 
 @router.get("/admin/enterprise/tenants")

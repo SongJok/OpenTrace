@@ -302,6 +302,15 @@ class AgentLoop:
         )
 
         selected_capabilities = set(intent.capabilities)
+        enterprise_grounding_required = bool(
+            dict(context.context_manifest.get("enterprise_context") or {}).get("requires_grounding")
+        )
+        if enterprise_grounding_required and str(payload.get("tool_choice") or "auto") != "none":
+            rag_spec = next((spec for spec in available_specs if spec.name == "rag"), None)
+            if rag_spec is not None:
+                selected_capabilities.add("rag")
+                if all(spec.name != "rag" for spec in tool_specs):
+                    tool_specs.append(rag_spec)
         if selected_capabilities:
             tool_specs = [spec for spec in tool_specs if spec.name in selected_capabilities]
         elif str(payload.get("tool_choice") or "auto") == "required":
@@ -452,7 +461,7 @@ class AgentLoop:
         if (
             str(payload.get("tool_choice") or "auto") != "none"
             and "rag" in spec_by_name
-            and self._requires_knowledge_grounding(query)
+            and (self._requires_knowledge_grounding(query) or enterprise_grounding_required)
         ):
             await self._prefetch_knowledge_grounding(
                 db,

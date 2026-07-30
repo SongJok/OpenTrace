@@ -49,6 +49,7 @@ def test_enterprise_readiness_is_explainable_and_actionable() -> None:
         "governance",
     }
     blocker_codes = {item["code"] for item in result["blockers"]}
+    assert "enterprise_cognition_missing" in blocker_codes
     assert "project_context_missing" in blocker_codes
     assert "company_knowledge_missing" in blocker_codes
     assert "enterprise_data_missing" in blocker_codes
@@ -69,6 +70,8 @@ def test_enterprise_readiness_rewards_governed_company_context() -> None:
         critical_alert_count=0,
         failed_response_count=0,
         knowledge_health={"score": 100, "status": "healthy"},
+        cognitive_entity_count=2,
+        published_company_context=True,
     )
     assert result["score"] == 100
     assert result["status"] == "ready"
