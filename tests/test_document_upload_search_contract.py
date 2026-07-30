@@ -18,6 +18,18 @@ class DocumentUploadSearchContractTests(unittest.TestCase):
         self.assertIn("db.add(DocumentChunk(", service)
         self.assertIn("document_id=doc.id", service)
 
+    def test_production_proxy_and_api_accept_enterprise_pdf_uploads(self):
+        nginx = self._read("frontend/nginx.conf")
+        router = self._read("gateway/api_gateway/routers/documents.py")
+        page = self._read("frontend/src/pages/DocumentsPage.tsx")
+
+        self.assertIn("client_max_body_size 64m;", nginx)
+        self.assertIn("await _read_document_upload(file)", router)
+        self.assertIn("settings.attachment_max_size_mb", router)
+        self.assertIn("单个文档不能超过", router)
+        self.assertIn("DOCUMENT_UPLOAD_MAX_SIZE_MB = 20", page)
+        self.assertIn("单个文件不超过 {DOCUMENT_UPLOAD_MAX_SIZE_MB}MB", page)
+
     def test_rag_agent_uses_documents_source_by_default(self):
         txt = self._read("agents/rag_agent.py")
         self.assertIn(

@@ -45,6 +45,8 @@ const CLASSIFICATION_LABELS: Record<Classification, string> = {
   confidential: '机密',
   restricted: '严格受限',
 }
+const DOCUMENT_UPLOAD_MAX_SIZE_MB = 20
+const DOCUMENT_UPLOAD_MAX_BYTES = DOCUMENT_UPLOAD_MAX_SIZE_MB * 1024 * 1024
 
 export default function DocumentsPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((state) => state.token)!
@@ -115,6 +117,11 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
 
   async function handleFiles(files: FileList | null) {
     if (!files?.length) return
+    const oversizedFile = Array.from(files).find((file) => file.size > DOCUMENT_UPLOAD_MAX_BYTES)
+    if (oversizedFile) {
+      setMessage(`“${oversizedFile.name}”超过 ${DOCUMENT_UPLOAD_MAX_SIZE_MB}MB，请压缩或拆分后重试。`)
+      return
+    }
     if (target === 'project' && !projectId) {
       setMessage('请先在对话工作台选择 Project，再上传 Project 资料。')
       return
@@ -280,7 +287,7 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
             <input ref={fileInputRef} type="file" multiple className="hidden" accept=".pdf,.txt,.md,.docx,.xlsx,.csv" onChange={(event) => void handleFiles(event.target.files)} />
             {uploading ? <Loader2 size={28} className="mx-auto animate-spin text-[var(--accent)]" /> : <Upload size={28} className="mx-auto text-[var(--accent)]" />}
             <p className="mt-3 text-sm font-medium">{uploading ? '正在解析、分块并入库…' : '拖入文件或点击上传'}</p>
-            <p className="mt-1 text-xs text-[var(--text-secondary)]">PDF、Word、Markdown、TXT、Excel、CSV</p>
+            <p className="mt-1 text-xs text-[var(--text-secondary)]">PDF、Word、Markdown、TXT、Excel、CSV · 单个文件不超过 {DOCUMENT_UPLOAD_MAX_SIZE_MB}MB</p>
           </div>
         </section>
 

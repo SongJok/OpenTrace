@@ -73,6 +73,7 @@ type ApiErr = { code?: number; message?: string; detail?: string }
 
 async function readApiError(res: Response, fallback: string): Promise<string> {
   const err = (await res.json().catch(() => ({}))) as ApiErr
+  if (res.status === 413) return '上传内容超过服务允许的大小，请压缩或拆分后重试'
   return err.message || err.detail || fallback
 }
 

@@ -96,6 +96,20 @@ class SearchResult(BaseModel):
     metadata: dict
 
 
+async def _read_document_upload(file: UploadFile) -> bytes:
+    """按统一附件上限读取文档，避免无界读取占用 API 进程内存。"""
+    max_size_mb = max(1, int(settings.attachment_max_size_mb))
+    raw = await file.read(max_size_mb * 1024 * 1024 + 1)
+    if not raw:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="文档不能为空")
+    if len(raw) > max_size_mb * 1024 * 1024:
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message=f"单个文档不能超过 {max_size_mb}MB",
+        )
+    return raw
+
+
 # ── Text extraction ───────────────────────────────────────────────────────────
 
 
@@ -279,7 +293,7 @@ async def upload_document(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentOut:
-    raw = await file.read()
+    raw = await _read_document_upload(file)
     filename = file.filename or "document"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
     text = await _extract_text(raw, filename)
@@ -536,7 +550,7 @@ async def update_document(
         doc.chunk_strategy = max(1, min(chunk_strategy, 8))
 
     if file:
-        raw = await file.read()
+        raw = await _read_document_upload(file)
         filename = file.filename or "document"
         text = await _extract_text(raw, filename)
         doc.file_size = len(raw)
