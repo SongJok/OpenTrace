@@ -1936,7 +1936,7 @@ export async function streamSseResponse(
               content: String(step.objective || ''),
               status: durableStatus === 'running'
                 ? 'running'
-                : durableStatus === 'completed' || durableStatus === 'failed'
+                : durableStatus === 'completed' || durableStatus === 'failed' || durableStatus === 'skipped'
                   ? 'done'
                   : 'pending',
             })

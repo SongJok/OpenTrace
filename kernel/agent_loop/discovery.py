@@ -76,13 +76,9 @@ class CapabilityDiscovery:
 
         ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
         positive = [item for item in ranked if item[0] > 0]
-        # 小目录完整交给规划器；目录扩展后只暴露相关能力和调用方显式工具，
-        # 避免工具 schema 吞噬长上下文。
-        selected = (
-            ranked if len(ranked) <= self.catalogue_limit else positive[: self.catalogue_limit]
-        )
-        if not selected:
-            selected = ranked[: self.catalogue_limit]
+        # 目录大小不能成为扩大能力面的理由。零相关能力会让短追问同时命中多个
+        # 同名写操作，并诱导规划器制造与用户目标无关的步骤。
+        selected = positive[: self.catalogue_limit]
         selected_names = {item[2].name for item in selected}
         for item in ranked:
             if item[2].name in pinned and item[2].name not in selected_names:

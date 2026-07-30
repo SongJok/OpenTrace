@@ -94,6 +94,14 @@ def test_calendar_tools_are_typed_and_writes_require_approval() -> None:
     assert "create_calendar_event" in {item.name for item in matches}
 
 
+def test_calendar_tool_defensively_normalizes_model_string_values() -> None:
+    from tools.builtin_tools.platform_tools import _as_bool, _as_int_list
+
+    assert _as_bool("False") is False
+    assert _as_bool("true") is True
+    assert _as_int_list("[10, 30]", default=[15]) == [10, 30]
+
+
 def test_calendar_tool_scope_is_hydrated_by_agent_loop() -> None:
     source = (ROOT / "kernel/agent_loop/runner.py").read_text(encoding="utf-8")
     for name in (

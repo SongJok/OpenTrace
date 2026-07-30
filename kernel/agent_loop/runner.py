@@ -36,6 +36,7 @@ from kernel.agent_loop.contracts import (
 from kernel.agent_loop.discovery import CapabilityDiscovery
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, capture_model_calls, get_model_gateway
+from services.calendar_intent import parse_calendar_create_intent
 
 EventEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
 _SENSITIVE_KEYS = {
@@ -88,6 +89,69 @@ def _tool_args(call: dict[str, Any]) -> dict[str, Any]:
 
 def _call_id(call: dict[str, Any]) -> str:
     return str(call.get("call_id") or call.get("id") or f"call_{uuid.uuid4().hex}")
+
+
+def _coerce_schema_value(value: Any, schema: dict[str, Any]) -> Any:
+    value_type = schema.get("type")
+    allowed_types = set(value_type) if isinstance(value_type, list) else {value_type}
+    if value is None and "null" in allowed_types:
+        return None
+    if "boolean" in allowed_types and isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no", ""}:
+            return False
+    if "integer" in allowed_types and isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return value
+    if "number" in allowed_types and isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return value
+    if "array" in allowed_types:
+        candidate = value
+        if isinstance(value, str):
+            try:
+                candidate = json.loads(value)
+            except (TypeError, ValueError):
+                return value
+        if isinstance(candidate, list):
+            item_schema = dict(schema.get("items") or {})
+            return [_coerce_schema_value(item, item_schema) for item in candidate]
+    if "object" in allowed_types and isinstance(value, str):
+        try:
+            candidate = json.loads(value)
+        except (TypeError, ValueError):
+            return value
+        if isinstance(candidate, dict):
+            return candidate
+    if "string" in allowed_types and not isinstance(value, str):
+        return str(value)
+    return value
+
+
+def _normalize_tool_call(call: dict[str, Any], spec: ToolSpec | None) -> dict[str, Any]:
+    if spec is None:
+        return call
+    properties = dict(spec.parameters.get("properties") or {})
+    raw_arguments = _tool_args(call)
+    arguments = {
+        name: _coerce_schema_value(raw_arguments[name], dict(schema or {}))
+        for name, schema in properties.items()
+        if name in raw_arguments
+    }
+    return {
+        "id": _call_id(call),
+        "call_id": _call_id(call),
+        "name": spec.name,
+        "type": "function",
+        "arguments": arguments,
+        "function": {"name": spec.name, "arguments": arguments},
+    }
 
 
 def _redact_sensitive(value: Any, *, key: str = "") -> Any:
@@ -251,12 +315,27 @@ class AgentLoop:
         available_specs = self._apply_tool_policy(
             self._available_tool_specs(payload), context.tool_policy
         )
+        planning_context = self._planning_context(
+            context.messages,
+            current_message_count=context.current_message_count,
+        )
+        pending_action = self._pending_action_from_context(
+            context.messages,
+            available_specs,
+            current_message_count=context.current_message_count,
+        )
         client_tool_names = {
             spec.name for spec in parse_tool_specs(list(payload.get("tools") or []))
         }
+        pinned_names = set(client_tool_names)
+        if pending_action and self._is_affirmative_follow_up(query):
+            pinned_names.add(str(pending_action["name"]))
+        discovery_query = query
+        if planning_context and self._is_contextual_follow_up(query):
+            discovery_query = f"{planning_context}\n当前追问：{query}"
         discovery = CapabilityDiscovery(
             catalogue_limit=int(settings.responses_capability_catalog_limit)
-        ).discover(query, available_specs, pinned_names=client_tool_names)
+        ).discover(discovery_query, available_specs, pinned_names=pinned_names)
         tool_specs = list(discovery.specs)
         await emit(
             "opentrace.capabilities.discovered",
@@ -277,6 +356,8 @@ class AgentLoop:
                     tool_specs=tool_specs,
                     goal_mode=bool(extension.get("goal_id")),
                     capability_catalogue=discovery.prompt_catalogue(),
+                    conversation_context=planning_context,
+                    pending_action=pending_action,
                 )
             model_calls.extend(planning_calls)
         intent = decision.intent
@@ -351,6 +432,110 @@ class AgentLoop:
                 "manifest": context.context_manifest,
             },
         )
+        deterministic_write = self._deterministic_write_call(
+            query=query,
+            response=response,
+            extension=extension,
+            tool_specs=tool_specs,
+            pending_action=pending_action,
+        )
+        if deterministic_write and str(payload.get("tool_choice") or "auto") != "none":
+            call, spec = deterministic_write
+            call_id = _call_id(call)
+            approval = await db.scalar(
+                select(ResponseApproval).where(
+                    ResponseApproval.response_id == response.id,
+                    ResponseApproval.call_id == call_id,
+                )
+            )
+            if approval is None:
+                item = ResponseItem(
+                    id=f"item_{uuid.uuid4().hex}",
+                    response_id=response.id,
+                    sequence_number=await self._next_item_sequence(db, response.id),
+                    item_type="function_call",
+                    role="assistant",
+                    content=None,
+                    payload={
+                        "call_id": call_id,
+                        "name": spec.name,
+                        "arguments": _redact_sensitive(_tool_args(call)),
+                    },
+                )
+                db.add(item)
+                await emit(
+                    "response.output_item.added",
+                    {
+                        "item_id": item.id,
+                        "item_type": "function_call",
+                        "call_id": call_id,
+                        "name": spec.name,
+                        "deterministic": True,
+                    },
+                )
+                approval = await self._ensure_approval(
+                    db,
+                    response=response,
+                    call=call,
+                    spec=spec,
+                )
+            if approval.status == "pending":
+                step = self._plan_step_for_capability(
+                    execution_plan,
+                    plan_statuses,
+                    spec.name,
+                    recovering=True,
+                )
+                if step:
+                    plan_statuses[step.id] = "requires_action"
+                    await emit(
+                        "opentrace.plan.step.deferred",
+                        {
+                            "step": step.to_dict(),
+                            "status": "requires_action",
+                            "reason": "approval_required",
+                            "deterministic": True,
+                        },
+                    )
+                await self._persist_execution_plan_runtime(
+                    db,
+                    response=response,
+                    statuses=plan_statuses,
+                    replan_count=replan_count,
+                )
+                response.status = "requires_action"
+                await emit(
+                    "response.requires_action",
+                    {
+                        "status": "requires_action",
+                        "approvals": [
+                            {
+                                "id": approval.id,
+                                "call_id": approval.call_id,
+                                "tool_name": approval.tool_name,
+                                "side_effect": approval.side_effect_level,
+                                "arguments": approval.arguments,
+                            }
+                        ],
+                    },
+                )
+                await db.commit()
+                return AgentLoopResult(
+                    status="requires_action",
+                    intent=intent,
+                    metadata={
+                        "model_calls": model_calls,
+                        "model_call_count": len(model_calls),
+                        "memory_ids": context.memory_ids,
+                        "attachment_ids": context.attachment_ids,
+                        "execution_profile": profile.value,
+                        "execution_plan": execution_plan.to_dict(),
+                        "execution_plan_status": dict(plan_statuses),
+                        "execution_plan_replan_count": replan_count,
+                        "context_manifest": context.context_manifest,
+                        "deterministic_write_prepared": spec.name,
+                    },
+                )
         direct_memory_answer = None
         if str(payload.get("tool_choice") or "auto") != "required":
             direct_memory_answer = self._direct_memory_answer(query, context.recalled_memories)
@@ -549,19 +734,38 @@ class AgentLoop:
         progress = _LoopProgressTracker()
         stalled_details: dict[str, Any] | None = None
         rounds_executed = 0
+        initial_write_names = self._pending_write_capabilities(
+            execution_plan,
+            plan_statuses,
+            spec_by_name,
+        )
+        forced_write_names: set[str] = set()
+        if (
+            len(initial_write_names) == 1
+            and self._is_explicit_write_request(query, pending_action=pending_action)
+            and str(payload.get("tool_choice") or "auto") != "none"
+        ):
+            forced_write_names = initial_write_names
         for round_number in range(1, round_limit + 1):
             rounds_executed = round_number
             await db.refresh(response)
             if response.status == "cancelled":
                 return AgentLoopResult(status="cancelled", intent=intent)
             await emit("opentrace.model.started", {"round": round_number, "model": model_name})
+            round_tools = public_tools
+            round_tool_choice = str(payload.get("tool_choice") or "auto")
+            if forced_write_names:
+                round_tools = [
+                    spec.as_openai_tool() for spec in tool_specs if spec.name in forced_write_names
+                ]
+                round_tool_choice = "required"
             with capture_model_calls() as calls:
                 model_response = await get_model_gateway().complete(
                     messages,
                     role=LLMRole.QUERY,
                     fallback_roles=[LLMRole.KNOWLEDGE],
-                    tools=public_tools,
-                    tool_choice=str(payload.get("tool_choice") or "auto"),
+                    tools=round_tools,
+                    tool_choice=round_tool_choice,
                     parallel_tool_calls=bool(payload.get("parallel_tool_calls", True)),
                     max_output_tokens=payload.get("max_output_tokens"),
                     model_override=model_name,
@@ -592,6 +796,41 @@ class AgentLoop:
                 },
             )
             if not model_response.tool_calls or str(payload.get("tool_choice") or "auto") == "none":
+                pending_write_names = self._pending_write_capabilities(
+                    execution_plan,
+                    plan_statuses,
+                    spec_by_name,
+                )
+                if (
+                    pending_write_names
+                    and self._is_explicit_write_request(query, pending_action=pending_action)
+                    and str(payload.get("tool_choice") or "auto") != "none"
+                    and round_number < round_limit
+                ):
+                    if model_response.content:
+                        messages.append(
+                            LLMMessage(role="assistant", content=str(model_response.content))
+                        )
+                    forced_write_names = pending_write_names
+                    messages.append(
+                        LLMMessage(
+                            role="system",
+                            content=(
+                                "用户已经明确要求执行写操作。不要再次用自然语言询问是否确认；"
+                                "请调用唯一待执行的写工具，由平台生成持久化审批。平台审批通过前"
+                                "不会实际执行副作用。"
+                            ),
+                        )
+                    )
+                    await emit(
+                        "opentrace.write_intent.enforced",
+                        {
+                            "round": round_number,
+                            "capabilities": sorted(pending_write_names),
+                            "reason": "explicit_write_intent_requires_durable_approval",
+                        },
+                    )
+                    continue
                 reasoning_summary = self._reasoning_summary(model_response.output_items)
                 if reasoning_summary:
                     await emit("response.reasoning_summary_text.done", {"text": reasoning_summary})
@@ -636,6 +875,9 @@ class AgentLoop:
             calls = model_response.tool_calls
             if not bool(payload.get("parallel_tool_calls", True)):
                 calls = calls[:1]
+            calls = [
+                _normalize_tool_call(call, spec_by_name.get(_tool_name(call))) for call in calls
+            ]
             assistant_calls = [
                 {
                     "id": _call_id(call),
@@ -705,7 +947,7 @@ class AgentLoop:
                     unmet_dependencies = [
                         dependency
                         for dependency in step.depends_on
-                        if plan_statuses.get(dependency) not in {"completed", "failed"}
+                        if plan_statuses.get(dependency) not in {"completed", "failed", "skipped"}
                     ]
                     if unmet_dependencies:
                         deferred = {
@@ -1174,7 +1416,7 @@ class AgentLoop:
         )
         payload = dict(item.payload or {}) if item else {}
         raw_statuses = dict(payload.get("statuses") or {})
-        allowed = {"pending", "running", "requires_action", "completed", "failed"}
+        allowed = {"pending", "running", "requires_action", "completed", "failed", "skipped"}
         statuses: dict[str, str] = {}
         for step in plan.steps:
             status = str(raw_statuses.get(step.id) or "pending")
@@ -1269,12 +1511,16 @@ class AgentLoop:
         statuses: dict[str, str],
     ) -> None:
         for step in plan.steps:
-            if statuses.get(step.id) in {"completed", "failed"}:
+            if statuses.get(step.id) in {"completed", "failed", "skipped"}:
                 continue
-            statuses[step.id] = "completed"
+            statuses[step.id] = "skipped"
             await emit(
-                "opentrace.plan.step.completed",
-                {"step": step.to_dict(), "status": "completed"},
+                "opentrace.plan.step.skipped",
+                {
+                    "step": step.to_dict(),
+                    "status": "skipped",
+                    "reason": "response_finalized_without_step_execution",
+                },
             )
 
     @staticmethod
@@ -1285,6 +1531,250 @@ class AgentLoop:
         if allowed:
             result = [spec for spec in result if spec.name in allowed]
         return result
+
+    @staticmethod
+    def _pending_write_capabilities(
+        plan: ExecutionPlan,
+        statuses: dict[str, str],
+        spec_by_name: dict[str, ToolSpec],
+    ) -> set[str]:
+        return {
+            str(step.capability)
+            for step in plan.steps
+            if step.capability
+            and statuses.get(step.id) in {"pending", "running"}
+            and spec_by_name.get(step.capability) is not None
+            and spec_by_name[step.capability].side_effect != SideEffect.READ
+        }
+
+    @classmethod
+    def _deterministic_write_call(
+        cls,
+        *,
+        query: str,
+        response: ResponseRecord,
+        extension: dict[str, Any],
+        tool_specs: list[ToolSpec],
+        pending_action: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any], ToolSpec] | None:
+        spec_by_name = {spec.name: spec for spec in tool_specs}
+        name = ""
+        arguments: dict[str, Any] | None = None
+        if pending_action and cls._is_affirmative_follow_up(query):
+            name = str(pending_action.get("name") or "")
+            arguments = dict(pending_action.get("arguments") or {})
+        elif cls._is_explicit_write_request(query):
+            name = "create_calendar_event"
+            if name in spec_by_name:
+                arguments = parse_calendar_create_intent(
+                    query,
+                    timezone_name=str(extension.get("timezone") or "Asia/Shanghai"),
+                )
+        spec = spec_by_name.get(name)
+        if spec is None or spec.side_effect == SideEffect.READ or not arguments:
+            return None
+        fingerprint = json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str)
+        call_id = (
+            "call_deterministic_"
+            + hashlib.sha256(f"{response.id}:{name}:{fingerprint}".encode()).hexdigest()[:24]
+        )
+        call = _normalize_tool_call(
+            {
+                "id": call_id,
+                "call_id": call_id,
+                "name": name,
+                "arguments": arguments,
+            },
+            spec,
+        )
+        return call, spec
+
+    @staticmethod
+    def _is_affirmative_follow_up(query: str) -> bool:
+        normalized = re.sub(r"[\s，。！？,.!?]", "", (query or "").lower())
+        if not normalized or len(normalized) > 24:
+            return False
+        markers = (
+            "确认",
+            "确认创建",
+            "继续",
+            "执行",
+            "可以",
+            "好的",
+            "好",
+            "同意",
+            "批准",
+            "是的",
+            "就这样",
+            "按这个",
+            "创建吧",
+            "confirm",
+            "continue",
+            "proceed",
+            "approve",
+            "yes",
+        )
+        return any(normalized == marker or normalized.startswith(marker) for marker in markers)
+
+    @classmethod
+    def _is_contextual_follow_up(cls, query: str) -> bool:
+        if cls._is_affirmative_follow_up(query):
+            return True
+        normalized = re.sub(r"\s+", "", query or "")
+        return len(normalized) <= 24 and any(
+            marker in normalized
+            for marker in ("这个", "那个", "刚才", "上一个", "上一条", "照此", "按上述")
+        )
+
+    @classmethod
+    def _is_explicit_write_request(
+        cls,
+        query: str,
+        *,
+        pending_action: dict[str, Any] | None = None,
+    ) -> bool:
+        if pending_action and cls._is_affirmative_follow_up(query):
+            return True
+        normalized = re.sub(r"\s+", "", query or "")
+        direct_markers = (
+            "记录下来",
+            "添加到日历",
+            "加入日历",
+            "创建日程",
+            "创建任务",
+            "创建预警",
+            "提醒我",
+            "取消日程",
+            "删除日程",
+            "修改日程",
+            "更新日程",
+            "改到",
+            "reschedule",
+            "addtocalendar",
+            "createevent",
+            "canceltheevent",
+        )
+        if any(marker in normalized.lower() for marker in direct_markers):
+            return True
+        return bool(
+            re.search(
+                r"(?:帮我|请|麻烦|给我).{0,12}" r"(?:记录|添加|创建|安排|提醒|取消|删除|修改|更新)",
+                normalized,
+            )
+        )
+
+    @classmethod
+    def _apply_side_effect_intent_policy(
+        cls,
+        query: str,
+        parsed: dict[str, Any],
+        tool_specs: list[ToolSpec],
+        pending_action: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """疑问句不得仅因动词重合扩大为写操作。"""
+
+        if cls._is_explicit_write_request(query, pending_action=pending_action):
+            return parsed
+        normalized = re.sub(r"\s+", "", query or "")
+        is_question = (
+            "?" in normalized
+            or "？" in normalized
+            or any(
+                marker in normalized
+                for marker in (
+                    "什么",
+                    "哪些",
+                    "多少",
+                    "何时",
+                    "几点",
+                    "有没有",
+                    "是否",
+                    "怎么",
+                    "如何",
+                )
+            )
+        )
+        if not is_question:
+            return parsed
+        side_effects = {spec.name: spec.side_effect for spec in tool_specs}
+        sanitized = dict(parsed or {})
+        sanitized["capabilities"] = [
+            str(name)
+            for name in sanitized.get("capabilities") or []
+            if side_effects.get(str(name), SideEffect.READ) == SideEffect.READ
+        ]
+        sanitized["steps"] = [
+            dict(step)
+            for step in sanitized.get("steps") or []
+            if not isinstance(step, dict)
+            or not step.get("capability")
+            or side_effects.get(str(step.get("capability")), SideEffect.READ) == SideEffect.READ
+        ]
+        return sanitized
+
+    @staticmethod
+    def _planning_context(
+        messages: list[dict[str, Any]],
+        *,
+        current_message_count: int,
+    ) -> str:
+        history_end = max(1, len(messages) - max(0, current_message_count))
+        lines: list[str] = []
+        for message in messages[1:history_end][-12:]:
+            role = str(message.get("role") or "")
+            content = str(message.get("content") or "").strip()
+            if content and role in {"user", "assistant", "tool"}:
+                lines.append(f"{role}: {content[:1200]}")
+            for call in list(message.get("tool_calls") or []):
+                function = dict(call.get("function") or {})
+                name = str(call.get("name") or function.get("name") or "")
+                arguments = call.get("arguments") or function.get("arguments") or {}
+                if name:
+                    lines.append(
+                        "assistant_tool: "
+                        + name
+                        + " "
+                        + json.dumps(arguments, ensure_ascii=False, default=str)[:1200]
+                    )
+        return "\n".join(lines)[-8_000:]
+
+    @staticmethod
+    def _pending_action_from_context(
+        messages: list[dict[str, Any]],
+        specs: list[ToolSpec],
+        *,
+        current_message_count: int,
+    ) -> dict[str, Any] | None:
+        history_end = max(1, len(messages) - max(0, current_message_count))
+        history = messages[1:history_end]
+        completed_call_ids = {
+            str(message.get("tool_call_id") or "")
+            for message in history
+            if str(message.get("role") or "") == "tool"
+        }
+        spec_by_name = {spec.name: spec for spec in specs}
+        for message in reversed(history):
+            for call in reversed(list(message.get("tool_calls") or [])):
+                function = dict(call.get("function") or {})
+                name = str(call.get("name") or function.get("name") or "")
+                call_id = str(call.get("call_id") or call.get("id") or "")
+                spec = spec_by_name.get(name)
+                if spec is None or spec.side_effect == SideEffect.READ:
+                    continue
+                if call_id and call_id in completed_call_ids:
+                    continue
+                raw_arguments = call.get("arguments") or function.get("arguments") or {}
+                if isinstance(raw_arguments, str):
+                    try:
+                        raw_arguments = json.loads(raw_arguments)
+                    except (TypeError, ValueError):
+                        raw_arguments = {}
+                return {
+                    "name": name,
+                    "call_id": call_id,
+                    "arguments": dict(raw_arguments) if isinstance(raw_arguments, dict) else {},
+                }
+        return None
 
     @staticmethod
     async def _emit_text(emit: EventEmitter, content: str) -> None:
@@ -1371,6 +1861,8 @@ class AgentLoop:
         tool_specs: list[ToolSpec],
         goal_mode: bool,
         capability_catalogue: list[dict[str, Any]],
+        conversation_context: str = "",
+        pending_action: dict[str, Any] | None = None,
     ) -> PlanningDecision:
         """Use a strict model tool call for semantic intent selection.
 
@@ -1455,6 +1947,8 @@ class AgentLoop:
             capability_names=names,
             attachment_context=attachment_context,
             capability_catalogue=capability_catalogue,
+            conversation_context=conversation_context,
+            pending_action=pending_action,
         )
         parsed: dict[str, Any] = {}
         try:
@@ -1480,6 +1974,13 @@ class AgentLoop:
             parsed = {}
 
         parsed = self._apply_conversational_memory_policy(query, parsed)
+        parsed = self._apply_pending_action_policy(query, parsed, pending_action)
+        parsed = self._apply_side_effect_intent_policy(
+            query,
+            parsed,
+            tool_specs,
+            pending_action,
+        )
         planned_capabilities = [
             str(step.get("capability") or "")
             for step in parsed.get("steps") or []
@@ -1540,7 +2041,7 @@ class AgentLoop:
                     id=f"step_{index}",
                     objective=f"调用 {capability} 获取完成目标所需的可核验证据",
                     capability=capability,
-                    depends_on=(f"step_{index - 1}",) if index > 1 else (),
+                    depends_on=(),
                     success_criteria="能力调用成功并返回可用于最终回答的结果",
                 )
                 for index, capability in enumerate(intent.capabilities[:8], start=1)
@@ -1726,6 +2227,42 @@ class AgentLoop:
         sanitized["success_criteria"] = ["不调用文件或其他副作用工具持久化记忆"]
         return sanitized
 
+    @classmethod
+    def _apply_pending_action_policy(
+        cls,
+        query: str,
+        parsed: dict[str, Any],
+        pending_action: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """短确认确定性继承上一轮未完成的副作用工具，不重新扩大能力集合。"""
+
+        if not pending_action or not cls._is_affirmative_follow_up(query):
+            return parsed
+        name = str(pending_action.get("name") or "").strip()
+        if not name:
+            return parsed
+        sanitized = dict(parsed or {})
+        sanitized["goal"] = str(sanitized.get("goal") or query)
+        sanitized["task_type"] = str(sanitized.get("task_type") or "chat")
+        sanitized["capabilities"] = [name]
+        sanitized["ambiguity"] = None
+        sanitized["execution_mode"] = "interactive"
+        sanitized["expected_outputs"] = ["完成上一轮已确认操作并返回可核验结果"]
+        sanitized["clarification_question"] = None
+        sanitized["complexity"] = "simple"
+        sanitized["steps"] = [
+            {
+                "id": "resume-pending-action",
+                "objective": f"继续执行上一轮待确认的 {name}",
+                "capability": name,
+                "depends_on": [],
+                "success_criteria": "进入持久化审批并在批准后仅执行一次",
+            }
+        ]
+        sanitized["success_criteria"] = ["待处理动作与上一轮参数保持一致"]
+        sanitized["replan_limit"] = 0
+        return sanitized
+
     @staticmethod
     def _intent_planning_prompt(
         *,
@@ -1733,15 +2270,30 @@ class AgentLoop:
         capability_names: list[str],
         attachment_context: str,
         capability_catalogue: list[dict[str, Any]] | None = None,
+        conversation_context: str = "",
+        pending_action: dict[str, Any] | None = None,
     ) -> str:
         prompt = (
             "识别用户真实目标并选择完成它所需的最小能力集合。不要用关键词路由。"
             "有歧义且会显著改变结果时给出 clarification_question。"
             f"\n可用能力：{json.dumps(capability_catalogue or capability_names, ensure_ascii=False)}"
             f"\n用户请求：{query}"
-            "\n对复杂任务给出2到8个可验证步骤及依赖；简单问答只给一个步骤。"
+            "\n能力列表只是候选集合，不代表调用顺序。只选择完成当前目标不可缺少的能力。"
+            "对复杂任务给出2到8个可验证步骤；只有存在真实数据依赖时才填写 depends_on。"
+            "简单问答或单工具任务只给一个步骤。"
             "步骤是面向用户的执行摘要，不要输出隐藏思维链。工具失败时允许在上限内重规划。"
         )
+        if conversation_context:
+            prompt += (
+                "\n以下是当前 Response 父链的最近对话与工具意图。短追问必须结合它理解，"
+                "不要把‘确认、继续、执行’重新解释成无关工具：\n" + conversation_context[:8_000]
+            )
+        if pending_action:
+            prompt += (
+                "\n检测到上一轮尚未产生工具结果的写操作。若当前消息是在确认或继续，"
+                "必须只继承该动作，不得替换为其他同名写能力：\n"
+                + json.dumps(pending_action, ensure_ascii=False, default=str)[:4_000]
+            )
         if attachment_context:
             prompt += (
                 "\n本回合附件资料如下。附件是用户请求的一部分，只用于理解目标和选择能力；"

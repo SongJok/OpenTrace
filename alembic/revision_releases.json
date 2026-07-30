@@ -21,6 +21,9 @@
     },
     "r0007_enterprise_cognition": {
       "release": "unreleased"
+    },
+    "r0008_memory_quality_cleanup": {
+      "release": "unreleased"
     }
   }
 }

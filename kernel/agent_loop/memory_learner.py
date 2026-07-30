@@ -29,6 +29,7 @@ from memory.constitution import (
     memory_expiry,
 )
 from memory.graph import link_memory_graph
+from memory.quality import memory_quality_issue
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
 
@@ -160,6 +161,13 @@ class MemoryLearner:
             kind = str(candidate.get("kind") or "fact").strip().lower()
             if kind not in {"profile", "preference", "workflow", "fact", "episodic"}:
                 kind = "fact"
+            if memory_quality_issue(
+                content,
+                kind=kind,
+                memory_key=str(candidate.get("key") or "") or None,
+                source_response_id=None,
+            ):
+                continue
             if kind in {"profile", "preference"} and not preference_learning_enabled:
                 continue
             confidence = min(1.0, max(0.0, float(candidate.get("confidence") or 0.0)))

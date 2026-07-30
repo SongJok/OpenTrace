@@ -41,6 +41,28 @@ def _schedule(value: str, timezone: str) -> str:
     return rule
 
 
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"false", "0", "no", ""}:
+            return False
+        if normalized in {"true", "1", "yes"}:
+            return True
+    return bool(value)
+
+
+def _as_int_list(value: Any, *, default: list[int]) -> list[int]:
+    candidate = value
+    if isinstance(value, str):
+        try:
+            candidate = json.loads(value)
+        except (TypeError, ValueError):
+            candidate = []
+    if not isinstance(candidate, list):
+        candidate = default
+    return [int(item) for item in candidate]
+
+
 async def _authorized_project(
     db: Any,
     *,
@@ -454,7 +476,7 @@ async def create_calendar_event_tool(
     location = str(location or "")
     event_type = str(event_type or "event")
     recurrence_rule = str(recurrence_rule or "")
-    all_day = bool(all_day)
+    all_day = _as_bool(all_day)
     start = parse_calendar_datetime(start_at, timezone)
     end = (
         parse_calendar_datetime(end_at, timezone)
@@ -465,7 +487,7 @@ async def create_calendar_event_tool(
     if event_type not in {"event", "meeting", "focus", "reminder"}:
         raise CalendarValidationError("invalid_event_type")
     reminders = sorted(
-        {int(value) for value in (reminder_minutes or [15]) if 0 <= int(value) <= 10080}
+        {value for value in _as_int_list(reminder_minutes, default=[15]) if 0 <= value <= 10080}
     )[:5]
     async with AsyncSessionLocal() as db:
         row = CalendarEvent(

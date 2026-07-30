@@ -38,6 +38,7 @@ from memory.constitution import (
     parse_memory_metadata,
 )
 from memory.graph import memory_graph_boosts
+from memory.quality import memory_quality_issue
 from services.calendar import (
     DEFAULT_CALENDAR_TIMEZONE,
     CalendarValidationError,
@@ -457,6 +458,21 @@ class ContextAssembler:
             compliant_memories: list[UserMemory] = []
             for memory in memories:
                 metadata = parse_memory_metadata(memory.metadata_json)
+                quality_issue = memory_quality_issue(
+                    memory.content,
+                    kind=memory.kind,
+                    memory_key=memory.memory_key,
+                    source_response_id=memory.source_response_id,
+                )
+                if quality_issue:
+                    memory.enabled = False
+                    memory.status = "rejected"
+                    metadata["quality_quarantined"] = {
+                        "reason": quality_issue,
+                        "at": now.isoformat(),
+                    }
+                    memory.metadata_json = json.dumps(metadata, ensure_ascii=False)
+                    continue
                 decision = evaluate_memory_constitution(
                     memory.content,
                     constitution=constitution,
