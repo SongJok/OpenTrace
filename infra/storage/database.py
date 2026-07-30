@@ -255,6 +255,7 @@ async def _verify_runtime_schema(conn) -> None:
         "alert_events",
         "skill_catalog_entries",
         "user_skill_installations",
+        "enterprise_skills",
         "resource_permissions",
         "enterprise_directory_principals",
         "enterprise_directory_memberships",

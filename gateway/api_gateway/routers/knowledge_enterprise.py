@@ -13,9 +13,11 @@ from pydantic import BaseModel, Field, HttpUrl
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gateway.api_gateway.routers.admin import get_current_admin_user
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.audit.logger import write_audit_log
+from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
 from infra.security.resource_scope import normalized_tenant_scope
 from infra.storage.database import db_session_dependency as get_db
@@ -50,6 +52,8 @@ from knowledge.lifecycle import (
 )
 from knowledge.query import search_knowledge
 from knowledge.sync import retry_sync_run
+from services.dingtalk_workspace import DingTalkWorkspaceClient, DingTalkWorkspaceError
+from services.enterprise_directory import sync_enterprise_directory
 
 router = APIRouter()
 
@@ -134,6 +138,14 @@ class ConnectorSnapshot(BaseModel):
 class ConnectorPushRequest(BaseModel):
     cursor: str | None = None
     snapshots: list[ConnectorSnapshot] = Field(min_length=1, max_length=200)
+
+
+class DingTalkConnectorSyncRequest(BaseModel):
+    include_documents: bool = True
+    include_chats: bool = True
+    include_directory: bool = True
+    limit: int = Field(default=20, ge=1, le=50)
+    chat_since_days: int = Field(default=30, ge=1, le=365)
 
 
 class KnowledgeSearchRequest(BaseModel):
@@ -843,6 +855,121 @@ async def push_connector_snapshots(
         "run_id": run.id,
         "status": run.status,
         "queued": len(payload.snapshots),
+    }
+
+
+@router.post("/knowledge/connectors/{connector_id}/sync-dingtalk", status_code=202)
+async def sync_dingtalk_connector(
+    connector_id: str,
+    payload: DingTalkConnectorSyncRequest,
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """读取钉钉文档、群聊和组织目录，并进入知识与目录治理链。"""
+    tenant_id, workspace_id = _scope(request, current_user)
+    connector = await db.scalar(
+        select(KnowledgeConnector).where(
+            KnowledgeConnector.id == connector_id,
+            KnowledgeConnector.tenant_id == tenant_id,
+            KnowledgeConnector.workspace_id == workspace_id,
+        )
+    )
+    if connector is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Connector not found")
+    if connector.connector_type != "dingtalk":
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="该连接器不是钉钉连接器")
+    await _space_or_error(
+        db, request=request, user=current_user, space_id=connector.space_id, role="admin"
+    )
+    config = dict(connector.connector_config or {})
+    try:
+        client = DingTalkWorkspaceClient(
+            binary=settings.dingtalk_dws_binary,
+            profile=settings.dingtalk_dws_profile,
+            timeout_seconds=settings.dingtalk_dws_timeout_seconds,
+        )
+        bundle = await client.collect(
+            include_documents=payload.include_documents,
+            include_chats=payload.include_chats,
+            include_directory=payload.include_directory,
+            workspace=str(config.get("workspace") or ""),
+            folder=str(config.get("folder") or ""),
+            root_department_id=str(config.get("root_department_id") or "1"),
+            chat_since_days=payload.chat_since_days,
+            limit=payload.limit,
+            max_departments=int(config.get("max_departments") or 500),
+        )
+    except (DingTalkWorkspaceError, ValueError) as exc:
+        connector.status = "error"
+        connector.last_error = str(exc)[:2000]
+        await db.commit()
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message=f"钉钉同步失败：{exc}",
+        ) from exc
+
+    directory_run_id = None
+    if payload.include_directory:
+        directory_run = await sync_enterprise_directory(
+            db,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            actor=current_user,
+            provider="dingtalk",
+            cursor=bundle.cursor,
+            authoritative=bool(config.get("directory_authoritative", False)),
+            principals=bundle.principals,
+            memberships=bundle.memberships,
+        )
+        directory_run_id = directory_run.id
+
+    queued_result: dict = {
+        "accepted": True,
+        "deduplicated": False,
+        "run_id": None,
+        "status": "succeeded",
+        "queued": 0,
+    }
+    if bundle.knowledge_items:
+        snapshots = []
+        configured_acl = (
+            config.get("default_acl") if isinstance(config.get("default_acl"), list) else []
+        )
+        for item in bundle.knowledge_items:
+            raw_acl = item.acl or configured_acl
+            snapshots.append(
+                ConnectorSnapshot(
+                    external_id=item.external_id,
+                    title=item.title,
+                    content=item.content,
+                    content_type="text",
+                    authority="external",
+                    classification=("confidential" if item.source_type == "chat" else None),
+                    metadata={**item.metadata, "dingtalk_source_type": item.source_type},
+                    acl=[SourceAclEntry.model_validate(entry) for entry in raw_acl],
+                )
+            )
+        queued_result = await push_connector_snapshots(
+            connector_id,
+            ConnectorPushRequest(cursor=bundle.cursor, snapshots=snapshots),
+            request,
+            current_user,
+            db,
+        )
+    else:
+        connector.status = "active"
+        connector.last_error = None
+        connector.sync_cursor = bundle.cursor
+        connector.last_sync_at = datetime.now().astimezone()
+        await db.commit()
+    return {
+        **queued_result,
+        "directory_run_id": directory_run_id,
+        "documents": sum(1 for item in bundle.knowledge_items if item.source_type == "document"),
+        "chats": sum(1 for item in bundle.knowledge_items if item.source_type == "chat"),
+        "departments": len(bundle.principals),
+        "memberships": len(bundle.memberships),
     }
 
 

@@ -21,6 +21,7 @@ from infra.storage.models import (
     ChatSession,
     DataSource,
     DataSourceSchema,
+    EnterpriseSkill,
     Project,
     ResponseItem,
     ResponseRecord,
@@ -177,6 +178,32 @@ class ContextAssembler:
             if str(item) and str(item) not in disabled_session_skills
         ]
         if enabled_session_skills:
+            company_skill_ids = [
+                skill_id for skill_id in enabled_session_skills if skill_id.startswith("company-")
+            ]
+            if company_skill_ids:
+                company_skills = list(
+                    (
+                        await db.execute(
+                            select(EnterpriseSkill)
+                            .where(
+                                EnterpriseSkill.tenant_id == response.tenant_id,
+                                EnterpriseSkill.workspace_id == response.workspace_id,
+                                EnterpriseSkill.status == "published",
+                                EnterpriseSkill.runtime_id.in_(company_skill_ids),
+                            )
+                            .order_by(EnterpriseSkill.published_at.desc())
+                        )
+                    ).scalars()
+                )
+                if company_skills:
+                    system_blocks.append(
+                        "公司发布的 Skills（企业治理指令，仍受平台权限、审批与审计约束）：\n"
+                        + "\n\n".join(
+                            f"## {skill.name}\n{skill.instructions[:12000]}"
+                            for skill in company_skills[:3]
+                        )[:24000]
+                    )
             system_blocks.append(
                 "当前会话已启用的 Skills（服务器会话策略）：\n"
                 + "\n".join(f"- {skill_id}" for skill_id in enabled_session_skills)

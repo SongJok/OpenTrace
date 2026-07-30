@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronLeft, Wrench, Plus, Trash2, Play, Save, Code, FileText, TestTube, Download, Power, Search, ShieldCheck, Star, RefreshCw, ExternalLink, PackageCheck, ArrowRight, BadgeCheck, Boxes } from 'lucide-react'
+import { ChevronLeft, Wrench, Plus, Trash2, Play, Save, Code, FileText, TestTube, Download, Power, Search, ShieldCheck, Star, RefreshCw, ExternalLink, PackageCheck, ArrowRight, BadgeCheck, Boxes, Building2, FolderOpen, UploadCloud } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 import { useChatStore } from '../store/chat'
 import {
@@ -19,13 +19,16 @@ import {
   apiSyncSkillCatalog,
   apiSetCatalogSkillAvailability,
   apiListConversations,
+  apiDistillCompanySkill,
+  apiListCompanySkills,
   type SkillItem,
   type SkillCatalogItem,
   type SkillCatalogSyncPolicy,
   type ConversationItem,
+  type EnterpriseSkillItem,
 } from '../api/client'
 
-type ViewMode = 'list' | 'create' | 'detail' | 'test'
+type ViewMode = 'list' | 'create' | 'detail' | 'test' | 'distill'
 type MarketplaceTab = 'discover' | 'search' | 'installed' | 'developer'
 type CatalogCategory = '全部' | '办公效率' | '数据分析' | '开发工具' | '搜索研究' | '内容创作' | '自动化'
 
@@ -54,6 +57,11 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
   const [marketplaceTab, setMarketplaceTab] = useState<MarketplaceTab>('discover')
   const [category, setCategory] = useState<CatalogCategory>('全部')
   const [sessionChoices, setSessionChoices] = useState<ConversationItem[]>([])
+  const [companySkills, setCompanySkills] = useState<EnterpriseSkillItem[]>([])
+  const [distillName, setDistillName] = useState('')
+  const [distillDescription, setDistillDescription] = useState('')
+  const [distillClassification, setDistillClassification] = useState<EnterpriseSkillItem['classification']>('internal')
+  const [distillFiles, setDistillFiles] = useState<File[]>([])
 
   // Create form
   const [name, setName] = useState('')
@@ -70,14 +78,16 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
 
   const load = async () => {
     try {
-      const [popular, recent, installed] = await Promise.all([
+      const [popular, recent, installed, published] = await Promise.all([
         apiListSkillCatalog(token, 'popular', catalogQuery),
         apiListSkillCatalog(token, 'recent', catalogQuery),
         apiListMyInstalledSkills(token),
+        apiListCompanySkills(token),
       ])
       setPopularCatalog(popular)
       setRecentCatalog(recent)
       setAccountCatalog(installed)
+      setCompanySkills(published)
       if (role === 'admin') {
         const [ss, governance] = await Promise.all([apiListSkills(token), apiListAdminSkillCatalog(token)])
         setSkills(Array.isArray(ss) ? ss : [])
@@ -247,6 +257,32 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
     }
   }
 
+  const handleDistill = async () => {
+    if (!distillName.trim() || !distillFiles.length) return
+    setLoading(true)
+    setOutput('')
+    try {
+      const result = await apiDistillCompanySkill(token, {
+        name: distillName.trim(),
+        description: distillDescription.trim(),
+        classification: distillClassification,
+        files: distillFiles,
+        paths: distillFiles.map((file) => file.webkitRelativePath || file.name),
+      })
+      setOutput(result.deduplicated ? '相同来源已蒸馏过，已返回现有公司 Skill。' : '蒸馏完成，新的 Skill 已作为“公司发布”展示。')
+      setDistillName('')
+      setDistillDescription('')
+      setDistillFiles([])
+      await load()
+      setView('list')
+      setMarketplaceTab('discover')
+    } catch (e: any) {
+      setOutput(`蒸馏失败：${e?.message || e}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const handleSelectSkill = async (skill: SkillItem) => {
     setLoading(true)
     try {
@@ -368,6 +404,27 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
             {marketplaceTab === 'developer' && role === 'admin' && <CatalogGovernancePanel items={adminCatalog} policy={catalogPolicy} busyId={busyCatalogId} syncing={loading} onSync={syncCatalog} onSetAvailability={setCatalogAvailability} />}
 
             {marketplaceTab === 'developer' && role === 'admin' && <section className="space-y-5"><SectionTitle title="开发者工具" subtitle="创建、测试和管理平台自有的可执行 Skills" action={<button onClick={() => { resetCreateForm(); setCode(defaultCodeTemplate); setView('create') }} className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)]"><Plus size={13} />创建 Skill</button>} /><div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="flex items-center gap-2 text-sm font-medium"><Download size={14} />从 Git 安装</div><div className="mt-3 grid gap-2 sm:grid-cols-[1fr_140px_auto]"><input value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} placeholder="https://github.com/org/skill.git" className="rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /><input value={gitRef} onChange={(e) => setGitRef(e.target.value)} placeholder="分支或标签" className="rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /><button disabled={loading || !gitUrl.trim()} onClick={() => void handleInstall()} className="rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-50">安装</button></div><p className="mt-2 text-[11px] text-[var(--text-secondary)]">可执行 Skill 受平台策略控制，生产环境默认禁止动态安装。</p></div>{skills.length === 0 ? <div className="rounded-2xl border border-dashed border-[var(--border)] p-12 text-center text-xs text-[var(--text-secondary)]">暂无平台自有 Skill</div> : <div className="space-y-2">{skills.map((skill) => <div key={skill.skill_id || skill.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="grid h-9 w-9 place-items-center rounded-lg bg-[var(--accent-dim)] text-[var(--accent)]"><Boxes size={16} /></div><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{skill.name || skill.id}</p><p className="text-[11px] text-[var(--text-secondary)]">v{skill.version} · {skill.skill_type || 'generic'} · {skill.entrypoint || 'main.py'}</p></div><button onClick={() => void handleSelectSkill(skill)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs"><FileText size={12} className="mr-1 inline" />详情</button><button onClick={() => void handleUninstall(skill.skill_id || skill.id)} className="rounded-lg border border-red-500/20 px-3 py-1.5 text-xs text-red-500"><Trash2 size={12} className="mr-1 inline" />移除</button></div>)}</div>}</section>}
+
+            <CompanySkillsSection skills={companySkills} role={role} activeSessionId={activeSessionId} enabledSkills={enabledSkills} onDistill={() => setView('distill')} onToggle={toggleSessionSkill} />
+          </main>
+        )}
+
+        {view === 'distill' && role === 'admin' && (
+          <main className="mx-auto max-w-3xl space-y-6 px-4 py-10 sm:px-6">
+            <div className="flex items-center gap-3"><button onClick={() => setView('list')} className="text-xs text-[var(--text-secondary)] hover:text-[var(--text)]">&larr; 返回</button><div><h2 className="text-xl font-semibold">蒸馏企业 Skill</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">从文件或文件夹提炼流程、规则与检查项，发布为企业内可复用能力。</p></div></div>
+            {output && <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-xs">{output}</div>}
+            <section className="space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
+              <input value={distillName} onChange={(event) => setDistillName(event.target.value)} placeholder="Skill 名称，例如：客户交付验收规范" className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
+              <textarea value={distillDescription} onChange={(event) => setDistillDescription(event.target.value)} rows={3} placeholder="说明它解决什么企业问题；留空时系统会根据资料生成企业价值说明。" className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
+              <select value={distillClassification} onChange={(event) => setDistillClassification(event.target.value as EnterpriseSkillItem['classification'])} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm"><option value="public">公开</option><option value="internal">内部</option><option value="confidential">机密</option></select>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--border)] p-5 text-sm hover:border-[var(--accent)]"><UploadCloud size={17} />选择文件<input type="file" multiple accept=".pdf,.docx,.md,.txt,.text,.csv,.json,.yaml,.yml" className="hidden" onChange={(event) => setDistillFiles(Array.from(event.target.files || []))} /></label>
+                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--border)] p-5 text-sm hover:border-[var(--accent)]"><FolderOpen size={17} />选择文件夹<input type="file" multiple accept=".pdf,.docx,.md,.txt,.text,.csv,.json,.yaml,.yml" className="hidden" ref={(element) => { if (element) element.setAttribute('webkitdirectory', '') }} onChange={(event) => setDistillFiles(Array.from(event.target.files || []))} /></label>
+              </div>
+              <div className="rounded-xl bg-[var(--bg)] p-3 text-xs text-[var(--text-secondary)]">已选择 {distillFiles.length} 个文件{distillFiles.length > 0 && `：${distillFiles.slice(0, 4).map((file) => file.webkitRelativePath || file.name).join('、')}${distillFiles.length > 4 ? '…' : ''}`}</div>
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-600">公司发布由管理员执行。系统只提炼文字和工作方法，不运行文件中的代码、宏或脚本；发布后仍受租户、工作区、会话启用、审批与审计约束。</div>
+              <button disabled={loading || !distillName.trim() || !distillFiles.length} onClick={() => void handleDistill()} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm text-[var(--accent-foreground)] disabled:opacity-40"><Building2 size={15} />{loading ? '蒸馏中…' : '蒸馏并公司发布'}</button>
+            </section>
           </main>
         )}
 
@@ -519,6 +576,27 @@ export function CatalogGovernancePanel({ items, policy, busyId, syncing, onSync,
         {!items.length && <div className="p-8 text-center text-xs text-[var(--text-secondary)]">目录尚未同步</div>}
       </div>
     </div>
+  </section>
+}
+
+function CompanySkillsSection({ skills, role, activeSessionId, enabledSkills, onDistill, onToggle }: {
+  skills: EnterpriseSkillItem[]
+  role: string | null
+  activeSessionId: string | null
+  enabledSkills: string[]
+  onDistill: () => void
+  onToggle: (skillId: string) => Promise<void>
+}) {
+  return <section className="mt-20 space-y-6 border-t border-[var(--border)] pt-10">
+    <SectionTitle title="公司 Skills" subtitle="由企业资料蒸馏、经过公司发布的工作方法，沉淀组织经验并服务实际业务" action={role === 'admin' ? <button onClick={onDistill} className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] px-4 py-2 text-xs text-[var(--accent-foreground)]"><UploadCloud size={14} />蒸馏 Skill</button> : undefined} />
+    {skills.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{skills.map((skill) => {
+      const enabled = enabledSkills.includes(skill.runtime_id)
+      return <article key={skill.id} className="flex min-h-56 flex-col rounded-2xl border border-emerald-500/20 bg-[var(--surface)] p-5 shadow-sm">
+        <div className="flex items-start gap-3"><div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-emerald-500/10 text-emerald-500"><Building2 size={18} /></div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{skill.name}</h3><span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600">公司发布</span></div><p className="mt-1 text-[10px] text-[var(--text-secondary)]">{skill.classification === 'public' ? '公开' : skill.classification === 'confidential' ? '机密' : '内部'} · {skill.source_files.length} 个来源文件</p></div></div>
+        <p className="mt-4 line-clamp-3 text-xs leading-5 text-[var(--text-secondary)]">{skill.value_summary}</p>
+        <div className="mt-auto flex items-center justify-between border-t border-[var(--border)] pt-4"><span className="text-[10px] text-[var(--text-secondary)]">可追溯 · 不执行文件代码</span><button disabled={!activeSessionId} onClick={() => void onToggle(skill.runtime_id)} className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] disabled:opacity-40 ${enabled ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600' : 'border-[var(--border)]'}`}><Power size={12} />{enabled ? '已启用' : '会话启用'}</button></div>
+      </article>
+    })}</div> : <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] py-14 text-center"><Building2 size={28} className="mx-auto text-[var(--text-secondary)]" /><p className="mt-3 text-sm font-medium">还没有公司发布的 Skill</p><p className="mt-1 text-xs text-[var(--text-secondary)]">管理员可以选择企业文件或文件夹，将高价值工作经验蒸馏为可复用能力。</p></div>}
   </section>
 }
 

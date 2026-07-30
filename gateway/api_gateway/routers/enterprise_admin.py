@@ -63,7 +63,7 @@ class DirectoryMembershipInput(BaseModel):
 
 
 class DirectorySyncRequest(BaseModel):
-    provider: Literal["manual", "scim", "hr"] = "manual"
+    provider: Literal["manual", "scim", "hr", "dingtalk"] = "manual"
     cursor: str | None = Field(default=None, max_length=512)
     authoritative: bool = False
     principals: list[DirectoryPrincipalInput] = Field(default_factory=list, max_length=2000)

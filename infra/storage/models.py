@@ -2110,6 +2110,54 @@ class UserSkillInstallation(Base):
     )
 
 
+class EnterpriseSkill(Base):
+    """由企业资料蒸馏并在租户工作区内发布的指令型 Skill。"""
+
+    __tablename__ = "enterprise_skills"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "workspace_id",
+            "source_digest",
+            name="uq_enterprise_skill_scope_source_digest",
+        ),
+        UniqueConstraint("runtime_id", name="uq_enterprise_skill_runtime_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    workspace_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    runtime_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    value_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    source_digest: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source_files: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    use_cases: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    classification: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="internal", index=True
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="published", index=True)
+    created_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    published_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    published_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ResourcePermission(Base):
     """Explicit resource ACL layered on top of ownership and tenant isolation."""
 

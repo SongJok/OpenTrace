@@ -545,6 +545,16 @@ export async function apiCreateEnterpriseKnowledgeConnector(token: string, paylo
   return res.json()
 }
 
+export async function apiSyncDingTalkKnowledgeConnector(token: string, connectorId: string): Promise<{ queued: number; documents: number; chats: number; departments: number; memberships: number }> {
+  const res = await apiFetch(`/knowledge/connectors/${encodeURIComponent(connectorId)}/sync-dingtalk`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ include_documents: true, include_chats: true, include_directory: true }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '同步钉钉企业数据失败'))
+  return res.json()
+}
+
 export async function apiListKnowledgeSyncRuns(token: string, connectorId?: string, spaceId?: string): Promise<KnowledgeSyncRunItem[]> {
   const params = new URLSearchParams()
   if (connectorId) params.set('connector_id', connectorId)
@@ -2406,6 +2416,21 @@ export interface SkillCatalogSyncPolicy {
   retention: 'append_only' | string
 }
 
+export interface EnterpriseSkillItem {
+  id: string
+  runtime_id: string
+  name: string
+  description: string
+  value_summary: string
+  instructions: string
+  source_files: Array<{ path: string; sha256: string; size: number; content_type: string }>
+  use_cases: string[]
+  classification: 'public' | 'internal' | 'confidential'
+  status: 'published' | 'archived'
+  published_at?: string | null
+  publication: 'company'
+}
+
 export async function apiListSkillCatalog(token: string, sort: 'popular' | 'recent', q = ''): Promise<SkillCatalogItem[]> { const p = new URLSearchParams({ sort, limit: '30' }); if (q.trim()) p.set('q', q.trim()); const res = await apiFetch(`/skills/catalog?${p}`, { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取 SkillHub 失败')); return (await res.json()).items ?? [] }
 export async function apiListMyInstalledSkills(token: string): Promise<SkillCatalogItem[]> { const res = await apiFetch('/skills/installed/me', { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取账户 Skills 失败')); return (await res.json()).items ?? [] }
 export async function apiListAdminSkillCatalog(token: string): Promise<{ items: SkillCatalogItem[]; policy: SkillCatalogSyncPolicy }> { const res = await apiFetch('/skills/catalog/admin?limit=500', { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取 Skill 治理目录失败')); return res.json() }
@@ -2413,6 +2438,17 @@ export async function apiSyncSkillCatalog(token: string): Promise<any> { const r
 export async function apiSetCatalogSkillAvailability(token: string, catalogSkillId: string, enabled: boolean, reason = ''): Promise<SkillCatalogItem> { const res = await apiFetch(`/skills/catalog/${encodeURIComponent(catalogSkillId)}/availability`, { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify({ enabled, reason }) }); if (!res.ok) throw new Error(await readApiError(res, enabled ? '恢复 Skill 失败' : '暂停 Skill 失败')); return (await res.json()).item }
 export async function apiInstallCatalogSkill(token: string, catalogSkillId: string): Promise<any> { const res = await apiFetch('/skills/catalog/install', { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ catalog_skill_id: catalogSkillId }) }); if (!res.ok) throw new Error(await readApiError(res, '安装 Skill 失败')); return res.json() }
 export async function apiUninstallCatalogSkill(token: string, installationId: string): Promise<any> { const res = await apiFetch(`/skills/installations/${encodeURIComponent(installationId)}`, { method: 'DELETE', headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '卸载 Skill 失败')); return res.json() }
+export async function apiListCompanySkills(token: string): Promise<EnterpriseSkillItem[]> { const res = await apiFetch('/skills/company', { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取公司 Skills 失败')); return (await res.json()).items ?? [] }
+export async function apiDistillCompanySkill(token: string, payload: { name: string; description: string; classification: EnterpriseSkillItem['classification']; files: File[]; paths: string[] }): Promise<{ skill: EnterpriseSkillItem; deduplicated: boolean }> {
+  const form = new FormData()
+  form.append('name', payload.name)
+  form.append('description', payload.description)
+  form.append('classification', payload.classification)
+  payload.files.forEach((file, index) => { form.append('files', file); form.append('paths', payload.paths[index] || file.name) })
+  const res = await apiFetch('/skills/company/distill', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form })
+  if (!res.ok) throw new Error(await readApiError(res, '蒸馏企业 Skill 失败'))
+  return res.json()
+}
 
 export async function apiListConnectors(token: string): Promise<ConnectorItem[]> {
   const res = await apiFetch('/connectors', { headers: authHeaders(token) })

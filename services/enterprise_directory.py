@@ -20,7 +20,7 @@ from infra.storage.models import (
 )
 
 ALLOWED_PRINCIPAL_TYPES = {"department", "group", "role"}
-ALLOWED_PROVIDERS = {"manual", "scim", "hr"}
+ALLOWED_PROVIDERS = {"manual", "scim", "hr", "dingtalk"}
 
 
 def directory_principal_payload(row: EnterpriseDirectoryPrincipal) -> dict[str, Any]:

@@ -68,6 +68,7 @@ services:
     volumes:
       - skills_data:/app/skills/installed
       - object_data:/var/lib/opentrace/objects
+      - dws_data:/var/lib/opentrace/dws
     extra_hosts:
       - "host.docker.internal:host-gateway"
     sysctls:
@@ -77,6 +78,8 @@ services:
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/opentrace_v2
       TOKEN_DB_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/opentrace_v2
       REDIS_URL: redis://redis:6379/10
+      DINGTALK_DWS_BINARY: ${DINGTALK_DWS_BINARY:-}
+      DWS_CONFIG_DIR: ${DWS_CONFIG_DIR:-/var/lib/opentrace/dws}
       TRACE_ENABLED: ${TRACE_ENABLED:-false}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1,host.docker.internal,.aliyuncs.com,dashscope.aliyuncs.com}
@@ -221,3 +224,4 @@ volumes:
   redis_data:
   skills_data:
   object_data:
+  dws_data:

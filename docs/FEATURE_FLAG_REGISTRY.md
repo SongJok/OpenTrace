@@ -39,3 +39,5 @@
 - 实验开关必须同时声明 owner、引入版本、退出条件和最晚删除版本。
 - deprecated 开关只用于滚动升级，禁止在新部署模板中默认开启。
 - `development/staging/production` 决定安全强度；`CAPABILITY_PROFILE` 决定能力集合。
+
+钉钉企业数据接入不是运行时 Feature Flag；它以 `DINGTALK_DWS_BINARY` 和有效只读认证是否可用作为显式部署门禁。未配置时同步请求失败关闭，不会回退到模拟数据或绕过企业知识/目录治理链。

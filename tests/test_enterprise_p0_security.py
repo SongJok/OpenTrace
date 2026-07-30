@@ -123,6 +123,7 @@ def test_control_plane_routes_require_admin_dependency():
             "/skills/catalog/install",
             "/skills/installed/me",
             "/skills/installations/{installation_id}",
+            "/skills/company",
         }
     )
     assert protected_routes

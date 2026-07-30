@@ -24,6 +24,9 @@
     },
     "r0008_memory_quality_cleanup": {
       "release": "unreleased"
+    },
+    "r0009_enterprise_skills": {
+      "release": "unreleased"
     }
   }
 }

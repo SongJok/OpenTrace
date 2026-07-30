@@ -159,6 +159,18 @@ python scripts/check_migration_policy.py
 | `RESPONSE_WORKER_MAX_QUEUE_DEPTH` | 与 SLO 告警一致 | 达阈值停止 Outbox 扩散，由 DB claim 排空 |
 | `MCP_SERVER_ENABLED` / `A2A_PROTOCOL_ENABLED` | 默认关闭、灰度开启 | 调用必须转换为 durable Response，不得旁路审批和账本 |
 
+### 钉钉企业数据接入
+
+| 变量 | 权威值 / 默认 | 说明 |
+|---|---|---|
+| `DINGTALK_DWS_BINARY` | 空（禁用） | 运行时挂载的 `dws` Linux 可执行文件绝对路径；API 仅以参数数组执行只读命令，不经过 shell |
+| `DINGTALK_DWS_PROFILE` | 空 | 运维预配置的只读企业 Profile / corpId；生产禁止挂载个人高权限 Profile |
+| `DINGTALK_DWS_TIMEOUT_SECONDS` | `30` | 单条读取命令超时，运行时限制在 5–120 秒 |
+| `DWS_CONFIG_DIR` | Compose: `/var/lib/opentrace/dws` | OAuth 加密凭据与恢复事件的持久化目录 |
+| `DWS_CLIENT_ID` / `DWS_CLIENT_SECRET` | 空 | Headless 环境的钉钉 AppKey/AppSecret；使用 Secret 注入，不写入镜像 |
+
+钉钉文档和群聊先进入持久化知识同步队列，再由 Worker 编译；部门和成员关系进入企业目录并投影到知识 ACL。群聊默认按 `confidential` 处理并保留群主体 ACL。生产应把版本固定的 DWS Linux 二进制以只读文件挂载，把 Profile 作为 Secret/持久卷挂载；不要让核心应用镜像构建依赖外部 CLI 下载服务。
+
 Helm Secret 使用三条独立连接：`API_DATABASE_URL`、`WORKER_DATABASE_URL`、
 `MIGRATION_DATABASE_URL`。API/Worker 角色不得是表 owner 或 superuser；角色初始化见
 `deploy/postgres_roles.sql`。

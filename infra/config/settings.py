@@ -256,6 +256,9 @@ class AppSettings(BaseSettings):
     slack_connector_client_secret: str = ""
     confluence_connector_client_id: str = ""
     confluence_connector_client_secret: str = ""
+    dingtalk_dws_binary: str = ""
+    dingtalk_dws_profile: str = ""
+    dingtalk_dws_timeout_seconds: int = 30
 
     # Weather
     weather_api_key: str = ""

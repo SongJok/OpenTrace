@@ -41,4 +41,13 @@ describe('SkillsPage marketplace contract', () => {
     expect(page.resolveSkillSessionId(null, null, [])).toBeNull()
     expect(page.default.toString()).toContain('目标会话')
   })
+
+  it('supports governed file and folder distillation with company publication', async () => {
+    const page = await import('../SkillsPage')
+    const source = page.default.toString()
+    expect(source).toContain('蒸馏企业 Skill')
+    expect(source).toContain('选择文件夹')
+    expect(source).toContain('公司发布')
+    expect(source).toContain('不运行文件中的代码')
+  })
 })

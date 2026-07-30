@@ -3,7 +3,7 @@
   "policy_effective_date": "2026-07-24",
   "production_baseline_revision": "20260724_chatgpt_runtime_completion",
   "new_revision_format": "^r[0-9]{4}_[a-z0-9_]+$",
-  "next_sequence": 9,
+  "next_sequence": 10,
   "frozen_migrations": [
     {
       "revision": "20260400_core_baseline",
@@ -343,6 +343,13 @@
       "revision": "r0008_memory_quality_cleanup",
       "file": "alembic/versions/r0008_memory_quality_cleanup.py",
       "sha256": "9e14a695fdcbb2b1e6ec21e5f6f716f7c6953c11ebcf0b7fcf497d926eb4a17d",
+      "governed_format": "r-sequence",
+      "frozen_on": "2026-07-30"
+    },
+    {
+      "revision": "r0009_enterprise_skills",
+      "file": "alembic/versions/r0009_enterprise_skills.py",
+      "sha256": "c5da3179ce1ad8f8714f5b97a186f84ad63296478af2172c1295e559f732c7a7",
       "governed_format": "r-sequence",
       "frozen_on": "2026-07-30"
     }
