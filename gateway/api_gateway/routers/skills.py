@@ -27,6 +27,7 @@ from infra.storage.models import (
     User,
     UserSkillInstallation,
 )
+from knowledge.access import classification_allows, resolve_access_context
 from skills.catalog import _catalog_item, install_catalog_skill, sync_skillhub_catalog
 from skills.distillation import DistillationSource, distill_enterprise_skill
 from skills.store.marketplace import marketplace
@@ -299,9 +300,23 @@ async def list_company_skills(
                 )
                 .order_by(EnterpriseSkill.published_at.desc(), EnterpriseSkill.name)
             )
-        ).scalars()
+        )
+        .scalars()
+        .all()
     )
-    return {"items": [_enterprise_skill_item(row) for row in rows]}
+    access = await resolve_access_context(
+        db,
+        user=current_user,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    return {
+        "items": [
+            _enterprise_skill_item(row)
+            for row in rows
+            if classification_allows(access.clearance, row.classification)
+        ]
+    }
 
 
 @router.post("/skills/company/distill", status_code=201)
@@ -524,13 +539,19 @@ async def uninstall_skill(
 @router.post("/skills/session/bind")
 async def bind_session_skills(
     req: SkillSessionBindingRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(request, user_id=current_user.id)
+    )
     result = await db.execute(
         select(ChatSession).where(
             ChatSession.id == req.session_id,
             ChatSession.user_id == current_user.id,
+            ChatSession.tenant_id == tenant_id,
+            ChatSession.workspace_id == workspace_id,
         )
     )
     session = result.scalar_one_or_none()
@@ -550,8 +571,8 @@ async def bind_session_skills(
                     )
                     .where(
                         UserSkillInstallation.user_id == current_user.id,
-                        UserSkillInstallation.tenant_id == session.tenant_id,
-                        UserSkillInstallation.workspace_id == session.workspace_id,
+                        UserSkillInstallation.tenant_id == tenant_id,
+                        UserSkillInstallation.workspace_id == workspace_id,
                         UserSkillInstallation.status == "installed",
                         SkillCatalogEntry.status == "active",
                         UserSkillInstallation.installed_skill_id.in_(account_ids),
@@ -566,18 +587,31 @@ async def bind_session_skills(
             raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="账户无权启用该 Skill")
     company_ids = [item for item in enabled_skills if item.startswith("company-")]
     if company_ids:
-        allowed_company_ids = set(
+        access = await resolve_access_context(
+            db,
+            user=current_user,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        company_skills = list(
             (
                 await db.execute(
-                    select(EnterpriseSkill.runtime_id).where(
-                        EnterpriseSkill.tenant_id == session.tenant_id,
-                        EnterpriseSkill.workspace_id == session.workspace_id,
+                    select(EnterpriseSkill).where(
+                        EnterpriseSkill.tenant_id == tenant_id,
+                        EnterpriseSkill.workspace_id == workspace_id,
                         EnterpriseSkill.status == "published",
                         EnterpriseSkill.runtime_id.in_(company_ids),
                     )
                 )
-            ).scalars()
+            )
+            .scalars()
+            .all()
         )
+        allowed_company_ids = {
+            skill.runtime_id
+            for skill in company_skills
+            if classification_allows(access.clearance, skill.classification)
+        }
         if sorted(set(company_ids) - allowed_company_ids):
             raise AppException(
                 ErrorCodes.PERMISSION_DENIED.code, message="当前企业无权启用该 Skill"
@@ -595,13 +629,19 @@ async def bind_session_skills(
 @router.get("/skills/session/{session_id}")
 async def get_session_skills(
     session_id: str,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(request, user_id=current_user.id)
+    )
     result = await db.execute(
         select(ChatSession).where(
             ChatSession.id == session_id,
             ChatSession.user_id == current_user.id,
+            ChatSession.tenant_id == tenant_id,
+            ChatSession.workspace_id == workspace_id,
         )
     )
     session = result.scalar_one_or_none()

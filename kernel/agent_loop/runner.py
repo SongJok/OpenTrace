@@ -307,6 +307,13 @@ class AgentLoop:
         context = await self.context_assembler.assemble(
             db, response=response, user_query=query, request_payload=payload
         )
+        response.response_metadata = {
+            **dict(getattr(response, "response_metadata", None) or {}),
+            "enterprise_context": dict(context.context_manifest.get("enterprise_context") or {}),
+        }
+        flush = getattr(db, "flush", None)
+        if flush is not None:
+            await flush()
         if profile == ExecutionProfile.AUTO and context.profile_execution_default in {
             ExecutionProfile.FAST.value,
             ExecutionProfile.DEEP.value,
@@ -383,9 +390,8 @@ class AgentLoop:
         )
 
         selected_capabilities = set(intent.capabilities)
-        enterprise_grounding_required = bool(
-            dict(context.context_manifest.get("enterprise_context") or {}).get("requires_grounding")
-        )
+        enterprise_manifest = dict(context.context_manifest.get("enterprise_context") or {})
+        enterprise_grounding_required = bool(enterprise_manifest.get("requires_grounding"))
         if enterprise_grounding_required and str(payload.get("tool_choice") or "auto") != "none":
             rag_spec = next((spec for spec in available_specs if spec.name == "rag"), None)
             if rag_spec is not None:
@@ -2422,7 +2428,19 @@ class AgentLoop:
     ) -> None:
         """在用户明确要求事实依据时，先执行只读 RAG 再进入 Manager 合成。"""
         call_id = f"call_grounding_{hashlib.sha256(response.id.encode()).hexdigest()[:20]}"
-        arguments = {"query": query, "parameters_json": "{}"}
+        enterprise_manifest = dict(
+            (response.response_metadata or {}).get("enterprise_context") or {}
+        )
+        parameters: dict[str, Any] = {}
+        if enterprise_manifest.get("requires_grounding"):
+            parameters = {
+                "enterprise_grounding_required": True,
+                "knowledge_space_ids": list(enterprise_manifest.get("knowledge_space_ids") or []),
+            }
+        arguments = {
+            "query": query,
+            "parameters_json": json.dumps(parameters, ensure_ascii=False),
+        }
         call = {"call_id": call_id, "name": "rag", "arguments": arguments}
         item = ResponseItem(
             id=f"item_{uuid.uuid4().hex}",
@@ -2809,6 +2827,20 @@ class AgentLoop:
         async with AsyncSessionLocal() as scope_db:
             session = await scope_db.get(ChatSession, response.conversation_id)
             if agent_name == "rag":
+                hydrated.pop("space_id", None)
+                hydrated.pop("knowledge_space_ids", None)
+                hydrated.pop("enterprise_grounding_required", None)
+                enterprise_manifest = dict(
+                    (response.response_metadata or {}).get("enterprise_context") or {}
+                )
+                enterprise_grounding_required = bool(enterprise_manifest.get("requires_grounding"))
+                if enterprise_grounding_required:
+                    hydrated["knowledge_space_ids"] = [
+                        str(item)
+                        for item in enterprise_manifest.get("knowledge_space_ids") or []
+                        if str(item)
+                    ]
+                    hydrated["enterprise_grounding_required"] = True
                 memory_mode = str(
                     extension.get("memory_mode")
                     or (response.request_payload or {}).get("memory_mode")
@@ -2849,6 +2881,7 @@ class AgentLoop:
                     and not session.is_temporary
                     and memory_mode == "enabled"
                     and memory_policy.get("enabled") is not False
+                    and not enterprise_grounding_required
                 )
                 hydrated["memory_project_only"] = bool(
                     getattr(project, "memory_mode", "default") == "project_only"
@@ -2865,6 +2898,7 @@ class AgentLoop:
                 disabled = set(getattr(session, "disabled_skills", None) or [])
                 candidates = [item for item in enabled if item not in disabled]
                 account_ids = [item for item in candidates if item.startswith("acct-")]
+                company_ids = [item for item in candidates if item.startswith("company-")]
                 allowed_account_ids: set[str] = set()
                 if account_ids:
                     allowed_account_ids = set(
@@ -2888,10 +2922,21 @@ class AgentLoop:
                         .scalars()
                         .all()
                     )
+                allowed_company_ids: set[str] = set()
+                if company_ids:
+                    company_skills = await ContextAssembler._visible_company_skills(
+                        scope_db,
+                        user_id=response.user_id,
+                        tenant_id=response.tenant_id,
+                        workspace_id=response.workspace_id,
+                        runtime_ids=company_ids,
+                    )
+                    allowed_company_ids = {skill.runtime_id for skill in company_skills}
                 hydrated["enabled_skills"] = [
                     item
                     for item in candidates
-                    if not item.startswith("acct-") or item in allowed_account_ids
+                    if (not item.startswith("acct-") or item in allowed_account_ids)
+                    and (not item.startswith("company-") or item in allowed_company_ids)
                 ]
                 return hydrated, None
 

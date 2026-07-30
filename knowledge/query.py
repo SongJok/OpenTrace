@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -175,6 +176,7 @@ async def search_knowledge(
     workspace_id: str | None,
     project_id: str | None = None,
     space_id: str | None = None,
+    knowledge_space_ids: Sequence[str] | None = None,
     top_k: int,
     query_type: str | None = None,
     session_id: str | None = None,
@@ -183,7 +185,8 @@ async def search_knowledge(
 
     Pages are returned as summaries first, followed by traceable claims.  For
     relation/comparison questions, published graph edges are included as a
-    third stage.  The raw document lane remains a separate fallback in RAG.
+    third stage.  Passing ``knowledge_space_ids`` creates an explicit scope;
+    it is intersected with the user's ACL and an empty scope fails closed.
     """
 
     tokens = _tokens(query)
@@ -205,16 +208,38 @@ async def search_knowledge(
                 if user is not None
                 else None
             )
-            if space_id and (
-                access_context is None or space_id not in access_context.accessible_space_ids
-            ):
-                return []
+            explicit_space_scope = knowledge_space_ids is not None or bool(space_id)
+            requested_space_ids = list(
+                dict.fromkeys(
+                    str(item).strip() for item in (knowledge_space_ids or ()) if str(item).strip()
+                )
+            )
+            if space_id:
+                normalized_space_id = space_id.strip()
+                if knowledge_space_ids is None:
+                    requested_space_ids = [normalized_space_id]
+                else:
+                    requested_space_ids = [
+                        item for item in requested_space_ids if item == normalized_space_id
+                    ]
+            if explicit_space_scope:
+                if access_context is None or not requested_space_ids:
+                    return []
+                accessible_space_ids = set(access_context.accessible_space_ids)
+                requested_space_ids = [
+                    item for item in requested_space_ids if item in accessible_space_ids
+                ]
+                if not requested_space_ids:
+                    return []
             source_access = (
                 accessible_source_predicate(access_context, project_id=project_id)
                 if access_context is not None
                 else None
             )
-            source_space = KnowledgeSource.space_id == space_id if space_id else True
+            if knowledge_space_ids is None:
+                source_space = KnowledgeSource.space_id == space_id if space_id else True
+            else:
+                source_space = KnowledgeSource.space_id.in_(requested_space_ids)
             hot_results: list[dict[str, Any]] = []
             if session_id:
                 state = await db.scalar(

@@ -619,6 +619,7 @@ async def load_enterprise_context(
     )
     principals_by_id = {row.id: row for row in department_principals}
     rendered: list[dict[str, Any]] = []
+    accessible_space_ids = set(access.accessible_space_ids)
     for entity in sorted(
         entities, key=lambda row: (row.entity_type != "company", row.display_name)
     ):
@@ -626,6 +627,9 @@ async def load_enterprise_context(
         if version is None or not classification_allows(access.clearance, version.classification):
             continue
         principal = principals_by_id.get(entity.directory_principal_id or "")
+        knowledge_space_id = str(entity.knowledge_space_id or "") or None
+        if knowledge_space_id not in accessible_space_ids:
+            knowledge_space_id = None
         rendered.append(
             {
                 "entity_id": entity.id,
@@ -633,7 +637,7 @@ async def load_enterprise_context(
                 "entity_key": entity.entity_key,
                 "display_name": entity.display_name,
                 "directory_external_id": principal.external_id if principal else None,
-                "knowledge_space_id": entity.knowledge_space_id,
+                "knowledge_space_id": knowledge_space_id,
                 "version_id": version.id,
                 "version": version.version,
                 "classification": version.classification,

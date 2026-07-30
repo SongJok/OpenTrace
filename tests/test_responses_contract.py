@@ -81,6 +81,12 @@ def test_responses_router_does_not_execute_legacy_chat_endpoint() -> None:
     assert "add_outbox" in text
 
 
+def test_conversation_reuse_keeps_org_boundary() -> None:
+    source = Path(__file__).resolve().parents[1] / "gateway/api_gateway/routers/responses.py"
+    text = source.read_text(encoding="utf-8")
+    assert "ChatSession.org_id == org_id" in text
+
+
 def test_api_process_does_not_start_execution_background_loops() -> None:
     root = Path(__file__).resolve().parents[1]
     api_main = (root / "gateway/api_gateway/main.py").read_text(encoding="utf-8")

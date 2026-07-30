@@ -366,6 +366,7 @@ async def _ensure_conversation(
                 ChatSession.id == conversation_id,
                 ChatSession.user_id == user.id,
                 ChatSession.tenant_id == tenant_id,
+                ChatSession.org_id == org_id,
                 ChatSession.workspace_id == workspace_id,
             )
         )

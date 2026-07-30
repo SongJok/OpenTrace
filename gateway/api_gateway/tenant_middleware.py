@@ -52,7 +52,7 @@ def sign_tenant_headers(
     *,
     user_id: str | None,
     tenant_id: str = "default",
-    org_id: str = "default",
+    org_id: str | None = None,
     workspace_id: str = "default",
     data_residency: str = "",
     timestamp: int | None = None,
@@ -62,11 +62,12 @@ def sign_tenant_headers(
     signing_secret = str(secret if secret is not None else settings.trusted_tenant_header_secret)
     if not signing_secret:
         raise ValueError("trusted tenant header secret is not configured")
+    effective_org_id = str(org_id or tenant_id).strip() or tenant_id
     ts = str(int(timestamp if timestamp is not None else time.time()))
     payload = _tenant_signature_payload(
         user_id=user_id,
         tenant_id=tenant_id,
-        org_id=org_id,
+        org_id=effective_org_id,
         workspace_id=workspace_id,
         data_residency=data_residency,
         timestamp=ts,
@@ -74,7 +75,7 @@ def sign_tenant_headers(
     signature = hmac.new(signing_secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
     headers = {
         "X-Tenant-Id": tenant_id,
-        "X-Org-Id": org_id,
+        "X-Org-Id": effective_org_id,
         "X-Workspace-Id": workspace_id,
         "X-Tenant-Timestamp": ts,
         "X-Tenant-Signature": signature,
@@ -92,10 +93,11 @@ def _require_trusted_tenant_headers(
     org_id: str,
     workspace_id: str,
     data_residency: str,
+    org_id_explicit: bool = True,
 ) -> None:
     custom_scope = (
         tenant_id != "default"
-        or org_id != "default"
+        or org_id_explicit
         or workspace_id != "default"
         or bool(data_residency)
     )
@@ -167,7 +169,7 @@ def ensure_tenant_registered(tenant_id: str, *, tier: str = "standard") -> None:
 def build_tenant_metadata(request: Request, user_id: str | None = None) -> dict[str, Any]:
     hdr = tenant_headers_from_request(request)
     tenant_id = str(hdr.get("tenant_id") or "default").strip() or "default"
-    org_id = str(hdr.get("org_id") or "default").strip() or "default"
+    org_id = str(hdr.get("org_id") or tenant_id).strip() or tenant_id
     workspace_id = str(hdr.get("workspace_id") or "default").strip() or "default"
     data_residency = str(hdr.get("data_residency") or "").strip()
     _require_trusted_tenant_headers(
@@ -177,6 +179,7 @@ def build_tenant_metadata(request: Request, user_id: str | None = None) -> dict[
         org_id=org_id,
         workspace_id=workspace_id,
         data_residency=data_residency,
+        org_id_explicit=bool(hdr.get("org_id")),
     )
     md: dict[str, Any] = {
         "tenant_id": tenant_id,

@@ -1,10 +1,29 @@
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+from starlette.requests import Request
 
 from gateway.api_gateway.main import app
+from gateway.api_gateway.routers import skills
+from gateway.api_gateway.routers.skills import list_company_skills
 from infra.storage.models import EnterpriseSkill
+from kernel.agent_loop.context import ContextAssembler
 from skills.distillation import DistillationSource, distill_enterprise_skill
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _request() -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/v1/skills/company",
+            "headers": [],
+        }
+    )
 
 
 def test_enterprise_skill_is_durable_and_tenant_scoped() -> None:
@@ -62,8 +81,92 @@ def test_company_skill_routes_and_runtime_context_are_scoped() -> None:
         assert "EnterpriseSkill.tenant_id" in source
         assert "EnterpriseSkill.workspace_id" in source
         assert 'EnterpriseSkill.status == "published"' in source
+        assert "classification_allows" in source
     assert "公司发布的 Skills" in context
     assert "company_ids" in router
+    assert "resolve_access_context" in context
+    assert "resolve_access_context" in router
+
+
+@pytest.mark.asyncio
+async def test_company_skill_list_filters_items_above_employee_clearance(monkeypatch) -> None:
+    internal = SimpleNamespace(
+        id="skill-1",
+        runtime_id="company-internal@1.0.0",
+        name="内部流程",
+        description="",
+        value_summary="",
+        instructions="内部流程",
+        source_files=[],
+        use_cases=[],
+        classification="internal",
+        status="published",
+        published_at=None,
+    )
+    confidential = SimpleNamespace(
+        **{
+            **internal.__dict__,
+            "id": "skill-2",
+            "runtime_id": "company-confidential@1.0.0",
+            "name": "机密流程",
+            "classification": "confidential",
+        }
+    )
+    result = Mock()
+    result.scalars.return_value.all.return_value = [internal, confidential]
+    db = AsyncMock()
+    db.execute.return_value = result
+    monkeypatch.setattr(
+        skills,
+        "build_tenant_metadata",
+        lambda *_args, **_kwargs: {"tenant_id": "tenant-1", "workspace_id": "workspace-1"},
+    )
+    monkeypatch.setattr(
+        skills,
+        "resolve_access_context",
+        AsyncMock(return_value=SimpleNamespace(clearance="internal")),
+    )
+
+    response = await list_company_skills(
+        request=_request(),
+        current_user=SimpleNamespace(id="user-1", is_superuser=False),
+        db=db,
+    )
+
+    assert [item["runtime_id"] for item in response["items"]] == [internal.runtime_id]
+
+
+@pytest.mark.asyncio
+async def test_context_company_skill_visibility_uses_response_user_clearance(monkeypatch) -> None:
+    from infra.storage.models import User
+    from kernel.agent_loop import context
+
+    internal = SimpleNamespace(runtime_id="company-internal@1.0.0", classification="internal")
+    confidential = SimpleNamespace(
+        runtime_id="company-confidential@1.0.0", classification="confidential"
+    )
+    user = SimpleNamespace(id="user-1", is_superuser=False)
+    result = Mock()
+    result.scalars.return_value.all.return_value = [internal, confidential]
+    db = AsyncMock()
+    db.get.return_value = user
+    db.execute.return_value = result
+    monkeypatch.setattr(
+        context,
+        "resolve_access_context",
+        AsyncMock(return_value=SimpleNamespace(clearance="internal")),
+    )
+
+    visible = await ContextAssembler._visible_company_skills(
+        db,
+        user_id="user-1",
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+        runtime_ids=[internal.runtime_id, confidential.runtime_id],
+    )
+
+    assert db.get.await_args.args == (User, "user-1")
+    assert [item.runtime_id for item in visible] == [internal.runtime_id]
 
 
 def test_enterprise_skill_migration_is_chained_and_reversible() -> None:

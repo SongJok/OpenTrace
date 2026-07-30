@@ -191,6 +191,13 @@ class RagAgent(BaseAgent):
     def __init__(self) -> None:
         super().__init__("rag")
 
+    @staticmethod
+    def _knowledge_space_ids(params: dict[str, Any]) -> list[str]:
+        raw = params.get("knowledge_space_ids")
+        if not isinstance(raw, list | tuple | set):
+            return []
+        return list(dict.fromkeys(str(item).strip() for item in raw if str(item).strip()))[:64]
+
     def _build_llmwiki_evidence(
         self,
         query: str,
@@ -491,6 +498,16 @@ class RagAgent(BaseAgent):
             sources = task.params.get("sources", ["knowledge", "documents", "semantic_memory"])
             if not isinstance(sources, list):
                 sources = ["knowledge", "documents", "semantic_memory"]
+            enterprise_grounding_required = bool(
+                task.params.get("enterprise_grounding_required", False)
+            )
+            has_knowledge_space_scope = "knowledge_space_ids" in task.params
+            knowledge_space_ids = self._knowledge_space_ids(task.params)
+            if enterprise_grounding_required:
+                # 企业事实必须经过已发布 KnowledgeSource 的治理链路。可信空间为空时
+                # 保持空范围并 fail closed，不能退回用户文档或个人记忆。
+                sources = ["knowledge"]
+                has_knowledge_space_scope = True
             if not (
                 getattr(settings, "knowledge_orchestration_enabled", True)
                 and getattr(settings, "knowledge_query_enabled", True)
@@ -542,6 +559,10 @@ class RagAgent(BaseAgent):
                 workspace_id=workspace_id,
                 params=task.params,
             )
+            if has_knowledge_space_scope:
+                rag_plan.filters["knowledge_space_ids"] = list(knowledge_space_ids)
+            if enterprise_grounding_required:
+                rag_plan.filters["enterprise_grounding_required"] = True
             doc_evidence_count = 0
             llmwiki_entries: list[dict[str, Any]] = []
             vector_chunks: list[dict[str, Any]] = []
@@ -553,6 +574,11 @@ class RagAgent(BaseAgent):
                             query=search_query,
                             user_id=user_id,
                             **retrieval_scope,
+                            **(
+                                {"knowledge_space_ids": knowledge_space_ids}
+                                if has_knowledge_space_scope
+                                else {}
+                            ),
                             top_k=max(top_k, 6),
                             query_type=query_type,
                             session_id=task.session_id or task.params.get("session_id"),

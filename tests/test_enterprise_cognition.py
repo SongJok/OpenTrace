@@ -148,6 +148,9 @@ def test_responses_main_path_injects_cognition_and_forces_governed_rag() -> None
     assert 'context_manifest.get("enterprise_context")' in runner_source
     assert 'selected_capabilities.add("rag")' in runner_source
     assert "enterprise_grounding_required" in runner_source
+    assert 'hydrated.pop("knowledge_space_ids", None)' in runner_source
+    assert 'hydrated["enterprise_grounding_required"] = True' in runner_source
+    assert '"knowledge_space_ids": list(' in runner_source
     assert '"org_id": org_id' in responses_source
 
 
@@ -163,6 +166,7 @@ def test_cognition_service_keeps_user_tenant_workspace_and_department_boundaries
         assert f"{model}.workspace_id == workspace_id" in source
     assert "EnterpriseDirectoryMembership.user_id == user_id" in source
     assert "classification_allows" in source
+    assert "accessible_space_ids = set(access.accessible_space_ids)" in source
     assert "effective_from" in source
     assert "effective_to" in source
     assert "with_for_update" in source

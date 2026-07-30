@@ -69,6 +69,28 @@ def test_signed_tenant_scope_is_user_bound(monkeypatch):
         tenant.build_tenant_metadata(_request(headers), user_id="user-b")
 
 
+def test_missing_org_header_inherits_signed_tenant(monkeypatch):
+    from gateway.api_gateway import tenant_middleware as tenant
+
+    monkeypatch.setattr(tenant.settings, "trusted_tenant_header_secret", "tenant-secret")
+    monkeypatch.setattr(tenant, "ensure_tenant_registered", lambda *_args, **_kwargs: None)
+    timestamp = int(time.time())
+    headers = tenant.sign_tenant_headers(
+        user_id="user-a",
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        timestamp=timestamp,
+        secret="tenant-secret",
+    )
+    assert headers["X-Org-Id"] == "tenant-a"
+    headers.pop("X-Org-Id")
+
+    metadata = tenant.build_tenant_metadata(_request(headers), user_id="user-a")
+
+    assert metadata["tenant_id"] == "tenant-a"
+    assert metadata["org_id"] == "tenant-a"
+
+
 def test_default_scope_remains_available_without_proxy_signature(monkeypatch):
     from gateway.api_gateway import tenant_middleware as tenant
 
