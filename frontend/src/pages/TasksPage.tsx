@@ -12,13 +12,14 @@ import {
   type ScheduledTaskItem,
 } from '../api/client'
 import { createDefaultScheduleWindow, ScheduleTimePicker, type ScheduleWindowValue } from '../components/ScheduleTimePicker'
+import { DEFAULT_TIMEZONE } from '../utils/timezone'
 
 export default function TasksPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((state) => state.token)!
   const [tasks, setTasks] = useState<ScheduledTaskItem[]>([])
   const [title, setTitle] = useState('')
   const [prompt, setPrompt] = useState('')
-  const [scheduleWindow, setScheduleWindow] = useState<ScheduleWindowValue>(() => createDefaultScheduleWindow(Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'))
+  const [scheduleWindow, setScheduleWindow] = useState<ScheduleWindowValue>(() => createDefaultScheduleWindow(DEFAULT_TIMEZONE))
   const [upcomingTimes, setUpcomingTimes] = useState<string[]>([])
   const [previewing, setPreviewing] = useState(false)
   const [saving, setSaving] = useState(false)

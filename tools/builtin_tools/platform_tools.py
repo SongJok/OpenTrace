@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 
+from infra.config.constants import DEFAULT_TIMEZONE
 from infra.responses.scheduler import next_occurrence, parse_schedule_expression
 from infra.security.resource_scope import get_accessible_data_source
 from infra.storage.database import AsyncSessionLocal
@@ -149,7 +150,7 @@ async def list_scheduled_tasks(
                 "type": "string",
                 "description": "如 每天 09:00、每周一 10:30 或 FREQ=...",
             },
-            "timezone": {"type": "string", "default": "Asia/Shanghai"},
+            "timezone": {"type": "string", "default": DEFAULT_TIMEZONE},
             "enabled": {"type": "boolean", "default": False},
         },
         "required": ["title", "prompt", "schedule"],
@@ -159,7 +160,7 @@ async def create_scheduled_task(
     title: str,
     prompt: str,
     schedule: str,
-    timezone: str = "Asia/Shanghai",
+    timezone: str = DEFAULT_TIMEZONE,
     enabled: bool = False,
     user_id: str = "",
     tenant_id: str = "default",
@@ -291,7 +292,7 @@ async def list_data_alerts(
             "threshold": {"type": "number"},
             "severity": {"type": "string", "enum": ["info", "warning", "critical"]},
             "schedule": {"type": "string"},
-            "timezone": {"type": "string", "default": "Asia/Shanghai"},
+            "timezone": {"type": "string", "default": DEFAULT_TIMEZONE},
             "enabled": {"type": "boolean", "default": False},
         },
         "required": ["name", "question", "data_source_id", "operator", "threshold", "schedule"],
@@ -307,7 +308,7 @@ async def create_data_alert(
     metric_column: str = "",
     aggregation: str = "first",
     severity: str = "warning",
-    timezone: str = "Asia/Shanghai",
+    timezone: str = DEFAULT_TIMEZONE,
     enabled: bool = False,
     user_id: str = "",
     tenant_id: str = "default",
@@ -398,7 +399,7 @@ async def create_data_alert(
 async def list_calendar_events_tool(
     start_at: str = "",
     end_at: str = "",
-    timezone: str = "Asia/Shanghai",
+    timezone: str = DEFAULT_TIMEZONE,
     user_id: str = "",
     tenant_id: str = "default",
     workspace_id: str = "default",
@@ -429,11 +430,21 @@ async def list_calendar_events_tool(
 @registry.tool(
     name="create_calendar_event",
     description=(
-        "在当前用户个人日历中创建日程。仅当用户明确说“记录、添加到日历、提醒我、安排”"
+        "在当前用户个人日历中创建日程。仅当用户明确说“记录、添加到日历、提醒我、安排、预定”"
         "时调用；这是持久化写操作，执行前必须由用户审批。相对日期必须先按当前日期和 timezone "
         "换算成明确 ISO-8601 时间。"
     ),
-    tags=["添加日历", "记录日程", "提醒我", "安排会议", "明天要做", "calendar", "create event"],
+    tags=[
+        "添加日历",
+        "记录日程",
+        "提醒我",
+        "安排会议",
+        "预定日历",
+        "预订会议",
+        "明天要做",
+        "calendar",
+        "create event",
+    ],
     side_effect="write",
     supports_parallel=False,
     max_retries=0,
@@ -458,7 +469,7 @@ async def create_calendar_event_tool(
     title: str,
     start_at: str,
     end_at: str = "",
-    timezone: str = "Asia/Shanghai",
+    timezone: str = DEFAULT_TIMEZONE,
     description: str = "",
     location: str = "",
     event_type: str = "event",
@@ -551,7 +562,7 @@ async def update_calendar_event_tool(
     title: str = "",
     start_at: str = "",
     end_at: str = "",
-    timezone: str = "Asia/Shanghai",
+    timezone: str = DEFAULT_TIMEZONE,
     description: str = "",
     location: str = "",
     user_id: str = "",

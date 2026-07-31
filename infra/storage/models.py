@@ -33,6 +33,7 @@ except Exception:  # pragma: no cover
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
+from infra.config.constants import DEFAULT_TIMEZONE
 from infra.config.settings import settings
 from infra.storage.database import Base
 
@@ -1802,7 +1803,7 @@ class CalendarEvent(Base):
     event_type: Mapped[str] = mapped_column(String(32), nullable=False, default="event")
     start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Shanghai")
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default=DEFAULT_TIMEZONE)
     all_day: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     recurrence_rule: Mapped[str | None] = mapped_column(String(512), nullable=True)
     reminder_minutes: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=lambda: [15])
@@ -1926,7 +1927,7 @@ class TaskDefinition(Base):
     project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     rrule: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default=DEFAULT_TIMEZONE)
     requires_confirmation: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -1987,7 +1988,7 @@ class AlertRule(Base):
     threshold: Mapped[float] = mapped_column(Float, nullable=False)
     severity: Mapped[str] = mapped_column(String(20), nullable=False, default="warning")
     rrule: Mapped[str] = mapped_column(String(512), nullable=False)
-    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default=DEFAULT_TIMEZONE)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", index=True)
     cooldown_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=3600)
     last_value: Mapped[float | None] = mapped_column(Float, nullable=True)

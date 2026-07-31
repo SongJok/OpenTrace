@@ -7,7 +7,14 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.api_gateway.main import app
-from gateway.api_gateway.routers.agent_resources import _owned_notification_subjects
+from gateway.api_gateway.routers.agent_resources import (
+    ScheduledTaskPayload,
+    SchedulePreviewPayload,
+    _owned_notification_subjects,
+)
+from gateway.api_gateway.routers.alerts import AlertRulePayload
+from gateway.api_gateway.routers.responses import OpenTraceOptions
+from infra.config.constants import DEFAULT_TIMEZONE
 from services.calendar import (
     CalendarValidationError,
     _expanded_occurrences,
@@ -31,6 +38,30 @@ def test_relative_date_target_can_be_normalized_in_user_timezone() -> None:
     # 当前日期是 2026-07-29；用户说“明天 09:00”时应落到 2026-07-30。
     result = parse_calendar_datetime(datetime(2026, 7, 30, 9, 0), "Asia/Shanghai")
     assert result == datetime(2026, 7, 30, 1, 0, tzinfo=UTC)
+
+
+def test_user_facing_time_defaults_are_beijing_time() -> None:
+    assert DEFAULT_TIMEZONE == "Asia/Shanghai"
+    assert OpenTraceOptions().timezone == DEFAULT_TIMEZONE
+    assert SchedulePreviewPayload(expression="每天 09:00").timezone == DEFAULT_TIMEZONE
+    assert (
+        ScheduledTaskPayload(
+            title="日报",
+            prompt="生成每日数据日报",
+            rrule="FREQ=DAILY",
+        ).timezone
+        == DEFAULT_TIMEZONE
+    )
+    assert (
+        AlertRulePayload(
+            name="余额预警",
+            question="查询当前账户余额",
+            data_source_id="source-1",
+            threshold=100,
+            rrule="FREQ=DAILY",
+        ).timezone
+        == DEFAULT_TIMEZONE
+    )
 
 
 def test_recurring_calendar_event_expands_into_instances() -> None:
@@ -125,6 +156,10 @@ def test_calendar_migration_and_runtime_readiness_are_registered() -> None:
     assert "CREATE TABLE IF NOT EXISTS public.calendar_reminder_deliveries" in migration
     assert '"calendar_events"' in runtime
     assert '"calendar_reminder_deliveries"' in runtime
+    timezone_defaults = (ROOT / "alembic/versions/r0010_beijing_timezone_defaults.py").read_text(
+        encoding="utf-8"
+    )
+    assert "ALTER COLUMN timezone SET DEFAULT 'Asia/Shanghai'" in timezone_defaults
 
 
 def test_calendar_reminders_join_worker_and_notification_center() -> None:

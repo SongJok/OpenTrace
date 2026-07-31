@@ -1,5 +1,6 @@
 // API client — all backend calls go through here
 import { normalizeFinalAnswerEnvelope, type TurnMetaEnvelope } from '../utils/streamEnvelope'
+import { DEFAULT_TIMEZONE } from '../utils/timezone'
 import {
   streamSseResponse,
   trackResponseStream,
@@ -1885,7 +1886,7 @@ export async function apiChatStream(
             data_source_ids: Array.isArray(payload?.data_source_ids) ? payload.data_source_ids : [],
             assistant_profile_id: typeof payload?.assistant_profile_id === 'string' ? payload.assistant_profile_id : undefined,
             attachment_ids: Array.isArray(payload?.attachment_ids) ? payload.attachment_ids : [],
-            timezone: typeof payload?.timezone === 'string' ? payload.timezone : Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
+            timezone: typeof payload?.timezone === 'string' ? payload.timezone : DEFAULT_TIMEZONE,
           },
           ...(typeof payload?.model === 'string' && payload.model.trim() ? { model: payload.model.trim() } : {}),
         }),

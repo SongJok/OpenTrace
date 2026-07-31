@@ -336,7 +336,7 @@ async def _ensure_unified_runtime_columns(conn) -> None:
         "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS project_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS conversation_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS rrule VARCHAR(512)",
-        "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'UTC'",
+        "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai'",
         "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS requires_confirmation BOOLEAN NOT NULL DEFAULT TRUE",
         "ALTER TABLE IF EXISTS public.task_runs ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMP WITH TIME ZONE",
         "ALTER TABLE IF EXISTS public.task_runs ADD COLUMN IF NOT EXISTS response_id VARCHAR(64)",

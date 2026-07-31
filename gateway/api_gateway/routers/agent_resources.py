@@ -17,6 +17,7 @@ from gateway.api_gateway.resource_scope import get_accessible_data_source
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.assistant_profiles import BUILT_IN_ASSISTANT_PROFILES
+from infra.config.constants import DEFAULT_TIMEZONE
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
@@ -75,7 +76,7 @@ class ScheduledTaskPayload(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     prompt: str = Field(min_length=3, max_length=20_000)
     rrule: str = Field(min_length=5, max_length=512)
-    timezone: str = Field(default="UTC", max_length=64)
+    timezone: str = Field(default=DEFAULT_TIMEZONE, max_length=64)
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     project_id: str | None = None
@@ -87,7 +88,7 @@ class ScheduledTaskPayload(BaseModel):
 class SchedulePreviewPayload(BaseModel):
     expression: str | None = Field(default=None, min_length=2, max_length=500)
     rrule: str | None = Field(default=None, min_length=5, max_length=512)
-    timezone: str = Field(default="UTC", max_length=64)
+    timezone: str = Field(default=DEFAULT_TIMEZONE, max_length=64)
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     count: int = Field(default=5, ge=1, le=10)

@@ -16,10 +16,11 @@ import {
   type ProjectItem,
 } from '../api/client'
 import { useAuthStore } from '../store/auth'
+import { DEFAULT_TIMEZONE } from '../utils/timezone'
 
 export default function AlertsPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((state) => state.token)!
-  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  const timezone = DEFAULT_TIMEZONE
   const [rules, setRules] = useState<AlertRuleItem[]>([])
   const [events, setEvents] = useState<AlertEventItem[]>([])
   const [sources, setSources] = useState<DataSourceItem[]>([])

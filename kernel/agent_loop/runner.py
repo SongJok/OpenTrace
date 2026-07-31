@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from infra.config.constants import DEFAULT_TIMEZONE
 from infra.config.settings import settings
 from infra.observability.tracer import traced_async
 from infra.storage.models import (
@@ -2724,7 +2725,7 @@ class AgentLoop:
                         "timezone": str(
                             extension.get("timezone")
                             or tool_arguments.get("timezone")
-                            or "Asia/Shanghai"
+                            or DEFAULT_TIMEZONE
                         ),
                     }
                 )

@@ -10,6 +10,7 @@ import {
 } from '../store/auth'
 import { useChatCommands } from '../store/chatCommands'
 import { useChatPreferences } from '../store/chatPreferences'
+import { DEFAULT_TIMEZONE } from '../utils/timezone'
 import { useChatStore } from '../store/chat'
 import { createClientId } from '../utils/clientId'
 
@@ -138,7 +139,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
         project_id: projectId ?? undefined,
         data_source_ids: dataSourceId ? [dataSourceId] : [],
         attachment_ids: attachmentIds,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
+        timezone: DEFAULT_TIMEZONE,
       },
     )
   }

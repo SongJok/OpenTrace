@@ -28,6 +28,7 @@ from governance.chat_constitution import (
     evaluate_chat_constitution,
     load_effective_chat_constitution,
 )
+from infra.config.constants import DEFAULT_TIMEZONE
 from infra.errors import AppException, ErrorCodes
 from infra.observability.metrics import RESPONSE_CREATED_TOTAL
 from infra.responses.repository import TERMINAL_STATUSES, add_outbox, append_event
@@ -91,7 +92,7 @@ class OpenTraceOptions(BaseModel):
     data_source_ids: list[str] = Field(default_factory=list)
     attachment_ids: list[str] = Field(default_factory=list, max_length=10)
     goal_id: str | None = None
-    timezone: str = Field(default="Asia/Shanghai", max_length=64)
+    timezone: str = Field(default=DEFAULT_TIMEZONE, max_length=64)
 
 
 class ResponseCreateRequest(BaseModel):

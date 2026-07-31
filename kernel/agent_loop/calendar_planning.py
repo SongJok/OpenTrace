@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from infra.config.constants import DEFAULT_TIMEZONE
 from infra.storage.models import ResponseApproval, ResponseRecord
 from kernel.agent_loop.contracts import (
     ExecutionPlan,
@@ -111,7 +112,7 @@ def deterministic_calendar_arguments(
         anchor = anchor.replace(tzinfo=UTC)
     return parse_calendar_create_intent(
         query,
-        timezone_name=str(extension.get("timezone") or "Asia/Shanghai"),
+        timezone_name=str(extension.get("timezone") or DEFAULT_TIMEZONE),
         now=anchor if isinstance(anchor, datetime) else None,
     )
 
@@ -230,14 +231,14 @@ def _calendar_local_time(value: Any, timezone_name: str) -> datetime | None:
     try:
         zone = ZoneInfo(timezone_name)
     except ZoneInfoNotFoundError:
-        zone = ZoneInfo("Asia/Shanghai")
+        zone = ZoneInfo(DEFAULT_TIMEZONE)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=zone)
     return parsed.astimezone(zone)
 
 
 def _calendar_time_label(arguments: dict[str, Any]) -> str:
-    timezone_name = str(arguments.get("timezone") or "Asia/Shanghai")
+    timezone_name = str(arguments.get("timezone") or DEFAULT_TIMEZONE)
     start = _calendar_local_time(arguments.get("start_at"), timezone_name)
     end = _calendar_local_time(arguments.get("end_at"), timezone_name)
     if start is None:
@@ -282,7 +283,7 @@ def deterministic_calendar_completion(
     arguments = dict(approval.arguments or result.get("parameters") or {})
     title = str(event_payload.get("title") or arguments.get("title") or "未命名日程").strip()
     timezone_name = str(
-        arguments.get("timezone") or event_payload.get("timezone") or "Asia/Shanghai"
+        arguments.get("timezone") or event_payload.get("timezone") or DEFAULT_TIMEZONE
     )
     reminders = [
         int(value)

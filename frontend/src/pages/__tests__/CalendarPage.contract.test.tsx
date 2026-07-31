@@ -29,7 +29,8 @@ describe('personal calendar product contracts', () => {
     const chatInputSource = (await import('../../components/ChatInput')).default.toString()
     expect(appSource).toContain('path: "/calendar"')
     expect(sidebarSource).toContain('我的日历')
-    expect(chatInputSource).toContain('resolvedOptions().timeZone')
+    expect(chatInputSource).toContain('DEFAULT_TIMEZONE')
+    expect(chatInputSource).not.toContain('resolvedOptions().timeZone')
     expect(sidebarSource).toContain('notification.kind === "calendar"')
   })
 

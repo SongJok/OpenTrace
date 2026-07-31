@@ -53,6 +53,8 @@ _CALENDAR_WRITE_MARKERS = (
     "addevent",
     "addtocalendar",
 )
+_CALENDAR_BOOKING_MARKERS = ("预定", "预订", "预约")
+_CALENDAR_OBJECT_MARKERS = ("日历", "日程", "会议")
 _COMPETING_WRITE_PATTERNS = (
     re.compile(
         r"(?:创建|新增|配置|设置|开启|建立)(?:一个|一条)?(?:数据)?"
@@ -68,6 +70,10 @@ _TITLE_REQUEST_SUFFIX = re.compile(
     r"新增到日历|加入日历|放到日历|写入日历|创建日历事件|创建日程|新增日程|"
     r"安排日程|create\s*event|add\s*event|"
     r"add\s*to\s*calendar)\s*[。.!！]?$",
+    re.IGNORECASE,
+)
+_EXPLICIT_TITLE = re.compile(
+    r"(?:名称|标题|主题)\s*[:：]\s*[‘’“”\"']?(?P<title>[^，,；;。.!！?？\n]+)",
     re.IGNORECASE,
 )
 
@@ -154,6 +160,12 @@ def _target_date(query: str, now: datetime) -> datetime | None:
 
 
 def _title(query: str, time_match: re.Match[str]) -> str:
+    explicit = _EXPLICIT_TITLE.search(query)
+    if explicit:
+        title = explicit.group("title").strip(" ，,。.!！?？‘’“”\"'") or "日程"
+        title = re.sub(r"(?i)opentrace", "OpenTrace", title)
+        title = re.sub(r"([\u4e00-\u9fff])OpenTrace", r"\1 OpenTrace", title)
+        return title[:255]
     cleaned = query[: time_match.start()] + query[time_match.end() :]
     cleaned = _DATE_TEXT.sub("", cleaned, count=1)
     cleaned = _TITLE_REQUEST_SUFFIX.sub("", cleaned)
@@ -172,6 +184,14 @@ def _title(query: str, time_match: re.Match[str]) -> str:
     return title[:255]
 
 
+def _has_calendar_write_marker(normalized: str) -> bool:
+    if any(marker in normalized for marker in _CALENDAR_WRITE_MARKERS):
+        return True
+    return any(marker in normalized for marker in _CALENDAR_BOOKING_MARKERS) and any(
+        marker in normalized for marker in _CALENDAR_OBJECT_MARKERS
+    )
+
+
 def parse_calendar_create_intent(
     query: str,
     *,
@@ -181,7 +201,7 @@ def parse_calendar_create_intent(
     """把明确的单次日历写入转换为 typed-tool 参数；模糊输入返回 None。"""
 
     normalized = re.sub(r"\s+", "", query or "").lower()
-    if not any(marker in normalized for marker in _CALENDAR_WRITE_MARKERS):
+    if not _has_calendar_write_marker(normalized):
         return None
     if any(pattern.search(normalized) for pattern in _COMPETING_WRITE_PATTERNS):
         return None
@@ -239,9 +259,12 @@ def parse_calendar_create_intent(
     if end <= start:
         return None
     title = _title(query, time_match)
-    event_type = (
-        "focus" if re.search(r"(?:开发|学习|写作|专注|编码|code)", title, re.I) else "event"
-    )
+    if re.search(r"(?:会议|开会|评审会|复盘会|例会|周会|站会)", title, re.I):
+        event_type = "meeting"
+    elif re.search(r"(?:开发|学习|写作|专注|编码|code)", title, re.I):
+        event_type = "focus"
+    else:
+        event_type = "event"
     return {
         "title": title,
         "start_at": start.isoformat(),

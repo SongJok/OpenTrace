@@ -14,6 +14,7 @@ from gateway.api_gateway.routers.agent_resources import _validate_schedule
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.alerts.scheduler import evaluate_alert_rule
+from infra.config.constants import DEFAULT_TIMEZONE
 from infra.errors import AppException, ErrorCodes
 from infra.responses.scheduler import next_occurrence
 from infra.security.resource_scope import get_accessible_data_source
@@ -36,7 +37,7 @@ class AlertRulePayload(BaseModel):
     threshold: float = Field(allow_inf_nan=False)
     severity: str = Field(default="warning", pattern="^(info|warning|critical)$")
     rrule: str = Field(min_length=5, max_length=512)
-    timezone: str = Field(default="UTC", max_length=64)
+    timezone: str = Field(default=DEFAULT_TIMEZONE, max_length=64)
     cooldown_seconds: int = Field(default=3600, ge=0, le=604800)
     enabled: bool = False
 

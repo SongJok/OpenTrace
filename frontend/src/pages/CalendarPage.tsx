@@ -24,6 +24,7 @@ import {
 } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import { useChatPreferences } from '../store/chatPreferences'
+import { DEFAULT_TIMEZONE, DEFAULT_TIMEZONE_OFFSET } from '../utils/timezone'
 
 type CalendarView = 'month' | 'agenda'
 type RecurrenceMode = 'none' | 'daily' | 'weekly' | 'monthly'
@@ -64,6 +65,25 @@ function dateKey(value: Date) {
   return `${year}-${month}-${day}`
 }
 
+function todayInDefaultTimezone() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: DEFAULT_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date())
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return new Date(Number(values.year), Number(values.month) - 1, Number(values.day))
+}
+
+function calendarIso(date: string, time: string) {
+  return `${date}T${time}:00${DEFAULT_TIMEZONE_OFFSET}`
+}
+
+function eventTime(value: string) {
+  return value.slice(11, 16)
+}
+
 function sameDay(left: Date, right: Date) {
   return dateKey(left) === dateKey(right)
 }
@@ -74,9 +94,7 @@ function eventLocalDate(event: CalendarEventItem) {
 
 function formatEventTime(event: CalendarEventItem) {
   if (event.all_day) return '全天'
-  const start = new Date(event.local_start_at)
-  const end = new Date(event.local_end_at)
-  return `${start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - ${end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+  return `${eventTime(event.local_start_at)} - ${eventTime(event.local_end_at)}`
 }
 
 function eventTone(type: CalendarEventItem['event_type']) {
@@ -106,10 +124,10 @@ export default function CalendarPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((state) => state.token)!
   const navigate = useNavigate()
   const requestPrefill = useChatPreferences((state) => state.requestPrefill)
-  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'
+  const timezone = DEFAULT_TIMEZONE
   const [view, setView] = useState<CalendarView>('month')
-  const [anchor, setAnchor] = useState(() => startOfMonth(new Date()))
-  const [selectedDate, setSelectedDate] = useState(() => startOfDay(new Date()))
+  const [anchor, setAnchor] = useState(() => startOfMonth(todayInDefaultTimezone()))
+  const [selectedDate, setSelectedDate] = useState(() => startOfDay(todayInDefaultTimezone()))
   const [events, setEvents] = useState<CalendarEventItem[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -118,7 +136,7 @@ export default function CalendarPage({ onBack }: { onBack: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [title, setTitle] = useState('')
   const [eventType, setEventType] = useState<CalendarEventItem['event_type']>('event')
-  const [eventDate, setEventDate] = useState(() => dateKey(new Date()))
+  const [eventDate, setEventDate] = useState(() => dateKey(todayInDefaultTimezone()))
   const [startTime, setStartTime] = useState('09:00')
   const [endTime, setEndTime] = useState('10:00')
   const [allDay, setAllDay] = useState(false)
@@ -135,7 +153,12 @@ export default function CalendarPage({ onBack }: { onBack: () => void }) {
     setLoading(true)
     setError('')
     try {
-      setEvents(await apiListCalendarEvents(token, gridStart.toISOString(), gridEnd.toISOString(), timezone))
+      setEvents(await apiListCalendarEvents(
+        token,
+        calendarIso(dateKey(gridStart), '00:00'),
+        calendarIso(dateKey(gridEnd), '00:00'),
+        timezone,
+      ))
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '日历加载失败')
     } finally {
@@ -188,14 +211,12 @@ export default function CalendarPage({ onBack }: { onBack: () => void }) {
   }
 
   const openEdit = (event: CalendarEventItem) => {
-    const start = new Date(event.local_start_at)
-    const end = new Date(event.local_end_at)
     setEditingId(event.id)
     setTitle(event.title)
     setEventType(event.event_type)
     setEventDate(eventLocalDate(event))
-    setStartTime(start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }))
-    setEndTime(end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }))
+    setStartTime(eventTime(event.local_start_at))
+    setEndTime(eventTime(event.local_end_at))
     setAllDay(event.all_day)
     setLocation(event.location)
     setDescription(event.description)
@@ -209,17 +230,15 @@ export default function CalendarPage({ onBack }: { onBack: () => void }) {
     setSaving(true)
     setError('')
     try {
-      const start = new Date(`${eventDate}T${allDay ? '00:00' : startTime}:00`)
-      const end = allDay
-        ? addDays(start, 1)
-        : new Date(`${eventDate}T${endTime}:00`)
+      const [year, month, day] = eventDate.split('-').map(Number)
+      const nextDate = dateKey(addDays(new Date(year, month - 1, day), 1))
       const payload = {
         title: title.trim(),
         description: description.trim(),
         location: location.trim(),
         event_type: eventType,
-        start_at: start.toISOString(),
-        end_at: end.toISOString(),
+        start_at: calendarIso(eventDate, allDay ? '00:00' : startTime),
+        end_at: calendarIso(allDay ? nextDate : eventDate, allDay ? '00:00' : endTime),
         timezone,
         all_day: allDay,
         recurrence_rule: recurrenceRule(recurrence),
@@ -269,7 +288,7 @@ export default function CalendarPage({ onBack }: { onBack: () => void }) {
         <section className="min-w-0 overflow-hidden rounded-3xl border border-[var(--border)] bg-[var(--surface)]">
           <div className="flex flex-col gap-3 border-b border-[var(--border)] p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
             <div className="flex items-center gap-2">
-              <button onClick={() => { const today = new Date(); setAnchor(startOfMonth(today)); setSelectedDate(startOfDay(today)) }} className="rounded-xl border border-[var(--border)] px-3 py-2 text-xs">今天</button>
+              <button onClick={() => { const today = todayInDefaultTimezone(); setAnchor(startOfMonth(today)); setSelectedDate(startOfDay(today)) }} className="rounded-xl border border-[var(--border)] px-3 py-2 text-xs">今天</button>
               <button onClick={() => setAnchor(new Date(anchor.getFullYear(), anchor.getMonth() - 1, 1))} aria-label="上个月" className="grid h-9 w-9 place-items-center rounded-xl hover:bg-[var(--surface-raised)]"><ChevronLeft size={16} /></button>
               <button onClick={() => setAnchor(new Date(anchor.getFullYear(), anchor.getMonth() + 1, 1))} aria-label="下个月" className="grid h-9 w-9 place-items-center rounded-xl hover:bg-[var(--surface-raised)]"><ChevronRight size={16} /></button>
               <h2 className="ml-1 text-lg font-semibold">{anchor.getFullYear()} 年 {anchor.getMonth() + 1} 月</h2>
@@ -295,9 +314,9 @@ export default function CalendarPage({ onBack }: { onBack: () => void }) {
                   const muted = day.getMonth() !== anchor.getMonth()
                   return (
                     <button key={dateKey(day)} onClick={() => setSelectedDate(day)} onDoubleClick={() => openCreate(day)} className={`min-h-24 border-b border-r border-[var(--border)] p-1.5 text-left transition-colors hover:bg-[var(--surface-raised)] sm:min-h-28 sm:p-2 ${sameDay(day, selectedDate) ? 'bg-[var(--accent-dim)]/40' : ''}`}>
-                      <span className={`grid h-6 w-6 place-items-center rounded-full text-xs ${sameDay(day, new Date()) ? 'bg-[var(--accent)] font-semibold text-[var(--accent-foreground)]' : muted ? 'text-[var(--text-secondary)]/50' : ''}`}>{day.getDate()}</span>
+                      <span className={`grid h-6 w-6 place-items-center rounded-full text-xs ${sameDay(day, todayInDefaultTimezone()) ? 'bg-[var(--accent)] font-semibold text-[var(--accent-foreground)]' : muted ? 'text-[var(--text-secondary)]/50' : ''}`}>{day.getDate()}</span>
                       <div className="mt-1 space-y-1">
-                        {dayEvents.slice(0, 3).map((event) => <div key={event.occurrence_id} className={`truncate rounded border px-1.5 py-0.5 text-[10px] ${eventTone(event.event_type)}`}>{event.all_day ? '' : new Date(event.local_start_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' '}{event.title}</div>)}
+                        {dayEvents.slice(0, 3).map((event) => <div key={event.occurrence_id} className={`truncate rounded border px-1.5 py-0.5 text-[10px] ${eventTone(event.event_type)}`}>{event.all_day ? '' : eventTime(event.local_start_at) + ' '}{event.title}</div>)}
                         {dayEvents.length > 3 && <div className="px-1 text-[10px] text-[var(--text-secondary)]">还有 {dayEvents.length - 3} 项</div>}
                       </div>
                     </button>

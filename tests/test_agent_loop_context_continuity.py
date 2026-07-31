@@ -209,6 +209,10 @@ def test_read_only_calendar_question_cannot_expand_into_write_intent() -> None:
     assert AgentLoop._is_explicit_write_request("帮我记录到日历") is True
     assert AgentLoop._is_explicit_write_request("帮我记录一下") is True
     assert AgentLoop._is_explicit_write_request("帮我新增到日历") is True
+    assert (
+        AgentLoop._is_explicit_write_request("帮我预定：明天下午两点到三点的日历，名称：开发会议")
+        is True
+    )
     assert governed["capabilities"] == ["list_calendar_events"]
     assert [step["id"] for step in governed["steps"]] == ["read"]
 
@@ -238,6 +242,31 @@ def test_explicit_calendar_request_is_deterministically_prepared_for_approval() 
         "recurrence_rule": "",
         "reminder_minutes": [15],
     }
+
+
+def test_calendar_booking_with_explicit_name_uses_beijing_time() -> None:
+    parsed = parse_calendar_create_intent(
+        "帮我预定：明天下午两点到三点的日历，名称：开发会议",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 31, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is not None
+    assert parsed["title"] == "开发会议"
+    assert parsed["start_at"] == "2026-08-01T14:00:00+08:00"
+    assert parsed["end_at"] == "2026-08-01T15:00:00+08:00"
+    assert parsed["timezone"] == "Asia/Shanghai"
+    assert parsed["event_type"] == "meeting"
+
+
+def test_non_calendar_booking_is_not_captured_as_calendar_write() -> None:
+    parsed = parse_calendar_create_intent(
+        "帮我预定明天下午两点到三点的酒店",
+        timezone_name="Asia/Shanghai",
+        now=datetime(2026, 7, 31, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert parsed is None
 
 
 def test_single_chinese_calendar_time_defaults_to_one_hour() -> None:
@@ -694,7 +723,7 @@ def test_deterministic_calendar_requires_write_enabled_tool() -> None:
 async def test_agent_loop_prepares_calendar_approval_when_planner_omits_tool(
     monkeypatch,
 ) -> None:
-    query = "明天下午三点客户复盘，帮我记录到日历"
+    query = "帮我预定：明天下午两点到三点的日历，名称：开发会议"
     context = SimpleNamespace(
         messages=[
             {"role": "system", "content": "系统指令"},
@@ -743,6 +772,7 @@ async def test_agent_loop_prepares_calendar_approval_when_planner_omits_tool(
                 "start_at": {"type": "string"},
                 "end_at": {"type": "string"},
                 "timezone": {"type": "string"},
+                "event_type": {"type": "string"},
             },
         },
         side_effect=SideEffect.WRITE,
@@ -758,8 +788,8 @@ async def test_agent_loop_prepares_calendar_approval_when_planner_omits_tool(
         id="resp-planner-omission",
         status="in_progress",
         response_metadata={},
-        request_payload={"input": query, "opentrace": {"timezone": "Asia/Shanghai"}},
-        created_at=datetime(2026, 7, 30, 3, 0, tzinfo=ZoneInfo("UTC")),
+        request_payload={"input": query, "opentrace": {}},
+        created_at=datetime(2026, 7, 31, 2, 0, tzinfo=ZoneInfo("UTC")),
     )
     approval_calls: list[dict] = []
     events: list[tuple[str, dict]] = []
@@ -811,7 +841,13 @@ async def test_agent_loop_prepares_calendar_approval_when_planner_omits_tool(
     assert result.status == "requires_action"
     assert result.intent is not None
     assert result.intent.capabilities == ("create_calendar_event",)
-    assert approval_calls[0]["arguments"]["start_at"] == "2026-07-31T15:00:00+08:00"
+    assert approval_calls[0]["arguments"] == {
+        "title": "开发会议",
+        "start_at": "2026-08-01T14:00:00+08:00",
+        "end_at": "2026-08-01T15:00:00+08:00",
+        "timezone": "Asia/Shanghai",
+        "event_type": "meeting",
+    }
     assert any(event_type == "response.requires_action" for event_type, _ in events)
 
 

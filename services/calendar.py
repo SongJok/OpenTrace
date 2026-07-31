@@ -14,9 +14,10 @@ from dateutil.rrule import rrulestr
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from infra.config.constants import DEFAULT_TIMEZONE
 from infra.storage.models import CalendarEvent, User
 
-DEFAULT_CALENDAR_TIMEZONE = "Asia/Shanghai"
+DEFAULT_CALENDAR_TIMEZONE = DEFAULT_TIMEZONE
 MAX_EXPANDED_EVENTS = 200
 
 
