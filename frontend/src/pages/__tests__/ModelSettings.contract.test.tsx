@@ -2,10 +2,36 @@ import { describe, expect, it } from 'vitest'
 
 import * as client from '../../api/modelSettings'
 
+const settings: client.UserModelSettings = {
+  active_selection: { source: 'free', model: 'glm-5.2-free', custom_model_id: null },
+  scope: { tenant_id: 'default', workspace_id: 'default' },
+  free: {
+    provider: '通用免费模型',
+    base_url: 'https://free.example/v1',
+    models: ['glm-5.2-free', 'deepseek-v4-pro-free'],
+    api_mode: 'chat_completions',
+    has_api_key: true,
+  },
+  custom_models: [{
+    id: 'custom-1',
+    name: '开发模型',
+    provider: 'Custom',
+    base_url: 'https://custom.example/v1',
+    model: 'custom-model',
+    api_mode: 'responses',
+    has_api_key: true,
+    api_key_masked: 'sk-a••••z',
+    created_at: null,
+    updated_at: null,
+  }],
+}
+
 describe('大模型动态配置 contract', () => {
-  it('exposes scoped model settings API helpers', () => {
+  it('exposes free selection and custom model CRUD helpers', () => {
     expect(client.apiGetModelSettings).toBeTypeOf('function')
-    expect(client.apiPatchModelSettings).toBeTypeOf('function')
+    expect(client.apiCreateCustomModel).toBeTypeOf('function')
+    expect(client.apiUpdateCustomModel).toBeTypeOf('function')
+    expect(client.apiDeleteCustomModel).toBeTypeOf('function')
     expect(client.apiSelectModelSettings).toBeTypeOf('function')
   })
 
@@ -13,20 +39,13 @@ describe('大模型动态配置 contract', () => {
     const page = await import('../SettingsPage')
     expect(page.default).toBeTypeOf('function')
   })
-  it('activates exactly the model that the user clicked', () => {
-    const settings: client.UserModelSettings = {
-      active_profile: 'environment',
-      scope: { tenant_id: 'default', workspace_id: 'default' },
-      environment: { provider: 'env', base_url: 'https://env.example/v1', model: 'qwen', models: ['qwen'], api_mode: 'auto', has_api_key: true, api_key_masked: '***', api_key_source: 'environment' },
-      official: { provider: 'official', base_url: 'https://official.example/v1', model: 'official-a', models: ['official-a'], api_mode: 'responses', has_api_key: true, api_key_masked: '***', api_key_source: 'stored' },
-      relay: { provider: 'relay', base_url: 'https://relay.example/v1', model: 'gpt-5.6-sol', models: ['gpt-5.6-sol', 'kimi-k3-kimi'], api_mode: 'chat_completions', has_api_key: true, api_key_masked: '***', api_key_source: 'environment' },
-    }
 
-    const selected = client.withSelectedModel(settings, 'relay', 'kimi-k3-kimi')
-    expect(selected.active_profile).toBe('relay')
-    expect(selected.relay.model).toBe('kimi-k3-kimi')
-    expect(settings.active_profile).toBe('environment')
-    expect(settings.relay.model).toBe('gpt-5.6-sol')
+  it('activates exactly the free or custom model that the user clicked', () => {
+    const freeSelected = client.withSelectedModel(settings, 'free', 'deepseek-v4-pro-free')
+    expect(freeSelected.active_selection).toEqual({ source: 'free', model: 'deepseek-v4-pro-free', custom_model_id: null })
+
+    const customSelected = client.withSelectedModel(settings, 'custom', 'custom-1')
+    expect(customSelected.active_selection).toEqual({ source: 'custom', model: 'custom-model', custom_model_id: 'custom-1' })
+    expect(settings.active_selection.model).toBe('glm-5.2-free')
   })
-
 })

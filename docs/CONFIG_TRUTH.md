@@ -58,26 +58,23 @@
 
 `staging` 与 `production` 会强制关闭动态 Skill 安装、创建、进程内执行和子进程执行。生产部署应把第三方 Skill 放入独立容器/微虚机，并增加网络出口、密钥和文件系统策略；仓库内子进程运行器只用于显式开启的开发环境。
 
-## LLM 配置组命名与动态选择
+## LLM 配置组命名与用户模型选择
 
 规划模型环境变量前缀为 `DEFAULT_LLM_PLANING_*`（项目内固定拼写 `PLANING`，非 PLANNING）。
 
-设置页支持按 `user_id + tenant_id + workspace_id` 保存动态文本模型配置。优先级为：
-
-1. 用户在设置页选中的“原始服务”或“第三方中转站”（API Key 使用 `DATA_SECRET_KEY` 派生密钥加密落库）；
-2. 设置页选择“环境变量”时继续使用 `DEFAULT_LLM_*`；
-3. 第三方中转站表单的初始值读取下列环境变量，但只有用户主动选择后才生效。
+设置页只展示一个系统内置的通用免费模型源，以及当前用户自己添加的模型。选择与自定义模型按 `user_id + tenant_id + workspace_id` 隔离；自定义 API Key 使用 `DATA_SECRET_KEY` 派生密钥加密落库，不通过 API 回显。未做选择时默认使用 `FREE_LLM_MODEL1`。
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `OTHER_LLM_MINSHORT_PROVIDER` | `第三方中转站(OpenAI Compatible)` | 中转站显示名称 |
-| `OTHER_LLM_MINSHORT_BASE_URL` | 空 | OpenAI-compatible Base URL |
-| `OTHER_LLM_MINSHORT_API_KEY` | 空 | 中转站 API Key，只作为设置页/Worker 的环境回退，不会经 API 回显 |
-| `OTHER_LLM_MINSHORT_API_MODE` | `chat_completions` | `auto`、`responses` 或 `chat_completions` |
-| `OTHER_LLM_MODEL1` / `OTHER_LLM_MODEL2` | 空 | 中转站默认模型候选 |
+| `FREE_LLM_MINSHORT_PROVIDER` | `通用免费模型` | 设置页中的内置模型源名称 |
+| `FREE_LLM_MINSHORT_BASE_URL` | `https://coding-api-3671.underpinetree.com` | 通用免费模型的 OpenAI-compatible Base URL |
+| `FREE_LLM_MINSHORT_API_KEY` | 空 | 服务端共享密钥，不下发到浏览器 |
+| `FREE_LLM_MINSHORT_API_MODE` | `chat_completions` | `auto`、`responses` 或 `chat_completions` |
+| `FREE_LLM_MODEL1` | `glm-5.2-free` | 默认免费模型 |
+| `FREE_LLM_MODEL2` | `deepseek-v4-pro-free` | 第二个可选免费模型 |
 | `DYNAMIC_LLM_ALLOW_PRIVATE_BASE_URLS` | `false` | 是否允许动态 Base URL 指向 localhost、私网或保留 IP；生产环境不建议开启 |
 
-动态配置接管规划、路由、压缩、知识问答和主回答等文本角色；Vision/Omni 仍使用专用环境配置，避免将多模态请求误发到普通文本中转站。未包含路径的 OpenAI-compatible Base URL 会自动补全 `/v1`。运行中的 Response 固定使用领取时解析出的配置，新建或重试的 Response 才读取最新设置。
+选中的免费或自定义模型接管规划、路由、压缩、知识问答和主回答等文本角色；Vision/Omni 仍使用专用环境配置，避免将多模态请求误发到普通文本端点。未包含路径的 OpenAI-compatible Base URL 会自动补全 `/v1`。运行中的 Response 固定使用领取时解析出的配置，新建或重试的 Response 才读取最新设置。`DEFAULT_LLM_*` 与 `OTHER_LLM_*` 仅保留为内部角色和旧部署兼容配置，不再作为用户可选模型展示。
 
 ## Responses Agent Loop 预算
 

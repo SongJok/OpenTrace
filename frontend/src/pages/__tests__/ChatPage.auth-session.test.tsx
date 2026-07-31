@@ -38,17 +38,6 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-const endpoint = {
-  provider: 'test',
-  base_url: '',
-  model: 'test-model',
-  models: ['test-model'],
-  api_mode: 'auto' as const,
-  has_api_key: true,
-  api_key_masked: '***',
-  api_key_source: 'stored' as const,
-}
-
 describe('ChatPage 认证会话隔离', () => {
   beforeEach(() => {
     localStorage.removeItem('opentrace-auth')
@@ -74,11 +63,10 @@ describe('ChatPage 认证会话隔离', () => {
     api.projects.mockImplementation((token: string) => token === 'old-token' ? oldProjects.promise : Promise.resolve([]))
     api.databases.mockImplementation((token: string) => token === 'old-token' ? oldDatabases.promise : Promise.resolve([]))
     api.modelSettings.mockResolvedValue({
-      active_profile: 'environment',
+      active_selection: { source: 'free', model: 'test-model', custom_model_id: null },
       scope: { tenant_id: 'tenant', workspace_id: 'workspace' },
-      environment: endpoint,
-      official: endpoint,
-      relay: endpoint,
+      free: { provider: 'test', base_url: '', models: ['test-model'], api_mode: 'chat_completions', has_api_key: true },
+      custom_models: [],
     })
     useAuthStore.getState().login('old-token', 'user-old', 'old@example.com')
 

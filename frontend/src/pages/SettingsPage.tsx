@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { BrainCircuit, ChevronLeft, Check, KeyRound, LogOut, Moon, Monitor, Palette, Sun } from 'lucide-react'
+import { BrainCircuit, ChevronLeft, Check, Eye, EyeOff, KeyRound, LogOut, Moon, Monitor, Palette, Pencil, Plus, Sun, Trash2, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useThemeStore, type AccentMode, type ThemeMode } from '../store/theme'
 import { useAuthStore } from '../store/auth'
 import { apiChangePassword, apiGetCustomInstructions, apiGetUiSettings, apiPatchUiSettings, apiSetCustomInstructions } from '../api/client'
 import { CardShell } from '../components/CardShell'
-import { apiGetModelSettings, apiPatchModelSettings, apiSelectModelSettings, withSelectedModel, type ModelEndpointSettings, type ModelProfileSource, type UserModelSettings } from '../api/modelSettings'
+import { apiCreateCustomModel, apiDeleteCustomModel, apiGetModelSettings, apiSelectModelSettings, apiUpdateCustomModel, withSelectedModel, type CustomModelInput, type CustomModelSettings, type ModelSource, type UserModelSettings } from '../api/modelSettings'
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; description: string; icon: ReactNode }[] = [
   { value: 'light', label: 'Light', description: '更适合白底阅读', icon: <Sun size={16} /> },
@@ -33,109 +33,80 @@ function SectionCard({ eyebrow, title, meta, children }: { eyebrow: string; titl
   )
 }
 
-function ModelEndpointEditor({
-  title,
-  description,
-  endpoint,
-  apiKey,
-  clearApiKey,
-  active,
+function CustomModelDialog({
+  open,
+  model,
   saving,
-  onEndpointChange,
-  onModelSelect,
-  onApiKeyChange,
-  onClearApiKeyChange,
+  onClose,
+  onSave,
 }: {
-  title: string
-  description: string
-  endpoint: ModelEndpointSettings
-  apiKey: string
-  clearApiKey: boolean
-  active: boolean
+  open: boolean
+  model: CustomModelSettings | null
   saving: boolean
-  onEndpointChange: (next: ModelEndpointSettings) => void
-  onModelSelect: (model: string) => void
-  onApiKeyChange: (value: string) => void
-  onClearApiKeyChange: (value: boolean) => void
+  onClose: () => void
+  onSave: (payload: CustomModelInput, apiKey: string) => void
 }) {
+  const [name, setName] = useState('')
+  const [provider, setProvider] = useState('自定义 / Custom')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [modelName, setModelName] = useState('')
+  const [apiMode, setApiMode] = useState<CustomModelInput['api_mode']>('chat_completions')
+  const [showApiKey, setShowApiKey] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setName(model?.name || '')
+    setProvider(model?.provider || '自定义 / Custom')
+    setBaseUrl(model?.base_url || '')
+    setApiKey('')
+    setModelName(model?.model || '')
+    setApiMode(model?.api_mode || 'chat_completions')
+    setShowApiKey(false)
+  }, [open, model])
+
+  if (!open) return null
   const inputClass = 'mt-1.5 w-full rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2.5 text-sm text-[var(--text)] outline-none transition-colors focus:border-[var(--accent)]'
   return (
-    <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-secondary)] p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-sm font-semibold text-[var(--text)]">{title}</div>
-          <div className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{description}</div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-label={model ? '编辑模型' : '添加模型'}>
+      <form
+        className="max-h-[calc(100vh-2rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl"
+        onSubmit={(event) => {
+          event.preventDefault()
+          onSave({ name: name.trim(), provider: provider.trim(), base_url: baseUrl.trim(), model: modelName.trim(), api_mode: apiMode }, apiKey.trim())
+        }}
+      >
+        <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <h3 className="text-lg font-semibold text-[var(--text)]">{model ? '编辑模型' : '添加模型'}</h3>
+            <span className="truncate rounded-full border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">OpenAI 兼容协议</span>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text)]"><X size={18} /></button>
         </div>
-        <div className="flex flex-col items-end gap-1.5">
-          {active ? <span className="rounded-full bg-[var(--accent-dim)] px-2 py-1 text-[10px] font-medium text-[var(--accent)]">当前启用</span> : null}
-          <span className={clsx('rounded-full px-2 py-1 text-[10px]', endpoint.has_api_key ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400')}>
-            {endpoint.has_api_key ? `Key: ${endpoint.api_key_source}` : '缺少 Key'}
-          </span>
+        <div className="space-y-4 p-5">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="text-xs text-[var(--text-secondary)]">显示名称<input required value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：我的开发模型" className={inputClass} /></label>
+            <label className="text-xs text-[var(--text-secondary)]">提供商<input value={provider} onChange={(event) => setProvider(event.target.value)} className={inputClass} /></label>
+          </div>
+          <label className="block text-xs text-[var(--text-secondary)]">接口地址<input required type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://provider.example.com/v1" className={inputClass} /></label>
+          <label className="block text-xs text-[var(--text-secondary)]">
+            API Key {model ? '（留空表示保持现有密钥）' : ''}
+            <div className="relative">
+              <input required={!model} type={showApiKey ? 'text' : 'password'} autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={model?.api_key_masked || '输入 API Key'} className={`${inputClass} pr-11`} />
+              <button type="button" onClick={() => setShowApiKey((current) => !current)} aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'} className="absolute right-1.5 top-3 grid h-8 w-8 place-items-center rounded-lg text-[var(--text-secondary)] hover:text-[var(--text)]">{showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}</button>
+            </div>
+          </label>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="text-xs text-[var(--text-secondary)]">模型名称<input required value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="例如：gpt-4.1-mini" className={inputClass} /></label>
+            <label className="text-xs text-[var(--text-secondary)]">API 模式<select value={apiMode} onChange={(event) => setApiMode(event.target.value as CustomModelInput['api_mode'])} className={inputClass}><option value="chat_completions">Chat Completions</option><option value="responses">Responses API</option><option value="auto">自动判断</option></select></label>
+          </div>
+          <p className="text-xs leading-5 text-[var(--text-secondary)]">自定义模型需要支持 OpenAI 兼容请求。工具调用等能力由模型服务实际支持情况决定。</p>
         </div>
-      </div>
-      <div className="mt-4 grid gap-3 md:grid-cols-2">
-        <label className="text-xs text-[var(--text-secondary)]">
-          Provider 名称
-          <input value={endpoint.provider} onChange={(event) => onEndpointChange({ ...endpoint, provider: event.target.value })} className={inputClass} />
-        </label>
-        <label className="text-xs text-[var(--text-secondary)]">
-          API 模式
-          <select value={endpoint.api_mode} onChange={(event) => onEndpointChange({ ...endpoint, api_mode: event.target.value as ModelEndpointSettings['api_mode'] })} className={inputClass}>
-            <option value="auto">自动判断</option>
-            <option value="responses">Responses API</option>
-            <option value="chat_completions">Chat Completions</option>
-          </select>
-        </label>
-      </div>
-      <label className="mt-3 block text-xs text-[var(--text-secondary)]">
-        Base URL
-        <input value={endpoint.base_url} onChange={(event) => onEndpointChange({ ...endpoint, base_url: event.target.value })} placeholder="https://provider.example.com/v1" className={inputClass} />
-      </label>
-      <div className="mt-3">
-        <div className="text-xs text-[var(--text-secondary)]">点击模型后立即启用，并用于下一条新消息</div>
-        <div className="mt-2 flex flex-wrap gap-2">
-          {endpoint.models.map((model) => (
-            <button
-              key={model}
-              type="button"
-              disabled={saving}
-              aria-label={`立即使用模型 ${model}`}
-              onClick={() => onModelSelect(model)}
-              className={clsx(
-                'rounded-xl border px-3 py-2 text-xs font-medium transition-colors disabled:opacity-50',
-                active && endpoint.model === model
-                  ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                  : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:border-[var(--accent-border)]',
-              )}
-            >
-              {model}
-              {active && endpoint.model === model ? ' · 使用中' : ''}
-            </button>
-          ))}
+        <div className="flex justify-end gap-3 border-t border-[var(--border)] px-5 py-4">
+          <button type="button" onClick={onClose} disabled={saving} className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm text-[var(--text)] disabled:opacity-50">取消</button>
+          <button type="submit" disabled={saving || !name.trim() || !baseUrl.trim() || !modelName.trim() || (!model && !apiKey.trim())} className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--accent-foreground)] disabled:opacity-50">{saving ? '保存中…' : '保存'}</button>
         </div>
-      </div>
-      <div className="mt-3">
-        <label className="text-xs text-[var(--text-secondary)]">
-          可选模型（逗号分隔；新增后先保存配置）
-          <input
-            value={endpoint.models.join(', ')}
-            onChange={(event) => {
-              const models = event.target.value.split(',').map((item) => item.trim()).filter(Boolean)
-              onEndpointChange({ ...endpoint, models, model: models.includes(endpoint.model) ? endpoint.model : (models[0] || '') })
-            }}
-            placeholder="model-a, model-b"
-            className={inputClass}
-          />
-        </label>
-      </div>
-      <label className="mt-3 block text-xs text-[var(--text-secondary)]">
-        API Key（留空表示保持现有密钥）
-        <input type="password" autoComplete="new-password" value={apiKey} disabled={clearApiKey} onChange={(event) => onApiKeyChange(event.target.value)} placeholder={endpoint.api_key_masked || '输入新的 API Key'} className={inputClass} />
-      </label>
-      <label className="mt-3 inline-flex items-center gap-2 text-xs text-[var(--text-secondary)]">
-        <input type="checkbox" checked={clearApiKey} onChange={(event) => onClearApiKeyChange(event.target.checked)} />
-        清除已保存密钥并回退到环境变量
-      </label>
+      </form>
     </div>
   )
 }
@@ -221,10 +192,8 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
   const [passwordSaving, setPasswordSaving] = useState(false)
   const [passwordMessage, setPasswordMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [modelSettings, setModelSettings] = useState<UserModelSettings | null>(null)
-  const [officialApiKey, setOfficialApiKey] = useState('')
-  const [relayApiKey, setRelayApiKey] = useState('')
-  const [clearOfficialApiKey, setClearOfficialApiKey] = useState(false)
-  const [clearRelayApiKey, setClearRelayApiKey] = useState(false)
+  const [modelDialogOpen, setModelDialogOpen] = useState(false)
+  const [editingCustomModel, setEditingCustomModel] = useState<CustomModelSettings | null>(null)
   const [modelSettingsSaving, setModelSettingsSaving] = useState(false)
   const [modelSettingsMessage, setModelSettingsMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
@@ -312,69 +281,59 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
     }
   }
 
-  const updateModelEndpoint = (key: 'official' | 'relay', endpoint: ModelEndpointSettings) => {
-    setModelSettings((current) => current ? { ...current, [key]: endpoint } : current)
-  }
-
-  const modelSettingsPayload = (settings: UserModelSettings) => ({
-    active_profile: settings.active_profile,
-    official: {
-      provider: settings.official.provider,
-      base_url: settings.official.base_url,
-      model: settings.official.model,
-      models: settings.official.models,
-      api_mode: settings.official.api_mode,
-      ...(officialApiKey ? { api_key: officialApiKey } : {}),
-      clear_api_key: clearOfficialApiKey,
-    },
-    relay: {
-      provider: settings.relay.provider,
-      base_url: settings.relay.base_url,
-      model: settings.relay.model,
-      models: settings.relay.models,
-      api_mode: settings.relay.api_mode,
-      ...(relayApiKey ? { api_key: relayApiKey } : {}),
-      clear_api_key: clearRelayApiKey,
-    },
-  })
-
-  const saveModelSettings = async () => {
-    if (!modelSettings || modelSettingsSaving) return
+  const saveCustomModel = async (payload: CustomModelInput, apiKey: string) => {
+    if (modelSettingsSaving) return
     setModelSettingsSaving(true)
     setModelSettingsMessage(null)
     try {
-      const saved = await apiPatchModelSettings(token, modelSettingsPayload(modelSettings))
-      setModelSettings(saved)
-      setOfficialApiKey('')
-      setRelayApiKey('')
-      setClearOfficialApiKey(false)
-      setClearRelayApiKey(false)
-      setModelSettingsMessage({ type: 'success', text: '端点配置已保存；当前启用模型会用于下一条新消息。' })
+      if (editingCustomModel) {
+        await apiUpdateCustomModel(token, editingCustomModel.id, { ...payload, ...(apiKey ? { api_key: apiKey } : {}) })
+      } else {
+        await apiCreateCustomModel(token, { ...payload, api_key: apiKey })
+      }
+      setModelSettings(await apiGetModelSettings(token))
+      setModelDialogOpen(false)
+      setEditingCustomModel(null)
+      setModelSettingsMessage({ type: 'success', text: editingCustomModel ? '模型配置已更新。' : '模型已添加，可立即选择使用。' })
     } catch (error) {
-      setModelSettingsMessage({ type: 'error', text: error instanceof Error ? error.message : '保存大模型配置失败' })
+      setModelSettingsMessage({ type: 'error', text: error instanceof Error ? error.message : '保存模型失败' })
     } finally {
       setModelSettingsSaving(false)
     }
   }
 
-  const activateModel = async (profile: ModelProfileSource, model?: string) => {
+  const deleteCustomModel = async (model: CustomModelSettings) => {
+    if (modelSettingsSaving || !window.confirm(`删除模型“${model.name}”？`)) return
+    setModelSettingsSaving(true)
+    setModelSettingsMessage(null)
+    try {
+      await apiDeleteCustomModel(token, model.id)
+      setModelSettings(await apiGetModelSettings(token))
+      setModelSettingsMessage({ type: 'success', text: '自定义模型已删除。' })
+    } catch (error) {
+      setModelSettingsMessage({ type: 'error', text: error instanceof Error ? error.message : '删除模型失败' })
+    } finally {
+      setModelSettingsSaving(false)
+    }
+  }
+
+  const activateModel = async (source: ModelSource, selected: string) => {
     if (!modelSettings || modelSettingsSaving) return
     const previous = modelSettings
     let optimistic: UserModelSettings
     try {
-      optimistic = withSelectedModel(modelSettings, profile, model)
+      optimistic = withSelectedModel(modelSettings, source, selected)
     } catch (error) {
       setModelSettingsMessage({ type: 'error', text: error instanceof Error ? error.message : '模型不可用' })
       return
     }
     setModelSettings(optimistic)
     setModelSettingsSaving(true)
-    setModelSettingsMessage({ type: 'success', text: `正在切换到 ${profile === 'environment' ? optimistic.environment.model : optimistic[profile].model}…` })
+    setModelSettingsMessage({ type: 'success', text: `正在切换到 ${optimistic.active_selection.model}…` })
     try {
-      const saved = await apiSelectModelSettings(token, profile, model)
+      const saved = await apiSelectModelSettings(token, source, selected)
       setModelSettings(saved)
-      const activeModel = saved.active_profile === 'environment' ? saved.environment.model : saved[saved.active_profile].model
-      setModelSettingsMessage({ type: 'success', text: `已切换到 ${activeModel}，下一条新消息将使用该模型。` })
+      setModelSettingsMessage({ type: 'success', text: `已切换到 ${saved.active_selection.model}，下一条新消息将使用该模型。` })
     } catch (error) {
       setModelSettings(previous)
       setModelSettingsMessage({ type: 'error', text: error instanceof Error ? error.message : '切换大模型失败' })
@@ -504,78 +463,87 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
             </form>
           </SectionCard>
 
-          <SectionCard eyebrow="Models" title="大模型自选择和配置" meta="按当前用户、租户和工作区保存；API Key 加密落库且不会回显。">
+          <SectionCard eyebrow="Models" title="模型选择" meta="通用免费模型对所有用户开放；你添加的模型只在当前账号和工作区可见。">
             {modelSettings ? (
               <div className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-3">
-                  {([
-                    ['environment', '环境变量', '保持现有 DEFAULT_LLM_* 配置'],
-                    ['official', '原始服务', '自定义原始供应商地址、密钥和模型'],
-                    ['relay', '第三方中转站', '使用 OpenAI-compatible 中转端点'],
-                  ] as [ModelProfileSource, string, string][]).map(([value, label, description]) => (
+                <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] pb-4">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-sm font-medium text-[var(--text)]"><BrainCircuit size={16} className="text-[var(--accent)]" />当前使用</div>
+                    <div className="mt-1 truncate font-mono text-sm text-[var(--text)]">{modelSettings.active_selection.model}</div>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-[var(--accent-dim)] px-2.5 py-1 text-xs text-[var(--accent)]">{modelSettings.active_selection.source === 'free' ? '通用免费' : '自定义'}</span>
+                </div>
+
+                <div>
+                  <div className="mb-3 flex items-end justify-between gap-3">
+                    <div><h3 className="text-sm font-semibold text-[var(--text)]">通用免费模型</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">由系统统一配置，无需填写 API Key。</p></div>
+                    {!modelSettings.free.has_api_key ? <span className="text-xs text-amber-400">服务端尚未配置 Key</span> : null}
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {modelSettings.free.models.map((model) => {
+                      const active = modelSettings.active_selection.source === 'free' && modelSettings.active_selection.model === model
+                      return (
                     <button
-                      key={value}
+                      key={model}
                       type="button"
-                      disabled={modelSettingsSaving}
-                      onClick={() => void activateModel(value, value === 'environment' ? undefined : modelSettings[value].model)}
+                      disabled={modelSettingsSaving || !modelSettings.free.has_api_key}
+                      onClick={() => void activateModel('free', model)}
                       className={clsx(
-                        'rounded-2xl border p-4 text-left transition-colors disabled:opacity-50',
-                        modelSettings.active_profile === value ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--accent-border)]',
+                        'flex min-h-20 items-center justify-between gap-3 rounded-xl border p-4 text-left transition-colors disabled:opacity-50',
+                        active ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--accent-border)]',
                       )}
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-semibold text-[var(--text)]">{label}</span>
-                        {modelSettings.active_profile === value ? <Check size={14} /> : null}
-                      </div>
-                      <div className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">{description}</div>
+                      <span className="min-w-0 truncate font-mono text-sm text-[var(--text)]">{model}</span>
+                      {active ? <Check size={16} className="shrink-0 text-[var(--accent)]" /> : null}
                     </button>
-                  ))}
+                      )
+                    })}
+                  </div>
                 </div>
 
-                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-xs text-[var(--text-secondary)]">
-                  <div className="flex items-center gap-2 font-medium text-[var(--text)]"><BrainCircuit size={15} className="text-[var(--accent)]" />当前生效</div>
-                  <div className="mt-2 font-mono">{modelSettings.active_profile === 'environment' ? modelSettings.environment.model : modelSettings[modelSettings.active_profile].model}</div>
-                  <div className="mt-1 truncate">{modelSettings.active_profile === 'environment' ? modelSettings.environment.base_url : modelSettings[modelSettings.active_profile].base_url}</div>
-                  <div className="mt-1">Scope: {modelSettings.scope.tenant_id} / {modelSettings.scope.workspace_id}</div>
+                <div>
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div><h3 className="text-sm font-semibold text-[var(--text)]">我的模型</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">API Key 加密保存，页面不会回显明文。</p></div>
+                    <button type="button" disabled={modelSettingsSaving || modelSettings.custom_models.length >= 20} onClick={() => { setEditingCustomModel(null); setModelDialogOpen(true) }} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-3 py-2 text-sm font-medium text-[var(--accent-foreground)] disabled:opacity-50"><Plus size={16} />添加模型</button>
+                  </div>
+                  {modelSettings.custom_models.length ? (
+                    <div className="space-y-2">
+                      {modelSettings.custom_models.map((model) => {
+                        const active = modelSettings.active_selection.source === 'custom' && modelSettings.active_selection.custom_model_id === model.id
+                        return (
+                          <div key={model.id} className={clsx('flex items-center gap-3 rounded-xl border p-3', active ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)] bg-[var(--bg-secondary)]')}>
+                            <button type="button" disabled={modelSettingsSaving} onClick={() => void activateModel('custom', model.id)} className="min-w-0 flex-1 text-left disabled:opacity-50">
+                              <div className="flex items-center gap-2"><span className="truncate text-sm font-medium text-[var(--text)]">{model.name}</span>{active ? <span className="shrink-0 text-xs text-[var(--accent)]">使用中</span> : null}</div>
+                              <div className="mt-1 flex min-w-0 gap-2 text-xs text-[var(--text-secondary)]"><span className="truncate font-mono">{model.model}</span><span className="shrink-0">· {model.provider}</span></div>
+                            </button>
+                            <button type="button" title="编辑模型" aria-label={`编辑模型 ${model.name}`} disabled={modelSettingsSaving} onClick={() => { setEditingCustomModel(model); setModelDialogOpen(true) }} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)] disabled:opacity-50"><Pencil size={15} /></button>
+                            <button type="button" title="删除模型" aria-label={`删除模型 ${model.name}`} disabled={modelSettingsSaving} onClick={() => void deleteCustomModel(model)} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-[var(--text-secondary)] hover:bg-red-500/10 hover:text-red-400 disabled:opacity-50"><Trash2 size={15} /></button>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => { setEditingCustomModel(null); setModelDialogOpen(true) }} className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--border)] px-4 py-7 text-sm text-[var(--text-secondary)] hover:border-[var(--accent-border)] hover:text-[var(--text)]"><Plus size={16} />添加第一个自定义模型</button>
+                  )}
                 </div>
 
-                <ModelEndpointEditor
-                  title="原始大模型服务"
-                  description="默认继承 DEFAULT_LLM_QUERY_*；在这里保存后可覆盖地址、API Key、API 模式和模型候选。"
-                  endpoint={modelSettings.official}
-                  apiKey={officialApiKey}
-                  clearApiKey={clearOfficialApiKey}
-                  active={modelSettings.active_profile === 'official'}
-                  saving={modelSettingsSaving}
-                  onEndpointChange={(endpoint) => updateModelEndpoint('official', endpoint)}
-                  onModelSelect={(model) => void activateModel('official', model)}
-                  onApiKeyChange={setOfficialApiKey}
-                  onClearApiKeyChange={setClearOfficialApiKey}
-                />
-                <ModelEndpointEditor
-                  title="第三方中转站"
-                  description="默认读取 OTHER_LLM_MINSHORT_* 与 OTHER_LLM_MODEL1/2；通常选择 Chat Completions，若中转站明确支持 Responses API 可切换。"
-                  endpoint={modelSettings.relay}
-                  apiKey={relayApiKey}
-                  clearApiKey={clearRelayApiKey}
-                  active={modelSettings.active_profile === 'relay'}
-                  saving={modelSettingsSaving}
-                  onEndpointChange={(endpoint) => updateModelEndpoint('relay', endpoint)}
-                  onModelSelect={(model) => void activateModel('relay', model)}
-                  onApiKeyChange={setRelayApiKey}
-                  onClearApiKeyChange={setClearRelayApiKey}
-                />
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className={clsx('text-xs', modelSettingsMessage?.type === 'success' ? 'text-emerald-400' : 'text-red-400')}>{modelSettingsMessage?.text || '点击模型会立即切换；地址、Key 和候选列表修改后请保存配置。'}</p>
-                  <button type="button" disabled={modelSettingsSaving} onClick={() => void saveModelSettings()} className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--accent-foreground)] disabled:opacity-60">
-                    {modelSettingsSaving ? '处理中…' : '保存端点配置'}
-                  </button>
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] pt-3">
+                  <p className={clsx('text-xs', modelSettingsMessage?.type === 'error' ? 'text-red-400' : 'text-emerald-400')}>{modelSettingsMessage?.text || '点击模型即可切换，并用于下一条新消息。'}</p>
+                  <span className="text-xs text-[var(--text-secondary)]">{modelSettings.scope.tenant_id} / {modelSettings.scope.workspace_id}</span>
                 </div>
               </div>
             ) : (
               <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-secondary)] p-4 text-sm text-[var(--text-secondary)]">{modelSettingsMessage?.text || '正在读取大模型配置…'}</div>
             )}
           </SectionCard>
+
+          <CustomModelDialog
+            open={modelDialogOpen}
+            model={editingCustomModel}
+            saving={modelSettingsSaving}
+            onClose={() => { if (!modelSettingsSaving) { setModelDialogOpen(false); setEditingCustomModel(null) } }}
+            onSave={(payload, apiKey) => void saveCustomModel(payload, apiKey)}
+          />
 
           <SectionCard eyebrow="Appearance" title="Theme" meta="统一前端颜色：白色 / 黑色 / 暖色">
             <div className="grid gap-4 lg:grid-cols-[1.3fr_1fr]">

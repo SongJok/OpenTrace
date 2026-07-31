@@ -1,6 +1,7 @@
 """
 Alembic async environment — fixed version.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -10,6 +11,7 @@ from logging.config import fileConfig
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import infra.storage.model_settings  # noqa: F401 — registers dynamic model settings
 import infra.storage.models  # noqa: F401 — registers ORM models
 from alembic import context
 
@@ -25,7 +27,11 @@ if config.config_file_name:
 # developers commonly invoke Alembic on the host where the published port is
 # reachable as ``localhost``.  Keep application settings unchanged and allow
 # an explicit one-command override for host migrations.
-db_url = os.getenv("ALEMBIC_DATABASE_URL") or settings.database_url or config.get_main_option("sqlalchemy.url")
+db_url = (
+    os.getenv("ALEMBIC_DATABASE_URL")
+    or settings.database_url
+    or config.get_main_option("sqlalchemy.url")
+)
 if db_url.startswith("postgresql://"):
     db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 target_metadata = Base.metadata

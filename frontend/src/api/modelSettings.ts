@@ -1,32 +1,44 @@
-export type ModelProfileSource = 'environment' | 'official' | 'relay'
+export type ModelSource = 'free' | 'custom'
 export type ModelApiMode = 'auto' | 'responses' | 'chat_completions'
 
-export interface ModelEndpointSettings {
+export interface FreeModelSettings {
   provider: string
   base_url: string
-  model: string
   models: string[]
   api_mode: ModelApiMode
   has_api_key: boolean
+}
+
+export interface CustomModelSettings {
+  id: string
+  name: string
+  provider: string
+  base_url: string
+  model: string
+  api_mode: ModelApiMode
+  has_api_key: boolean
   api_key_masked: string
-  api_key_source: 'stored' | 'environment' | 'missing'
+  created_at: string | null
+  updated_at: string | null
 }
 
 export interface UserModelSettings {
-  active_profile: ModelProfileSource
+  active_selection: {
+    source: ModelSource
+    model: string
+    custom_model_id: string | null
+  }
   scope: { tenant_id: string; workspace_id: string }
-  environment: ModelEndpointSettings
-  official: ModelEndpointSettings
-  relay: ModelEndpointSettings
+  free: FreeModelSettings
+  custom_models: CustomModelSettings[]
 }
 
-export interface ModelEndpointUpdate {
+export interface CustomModelInput {
+  name: string
   provider: string
   base_url: string
   api_key?: string
-  clear_api_key?: boolean
   model: string
-  models: string[]
   api_mode: ModelApiMode
 }
 
@@ -60,34 +72,51 @@ export async function apiGetModelSettings(token: string): Promise<UserModelSetti
   return response.json()
 }
 
-export async function apiPatchModelSettings(
-  token: string,
-  payload: { active_profile: ModelProfileSource; official: ModelEndpointUpdate; relay: ModelEndpointUpdate },
-): Promise<UserModelSettings> {
-  const response = await modelSettingsFetch('/users/model-settings', token, { method: 'PATCH', body: JSON.stringify(payload) })
-  if (!response.ok) throw new Error(await errorMessage(response, '保存大模型配置失败'))
+export async function apiCreateCustomModel(token: string, payload: CustomModelInput & { api_key: string }): Promise<CustomModelSettings> {
+  const response = await modelSettingsFetch('/users/model-settings/custom-models', token, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) throw new Error(await errorMessage(response, '添加模型失败'))
   return response.json()
 }
+
+export async function apiUpdateCustomModel(token: string, id: string, payload: CustomModelInput): Promise<CustomModelSettings> {
+  const response = await modelSettingsFetch(`/users/model-settings/custom-models/${encodeURIComponent(id)}`, token, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) throw new Error(await errorMessage(response, '更新模型失败'))
+  return response.json()
+}
+
+export async function apiDeleteCustomModel(token: string, id: string): Promise<void> {
+  const response = await modelSettingsFetch(`/users/model-settings/custom-models/${encodeURIComponent(id)}`, token, { method: 'DELETE' })
+  if (!response.ok) throw new Error(await errorMessage(response, '删除模型失败'))
+}
+
 export function withSelectedModel(
   settings: UserModelSettings,
-  profile: ModelProfileSource,
-  model?: string,
+  source: ModelSource,
+  selected: string,
 ): UserModelSettings {
-  if (profile === 'environment') return { ...settings, active_profile: profile }
-  const endpoint = settings[profile]
-  const selected = model || endpoint.model
-  if (!endpoint.models.includes(selected)) throw new Error('所选模型不在候选列表中')
-  return { ...settings, active_profile: profile, [profile]: { ...endpoint, model: selected } }
+  if (source === 'free') {
+    if (!settings.free.models.includes(selected)) throw new Error('所选模型不在通用免费模型列表中')
+    return { ...settings, active_selection: { source, model: selected, custom_model_id: null } }
+  }
+  const custom = settings.custom_models.find((item) => item.id === selected)
+  if (!custom) throw new Error('自定义模型不存在')
+  return { ...settings, active_selection: { source, model: custom.model, custom_model_id: custom.id } }
 }
 
 export async function apiSelectModelSettings(
   token: string,
-  profile: ModelProfileSource,
-  model?: string,
+  source: ModelSource,
+  selected: string,
 ): Promise<UserModelSettings> {
   const response = await modelSettingsFetch('/users/model-settings/selection', token, {
     method: 'PATCH',
-    body: JSON.stringify({ profile, ...(model ? { model } : {}) }),
+    body: JSON.stringify(source === 'free' ? { source, model: selected } : { source, custom_model_id: selected }),
   })
   if (!response.ok) throw new Error(await errorMessage(response, '切换大模型失败'))
   return response.json()

@@ -136,6 +136,17 @@ class LLMSettings(BaseSettings):
     other_llm_model1: str = ""
     other_llm_model2: str = ""
 
+    # 面向用户的统一免费模型源。用户可在两个模型间选择，也可切换到自己保存的
+    # OpenAI-compatible 模型；旧的 DEFAULT_LLM_* 仍供专用内部角色兼容使用。
+    free_llm_minshort_provider: str = "通用免费模型"
+    free_llm_minshort_base_url: str = "https://coding-api-3671.underpinetree.com"
+    free_llm_minshort_api_key: str = ""
+    free_llm_minshort_api_mode: Literal["auto", "responses", "chat_completions"] = (
+        "chat_completions"
+    )
+    free_llm_model1: str = "glm-5.2-free"
+    free_llm_model2: str = "deepseek-v4-pro-free"
+
 
 class EmbeddingSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

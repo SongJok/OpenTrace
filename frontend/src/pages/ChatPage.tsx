@@ -81,8 +81,7 @@ export default function ChatPage() {
     void apiGetModelSettings(token)
       .then((settings) => {
         if (!isAuthSessionCurrent(authSession)) return
-        const endpoint = settings.active_profile === 'environment' ? settings.environment : settings[settings.active_profile]
-        setActiveModel(endpoint.model)
+        setActiveModel(settings.active_selection.model)
       })
       .catch(() => {
         if (isAuthSessionCurrent(authSession)) setActiveModel('')

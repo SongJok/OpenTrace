@@ -126,25 +126,18 @@ cd OpenTrace
 cp .env.example .env
 ```
 
-`.env.example` contains no real credentials. At minimum, provide API keys for the model roles you
-intend to use:
+`.env.example` contains no real credentials. Configure the shared free model source shown to users:
 
 ```env
-DEFAULT_LLM_QUERY_API_KEY=your-provider-key
-DEFAULT_LLM_COMPRESS_API_KEY=your-provider-key
-DEFAULT_LLM_PLANING_API_KEY=your-provider-key
-DEFAULT_LLM_SENIORSHORT_API_KEY=your-provider-key
-DEFAULT_LLM_MIDDLESHORT_API_KEY=your-provider-key
-DEFAULT_LLM_JUNIORSHORT_API_KEY=your-provider-key
-DEFAULT_LLM_MINSHORT_API_KEY=your-provider-key
-DEFAULT_LLM_VISION_API_KEY=your-provider-key
-
-# 可选：设置页中的第三方 OpenAI-compatible 中转站默认值
-OTHER_LLM_MINSHORT_BASE_URL=https://relay.example.com/v1
-OTHER_LLM_MINSHORT_API_KEY=your-relay-key
-OTHER_LLM_MODEL1=model-a
-OTHER_LLM_MODEL2=model-b
+FREE_LLM_MINSHORT_BASE_URL=https://coding-api-3671.underpinetree.com
+FREE_LLM_MINSHORT_API_KEY=your-shared-free-model-key
+FREE_LLM_MODEL1=glm-5.2-free
+FREE_LLM_MODEL2=deepseek-v4-pro-free
 ```
+
+Users may also add their own OpenAI-compatible model from Settings. Its API Key is encrypted with
+`DATA_SECRET_KEY` and scoped to the current user, tenant, and workspace. Specialized internal or
+multimodal roles can still use the corresponding `DEFAULT_LLM_*` variables from `.env.example`.
 
 Embedding and reranking may share `DASHSCOPE_API_KEY` or use separate keys. Staging and production
 deployments must set independent `APP_SECRET_KEY`, `JWT_SECRET`, and `DATA_SECRET_KEY` values and

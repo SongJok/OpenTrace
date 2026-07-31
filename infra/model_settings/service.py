@@ -14,11 +14,11 @@ from infra.security.data_source_secrets import (
     decrypt_data_source_secret,
     encrypt_data_source_secret,
 )
-from infra.storage.model_settings import UserModelSettings
+from infra.storage.model_settings import UserCustomModel, UserModelSettings
 from model.model_gateway.runtime_config import RuntimeLLMProfile
 
 ALLOWED_API_MODES = {"auto", "responses", "chat_completions"}
-ALLOWED_PROFILES = {"environment", "official", "relay"}
+ALLOWED_SOURCES = {"free", "custom"}
 
 
 @dataclass(frozen=True)
@@ -40,30 +40,15 @@ def _unique_models(*values: str) -> tuple[str, ...]:
     return tuple(result)
 
 
-def environment_defaults() -> EndpointDefaults:
+def free_defaults() -> EndpointDefaults:
+    models = _unique_models(settings.free_llm_model1, settings.free_llm_model2)
     return EndpointDefaults(
-        provider=settings.default_llm_query_provider,
-        base_url=settings.default_llm_query_base_url,
-        model=settings.default_llm_query_model,
-        models=_unique_models(
-            settings.default_llm_query_model,
-            settings.default_llm_fast_model,
-            settings.default_llm_deep_model,
-        ),
-        api_mode="auto",
-        api_key=settings.default_llm_query_api_key,
-    )
-
-
-def relay_defaults() -> EndpointDefaults:
-    models = _unique_models(settings.other_llm_model1, settings.other_llm_model2)
-    return EndpointDefaults(
-        provider=settings.other_llm_minshort_provider,
-        base_url=settings.other_llm_minshort_base_url,
+        provider=settings.free_llm_minshort_provider,
+        base_url=settings.free_llm_minshort_base_url,
         model=models[0] if models else "",
         models=models,
-        api_mode=settings.other_llm_minshort_api_mode,
-        api_key=settings.other_llm_minshort_api_key,
+        api_mode=settings.free_llm_minshort_api_mode,
+        api_key=settings.free_llm_minshort_api_key,
     )
 
 
@@ -123,36 +108,33 @@ def decrypt_model_api_key(value: str | None) -> str:
     return decrypt_data_source_secret(value)
 
 
-def _profile_from_row(row: UserModelSettings, source: str) -> RuntimeLLMProfile | None:
-    if source == "official":
-        defaults = environment_defaults()
-        provider = row.official_provider or defaults.provider
-        base_url = row.official_base_url or defaults.base_url
-        model = row.official_model or defaults.model
-        models = normalize_models(list(row.official_models or defaults.models), model)
-        api_mode = row.official_api_mode or defaults.api_mode
-        stored_key = decrypt_model_api_key(row.official_api_key_encrypted)
-    elif source == "relay":
-        defaults = relay_defaults()
-        provider = row.relay_provider or defaults.provider
-        base_url = row.relay_base_url or defaults.base_url
-        model = row.relay_model or defaults.model
-        models = normalize_models(list(row.relay_models or defaults.models), model)
-        api_mode = row.relay_api_mode or defaults.api_mode
-        stored_key = decrypt_model_api_key(row.relay_api_key_encrypted)
-    else:
+def _free_profile(row: UserModelSettings | None) -> RuntimeLLMProfile | None:
+    defaults = free_defaults()
+    if not defaults.base_url or not defaults.model:
         return None
-    api_key = stored_key or defaults.api_key
-    if not base_url or not model:
-        return None
+    selected = str(row.active_free_model or "").strip() if row else ""
+    if selected not in defaults.models:
+        selected = defaults.model
     return RuntimeLLMProfile(
-        source=source,
-        provider=provider,
-        base_url=validate_base_url(base_url),
-        api_key=api_key,
-        model=model,
-        models=models,
-        api_mode=api_mode if api_mode in ALLOWED_API_MODES else "chat_completions",
+        source="free",
+        provider=defaults.provider,
+        base_url=validate_base_url(defaults.base_url),
+        api_key=defaults.api_key,
+        model=selected,
+        models=defaults.models,
+        api_mode=defaults.api_mode,
+    )
+
+
+def _custom_profile(row: UserCustomModel) -> RuntimeLLMProfile:
+    return RuntimeLLMProfile(
+        source="custom",
+        provider=row.provider,
+        base_url=validate_base_url(row.base_url),
+        api_key=decrypt_model_api_key(row.api_key_encrypted),
+        model=row.model,
+        models=(row.model,),
+        api_mode=row.api_mode if row.api_mode in ALLOWED_API_MODES else "chat_completions",
     )
 
 
@@ -170,6 +152,15 @@ async def load_runtime_llm_profile(
             UserModelSettings.workspace_id == workspace_id,
         )
     )
-    if row is None or row.active_profile == "environment":
-        return None
-    return _profile_from_row(row, row.active_profile)
+    if row is not None and row.active_source == "custom" and row.active_custom_model_id:
+        custom = await db.scalar(
+            select(UserCustomModel).where(
+                UserCustomModel.id == row.active_custom_model_id,
+                UserCustomModel.user_id == user_id,
+                UserCustomModel.tenant_id == tenant_id,
+                UserCustomModel.workspace_id == workspace_id,
+            )
+        )
+        if custom is not None:
+            return _custom_profile(custom)
+    return _free_profile(row)

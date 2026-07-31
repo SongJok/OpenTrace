@@ -30,6 +30,9 @@
     },
     "r0010_beijing_timezone_defaults": {
       "release": "unreleased"
+    },
+    "r0011_user_custom_models": {
+      "release": "unreleased"
     }
   }
 }

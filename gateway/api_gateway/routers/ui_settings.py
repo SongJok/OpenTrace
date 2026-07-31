@@ -5,7 +5,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.routers.auth import get_current_user
@@ -15,14 +15,12 @@ from infra.model_settings.service import (
     ALLOWED_API_MODES,
     decrypt_model_api_key,
     encrypt_model_api_key,
-    environment_defaults,
+    free_defaults,
     mask_api_key,
-    normalize_models,
-    relay_defaults,
     validate_base_url,
 )
 from infra.storage.database import db_session_dependency as get_db
-from infra.storage.model_settings import UserModelSettings
+from infra.storage.model_settings import UserCustomModel, UserModelSettings
 from infra.storage.models import User, UserUiSettings
 
 router = APIRouter()
@@ -108,120 +106,190 @@ async def patch_ui_settings(
     )
 
 
-class ModelEndpointPayload(BaseModel):
-    provider: str = Field(default="", max_length=128)
-    base_url: str = Field(default="", max_length=2048)
-    api_key: str | None = Field(default=None, max_length=8192)
-    clear_api_key: bool = False
-    model: str = Field(default="", max_length=255)
-    models: list[str] = Field(default_factory=list, max_length=20)
+class CustomModelCreatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    provider: str = Field(default="自定义 / Custom", max_length=128)
+    base_url: str = Field(min_length=1, max_length=2048)
+    api_key: str = Field(min_length=1, max_length=8192)
+    model: str = Field(min_length=1, max_length=255)
     api_mode: Literal["auto", "responses", "chat_completions"] = "chat_completions"
 
 
-class ModelSettingsPayload(BaseModel):
-    active_profile: Literal["environment", "official", "relay"] = "environment"
-    official: ModelEndpointPayload
-    relay: ModelEndpointPayload
+class CustomModelUpdatePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    provider: str = Field(default="自定义 / Custom", max_length=128)
+    base_url: str = Field(min_length=1, max_length=2048)
+    api_key: str | None = Field(default=None, max_length=8192)
+    model: str = Field(min_length=1, max_length=255)
+    api_mode: Literal["auto", "responses", "chat_completions"] = "chat_completions"
 
 
 class ModelSelectionPayload(BaseModel):
-    profile: Literal["environment", "official", "relay"]
+    source: Literal["free", "custom"]
     model: str | None = Field(default=None, max_length=255)
+    custom_model_id: str | None = Field(default=None, max_length=36)
 
 
-def _endpoint_view(
+def _scope(request: Request, user_id: str) -> tuple[str, str]:
+    metadata = build_tenant_metadata(request, user_id=user_id)
+    return (
+        str(metadata.get("tenant_id") or "default"),
+        str(metadata.get("workspace_id") or "default"),
+    )
+
+
+def _custom_model_view(row: UserCustomModel) -> dict:
+    api_key = decrypt_model_api_key(row.api_key_encrypted)
+    return {
+        "id": row.id,
+        "name": row.name,
+        "provider": row.provider,
+        "base_url": row.base_url,
+        "model": row.model,
+        "api_mode": row.api_mode,
+        "has_api_key": bool(api_key),
+        "api_key_masked": mask_api_key(api_key),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _settings_view(
+    row: UserModelSettings | None,
+    custom_models: list[UserCustomModel],
     *,
-    provider: str,
-    base_url: str,
-    model: str,
-    models: list[str] | tuple[str, ...],
-    api_mode: str,
-    stored_encrypted: str | None,
-    environment_key: str,
+    tenant_id: str,
+    workspace_id: str,
 ) -> dict:
-    stored_key = decrypt_model_api_key(stored_encrypted)
-    effective_key = stored_key or environment_key
+    free = free_defaults()
+    free_model = str(row.active_free_model or "").strip() if row else ""
+    if free_model not in free.models:
+        free_model = free.model
+    custom_by_id = {item.id: item for item in custom_models}
+    active_custom = custom_by_id.get(row.active_custom_model_id) if row else None
+    active_source = "custom" if row and row.active_source == "custom" and active_custom else "free"
+    active_model = active_custom.model if active_custom else free_model
     return {
-        "provider": provider,
-        "base_url": base_url,
-        "model": model,
-        "models": list(normalize_models(list(models), model)) if model else list(models),
-        "api_mode": api_mode,
-        "has_api_key": bool(effective_key),
-        "api_key_masked": mask_api_key(effective_key),
-        "api_key_source": (
-            "stored" if stored_key else ("environment" if environment_key else "missing")
-        ),
-    }
-
-
-def _settings_view(row: UserModelSettings | None, *, tenant_id: str, workspace_id: str) -> dict:
-    environment = environment_defaults()
-    relay = relay_defaults()
-    official_provider = (
-        row.official_provider if row and row.official_provider else environment.provider
-    )
-    official_base_url = (
-        row.official_base_url if row and row.official_base_url else environment.base_url
-    )
-    official_model = row.official_model if row and row.official_model else environment.model
-    official_models = (
-        row.official_models if row and row.official_models else list(environment.models)
-    )
-    official_api_mode = (
-        row.official_api_mode if row and row.official_api_mode else environment.api_mode
-    )
-    relay_provider = row.relay_provider if row and row.relay_provider else relay.provider
-    relay_base_url = row.relay_base_url if row and row.relay_base_url else relay.base_url
-    relay_model = row.relay_model if row and row.relay_model else relay.model
-    relay_models = row.relay_models if row and row.relay_models else list(relay.models)
-    relay_api_mode = row.relay_api_mode if row and row.relay_api_mode else relay.api_mode
-    return {
-        "active_profile": row.active_profile if row else "environment",
+        "active_selection": {
+            "source": active_source,
+            "model": active_model,
+            "custom_model_id": active_custom.id if active_custom else None,
+        },
         "scope": {"tenant_id": tenant_id, "workspace_id": workspace_id},
-        "environment": _endpoint_view(
-            provider=environment.provider,
-            base_url=environment.base_url,
-            model=environment.model,
-            models=environment.models,
-            api_mode=environment.api_mode,
-            stored_encrypted=None,
-            environment_key=environment.api_key,
-        ),
-        "official": _endpoint_view(
-            provider=official_provider,
-            base_url=official_base_url,
-            model=official_model,
-            models=official_models,
-            api_mode=official_api_mode,
-            stored_encrypted=row.official_api_key_encrypted if row else None,
-            environment_key=environment.api_key,
-        ),
-        "relay": _endpoint_view(
-            provider=relay_provider,
-            base_url=relay_base_url,
-            model=relay_model,
-            models=relay_models,
-            api_mode=relay_api_mode,
-            stored_encrypted=row.relay_api_key_encrypted if row else None,
-            environment_key=relay.api_key,
-        ),
+        "free": {
+            "provider": free.provider,
+            "base_url": free.base_url,
+            "models": list(free.models),
+            "api_mode": free.api_mode,
+            "has_api_key": bool(free.api_key),
+        },
+        "custom_models": [_custom_model_view(item) for item in custom_models],
     }
 
 
-def _validated_endpoint(
-    payload: ModelEndpointPayload, *, required: bool = True
-) -> tuple[str, tuple[str, ...]]:
-    if not required and not payload.base_url.strip() and not payload.model.strip():
-        return "", tuple()
+def _validated_custom_payload(
+    payload: CustomModelCreatePayload | CustomModelUpdatePayload,
+) -> tuple[str, str, str, str]:
+    name = payload.name.strip()
+    provider = payload.provider.strip() or "自定义 / Custom"
+    model = payload.model.strip()
+    if not name or not model:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="名称和模型名称不能为空")
     try:
         base_url = validate_base_url(payload.base_url)
-        models = normalize_models(payload.models, payload.model)
     except ValueError as exc:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
     if payload.api_mode not in ALLOWED_API_MODES:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="不支持的 API 模式")
-    return base_url, models
+    return name, provider, base_url, model
+
+
+async def _get_settings_row(
+    db: AsyncSession, *, user_id: str, tenant_id: str, workspace_id: str
+) -> UserModelSettings | None:
+    return await db.scalar(
+        select(UserModelSettings).where(
+            UserModelSettings.user_id == user_id,
+            UserModelSettings.tenant_id == tenant_id,
+            UserModelSettings.workspace_id == workspace_id,
+        )
+    )
+
+
+async def _get_custom_models(
+    db: AsyncSession, *, user_id: str, tenant_id: str, workspace_id: str
+) -> list[UserCustomModel]:
+    result = await db.scalars(
+        select(UserCustomModel)
+        .where(
+            UserCustomModel.user_id == user_id,
+            UserCustomModel.tenant_id == tenant_id,
+            UserCustomModel.workspace_id == workspace_id,
+        )
+        .order_by(UserCustomModel.created_at.asc(), UserCustomModel.id.asc())
+    )
+    return list(result.all())
+
+
+async def _get_or_create_settings_row(
+    db: AsyncSession, *, user_id: str, tenant_id: str, workspace_id: str
+) -> UserModelSettings:
+    row = await _get_settings_row(
+        db, user_id=user_id, tenant_id=tenant_id, workspace_id=workspace_id
+    )
+    if row is None:
+        row = UserModelSettings(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            active_source="free",
+        )
+        db.add(row)
+        await db.flush()
+    return row
+
+
+async def _get_scoped_custom_model(
+    db: AsyncSession,
+    *,
+    model_id: str,
+    user_id: str,
+    tenant_id: str,
+    workspace_id: str,
+) -> UserCustomModel:
+    row = await db.scalar(
+        select(UserCustomModel).where(
+            UserCustomModel.id == model_id,
+            UserCustomModel.user_id == user_id,
+            UserCustomModel.tenant_id == tenant_id,
+            UserCustomModel.workspace_id == workspace_id,
+        )
+    )
+    if row is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="自定义模型不存在")
+    return row
+
+
+async def _ensure_unique_custom_name(
+    db: AsyncSession,
+    *,
+    name: str,
+    user_id: str,
+    tenant_id: str,
+    workspace_id: str,
+    exclude_id: str | None = None,
+) -> None:
+    query = select(UserCustomModel.id).where(
+        UserCustomModel.user_id == user_id,
+        UserCustomModel.tenant_id == tenant_id,
+        UserCustomModel.workspace_id == workspace_id,
+        UserCustomModel.name == name,
+    )
+    if exclude_id:
+        query = query.where(UserCustomModel.id != exclude_id)
+    if await db.scalar(query):
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="自定义模型名称已存在")
 
 
 @router.get("/users/model-settings")
@@ -230,90 +298,126 @@ async def get_model_settings(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    scope = build_tenant_metadata(request, user_id=current_user.id)
-    tenant_id = str(scope.get("tenant_id") or "default")
-    workspace_id = str(scope.get("workspace_id") or "default")
-    row = await db.scalar(
-        select(UserModelSettings).where(
-            UserModelSettings.user_id == current_user.id,
-            UserModelSettings.tenant_id == tenant_id,
-            UserModelSettings.workspace_id == workspace_id,
-        )
+    tenant_id, workspace_id = _scope(request, current_user.id)
+    row = await _get_settings_row(
+        db, user_id=current_user.id, tenant_id=tenant_id, workspace_id=workspace_id
     )
-    return _settings_view(row, tenant_id=tenant_id, workspace_id=workspace_id)
+    custom_models = await _get_custom_models(
+        db, user_id=current_user.id, tenant_id=tenant_id, workspace_id=workspace_id
+    )
+    return _settings_view(row, custom_models, tenant_id=tenant_id, workspace_id=workspace_id)
 
 
-@router.patch("/users/model-settings")
-async def patch_model_settings(
+@router.post("/users/model-settings/custom-models", status_code=201)
+async def create_custom_model(
     request: Request,
-    req: ModelSettingsPayload,
+    req: CustomModelCreatePayload,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    scope = build_tenant_metadata(request, user_id=current_user.id)
-    tenant_id = str(scope.get("tenant_id") or "default")
-    workspace_id = str(scope.get("workspace_id") or "default")
-    official_base_url, official_models = _validated_endpoint(
-        req.official, required=req.active_profile == "official"
-    )
-    relay_base_url, relay_models = _validated_endpoint(
-        req.relay, required=req.active_profile == "relay"
-    )
-    row = await db.scalar(
-        select(UserModelSettings).where(
-            UserModelSettings.user_id == current_user.id,
-            UserModelSettings.tenant_id == tenant_id,
-            UserModelSettings.workspace_id == workspace_id,
+    tenant_id, workspace_id = _scope(request, current_user.id)
+    name, provider, base_url, model = _validated_custom_payload(req)
+    api_key = req.api_key.strip()
+    if not api_key:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="API Key 不能为空")
+    count = await db.scalar(
+        select(func.count(UserCustomModel.id)).where(
+            UserCustomModel.user_id == current_user.id,
+            UserCustomModel.tenant_id == tenant_id,
+            UserCustomModel.workspace_id == workspace_id,
         )
     )
-    if row is None:
-        row = UserModelSettings(
-            id=str(uuid.uuid4()),
-            user_id=current_user.id,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-        )
-        db.add(row)
-        await db.flush()
-
-    row.active_profile = req.active_profile
-    row.official_provider = req.official.provider.strip()
-    row.official_base_url = official_base_url
-    row.official_model = req.official.model.strip()
-    row.official_models = list(official_models)
-    row.official_api_mode = req.official.api_mode
-    row.relay_provider = req.relay.provider.strip()
-    row.relay_base_url = relay_base_url
-    row.relay_model = req.relay.model.strip()
-    row.relay_models = list(relay_models)
-    row.relay_api_mode = req.relay.api_mode
-
-    if req.official.clear_api_key:
-        row.official_api_key_encrypted = None
-    elif req.official.api_key is not None and req.official.api_key.strip():
-        row.official_api_key_encrypted = encrypt_model_api_key(req.official.api_key.strip())
-    if req.relay.clear_api_key:
-        row.relay_api_key_encrypted = None
-    elif req.relay.api_key is not None and req.relay.api_key.strip():
-        row.relay_api_key_encrypted = encrypt_model_api_key(req.relay.api_key.strip())
-
-    environment = environment_defaults()
-    relay_environment = relay_defaults()
-    if req.active_profile == "official":
-        effective_key = decrypt_model_api_key(row.official_api_key_encrypted) or environment.api_key
-        if not effective_key:
-            raise AppException(ErrorCodes.PARAM_INVALID.code, message="原始服务尚未配置 API Key")
-    elif req.active_profile == "relay":
-        effective_key = (
-            decrypt_model_api_key(row.relay_api_key_encrypted) or relay_environment.api_key
-        )
-        if not effective_key:
-            raise AppException(
-                ErrorCodes.PARAM_INVALID.code, message="第三方中转站尚未配置 API Key"
-            )
-
+    if int(count or 0) >= 20:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="每个工作区最多添加 20 个模型")
+    await _ensure_unique_custom_name(
+        db,
+        name=name,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    row = UserCustomModel(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        name=name,
+        provider=provider,
+        base_url=base_url,
+        api_key_encrypted=encrypt_model_api_key(api_key),
+        model=model,
+        api_mode=req.api_mode,
+    )
+    db.add(row)
     await db.commit()
-    return _settings_view(row, tenant_id=tenant_id, workspace_id=workspace_id)
+    await db.refresh(row)
+    return _custom_model_view(row)
+
+
+@router.patch("/users/model-settings/custom-models/{model_id}")
+async def update_custom_model(
+    model_id: str,
+    request: Request,
+    req: CustomModelUpdatePayload,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    tenant_id, workspace_id = _scope(request, current_user.id)
+    row = await _get_scoped_custom_model(
+        db,
+        model_id=model_id,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    name, provider, base_url, model = _validated_custom_payload(req)
+    await _ensure_unique_custom_name(
+        db,
+        name=name,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        exclude_id=row.id,
+    )
+    row.name = name
+    row.provider = provider
+    row.base_url = base_url
+    row.model = model
+    row.api_mode = req.api_mode
+    if req.api_key is not None:
+        api_key = req.api_key.strip()
+        if not api_key:
+            raise AppException(ErrorCodes.PARAM_INVALID.code, message="API Key 不能为空")
+        row.api_key_encrypted = encrypt_model_api_key(api_key)
+    await db.commit()
+    await db.refresh(row)
+    return _custom_model_view(row)
+
+
+@router.delete("/users/model-settings/custom-models/{model_id}")
+async def delete_custom_model(
+    model_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    tenant_id, workspace_id = _scope(request, current_user.id)
+    custom = await _get_scoped_custom_model(
+        db,
+        model_id=model_id,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
+    settings_row = await _get_settings_row(
+        db, user_id=current_user.id, tenant_id=tenant_id, workspace_id=workspace_id
+    )
+    if settings_row and settings_row.active_custom_model_id == custom.id:
+        settings_row.active_source = "free"
+        settings_row.active_custom_model_id = None
+    await db.delete(custom)
+    await db.commit()
+    return {"deleted": True, "id": model_id}
 
 
 @router.patch("/users/model-settings/selection")
@@ -323,63 +427,41 @@ async def select_active_model(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """点击模型后原子切换；不覆盖设置页中尚未保存的端点编辑。"""
-    scope = build_tenant_metadata(request, user_id=current_user.id)
-    tenant_id = str(scope.get("tenant_id") or "default")
-    workspace_id = str(scope.get("workspace_id") or "default")
-    row = await db.scalar(
-        select(UserModelSettings).where(
-            UserModelSettings.user_id == current_user.id,
-            UserModelSettings.tenant_id == tenant_id,
-            UserModelSettings.workspace_id == workspace_id,
-        )
+    """原子切换下一次 Response 使用的免费或用户自定义模型。"""
+    tenant_id, workspace_id = _scope(request, current_user.id)
+    row = await _get_or_create_settings_row(
+        db, user_id=current_user.id, tenant_id=tenant_id, workspace_id=workspace_id
     )
-    if req.profile == "environment":
-        if row is not None:
-            row.active_profile = "environment"
-            await db.commit()
-        return _settings_view(row, tenant_id=tenant_id, workspace_id=workspace_id)
-
-    if row is None:
-        row = UserModelSettings(
-            id=str(uuid.uuid4()),
+    if req.source == "free":
+        defaults = free_defaults()
+        selected = str(req.model or defaults.model).strip()
+        if selected not in defaults.models:
+            raise AppException(
+                ErrorCodes.PARAM_INVALID.code, message="所选模型不在通用免费模型列表中"
+            )
+        if not defaults.api_key:
+            raise AppException(
+                ErrorCodes.PARAM_INVALID.code, message="通用免费模型尚未配置 API Key"
+            )
+        row.active_source = "free"
+        row.active_free_model = selected
+        row.active_custom_model_id = None
+    else:
+        if not req.custom_model_id:
+            raise AppException(ErrorCodes.PARAM_INVALID.code, message="请选择自定义模型")
+        custom = await _get_scoped_custom_model(
+            db,
+            model_id=req.custom_model_id,
             user_id=current_user.id,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
         )
-        db.add(row)
-        await db.flush()
-
-    current = _settings_view(row, tenant_id=tenant_id, workspace_id=workspace_id)
-    endpoint = current[req.profile]
-    selected_model = str(req.model or endpoint.get("model") or "").strip()
-    if not selected_model or selected_model not in set(endpoint.get("models") or []):
-        raise AppException(
-            ErrorCodes.PARAM_INVALID.code,
-            message="所选模型不在当前服务的候选列表中，请先保存模型候选。",
-        )
-    if not endpoint.get("has_api_key"):
-        raise AppException(
-            ErrorCodes.PARAM_INVALID.code,
-            message="当前模型服务尚未配置 API Key。",
-        )
-    try:
-        normalized_base_url = validate_base_url(str(endpoint.get("base_url") or ""))
-    except ValueError as exc:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
-
-    row.active_profile = req.profile
-    if req.profile == "official":
-        row.official_provider = str(endpoint.get("provider") or "")
-        row.official_base_url = normalized_base_url
-        row.official_model = selected_model
-        row.official_models = list(endpoint.get("models") or [])
-        row.official_api_mode = str(endpoint.get("api_mode") or "auto")
-    else:
-        row.relay_provider = str(endpoint.get("provider") or "")
-        row.relay_base_url = normalized_base_url
-        row.relay_model = selected_model
-        row.relay_models = list(endpoint.get("models") or [])
-        row.relay_api_mode = str(endpoint.get("api_mode") or "chat_completions")
+        if not decrypt_model_api_key(custom.api_key_encrypted):
+            raise AppException(ErrorCodes.PARAM_INVALID.code, message="自定义模型缺少 API Key")
+        row.active_source = "custom"
+        row.active_custom_model_id = custom.id
     await db.commit()
-    return _settings_view(row, tenant_id=tenant_id, workspace_id=workspace_id)
+    custom_models = await _get_custom_models(
+        db, user_id=current_user.id, tenant_id=tenant_id, workspace_id=workspace_id
+    )
+    return _settings_view(row, custom_models, tenant_id=tenant_id, workspace_id=workspace_id)

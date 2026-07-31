@@ -5,6 +5,8 @@ import pytest
 from infra.model_settings.service import (
     decrypt_model_api_key,
     encrypt_model_api_key,
+    free_defaults,
+    load_runtime_llm_profile,
     mask_api_key,
     normalize_models,
     validate_base_url,
@@ -72,27 +74,116 @@ def test_model_candidates_are_deduplicated_and_keep_selected_model():
 
 
 def test_model_settings_table_is_scoped_and_secret_is_never_plaintext():
-    from infra.storage.model_settings import UserModelSettings
+    from infra.storage.model_settings import UserCustomModel, UserModelSettings
 
     constraints = {constraint.name for constraint in UserModelSettings.__table__.constraints}
     assert "uq_user_model_settings_scope" in constraints
     assert "api_key" not in UserModelSettings.__table__.columns
     assert "official_api_key_encrypted" in UserModelSettings.__table__.columns
     assert "relay_api_key_encrypted" in UserModelSettings.__table__.columns
+    custom_constraints = {constraint.name for constraint in UserCustomModel.__table__.constraints}
+    assert "uq_user_custom_models_scope_name" in custom_constraints
+    assert "api_key" not in UserCustomModel.__table__.columns
+    assert "api_key_encrypted" in UserCustomModel.__table__.columns
 
 
-def test_relay_environment_names_are_supported(monkeypatch):
+def test_free_model_environment_names_are_supported(monkeypatch):
     from infra.config.settings import LLMSettings
 
-    monkeypatch.setenv("OTHER_LLM_MINSHORT_BASE_URL", "https://relay.example.com")
-    monkeypatch.setenv("OTHER_LLM_MINSHORT_API_KEY", "sk-test")
-    monkeypatch.setenv("OTHER_LLM_MODEL1", "gpt-5.6-sol")
-    monkeypatch.setenv("OTHER_LLM_MODEL2", "kimi-k3-kimi")
+    monkeypatch.setenv("FREE_LLM_MINSHORT_BASE_URL", "https://free.example.com")
+    monkeypatch.setenv("FREE_LLM_MINSHORT_API_KEY", "sk-test")
+    monkeypatch.setenv("FREE_LLM_MODEL1", "glm-5.2-free")
+    monkeypatch.setenv("FREE_LLM_MODEL2", "deepseek-v4-pro-free")
     cfg = LLMSettings(_env_file=None)
-    assert cfg.other_llm_minshort_base_url == "https://relay.example.com"
-    assert cfg.other_llm_minshort_api_key == "sk-test"
-    assert cfg.other_llm_model1 == "gpt-5.6-sol"
-    assert cfg.other_llm_model2 == "kimi-k3-kimi"
+    assert cfg.free_llm_minshort_base_url == "https://free.example.com"
+    assert cfg.free_llm_minshort_api_key == "sk-test"
+    assert cfg.free_llm_model1 == "glm-5.2-free"
+    assert cfg.free_llm_model2 == "deepseek-v4-pro-free"
+
+
+def test_free_defaults_expose_only_the_two_configured_models(monkeypatch):
+    from infra.model_settings import service
+
+    monkeypatch.setattr(service.settings, "free_llm_model1", "glm-5.2-free")
+    monkeypatch.setattr(service.settings, "free_llm_model2", "deepseek-v4-pro-free")
+    defaults = free_defaults()
+    assert defaults.models == ("glm-5.2-free", "deepseek-v4-pro-free")
+    assert defaults.model == "glm-5.2-free"
+
+
+@pytest.mark.asyncio
+async def test_runtime_uses_selected_free_model(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from infra.model_settings import service
+    from infra.storage.model_settings import UserModelSettings
+
+    monkeypatch.setattr(service.settings, "free_llm_minshort_base_url", "https://free.example")
+    monkeypatch.setattr(service.settings, "free_llm_minshort_api_key", "sk-free")
+    monkeypatch.setattr(service.settings, "free_llm_model1", "glm-5.2-free")
+    monkeypatch.setattr(service.settings, "free_llm_model2", "deepseek-v4-pro-free")
+    row = UserModelSettings(
+        user_id="user-1",
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+        active_source="free",
+        active_free_model="deepseek-v4-pro-free",
+    )
+    db = AsyncMock()
+    db.scalar.return_value = row
+
+    profile = await load_runtime_llm_profile(
+        db, user_id="user-1", tenant_id="tenant-1", workspace_id="workspace-1"
+    )
+
+    assert profile is not None
+    assert profile.source == "free"
+    assert profile.model == "deepseek-v4-pro-free"
+    assert profile.models == ("glm-5.2-free", "deepseek-v4-pro-free")
+
+
+@pytest.mark.asyncio
+async def test_runtime_custom_model_is_scoped_and_decrypted(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from infra.config.settings import get_settings
+    from infra.storage.model_settings import UserCustomModel, UserModelSettings
+
+    monkeypatch.setattr(get_settings(), "data_secret_key", "custom-model-runtime-secret")
+    settings_row = UserModelSettings(
+        user_id="user-1",
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+        active_source="custom",
+        active_custom_model_id="custom-1",
+    )
+    custom = UserCustomModel(
+        id="custom-1",
+        user_id="user-1",
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+        name="开发模型",
+        provider="Custom",
+        base_url="https://custom.example/v1",
+        api_key_encrypted=encrypt_model_api_key("sk-custom"),
+        model="custom-model",
+        api_mode="responses",
+    )
+    db = AsyncMock()
+    db.scalar.side_effect = [settings_row, custom]
+
+    profile = await load_runtime_llm_profile(
+        db, user_id="user-1", tenant_id="tenant-1", workspace_id="workspace-1"
+    )
+
+    assert profile is not None
+    assert profile.source == "custom"
+    assert profile.api_key == "sk-custom"
+    assert profile.model == "custom-model"
+    custom_query = str(db.scalar.await_args_list[1].args[0])
+    assert "user_custom_models.user_id" in custom_query
+    assert "user_custom_models.tenant_id" in custom_query
+    assert "user_custom_models.workspace_id" in custom_query
 
 
 def test_model_selection_endpoint_is_atomic_and_scoped():
@@ -100,10 +191,16 @@ def test_model_selection_endpoint_is_atomic_and_scoped():
 
     source = Path("gateway/api_gateway/routers/ui_settings.py").read_text(encoding="utf-8")
     assert '@router.patch("/users/model-settings/selection")' in source
-    assert "UserModelSettings.user_id == current_user.id" in source
+    assert "UserModelSettings.user_id == user_id" in source
     assert "UserModelSettings.tenant_id == tenant_id" in source
     assert "UserModelSettings.workspace_id == workspace_id" in source
-    assert "所选模型不在当前服务的候选列表中" in source
+    assert '@router.post("/users/model-settings/custom-models"' in source
+    assert '@router.patch("/users/model-settings/custom-models/{model_id}")' in source
+    assert '@router.delete("/users/model-settings/custom-models/{model_id}")' in source
+    assert "UserCustomModel.user_id == user_id" in source
+    assert "UserCustomModel.tenant_id == tenant_id" in source
+    assert "UserCustomModel.workspace_id == workspace_id" in source
+    assert "所选模型不在通用免费模型列表中" in source
 
 
 def test_kimi_k3_temperature_is_normalized_for_relay_compatibility():
