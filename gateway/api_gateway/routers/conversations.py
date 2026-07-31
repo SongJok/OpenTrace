@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.errors import AppException, ErrorCodes
+from infra.model_settings import snapshot_runtime_llm_selection
 from infra.responses.repository import add_outbox, append_event
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
@@ -521,6 +522,12 @@ async def edit_message_and_branch(
     new_id = f"resp_{uuid.uuid4().hex}"
     request_payload = dict(source.request_payload or {})
     request_payload["input"] = content
+    model_selection = await snapshot_runtime_llm_selection(
+        db,
+        user_id=source.user_id,
+        tenant_id=source.tenant_id,
+        workspace_id=source.workspace_id,
+    )
     branch = ResponseRecord(
         id=new_id,
         conversation_id=source.conversation_id,
@@ -533,7 +540,10 @@ async def edit_message_and_branch(
         mode="stream",
         model=source.model,
         request_payload=request_payload,
-        response_metadata=dict(source.response_metadata or {}),
+        response_metadata={
+            **dict(source.response_metadata or {}),
+            "model_selection": model_selection,
+        },
         goal_id=source.goal_id,
     )
     db.add(branch)

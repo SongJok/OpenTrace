@@ -30,6 +30,7 @@ from governance.chat_constitution import (
 )
 from infra.config.constants import DEFAULT_TIMEZONE
 from infra.errors import AppException, ErrorCodes
+from infra.model_settings import snapshot_runtime_llm_selection
 from infra.observability.metrics import RESPONSE_CREATED_TOTAL
 from infra.responses.repository import TERMINAL_STATUSES, add_outbox, append_event
 from infra.security.resource_scope import get_accessible_data_source
@@ -668,6 +669,12 @@ async def create_response(
     parent_id = await _resolve_parent(
         db, request=request, session=session, user=current_user, tenant_id=tenant_id
     )
+    model_selection = await snapshot_runtime_llm_selection(
+        db,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+    )
     response_id = f"resp_{uuid.uuid4().hex}"
     payload = request.model_dump(mode="json")
     record = ResponseRecord(
@@ -685,6 +692,7 @@ async def create_response(
         request_payload=payload,
         response_metadata={
             "opentrace": request.opentrace.model_dump(mode="json"),
+            "model_selection": model_selection,
             "org_id": org_id,
             "tenant_policy": _json_safe(tenant.get("tenant_policy") or {}),
         },

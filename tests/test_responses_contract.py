@@ -74,6 +74,26 @@ def test_background_requires_durable_storage_and_supports_streaming() -> None:
     assert hasattr(ResponseToolExecution, "idempotency_key")
 
 
+def test_response_model_selection_is_snapshotted_for_worker_recovery() -> None:
+    root = Path(__file__).resolve().parents[1]
+    router = (root / "gateway/api_gateway/routers/responses.py").read_text(encoding="utf-8")
+    worker = (root / "infra/responses/worker.py").read_text(encoding="utf-8")
+    conversations = (root / "gateway/api_gateway/routers/conversations.py").read_text(
+        encoding="utf-8"
+    )
+    scheduler = (root / "infra/responses/scheduler.py").read_text(encoding="utf-8")
+
+    assert "model_selection = await snapshot_runtime_llm_selection(" in router
+    assert '"model_selection": model_selection' in router
+    assert 'selection=(response.response_metadata or {}).get("model_selection")' in worker
+    edit_branch = conversations.split("async def edit_message_and_branch(", 1)[1].split(
+        "async def branch_conversation(", 1
+    )[0]
+    assert "model_selection = await snapshot_runtime_llm_selection(" in edit_branch
+    assert '"model_selection": model_selection' in edit_branch
+    assert "model_selection = await snapshot_runtime_llm_selection(" in scheduler
+
+
 def test_response_worker_claim_path_uses_expiry_and_attempt_guards() -> None:
     source = Path(__file__).resolve().parents[1] / "infra/responses/repository.py"
     text = source.read_text(encoding="utf-8")

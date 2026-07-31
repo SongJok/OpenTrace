@@ -9,6 +9,7 @@ from infra.model_settings.service import (
     load_runtime_llm_profile,
     mask_api_key,
     normalize_models,
+    snapshot_runtime_llm_selection,
     validate_base_url,
 )
 from model.model_gateway.gateway import LLMRole, ModelGateway, _build_config
@@ -143,6 +144,36 @@ async def test_runtime_uses_selected_free_model(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_response_snapshot_keeps_free_model_after_user_switches(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from infra.model_settings import service
+
+    monkeypatch.setattr(service.settings, "free_llm_minshort_base_url", "https://free.example")
+    monkeypatch.setattr(service.settings, "free_llm_minshort_api_key", "sk-free")
+    monkeypatch.setattr(service.settings, "free_llm_model1", "glm-5.2-free")
+    monkeypatch.setattr(service.settings, "free_llm_model2", "deepseek-v4-pro-free")
+    db = AsyncMock()
+
+    profile = await load_runtime_llm_profile(
+        db,
+        user_id="user-1",
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+        selection={
+            "version": 1,
+            "source": "free",
+            "model": "glm-5.2-free",
+            "custom_model_id": None,
+        },
+    )
+
+    assert profile is not None
+    assert profile.model == "glm-5.2-free"
+    db.scalar.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_runtime_custom_model_is_scoped_and_decrypted(monkeypatch):
     from unittest.mock import AsyncMock
 
@@ -184,6 +215,87 @@ async def test_runtime_custom_model_is_scoped_and_decrypted(monkeypatch):
     assert "user_custom_models.user_id" in custom_query
     assert "user_custom_models.tenant_id" in custom_query
     assert "user_custom_models.workspace_id" in custom_query
+
+
+@pytest.mark.asyncio
+async def test_response_snapshot_uses_original_scoped_custom_model(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from infra.config.settings import get_settings
+    from infra.storage.model_settings import UserCustomModel
+
+    monkeypatch.setattr(get_settings(), "data_secret_key", "custom-model-snapshot-secret")
+    custom = UserCustomModel(
+        id="custom-original",
+        user_id="user-1",
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+        name="原模型",
+        provider="Custom",
+        base_url="https://custom.example/v1",
+        api_key_encrypted=encrypt_model_api_key("sk-original"),
+        model="original-model",
+        api_mode="responses",
+    )
+    db = AsyncMock()
+    db.scalar.return_value = custom
+
+    profile = await load_runtime_llm_profile(
+        db,
+        user_id="user-1",
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+        selection={
+            "version": 1,
+            "source": "custom",
+            "model": "original-model",
+            "custom_model_id": "custom-original",
+        },
+    )
+
+    assert profile is not None
+    assert profile.model == "original-model"
+    assert profile.api_key == "sk-original"
+    custom_query = str(db.scalar.await_args.args[0])
+    assert "user_custom_models.user_id" in custom_query
+    assert "user_custom_models.tenant_id" in custom_query
+    assert "user_custom_models.workspace_id" in custom_query
+
+
+@pytest.mark.asyncio
+async def test_model_selection_snapshot_contains_no_secret(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from infra.model_settings import service
+    from infra.storage.model_settings import UserModelSettings
+
+    monkeypatch.setattr(service.settings, "free_llm_minshort_api_key", "sk-never-persist")
+    monkeypatch.setattr(service.settings, "free_llm_model1", "glm-5.2-free")
+    monkeypatch.setattr(service.settings, "free_llm_model2", "deepseek-v4-pro-free")
+    settings_row = UserModelSettings(
+        user_id="user-1",
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+        active_source="free",
+        active_free_model="deepseek-v4-pro-free",
+    )
+    db = AsyncMock()
+    db.scalar.return_value = settings_row
+
+    snapshot = await snapshot_runtime_llm_selection(
+        db,
+        user_id="user-1",
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+    )
+
+    assert snapshot == {
+        "version": 1,
+        "source": "free",
+        "model": "deepseek-v4-pro-free",
+        "custom_model_id": None,
+    }
+    assert "key" not in str(snapshot).lower()
 
 
 def test_model_selection_endpoint_is_atomic_and_scoped():

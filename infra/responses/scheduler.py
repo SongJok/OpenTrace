@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from infra.model_settings import snapshot_runtime_llm_selection
 from infra.observability.logger import get_logger
 from infra.responses.repository import add_outbox, append_event
 from infra.storage.database import AsyncSessionLocal
@@ -292,6 +293,12 @@ async def queue_task_run(
         task.conversation_id = session.id
 
     response_id = f"resp_{uuid.uuid4().hex}"
+    model_selection = await snapshot_runtime_llm_selection(
+        db,
+        user_id=task.user_id,
+        tenant_id=task.tenant_id,
+        workspace_id=task.workspace_id,
+    )
     response = ResponseRecord(
         id=response_id,
         conversation_id=session.id,
@@ -319,6 +326,7 @@ async def queue_task_run(
             },
         },
         response_metadata={
+            "model_selection": model_selection,
             "scheduled_task_id": task.id,
             "task_run_id": run.id,
             "task_trigger": trigger,

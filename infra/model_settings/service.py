@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
@@ -108,11 +110,15 @@ def decrypt_model_api_key(value: str | None) -> str:
     return decrypt_data_source_secret(value)
 
 
-def _free_profile(row: UserModelSettings | None) -> RuntimeLLMProfile | None:
+def _free_profile(
+    row: UserModelSettings | None,
+    *,
+    selected_model: str | None = None,
+) -> RuntimeLLMProfile | None:
     defaults = free_defaults()
     if not defaults.base_url or not defaults.model:
         return None
-    selected = str(row.active_free_model or "").strip() if row else ""
+    selected = str(selected_model or (row.active_free_model if row else "") or "").strip()
     if selected not in defaults.models:
         selected = defaults.model
     return RuntimeLLMProfile(
@@ -138,13 +144,33 @@ def _custom_profile(row: UserCustomModel) -> RuntimeLLMProfile:
     )
 
 
-async def load_runtime_llm_profile(
+async def _load_scoped_custom_model(
+    db: AsyncSession,
+    *,
+    model_id: str,
+    user_id: str,
+    tenant_id: str,
+    workspace_id: str,
+) -> UserCustomModel | None:
+    return await db.scalar(
+        select(UserCustomModel).where(
+            UserCustomModel.id == model_id,
+            UserCustomModel.user_id == user_id,
+            UserCustomModel.tenant_id == tenant_id,
+            UserCustomModel.workspace_id == workspace_id,
+        )
+    )
+
+
+async def snapshot_runtime_llm_selection(
     db: AsyncSession,
     *,
     user_id: str,
     tenant_id: str,
     workspace_id: str,
-) -> RuntimeLLMProfile | None:
+) -> dict[str, Any]:
+    """固定新 Response 的模型选择，不复制 API Key 等敏感配置。"""
+
     row = await db.scalar(
         select(UserModelSettings).where(
             UserModelSettings.user_id == user_id,
@@ -153,13 +179,74 @@ async def load_runtime_llm_profile(
         )
     )
     if row is not None and row.active_source == "custom" and row.active_custom_model_id:
-        custom = await db.scalar(
-            select(UserCustomModel).where(
-                UserCustomModel.id == row.active_custom_model_id,
-                UserCustomModel.user_id == user_id,
-                UserCustomModel.tenant_id == tenant_id,
-                UserCustomModel.workspace_id == workspace_id,
+        custom = await _load_scoped_custom_model(
+            db,
+            model_id=row.active_custom_model_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+        )
+        if custom is not None:
+            return {
+                "version": 1,
+                "source": "custom",
+                "model": custom.model,
+                "custom_model_id": custom.id,
+            }
+
+    defaults = free_defaults()
+    selected = str(row.active_free_model or "").strip() if row else ""
+    if selected not in defaults.models:
+        selected = defaults.model
+    return {
+        "version": 1,
+        "source": "free",
+        "model": selected,
+        "custom_model_id": None,
+    }
+
+
+async def load_runtime_llm_profile(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    tenant_id: str,
+    workspace_id: str,
+    selection: Mapping[str, Any] | None = None,
+) -> RuntimeLLMProfile | None:
+    if selection is not None:
+        source = str(selection.get("source") or "")
+        if source == "custom":
+            custom_model_id = str(selection.get("custom_model_id") or "")
+            if not custom_model_id:
+                raise ValueError("Response 模型快照缺少自定义模型 ID")
+            custom = await _load_scoped_custom_model(
+                db,
+                model_id=custom_model_id,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
             )
+            if custom is None:
+                raise ValueError("Response 固定的自定义模型已不存在")
+            return _custom_profile(custom)
+        if source == "free":
+            return _free_profile(None, selected_model=str(selection.get("model") or ""))
+
+    row = await db.scalar(
+        select(UserModelSettings).where(
+            UserModelSettings.user_id == user_id,
+            UserModelSettings.tenant_id == tenant_id,
+            UserModelSettings.workspace_id == workspace_id,
+        )
+    )
+    if row is not None and row.active_source == "custom" and row.active_custom_model_id:
+        custom = await _load_scoped_custom_model(
+            db,
+            model_id=row.active_custom_model_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
         )
         if custom is not None:
             return _custom_profile(custom)

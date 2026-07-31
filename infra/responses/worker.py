@@ -251,6 +251,7 @@ async def execute_response(response_id: str | None = None) -> bool:
                 user_id=response.user_id,
                 tenant_id=response.tenant_id,
                 workspace_id=response.workspace_id,
+                selection=(response.response_metadata or {}).get("model_selection"),
             )
             if runtime_profile is not None:
                 await emit(
