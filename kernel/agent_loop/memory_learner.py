@@ -57,6 +57,8 @@ _TRANSIENT_MARKERS = re.compile(
 )
 
 _FACT_SUBJECTS = {
+    "名字",
+    "称呼",
     "代号",
     "时区",
     "语言",
@@ -185,9 +187,10 @@ class MemoryLearner:
             learning_mode = str(
                 candidate.get("_learning_mode") or ("explicit" if explicit else "model")
             )
+            authoritative = explicit or learning_mode == "correction"
             status = self._candidate_status(
                 confidence=confidence,
-                explicit=explicit,
+                explicit=authoritative,
                 learning_mode=learning_mode,
             )
             constitution_decision = evaluate_memory_constitution(
@@ -243,7 +246,7 @@ class MemoryLearner:
                 memory_key,
                 content,
             )
-            if conflict and conflict.content != content and not explicit:
+            if conflict and conflict.content != content and not authoritative:
                 status = "pending"
             row = await self._find_pending_candidate(
                 db,
@@ -292,7 +295,7 @@ class MemoryLearner:
                         learning_mode=learning_mode,
                     )
                 row.status = status
-            if conflict and conflict.content != content and not explicit:
+            if conflict and conflict.content != content and not authoritative:
                 row.status = "pending"
             required_observations = int(constitution.rules["proactive_activation_observations"])
             if (
@@ -362,7 +365,7 @@ class MemoryLearner:
                     confidence=confidence,
                     salience=row.salience,
                     source_response_id=response.id,
-                    supersedes_id=conflict.id if conflict and explicit else None,
+                    supersedes_id=conflict.id if conflict and authoritative else None,
                     expires_at=memory_expiry(constitution),
                 )
                 db.add(memory)
@@ -372,7 +375,7 @@ class MemoryLearner:
                     memory=memory,
                     evidence_response_id=response.id,
                 )
-                if conflict and explicit:
+                if conflict and authoritative:
                     conflict.status = "superseded"
                     conflict.enabled = False
                 evidence.memory_id = memory.id
@@ -454,7 +457,94 @@ class MemoryLearner:
     def deterministic_candidates(cls, text: str) -> list[dict[str, Any]]:
         """返回无需模型即可审计和落库的稳定记忆候选。"""
 
-        return [*cls._extract_explicit(text), *cls._extract_proactive(text)]
+        return [
+            *cls._extract_explicit(text),
+            *cls._extract_corrections(text),
+            *cls._extract_proactive(text),
+        ]
+
+    @staticmethod
+    def _extract_corrections(text: str) -> list[dict[str, Any]]:
+        """提取用户对稳定个人事实的明确更正，允许以可审计方式替代旧值。"""
+
+        without_code = re.sub(r"```[\s\S]*?```", " ", text)
+        statements = [
+            part.strip(" \t\r\n-•")
+            for part in re.split(r"(?<=[。！？!?])\s*|\n+", without_code)
+            if part.strip()
+        ]
+        candidates: list[dict[str, Any]] = []
+        for statement in statements:
+            if _TRANSIENT_MARKERS.search(statement):
+                continue
+            prefixed = re.match(r"^(?:更正|纠正|更新|修改)(?:一下)?[：:，, ]*", statement)
+            normalized = (statement[prefixed.end() :] if prefixed else statement).rstrip(
+                " \t。！？!?"
+            )
+            negative_match = re.match(
+                r"^我的(?P<subject>[^，。:：]{1,20}?)(?:不再是|不是)\s*"
+                r"[^，。！？!?]{1,100}?(?:[，,]?而是|[，,]?现在是)\s*"
+                r"(?P<value>[^。！？!?]{1,160})$",
+                normalized,
+                flags=re.I,
+            )
+            now_match = re.match(
+                r"^我的(?P<subject>[^，。:：]{1,20}?)现在(?:改为|改成|换成|是|为)\s*"
+                r"(?P<value>[^。！？!?]{1,160})$",
+                normalized,
+                flags=re.I,
+            )
+            change_match = re.match(
+                r"^我的(?P<subject>[^，。:：]{1,20}?)(?:改为|改成|换成)\s*"
+                r"(?P<value>[^。！？!?]{1,160})$",
+                normalized,
+                flags=re.I,
+            )
+            direct_match = (
+                re.match(
+                    r"^我的(?P<subject>[^，。:：]{1,20}?)(?:是|为)\s*"
+                    r"(?P<value>[^。！？!?]{1,160})$",
+                    normalized,
+                    flags=re.I,
+                )
+                if prefixed
+                else None
+            )
+            selected = negative_match or now_match or change_match or direct_match
+            if selected is None:
+                continue
+            subject = selected.group("subject").strip()
+            value = selected.group("value").strip(" \t，,。！!")
+            if subject not in _FACT_SUBJECTS or not value:
+                continue
+            content = f"我的{subject}是 {value}"
+            if MemoryLearner._contains_secret(content) or MemoryLearner._contains_sensitive(
+                content
+            ):
+                continue
+            memory_key = (
+                "profile.name"
+                if subject in {"名字", "称呼"}
+                else f"fact.{sha256(subject.lower().encode('utf-8')).hexdigest()[:16]}"
+            )
+            candidates.append(
+                {
+                    "content": content,
+                    "key": memory_key,
+                    "kind": (
+                        "profile"
+                        if subject in {"名字", "称呼", "职业", "岗位", "职位", "角色"}
+                        else "fact"
+                    ),
+                    "confidence": 0.98,
+                    "salience": 0.9,
+                    "explicit": False,
+                    "sensitive": False,
+                    "scope_type": "user",
+                    "_learning_mode": "correction",
+                }
+            )
+        return candidates[:4]
 
     @staticmethod
     def _extract_proactive(text: str) -> list[dict[str, Any]]:

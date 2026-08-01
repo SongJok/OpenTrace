@@ -70,6 +70,7 @@ def test_memory_e2e_covers_cross_conversation_and_isolation() -> None:
     assert "无需明确指令的主动学习与跨会话召回" in source
     assert "敏感信息与一次性请求不会持久化" in source
     assert "冲突记忆替代与旧值失效" in source
+    assert "无需记住指令的明确纠正会替代旧记忆" in source
 
 
 def test_rag_memory_retrieval_keeps_runtime_scope_and_lifecycle_filters() -> None:

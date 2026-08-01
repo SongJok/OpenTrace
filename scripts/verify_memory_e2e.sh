@@ -397,6 +397,26 @@ assert automatic_memory["id"] not in response_memory_ids(updated_recall)
 assert updated_marker in updated_recall.get("output_text", "")
 print("[PASS] 冲突记忆替代与旧值失效")
 
+correction_marker = f"明确纠正-{suffix}"
+correction_conversation = create_conversation()
+respond(
+    correction_conversation,
+    f"更正一下，我的常用技术栈是 {correction_marker}。",
+)
+corrected_memory = wait_for_memory(correction_marker, should_exist=True)
+assert corrected_memory is not None
+memory_ids.append(corrected_memory["id"])
+memory_rows = {item["id"]: item for item in memories()}
+assert memory_rows[reinforced_memory["id"]]["status"] == "superseded"
+assert memory_rows[reinforced_memory["id"]]["enabled"] is False
+assert corrected_memory["supersedes_id"] == reinforced_memory["id"]
+correction_recall_conversation = create_conversation()
+correction_recall = respond(correction_recall_conversation, "我的常用技术栈是什么？")
+assert corrected_memory["id"] in response_memory_ids(correction_recall)
+assert reinforced_memory["id"] not in response_memory_ids(correction_recall)
+assert correction_marker in correction_recall.get("output_text", "")
+print("[PASS] 无需记住指令的明确纠正会替代旧记忆")
+
 request(f"/api/v2/memories/{user_memory_id}", "PATCH", {"enabled": False})
 disabled_memory_conversation = create_conversation()
 disabled_memory_result = respond(disabled_memory_conversation, "我的记忆验收代号是什么？")

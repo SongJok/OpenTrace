@@ -811,7 +811,7 @@ class ContextAssembler:
         while current_id and current_id not in seen and len(chain) < self.max_history_items:
             seen.add(current_id)
             row = await db.get(ResponseRecord, current_id)
-            if row is None or row.conversation_id != response.conversation_id:
+            if not self._same_response_scope(row, response):
                 break
             chain.append(row.id)
             current_id = row.parent_response_id
@@ -887,6 +887,20 @@ class ContextAssembler:
                     }
                 )
         return result[-self.max_history_items :]
+
+    @staticmethod
+    def _same_response_scope(
+        candidate: ResponseRecord | None,
+        response: ResponseRecord,
+    ) -> bool:
+        """父链必须同时属于同一用户、租户、工作区和会话。"""
+
+        if candidate is None:
+            return False
+        return all(
+            getattr(candidate, field, None) == getattr(response, field, None)
+            for field in ("conversation_id", "user_id", "tenant_id", "workspace_id")
+        )
 
     def _pack_messages(
         self,
