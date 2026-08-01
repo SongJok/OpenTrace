@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from kernel.agent_loop.context import ContextAssembler
 from kernel.agent_loop.memory_learner import MemoryLearner
 from kernel.agent_loop.summarizer import ConversationSummarizer
+from kernel.agent_loop.write_intent import is_contextual_follow_up
 
 
 def test_structured_checkpoint_is_normalized_and_rendered() -> None:
@@ -96,6 +97,15 @@ def test_memory_correction_uses_stable_key_and_authoritative_mode() -> None:
     assert negative[0]["content"] == "我的技术栈是 TypeScript 和 React"
 
 
+def test_explicit_memory_and_correction_share_the_same_stable_key() -> None:
+    original = MemoryLearner.deterministic_candidates("请记住：我的代号是苍穹-8041。")
+    corrected = MemoryLearner.deterministic_candidates("更正一下，我的代号是星轨-9152。")
+
+    assert original[0]["key"] == corrected[0]["key"]
+    assert original[0]["key"].startswith("fact.")
+    assert corrected[0]["_learning_mode"] == "correction"
+
+
 def test_transient_statement_is_never_promoted_as_correction() -> None:
     candidates = MemoryLearner.deterministic_candidates("今天我的技术栈改为 Rust")
 
@@ -108,3 +118,30 @@ def test_name_correction_reuses_existing_profile_key() -> None:
 
     assert original[0]["key"] == corrected[0]["key"] == "profile.name"
     assert corrected[0]["content"] == "我的名字是 林舟"
+
+
+def test_contextual_follow_up_expands_memory_retrieval_from_current_branch() -> None:
+    history = [
+        {"role": "user", "content": "公司的印章借用流程是什么？"},
+        {"role": "assistant", "content": "请在钉钉 OA 审批中提交印章借用申请。"},
+    ]
+
+    expanded, used_history = ContextAssembler._expanded_retrieval_query(
+        "那具体怎么操作？",
+        history,
+    )
+
+    assert is_contextual_follow_up("那具体怎么操作？") is True
+    assert used_history is True
+    assert "印章借用流程" in expanded
+    assert "钉钉 OA 审批" in expanded
+
+
+def test_standalone_memory_query_is_not_polluted_by_old_branch_content() -> None:
+    expanded, used_history = ContextAssembler._expanded_retrieval_query(
+        "财务报销制度是什么？",
+        [{"role": "user", "content": "上一个无关问题"}],
+    )
+
+    assert expanded == "财务报销制度是什么？"
+    assert used_history is False

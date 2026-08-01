@@ -161,6 +161,17 @@ def test_direct_memory_projection_never_handles_memory_mutation() -> None:
     )
 
 
+def test_direct_memory_projection_accepts_value_only_presentation_suffix() -> None:
+    from kernel.agent_loop.runner import AgentLoop
+
+    answer = AgentLoop._direct_memory_answer(
+        "我的代号是什么？只回答当前有效值。",
+        [{"id": "memory-current", "content": "我的代号是 星轨-9152"}],
+    )
+
+    assert answer == "星轨-9152"
+
+
 def test_disabled_memory_learning_cannot_claim_persistence() -> None:
     from kernel.agent_loop.contracts import ExecutionProfile, IntentPlan, SideEffect
     from kernel.agent_loop.runner import AgentLoop

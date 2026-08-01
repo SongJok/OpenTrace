@@ -110,6 +110,94 @@ async def test_company_brain_retrieval_explores_only_query_relevant_units() -> N
     assert recall.manifest()["isolation"] == "internal_only"
 
 
+def test_company_brain_rejects_planner_and_offline_fallback_outputs() -> None:
+    assert (
+        company_brain._processed_source_issue(
+            '{"subtasks":[{"agent_type":"tool","query":"内部资料"}],"max_parallel":1}'
+        )
+        == "planner_fallback_output"
+    )
+    assert (
+        company_brain._processed_source_issue(
+            '{"subtasks":[{"agent_type":"tool","query":"第一行\n第二行"}],'
+            '"merge_strategy":"prioritized"}'
+        )
+        == "planner_fallback_output"
+    )
+    assert (
+        company_brain._processed_source_issue("我目前处于离线降级模式，暂时无法调用模型服务")
+        == "offline_fallback_output"
+    )
+    assert company_brain._processed_source_issue('["审批必须留痕"]') == (
+        "unexpected_structured_output"
+    )
+    assert company_brain._processed_source_issue('"审批必须留痕"') == (
+        "unexpected_structured_output"
+    )
+    assert company_brain._processed_source_issue("## 制度\n\n- 审批必须保留审计记录") is None
+
+
+def test_employee_version_payload_does_not_expose_company_brain_corpus() -> None:
+    version = SimpleNamespace(
+        id="version-1",
+        company_id="company-1",
+        version=1,
+        status="published",
+        content="内部公司事实",
+        char_count=6,
+        long_term_chars=6,
+        medium_term_chars=0,
+        short_term_chars=0,
+        source_ids=["source-1"],
+        trigger="source_ingestion",
+        change_summary="初次发布",
+        published_at=None,
+        created_at=None,
+    )
+
+    payload = company_brain.company_brain_version_payload(version, include_content=False)
+
+    assert payload is not None
+    assert payload["content"] == ""
+    assert payload["source_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_company_brain_model_completion_uses_query_fallback_and_rejects_placeholder(
+    monkeypatch,
+) -> None:
+    gateway = AsyncMock()
+    gateway.complete.return_value = SimpleNamespace(
+        content="离线占位",
+        model="offline-fallback",
+        raw={"fallback": True},
+    )
+    monkeypatch.setattr(company_brain, "get_model_gateway", lambda: gateway)
+
+    with pytest.raises(RuntimeError, match="company_brain_model_unavailable"):
+        await company_brain._model_complete("整理", "资料", max_output_tokens=100)
+
+    call = gateway.complete.await_args
+    assert call.kwargs["role"] == company_brain.LLMRole.COMPRESS
+    assert call.kwargs["fallback_roles"] == [company_brain.LLMRole.QUERY]
+
+
+@pytest.mark.asyncio
+async def test_company_brain_profile_lookup_applies_enterprise_scope() -> None:
+    db = AsyncMock()
+    db.scalar.return_value = None
+
+    await company_brain.get_company_profile(
+        db,
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+    )
+
+    statement = str(db.scalar.await_args.args[0])
+    assert "company_profiles.tenant_id" in statement
+    assert "company_profiles.workspace_id" in statement
+
+
 @pytest.mark.parametrize(
     ("content", "key", "kind", "category"),
     [
@@ -189,6 +277,20 @@ def test_company_brain_full_stack_contract() -> None:
     assert 'revision = "r0012_company_brain"' in migration
     assert 'down_revision = "r0011_user_custom_models"' in migration
     assert "memory/COMPANY.md" in ignore
-    assert "每天 05:00 自主学习" in frontend
+    assert "每天 05:00 提炼候选" in frontend
+    assert "apiApproveCompanyBrainSource" in frontend
+    assert "tenant_workspace_company_and_user_personal" in context
     assert "TRUNCATE TABLE" in clear_script
     assert "alembic_version" in clear_script
+
+
+def test_company_source_status_is_flushed_before_recompilation() -> None:
+    source = (ROOT / "services/company_brain.py").read_text(encoding="utf-8")
+    processing = source.index("async def process_pending_company_sources")
+    compilation = source.index(
+        'trigger="source_reconciliation" if rebuild_requested else "source_ingestion"',
+        processing,
+    )
+    flush = source.rindex("await db.flush()", processing, compilation)
+
+    assert flush < compilation

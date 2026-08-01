@@ -39,6 +39,7 @@ export interface CompanyBrainFolderItem {
   default_tier?: CompanyBrainTier
   source_count: number
   ready_count: number
+  review_count?: number
 }
 
 export interface CompanyBrainSourceItem {
@@ -51,11 +52,12 @@ export interface CompanyBrainSourceItem {
   processed_content: string
   source_content?: string
   source_preview?: string
-  status: 'pending' | 'processing' | 'retry' | 'ready' | 'error'
+  status: 'pending' | 'processing' | 'retry' | 'review' | 'ready' | 'rebuild' | 'inactive' | 'error'
   active: boolean
   salience: number
   processing_attempts: number
   error_message?: string | null
+  quality_issue?: string | null
   processed_at?: string | null
   created_at?: string | null
 }
@@ -146,6 +148,18 @@ export async function apiUploadCompanyBrainSource(token: string, payload: {
 export async function apiDeactivateCompanyBrainSource(token: string, sourceId: string): Promise<void> {
   const res = await apiFetchResponses(`/admin/company/brain/sources/${encodeURIComponent(sourceId)}`, { method: 'DELETE', headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '停用企业大脑来源失败'))
+}
+
+export async function apiApproveCompanyBrainSource(token: string, sourceId: string): Promise<CompanyBrainSourceItem> {
+  const res = await apiFetchResponses(`/admin/company/brain/sources/${encodeURIComponent(sourceId)}/approve`, { method: 'POST', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '审核企业大脑候选失败'))
+  return res.json()
+}
+
+export async function apiRetryCompanyBrainSource(token: string, sourceId: string): Promise<CompanyBrainSourceItem> {
+  const res = await apiFetchResponses(`/admin/company/brain/sources/${encodeURIComponent(sourceId)}/retry`, { method: 'POST', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '重新处理企业大脑来源失败'))
+  return res.json()
 }
 
 export async function apiSaveCompanyBrainDraft(token: string, content: string, changeSummary: string): Promise<CompanyBrainVersionItem> {

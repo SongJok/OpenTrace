@@ -498,10 +498,10 @@ class ModelGateway:
                         latency_ms=latency_ms,
                     )
                     last_exc = exc
-                    # A payment/quota/auth/model error will not be repaired by
-                    # another Qwen role using the same provider account.
-                    if self._classify_exception(exc) in {"auth", "model_not_found"}:
-                        break
+                    # 不同角色可能映射到同一账号下的不同模型配额。即使主角色返回
+                    # 认证、配额或模型错误，也要继续尝试显式 fallback；每个角色自身
+                    # 的熔断器仍会阻止持续重试故障端点。
+                    continue
 
             logger.warning(
                 "All LLM candidates failed; using offline fallback when policy allows",

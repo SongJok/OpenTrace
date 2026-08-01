@@ -447,8 +447,8 @@ class MemoryLearner:
         try:
             result = await get_model_gateway().complete(
                 [LLMMessage(role="system", content=prompt), LLMMessage(role="user", content=text)],
-                role=LLMRole.PLANNING,
-                fallback_roles=[],
+                role=LLMRole.COMPRESS,
+                fallback_roles=[LLMRole.QUERY],
                 max_output_tokens=1000,
                 store=False,
             )
@@ -517,7 +517,22 @@ class MemoryLearner:
                 ("审批", "批准", "操作习惯", "工作流习惯", "approval", "operation_habit"),
             ),
             ("template", ("模板", "片段", "固定格式", "template", "snippet")),
-            ("calendar", ("日历", "日程", "会议时间", "calendar", "schedule")),
+            (
+                "calendar",
+                (
+                    "日历",
+                    "日程",
+                    "会议时间",
+                    "工作时间",
+                    "办公时间",
+                    "可用时间",
+                    "时区",
+                    "calendar",
+                    "schedule",
+                    "timezone",
+                    "working_hours",
+                ),
+            ),
             ("task", ("任务", "待办", "todo", "task")),
         )
         for category, markers in rules:
@@ -584,20 +599,15 @@ class MemoryLearner:
                 content
             ):
                 continue
-            memory_key = (
-                "profile.name"
-                if subject in {"名字", "称呼"}
-                else f"fact.{sha256(subject.lower().encode('utf-8')).hexdigest()[:16]}"
+            kind = (
+                "profile" if subject in {"名字", "称呼", "职业", "岗位", "职位", "角色"} else "fact"
             )
+            memory_key = MemoryLearner._subject_memory_key(subject, kind=kind)
             candidates.append(
                 {
                     "content": content,
                     "key": memory_key,
-                    "kind": (
-                        "profile"
-                        if subject in {"名字", "称呼", "职业", "岗位", "职位", "角色"}
-                        else "fact"
-                    ),
+                    "kind": kind,
                     "confidence": 0.98,
                     "salience": 0.9,
                     "explicit": False,
@@ -932,11 +942,10 @@ class MemoryLearner:
             lowered,
         )
         subject = subject_match.group("subject").strip() if subject_match else content[:80]
-        digest = sha256(subject.lower().encode("utf-8")).hexdigest()[:20]
         return [
             {
                 "content": content,
-                "key": f"explicit.{kind}.{digest}",
+                "key": MemoryLearner._subject_memory_key(subject, kind=kind),
                 "kind": kind,
                 "confidence": 1.0,
                 "salience": 0.9,
@@ -946,6 +955,31 @@ class MemoryLearner:
                 "_learning_mode": "explicit",
             }
         ]
+
+    @staticmethod
+    def _subject_memory_key(subject: str, *, kind: str) -> str:
+        """为同一个人主题生成跨学习模式稳定的冲突键。"""
+
+        normalized = subject.strip().lower()
+        if normalized in {"名字", "称呼", "name"}:
+            return "profile.name"
+        if normalized in {"职业", "岗位", "职位", "job", "occupation"}:
+            return "profile.occupation"
+        if normalized in {"时区", "常用时区", "默认时区", "所在地时区", "timezone"}:
+            return "profile.timezone"
+        digest = sha256(normalized.encode("utf-8")).hexdigest()[:16]
+        return f"{kind}.{digest}"
+
+    @staticmethod
+    def _memory_subject(content: str) -> str | None:
+        match = re.search(
+            r"我的(?P<subject>[^，。,:：]{1,40}?)(?:是|为|:|：)", content, flags=re.I
+        ) or re.search(
+            r"my\s+(?P<subject>[a-z0-9 _-]{1,40}?)\s+(?:is|=|:)",
+            content,
+            flags=re.I,
+        )
+        return match.group("subject").strip().lower() if match else None
 
     @staticmethod
     def _contains_secret(text: str) -> bool:
@@ -1006,7 +1040,7 @@ class MemoryLearner:
     ) -> UserMemory | None:
         if not memory_key:
             return None
-        return await db.scalar(
+        conflict = await db.scalar(
             select(UserMemory)
             .where(
                 UserMemory.user_id == user_id,
@@ -1019,6 +1053,34 @@ class MemoryLearner:
                 UserMemory.content != content,
             )
             .order_by(UserMemory.updated_at.desc())
+        )
+        if conflict is not None:
+            return conflict
+
+        # 兼容旧版 explicit.<kind>.<hash> 键；同一“我的 X 是 Y”主题仍应被更正替代。
+        subject = MemoryLearner._memory_subject(content)
+        if subject is None:
+            return None
+        rows = (
+            (
+                await db.execute(
+                    select(UserMemory).where(
+                        UserMemory.user_id == user_id,
+                        UserMemory.tenant_id == tenant_id,
+                        UserMemory.workspace_id == workspace_id,
+                        UserMemory.scope_type == scope_type,
+                        UserMemory.scope_id == scope_id,
+                        UserMemory.status == "active",
+                        UserMemory.enabled.is_(True),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return next(
+            (row for row in rows if MemoryLearner._memory_subject(row.content) == subject),
+            None,
         )
 
     @staticmethod

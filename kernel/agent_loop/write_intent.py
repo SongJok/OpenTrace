@@ -37,7 +37,22 @@ def is_contextual_follow_up(query: str) -> bool:
     normalized = re.sub(r"\s+", "", query or "")
     return len(normalized) <= 24 and any(
         marker in normalized
-        for marker in ("这个", "那个", "刚才", "上一个", "上一条", "照此", "按上述")
+        for marker in (
+            "这个",
+            "那个",
+            "刚才",
+            "上一个",
+            "上一条",
+            "上一轮",
+            "照此",
+            "按上述",
+            "继续说",
+            "接着说",
+            "再详细",
+            "具体怎么",
+            "然后呢",
+            "那怎么",
+        )
     )
 
 

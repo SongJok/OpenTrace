@@ -2186,8 +2186,26 @@ class AgentLoop:
         if any(marker in normalized for marker in compound_markers):
             return None
         question_end = max(query.rfind("？"), query.rfind("?"))
-        if question_end >= 0 and query[question_end + 1 :].strip():
-            return None
+        trailing_instruction = query[question_end + 1 :].strip() if question_end >= 0 else ""
+        value_only = False
+        if trailing_instruction:
+            normalized_trailing = re.sub(r"[\s，,。.!！]", "", trailing_instruction).lower()
+            value_only = normalized_trailing in {
+                "只回答值",
+                "只回答当前值",
+                "只回答有效值",
+                "只回答当前有效值",
+            }
+            allowed_trailing = value_only or normalized_trailing in {
+                "请直接回答",
+                "直接回答",
+                "请简短回答",
+                "简短回答",
+                "不要解释",
+                "无需解释",
+            }
+            if not allowed_trailing:
+                return None
         chinese_question = "我的" in normalized and any(
             marker in normalized
             for marker in ("是什么", "叫什么", "多少", "哪个", "哪一个", "还记得", "记得吗")
@@ -2213,6 +2231,10 @@ class AgentLoop:
             return None
         selected = max(ranked, key=lambda item: (item[0], item[1]))[2]
         content = str(selected.get("content") or "").strip().rstrip("。.!！")
+        if value_only:
+            value_match = re.search(r"(?:是|为|:|：)\s*(?P<value>.+)$", content)
+            if value_match:
+                return value_match.group("value").strip()
         return f"根据你已确认的记忆，{content}。"
 
     @staticmethod

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BrainCircuit,
   Building2,
+  Check,
   ChevronLeft,
   FileText,
   Folder,
@@ -15,12 +16,14 @@ import {
   Upload,
 } from "lucide-react";
 import {
+  apiApproveCompanyBrainSource,
   apiBindCompany,
   apiCreateCompanyBrainManualSource,
   apiDeactivateCompanyBrainSource,
   apiGetCompanyBrain,
   apiListCompanyBrainSources,
   apiPublishCompanyBrainDraft,
+  apiRetryCompanyBrainSource,
   apiSaveCompanyBrainDraft,
   apiUploadCompanyBrainSource,
   type CompanyBrainFolder,
@@ -42,6 +45,9 @@ const statusLabel: Record<string, string> = {
   processing: "LLM 处理中",
   retry: "等待重试",
   ready: "已生效",
+  review: "待管理员审核",
+  rebuild: "等待重编译",
+  inactive: "已停用",
   error: "处理失败",
 };
 
@@ -73,6 +79,7 @@ export default function CompanyBrainPage({ onBack }: { onBack: () => void }) {
   const [changeSummary, setChangeSummary] =
     useState("管理员在线编辑 COMPANY.md");
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const editorDirty = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -86,13 +93,9 @@ export default function CompanyBrainPage({ onBack }: { onBack: () => void }) {
       } else {
         setSources([]);
       }
-      setEditorContent(
-        (current) =>
-          current ||
-          nextBrain.draft?.content ||
-          nextBrain.published?.content ||
-          "",
-      );
+      if (!editorDirty.current) {
+        setEditorContent(nextBrain.draft?.content || nextBrain.published?.content || "");
+      }
       setLegalName(nextBrain.profile.legal_name);
       setShortName(
         nextBrain.profile.short_name === "OpenTrace" && !nextBrain.profile.bound
@@ -132,8 +135,10 @@ export default function CompanyBrainPage({ onBack }: { onBack: () => void }) {
   const sourceStats = useMemo(
     () => ({
       ready: sources.filter((source) => source.status === "ready").length,
+      review: sources.filter((source) => source.status === "review").length,
       pending: sources.filter(
-        (source) => source.status !== "ready" && source.status !== "error",
+        (source) =>
+          !["ready", "review", "error", "inactive"].includes(source.status),
       ).length,
     }),
     [sources],
@@ -216,6 +221,33 @@ export default function CompanyBrainPage({ onBack }: { onBack: () => void }) {
     }
   }
 
+  async function approveSource(source: CompanyBrainSourceItem) {
+    if (!window.confirm(`确认将“${source.title}”提升为企业事实并进入发布队列吗？`)) return;
+    setWorking(true);
+    setError("");
+    try {
+      await apiApproveCompanyBrainSource(token, source.id);
+      await load();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "审核失败");
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function retrySource(source: CompanyBrainSourceItem) {
+    setWorking(true);
+    setError("");
+    try {
+      await apiRetryCompanyBrainSource(token, source.id);
+      await load();
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "重新处理失败");
+    } finally {
+      setWorking(false);
+    }
+  }
+
   async function saveDraft() {
     if (!editorContent.trim()) return;
     setWorking(true);
@@ -240,6 +272,7 @@ export default function CompanyBrainPage({ onBack }: { onBack: () => void }) {
     setError("");
     try {
       await apiPublishCompanyBrainDraft(token, brain.draft.id);
+      editorDirty.current = false;
       setEditorContent("");
       await load();
     } catch (nextError) {
@@ -263,6 +296,8 @@ export default function CompanyBrainPage({ onBack }: { onBack: () => void }) {
         <div className="mx-auto flex max-w-7xl items-center gap-3">
           <button
             onClick={onBack}
+            title="返回"
+            aria-label="返回"
             className="grid h-9 w-9 place-items-center rounded-xl border border-[var(--border)] bg-[var(--surface)]"
           >
             <ChevronLeft size={16} />
@@ -278,6 +313,8 @@ export default function CompanyBrainPage({ onBack }: { onBack: () => void }) {
           </div>
           <button
             onClick={() => void load()}
+            title="刷新企业大脑"
+            aria-label="刷新企业大脑"
             className="grid h-9 w-9 place-items-center rounded-xl border border-[var(--border)]"
           >
             <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
@@ -359,7 +396,7 @@ export default function CompanyBrainPage({ onBack }: { onBack: () => void }) {
                 </p>
                 <div className="mt-4 flex flex-wrap gap-2 text-xs">
                   <span className="rounded-full bg-[var(--accent-dim)] px-3 py-1 text-[var(--accent)]">
-                    每天 05:00 自主学习
+                    每天 05:00 提炼候选
                   </span>
                   <span className="rounded-full bg-[var(--surface-raised)] px-3 py-1">
                     17 万字自动压缩
@@ -426,6 +463,9 @@ export default function CompanyBrainPage({ onBack }: { onBack: () => void }) {
                     </div>
                     <div className="mt-1 text-[10px] text-[var(--text-secondary)]">
                       {folder.ready_count}/{folder.source_count} 已处理
+                      {(folder.review_count || 0) > 0
+                        ? ` · ${folder.review_count} 待审`
+                        : ""}
                     </div>
                   </button>
                 ))}
@@ -507,7 +547,7 @@ export default function CompanyBrainPage({ onBack }: { onBack: () => void }) {
                       <h3 className="font-medium">{selectedFolder} 来源</h3>
                       <p className="text-xs text-[var(--text-secondary)]">
                         已生效 {sourceStats.ready} · 处理中{" "}
-                        {sourceStats.pending}
+                        {sourceStats.pending} · 待审核 {sourceStats.review}
                       </p>
                     </div>
                   </div>
@@ -546,13 +586,39 @@ export default function CompanyBrainPage({ onBack }: { onBack: () => void }) {
                               </p>
                             )}
                           </div>
-                          <button
-                            disabled={working}
-                            onClick={() => void removeSource(source)}
-                            className="grid h-8 w-8 place-items-center rounded-lg text-[var(--text-secondary)] hover:bg-red-500/10 hover:text-red-500"
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                          <div className="flex shrink-0 flex-col gap-1">
+                            {source.status === "review" && (
+                              <button
+                                disabled={working}
+                                onClick={() => void approveSource(source)}
+                                title="审核通过"
+                                aria-label={`审核通过 ${source.title}`}
+                                className="grid h-8 w-8 place-items-center rounded-lg text-emerald-500 hover:bg-emerald-500/10"
+                              >
+                                <Check size={14} />
+                              </button>
+                            )}
+                            {source.status !== "processing" && source.status !== "review" && (
+                              <button
+                                disabled={working}
+                                onClick={() => void retrySource(source)}
+                                title="重新处理"
+                                aria-label={`重新处理 ${source.title}`}
+                                className="grid h-8 w-8 place-items-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+                              >
+                                <RefreshCw size={14} />
+                              </button>
+                            )}
+                            <button
+                              disabled={working}
+                              onClick={() => void removeSource(source)}
+                              title="停用来源"
+                              aria-label={`停用 ${source.title}`}
+                              className="grid h-8 w-8 place-items-center rounded-lg text-[var(--text-secondary)] hover:bg-red-500/10 hover:text-red-500"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
                         </div>
                       </article>
                     ))}
@@ -565,19 +631,19 @@ export default function CompanyBrainPage({ onBack }: { onBack: () => void }) {
                 </div>
               </section>
             )}
-            <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-5">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <h2 className="font-medium">
-                    COMPANY.md{" "}
-                    {role === "admin" ? "在线编辑与发布" : "当前发布版本"}
-                  </h2>
-                  <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                    实际发布镜像位于项目一级目录
-                    memory/COMPANY.md，并已禁止提交到 Git。
-                  </p>
-                </div>
-                {role === "admin" && (
+            {role === "admin" && (
+              <section className="rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="font-medium">
+                      COMPANY.md{" "}
+                      在线编辑与发布
+                    </h2>
+                    <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                      实际发布镜像位于项目一级目录
+                      memory/COMPANY.md，并已禁止提交到 Git。
+                    </p>
+                  </div>
                   <div className="flex gap-2">
                     <button
                       disabled={working}
@@ -596,29 +662,25 @@ export default function CompanyBrainPage({ onBack }: { onBack: () => void }) {
                       发布生效
                     </button>
                   </div>
-                )}
-              </div>
-              {role === "admin" && (
+                </div>
                 <input
                   value={changeSummary}
                   onChange={(event) => setChangeSummary(event.target.value)}
                   placeholder="本次修改说明"
                   className="mt-4 w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2 text-xs"
                 />
-              )}
-              <textarea
-                readOnly={role !== "admin"}
-                value={
-                  role === "admin"
-                    ? editorContent
-                    : brain.published?.content || ""
-                }
-                onChange={(event) => setEditorContent(event.target.value)}
-                rows={28}
-                spellCheck={false}
-                className="mt-3 w-full resize-y rounded-2xl border border-[var(--border)] bg-[var(--bg)] p-4 font-mono text-xs leading-6 outline-none focus:border-[var(--accent)]"
-              />
-            </section>
+                <textarea
+                  value={editorContent}
+                  onChange={(event) => {
+                    editorDirty.current = true;
+                    setEditorContent(event.target.value);
+                  }}
+                  rows={28}
+                  spellCheck={false}
+                  className="mt-3 w-full resize-y rounded-2xl border border-[var(--border)] bg-[var(--bg)] p-4 font-mono text-xs leading-6 outline-none focus:border-[var(--accent)]"
+                />
+              </section>
+            )}
           </>
         )}
       </main>

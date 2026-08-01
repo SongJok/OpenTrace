@@ -67,3 +67,37 @@ async def test_tool_call_without_text_remains_valid(monkeypatch):
     )
 
     assert result.tool_calls
+
+
+@pytest.mark.asyncio
+async def test_auth_or_model_quota_error_still_tries_explicit_fallback(monkeypatch):
+    calls: list[LLMRole] = []
+
+    class FailedAdapter:
+        config = SimpleNamespace(model="quota-model")
+
+        async def complete(self, *args, **kwargs):
+            raise RuntimeError("403 AllocationQuota.FreeTierOnly")
+
+    class FallbackAdapter:
+        config = SimpleNamespace(model="available-model")
+
+        async def complete(self, *args, **kwargs):
+            return LLMResponse(content="fallback succeeded", model="available-model")
+
+    gateway = ModelGateway()
+
+    def adapter_for(role: LLMRole, *args, **kwargs):
+        calls.append(role)
+        return FailedAdapter() if role == LLMRole.COMPRESS else FallbackAdapter()
+
+    monkeypatch.setattr(gateway, "_get_adapter", adapter_for)
+
+    result = await gateway.complete(
+        [LLMMessage(role="user", content="整理企业资料")],
+        role=LLMRole.COMPRESS,
+        fallback_roles=[LLMRole.QUERY],
+    )
+
+    assert calls == [LLMRole.COMPRESS, LLMRole.QUERY]
+    assert result.content == "fallback succeeded"

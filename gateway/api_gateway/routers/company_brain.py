@@ -72,6 +72,8 @@ def _company_error(reason: str) -> AppException:
         "company_brain_draft_not_found": "未找到可发布的 COMPANY.md 草稿",
         "company_brain_draft_not_publishable": "该版本不属于当前公司或已经发布",
         "company_brain_source_contains_secret": "资料包含疑似密钥或认证信息，已拒绝进入企业大脑",
+        "company_brain_source_not_reviewable": "只有待管理员审核的自主学习候选可以批准",
+        "company_brain_source_not_reprocessable": "已停用的企业大脑来源不能重新处理",
     }
     return AppException(
         ErrorCodes.PARAM_INVALID.code,
@@ -80,11 +82,39 @@ def _company_error(reason: str) -> AppException:
     )
 
 
+def _request_scope(request: Request, user: User) -> tuple[str, str]:
+    return normalized_tenant_scope(build_tenant_metadata(request, user_id=user.id))
+
+
+async def _scoped_profile(
+    db: AsyncSession,
+    *,
+    request: Request,
+    user: User,
+    for_update: bool = False,
+) -> CompanyProfile | None:
+    tenant_id, workspace_id = _request_scope(request, user)
+    return await get_company_profile(
+        db,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        for_update=for_update,
+    )
+
+
 @router.get("/company/profile")
 async def current_company_profile(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """公司简称是界面品牌，不属于敏感内容，因此登录页和分享页也可读取。"""
 
-    return company_profile_payload(await get_company_profile(db))
+    payload = company_profile_payload(await get_company_profile(db))
+    return {
+        **payload,
+        "id": None,
+        "legal_name": "",
+        "description": "",
+        "current_version_id": None,
+        "last_maintenance_at": None,
+    }
 
 
 @router.put("/admin/company/profile")
@@ -96,17 +126,20 @@ async def bind_company(
 ) -> dict[str, Any]:
     legal_name = payload.legal_name.strip()
     short_name = payload.short_name.strip()
+    tenant_id, workspace_id = _request_scope(request, current_user)
     profile = await get_company_profile(db, for_update=True)
     if profile is not None:
-        if profile.legal_name != legal_name:
+        if (
+            profile.tenant_id != tenant_id
+            or profile.workspace_id != workspace_id
+            or profile.legal_name != legal_name
+        ):
             raise _company_error("company_already_bound")
         profile.short_name = short_name
         profile.description = payload.description.strip()
         await db.commit()
         return company_profile_payload(profile)
 
-    metadata = build_tenant_metadata(request, user_id=current_user.id)
-    tenant_id, workspace_id = normalized_tenant_scope(metadata)
     profile = CompanyProfile(
         id=str(uuid.uuid4()),
         singleton_key="primary",
@@ -130,16 +163,16 @@ async def bind_company(
 
 @router.get("/company/brain")
 async def current_company_brain(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    del current_user
-    profile = await get_company_profile(db)
+    profile = await _scoped_profile(db, request=request, user=current_user)
     if profile is None:
         return {
             "profile": company_profile_payload(None),
             "folders": [
-                {"name": folder, "source_count": 0, "ready_count": 0}
+                {"name": folder, "source_count": 0, "ready_count": 0, "review_count": 0}
                 for folder in COMPANY_BRAIN_FOLDERS
             ],
             "published": None,
@@ -151,6 +184,7 @@ async def current_company_brain(
                 CompanyBrainSource.folder,
                 func.count(CompanyBrainSource.id),
                 func.count(CompanyBrainSource.id).filter(CompanyBrainSource.status == "ready"),
+                func.count(CompanyBrainSource.id).filter(CompanyBrainSource.status == "review"),
             )
             .where(
                 CompanyBrainSource.company_id == profile.id,
@@ -159,7 +193,10 @@ async def current_company_brain(
             .group_by(CompanyBrainSource.folder)
         )
     ).all()
-    by_folder = {str(folder): (int(total), int(ready)) for folder, total, ready in counts}
+    by_folder = {
+        str(folder): (int(total), int(ready), int(review))
+        for folder, total, ready, review in counts
+    }
     published = (
         await db.scalar(
             select(CompanyBrainVersion).where(
@@ -170,13 +207,18 @@ async def current_company_brain(
         if profile.current_version_id
         else None
     )
-    draft = await db.scalar(
-        select(CompanyBrainVersion)
-        .where(
-            CompanyBrainVersion.company_id == profile.id,
-            CompanyBrainVersion.status == "draft",
+    is_admin = current_user.role == "admin" or bool(current_user.is_superuser)
+    draft = (
+        await db.scalar(
+            select(CompanyBrainVersion)
+            .where(
+                CompanyBrainVersion.company_id == profile.id,
+                CompanyBrainVersion.status == "draft",
+            )
+            .order_by(CompanyBrainVersion.version.desc())
         )
-        .order_by(CompanyBrainVersion.version.desc())
+        if is_admin
+        else None
     )
     return {
         "profile": company_profile_payload(profile),
@@ -184,26 +226,27 @@ async def current_company_brain(
             {
                 "name": folder,
                 "default_tier": "long" if folder in {"文化", "行政"} else "medium",
-                "source_count": by_folder.get(folder, (0, 0))[0],
-                "ready_count": by_folder.get(folder, (0, 0))[1],
+                "source_count": by_folder.get(folder, (0, 0, 0))[0],
+                "ready_count": by_folder.get(folder, (0, 0, 0))[1],
+                "review_count": by_folder.get(folder, (0, 0, 0))[2],
             }
             for folder in COMPANY_BRAIN_FOLDERS
         ],
-        "published": company_brain_version_payload(published),
-        "draft": company_brain_version_payload(draft),
+        "published": company_brain_version_payload(published, include_content=is_admin),
+        "draft": company_brain_version_payload(draft, include_content=is_admin),
     }
 
 
 @router.get("/admin/company/brain/sources")
 async def list_company_brain_sources(
+    request: Request,
     folder: str | None = Query(default=None, max_length=20),
     include_inactive: bool = False,
     limit: int = Query(default=500, ge=1, le=2000),
     current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    del current_user
-    profile = await get_company_profile(db)
+    profile = await _scoped_profile(db, request=request, user=current_user)
     if profile is None:
         raise _company_error("company_not_bound")
     statement = select(CompanyBrainSource).where(CompanyBrainSource.company_id == profile.id)
@@ -258,11 +301,12 @@ async def _create_source(
 
 @router.post("/admin/company/brain/sources/manual", status_code=202)
 async def create_manual_company_brain_source(
+    request: Request,
     payload: CompanyBrainManualSourceInput,
     current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    profile = await get_company_profile(db)
+    profile = await _scoped_profile(db, request=request, user=current_user)
     if profile is None:
         raise _company_error("company_not_bound")
     try:
@@ -288,6 +332,7 @@ async def create_manual_company_brain_source(
 
 @router.post("/admin/company/brain/sources/upload", status_code=202)
 async def upload_company_brain_source(
+    request: Request,
     file: UploadFile = File(...),
     folder: str = Form(...),
     memory_tier: str = Form("auto"),
@@ -296,7 +341,7 @@ async def upload_company_brain_source(
     current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    profile = await get_company_profile(db)
+    profile = await _scoped_profile(db, request=request, user=current_user)
     if profile is None:
         raise _company_error("company_not_bound")
     try:
@@ -327,12 +372,12 @@ async def upload_company_brain_source(
 
 @router.delete("/admin/company/brain/sources/{source_id}")
 async def deactivate_company_brain_source(
+    request: Request,
     source_id: str,
     current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    del current_user
-    profile = await get_company_profile(db)
+    profile = await _scoped_profile(db, request=request, user=current_user)
     if profile is None:
         raise _company_error("company_not_bound")
     source = await db.scalar(
@@ -344,17 +389,87 @@ async def deactivate_company_brain_source(
     if source is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="企业大脑来源不存在")
     source.active = False
+    source.status = "rebuild"
     await db.commit()
     return {"status": "deactivated", "id": source.id}
 
 
+@router.post("/admin/company/brain/sources/{source_id}/approve", status_code=202)
+async def approve_company_brain_source(
+    request: Request,
+    source_id: str,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    profile = await _scoped_profile(db, request=request, user=current_user)
+    if profile is None:
+        raise _company_error("company_not_bound")
+    source = await db.scalar(
+        select(CompanyBrainSource).where(
+            CompanyBrainSource.id == source_id,
+            CompanyBrainSource.company_id == profile.id,
+            CompanyBrainSource.active.is_(True),
+        )
+    )
+    if source is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="企业大脑来源不存在")
+    if source.status != "review" or source.source_type != "conversation":
+        raise _company_error("company_brain_source_not_reviewable")
+    metadata = dict(source.source_metadata or {})
+    metadata["review_approved_by"] = current_user.id
+    source.source_metadata = metadata
+    # Worker 负责将候选提升为 ready 并重编译，API 只提交持久状态。
+    source.status = "pending"
+    source.error_message = None
+    await db.commit()
+    return company_brain_source_payload(source)
+
+
+@router.post("/admin/company/brain/sources/{source_id}/retry", status_code=202)
+async def retry_company_brain_source(
+    request: Request,
+    source_id: str,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    profile = await _scoped_profile(db, request=request, user=current_user)
+    if profile is None:
+        raise _company_error("company_not_bound")
+    source = await db.scalar(
+        select(CompanyBrainSource).where(
+            CompanyBrainSource.id == source_id,
+            CompanyBrainSource.company_id == profile.id,
+        )
+    )
+    if source is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="企业大脑来源不存在")
+    if not source.active:
+        raise _company_error("company_brain_source_not_reprocessable")
+    source.status = "pending"
+    source.processed_content = ""
+    source.processed_at = None
+    source.processing_attempts = 0
+    source.error_message = None
+    metadata = dict(source.source_metadata or {})
+    metadata["reprocess_requested_by"] = current_user.id
+    source.source_metadata = metadata
+    await db.commit()
+    return company_brain_source_payload(source)
+
+
 @router.put("/admin/company/brain/draft")
 async def save_company_brain_draft(
+    request: Request,
     payload: CompanyBrainDraftInput,
     current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    profile = await get_company_profile(db)
+    profile = await _scoped_profile(
+        db,
+        request=request,
+        user=current_user,
+        for_update=True,
+    )
     if profile is None:
         raise _company_error("company_not_bound")
     try:
@@ -374,11 +489,17 @@ async def save_company_brain_draft(
 
 @router.post("/admin/company/brain/publish")
 async def publish_company_brain_draft(
+    request: Request,
     payload: CompanyBrainPublishInput,
     current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    profile = await get_company_profile(db, for_update=True)
+    profile = await _scoped_profile(
+        db,
+        request=request,
+        user=current_user,
+        for_update=True,
+    )
     if profile is None:
         raise _company_error("company_not_bound")
     statement = select(CompanyBrainVersion).where(

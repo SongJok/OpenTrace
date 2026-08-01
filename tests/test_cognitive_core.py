@@ -55,7 +55,7 @@ def test_memory_learner_has_deterministic_fallback_for_explicit_memory():
     assert candidates[0]["content"] == "我的跨会话测试代号是星河-7391"
     assert candidates[0]["explicit"] is True
     assert candidates[0]["scope_type"] == "user"
-    assert candidates[0]["key"].startswith("explicit.fact.")
+    assert candidates[0]["key"].startswith("fact.")
 
 
 def test_memory_learner_classifies_explicit_preferences():
@@ -128,6 +128,23 @@ def test_time_definition_remains_relevant_for_a_later_scheduling_turn() -> None:
 
     assert ranked == [working_hours]
     assert direct == "根据你已确认的记忆，我的工作时间是周一到周五 09:00-18:00。"
+
+
+def test_unrelated_personal_workflow_is_not_injected_into_every_turn() -> None:
+    workflow = SimpleNamespace(
+        id="approval-workflow",
+        content="审批操作习惯是先预览再批准",
+        pinned=False,
+        kind="workflow",
+        personal_category="approval_habit",
+        scope_type="user",
+        salience=0.9,
+        confidence=1.0,
+        updated_at=datetime.now(UTC),
+    )
+
+    assert ContextAssembler._rank_memories([workflow], "帮我解释量子计算") == []
+    assert ContextAssembler._rank_memories([workflow], "我的审批操作习惯是什么") == [workflow]
 
 
 def test_memory_learner_rejects_transient_questions_and_sensitive_profile_data():
@@ -229,7 +246,7 @@ def test_explicit_memory_uses_stable_key_even_when_model_returns_an_explicit_can
 
     assert len(candidates) == 1
     assert candidates[0]["content"] == "我的代号是北辰-42"
-    assert candidates[0]["key"].startswith("explicit.fact.")
+    assert candidates[0]["key"].startswith("fact.")
 
 
 def test_memory_ranker_excludes_irrelevant_user_facts_but_keeps_preferences():

@@ -31,6 +31,7 @@ from infra.storage.models import (
 )
 from infra.storage.object_store import get_object_store
 from kernel.agent_loop.prompt import PLATFORM_PROMPT, render_scope_prompt
+from kernel.agent_loop.write_intent import is_contextual_follow_up
 from kernel.token_counter import get_token_counter
 from knowledge.access import classification_allows, resolve_access_context
 from memory.constitution import (
@@ -183,7 +184,17 @@ class ContextAssembler:
         )
         if enterprise_context.prompt:
             system_blocks.append(enterprise_context.prompt)
-        company_brain_recall = await retrieve_company_brain(db, query=user_query)
+        history = await self._active_branch_items(db, response)
+        retrieval_query, retrieval_query_expanded = self._expanded_retrieval_query(
+            user_query,
+            history,
+        )
+        company_brain_recall = await retrieve_company_brain(
+            db,
+            query=retrieval_query,
+            tenant_id=response.tenant_id,
+            workspace_id=response.workspace_id,
+        )
         calendar_context_error: str | None = None
         try:
             calendar_events = await upcoming_calendar_context(
@@ -577,7 +588,7 @@ class ContextAssembler:
                     memory_id=memory.id,
                 )
             memories = compliant_memories
-            anchors = self._rank_memories(memories, user_query)[:12]
+            anchors = self._rank_memories(memories, retrieval_query)[:12]
             graph_boosts, relation_edges = await memory_graph_boosts(
                 db,
                 memory_ids=[memory.id for memory in anchors],
@@ -588,7 +599,7 @@ class ContextAssembler:
             memory_relation_count = len(relation_edges)
             memories = self._rank_memories(
                 memories,
-                user_query,
+                retrieval_query,
                 graph_boosts=graph_boosts,
             )[:24]
             if memories:
@@ -645,7 +656,6 @@ class ContextAssembler:
                 "其它工具对企业大脑和个人记忆进行蒸馏、收集、训练或另行持久化。"
             )
 
-        history = await self._active_branch_items(db, response)
         messages: list[dict[str, Any]] = [{"role": "system", "content": "\n\n".join(system_blocks)}]
         messages.extend(history)
         current_messages = self._current_input_messages(
@@ -684,7 +694,8 @@ class ContextAssembler:
                 "calendar_context_error": calendar_context_error,
                 "enterprise_context": enterprise_context.manifest(),
                 "company_brain": company_brain_recall.manifest(),
-                "memory_isolation": "internal_project_only",
+                "memory_retrieval_query_expanded": retrieval_query_expanded,
+                "memory_isolation": "tenant_workspace_company_and_user_personal",
             }
         )
         return AssembledContext(
@@ -777,6 +788,39 @@ class ContextAssembler:
         return normalized
 
     @staticmethod
+    def _expanded_retrieval_query(
+        query: str,
+        history: list[dict[str, Any]],
+    ) -> tuple[str, bool]:
+        """短指代继承当前父链最近主题，只扩展检索，不改写用户当前指令。"""
+
+        normalized = str(query or "").strip()
+        if not normalized or not is_contextual_follow_up(normalized):
+            return normalized, False
+        recent: list[str] = []
+        for message in reversed(history):
+            if message.get("role") not in {"user", "assistant"}:
+                continue
+            content = message.get("content")
+            if isinstance(content, list):
+                text = " ".join(
+                    str(part.get("text") or part.get("input_text") or "")
+                    for part in content
+                    if isinstance(part, dict)
+                )
+            else:
+                text = str(content or "")
+            text = re.sub(r"\s+", " ", text).strip()
+            if not text:
+                continue
+            recent.append(text[:2000])
+            if len(recent) >= 4:
+                break
+        if not recent:
+            return normalized, False
+        return normalized + "\n最近对话主题：\n" + "\n".join(reversed(recent)), True
+
+    @staticmethod
     def _rank_memories(
         memories: list[UserMemory],
         query: str,
@@ -794,15 +838,11 @@ class ContextAssembler:
                 updated_at = updated_at.replace(tzinfo=UTC)
             age_days = max(0.0, (datetime.now(UTC) - updated_at).total_seconds() / 86400)
             salience_decay = 1.0 if item.pinned else max(0.60, 0.995**age_days)
-            always_relevant = (
-                bool(item.pinned)
-                or item.kind
-                in {
-                    "preference",
-                    "profile",
-                    "workflow",
-                }
-                or item.scope_type in {"project", "conversation"}
+            # 置顶项和回答风格偏好可跨主题生效；其余个人事实、工作流及项目记忆
+            # 必须与当前检索主题相关，避免把最多 24 条无关记忆灌入每一轮。
+            always_relevant = bool(item.pinned) or (
+                item.kind == "preference"
+                and getattr(item, "personal_category", "response_style") == "response_style"
             )
             value = (
                 (3.0 if item.pinned else 0.0)
