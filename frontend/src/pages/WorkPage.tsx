@@ -25,6 +25,7 @@ import {
   CalendarDays,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
+import { useChatPreferences } from '../store/chatPreferences'
 import { WorkbenchActionCenter } from '../components/WorkbenchActionCenter'
 import {
   apiCreateAssistantProfile,
@@ -40,6 +41,7 @@ import {
   type AssistantProfileItem,
   type DataSourceItem,
   type EnterpriseWorkbenchOverview,
+  type EnterpriseWorkbenchScenario,
   type GoalItem,
   type ProjectItem,
 } from '../api/client'
@@ -87,6 +89,20 @@ function scoreTone(score: number) {
   if (score >= 85) return 'text-emerald-500'
   if (score >= 60) return 'text-amber-500'
   return 'text-blue-500'
+}
+
+export function scenarioLaunchIntent(scenario: EnterpriseWorkbenchScenario): {
+  route: string
+  prefillText: string | null
+} {
+  const canPrefill = scenario.status !== 'setup_required'
+    && scenario.launch_mode === 'chat'
+    && scenario.action_route === '/chat'
+    && scenario.starter_prompt.trim().length > 0
+  return {
+    route: scenario.action_route,
+    prefillText: canPrefill ? scenario.starter_prompt : null,
+  }
 }
 
 export default function WorkPage({ onBack }: { onBack: () => void }) {
@@ -282,7 +298,8 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
   )
 }
 
-function OverviewPanel({ overview, displayName, navigate }: { overview: EnterpriseWorkbenchOverview; displayName: string | null; navigate: ReturnType<typeof useNavigate> }) {
+export function OverviewPanel({ overview, displayName, navigate }: { overview: EnterpriseWorkbenchOverview; displayName: string | null; navigate: ReturnType<typeof useNavigate> }) {
+  const requestPrefill = useChatPreferences((state) => state.requestPrefill)
   const summaryCards = [
     { label: '运行中的 AI 工作', value: overview.summary.running_responses, detail: `${overview.summary.pending_approvals} 个待审批`, icon: Activity, route: '/chat' },
     { label: '长期 Goals', value: overview.summary.active_goals, detail: `${overview.summary.projects} 个 Project`, icon: Target, route: '/work?tab=goals' },
@@ -296,6 +313,21 @@ function OverviewPanel({ overview, displayName, navigate }: { overview: Enterpri
     ['主动工作', overview.readiness.dimensions.automation],
     ['安全治理', overview.readiness.dimensions.governance],
   ] as const
+  const scenarioStatusLabel: Record<EnterpriseWorkbenchScenario['status'], string> = {
+    ready: '可开始',
+    setup_required: '需配置',
+    active: '已启用',
+  }
+  const memoryScopeLabel: Record<EnterpriseWorkbenchScenario['memory_scope'], string> = {
+    conversation: '会话记忆',
+    user: '个人记忆',
+    project: 'Project 记忆',
+  }
+  const launchScenario = (scenario: EnterpriseWorkbenchScenario) => {
+    const intent = scenarioLaunchIntent(scenario)
+    if (intent.prefillText) requestPrefill(intent.prefillText)
+    navigate(intent.route)
+  }
 
   return <div className="space-y-6">
     <section className="overflow-hidden rounded-3xl border border-[var(--border)] bg-[var(--surface)]">
@@ -306,6 +338,36 @@ function OverviewPanel({ overview, displayName, navigate }: { overview: Enterpri
     </section>
 
     <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{summaryCards.map(({ label, value, detail, icon: Icon, route }) => <button key={label} onClick={() => navigate(route)} className="group rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-left transition-transform hover:-translate-y-0.5 hover:border-[var(--accent)]/40"><div className="flex items-start justify-between"><div className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--accent-dim)] text-[var(--accent)]"><Icon size={17} /></div><ArrowRight size={14} className="text-[var(--text-secondary)] transition-transform group-hover:translate-x-0.5" /></div><div className="mt-4 text-2xl font-semibold">{value}</div><div className="mt-1 text-sm">{label}</div><div className="mt-1 text-xs text-[var(--text-secondary)]">{detail}</div></button>)}</section>
+
+    <section>
+      <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2"><Workflow size={17} className="text-[var(--accent)]" /><h2 className="font-medium">企业日常工作场景</h2></div>
+          <p className="mt-1 text-xs text-[var(--text-secondary)]">按当前上下文、知识、数据、Skill 和主动工作状态生成；写操作继续走持久化审批。</p>
+        </div>
+        <span className="rounded-full bg-[var(--surface)] px-3 py-1 text-xs text-[var(--text-secondary)]">{overview.summary.available_work_scenarios}/{overview.scenarios.length} 可用 · {overview.summary.active_work_scenarios} 已启用</span>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {overview.scenarios.map((scenario) => (
+          <button key={scenario.id} onClick={() => launchScenario(scenario)} className="group flex min-h-64 flex-col rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-left hover:border-[var(--accent)]/40">
+            <div className="flex items-start justify-between gap-3">
+              <span className="rounded-full bg-[var(--surface-raised)] px-2 py-1 text-[10px] text-[var(--text-secondary)]">{scenario.category}</span>
+              <span className={`rounded-full px-2 py-1 text-[10px] ${scenario.status === 'active' ? 'bg-emerald-500/10 text-emerald-500' : scenario.status === 'setup_required' ? 'bg-amber-500/10 text-amber-500' : 'bg-[var(--accent-dim)] text-[var(--accent)]'}`}>{scenarioStatusLabel[scenario.status]}{scenario.recommended ? ' · 推荐' : ''}</span>
+            </div>
+            <h3 className="mt-4 text-sm font-medium">{scenario.title}</h3>
+            <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">{scenario.description}</p>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {scenario.deliverables.slice(0, 3).map((item) => <span key={item} className="rounded-md border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--text-secondary)]">{item}</span>)}
+            </div>
+            <div className="mt-auto pt-4">
+              <div className="flex items-center justify-between gap-3 text-[10px] text-[var(--text-secondary)]"><span>{memoryScopeLabel[scenario.memory_scope]}</span><span>{scenario.approval_required ? '写入前审批' : scenario.approval_policy === 'inherited' ? '副作用继承审批' : '只读免审批'}</span></div>
+              {scenario.blockers[0] && <p className="mt-2 line-clamp-2 text-[10px] text-amber-500">{scenario.blockers[0].title}</p>}
+              <div className="mt-3 flex items-center justify-between text-xs text-[var(--accent)]"><span>{scenario.action_label}</span><ArrowRight size={13} className="transition-transform group-hover:translate-x-0.5" /></div>
+            </div>
+          </button>
+        ))}
+      </div>
+    </section>
 
     <div className="grid gap-6 xl:grid-cols-[1.15fr_.85fr]">
       <section><div className="mb-3 flex items-center justify-between"><div><h2 className="font-medium">需要你关注</h2><p className="text-xs text-[var(--text-secondary)]">审批、预警、失败执行和知识治理集中在一个队列。</p></div><span className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">{overview.attention_items.length} 项</span></div><div className="space-y-2">{overview.attention_items.map((item) => <button key={`${item.type}-${item.id}`} onClick={() => navigate(item.route)} className="flex w-full items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-left hover:border-[var(--accent)]/40"><div className={`mt-0.5 grid h-9 w-9 flex-none place-items-center rounded-xl ${item.severity === 'error' || item.severity === 'critical' ? 'bg-red-500/10 text-red-500' : 'bg-amber-500/10 text-amber-500'}`}>{item.type === 'approval' ? <ShieldCheck size={17} /> : item.type === 'knowledge' ? <BookOpen size={17} /> : <AlertTriangle size={17} />}</div><div className="min-w-0 flex-1"><div className="flex items-start justify-between gap-3"><h3 className="text-sm font-medium">{item.title}</h3><span className="flex-none text-[10px] text-[var(--text-secondary)]">{formatTime(item.created_at)}</span></div><p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{item.description}</p></div></button>)}{overview.attention_items.length === 0 && <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] p-8 text-center"><CheckCircle2 size={28} className="mx-auto text-emerald-500" /><p className="mt-3 text-sm font-medium">当前没有阻塞事项</p><p className="mt-1 text-xs text-[var(--text-secondary)]">审批、预警与治理队列均处于可控状态。</p></div>}</div></section>

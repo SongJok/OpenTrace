@@ -12,6 +12,7 @@ OpenTrace 的企业化目标不是把多个 AI 功能堆叠成菜单，而是成
 企业 AI 工作台 /work
   ├─ 员工行动面：待审批、关键预警、失败重试、最近工作
   ├─ 统一行动中心：分类、搜索、未读通知确认与站内处置跳转
+  ├─ 企业工作场景：前置条件、能力链、记忆、证据、审批与可验收交付物
   ├─ AI 就绪度：上下文、知识、数据、自动化、安全治理
   ├─ Project：业务目标、指令、记忆与数据权限边界
   ├─ Goal：通过 Responses 主链路持续执行的长期工作
@@ -29,6 +30,11 @@ Responses 主链路
 ```
 
 工作台不是第二套 Agent Runtime，也不直接执行模型、工具或后台任务。`GET /api/v2/workbench/overview` 只从 PostgreSQL 事实状态生成当前用户的可行动投影；Redis 不参与状态判定。`attention_limit` 允许行动中心在 5 到 100 条之间按需读取队列，同时保持服务端边界过滤；通知已读仍通过持久化通知 API 更新，不由前端本地状态冒充完成。
+
+场景目录见[企业日常工作场景目录](../catalog/enterprise_work_scenarios.md)。工作台根据当前
+Project、已发布知识、授权数据源、个人安装 Skill、可见公司 Skill、Goal、定时任务和预警
+生成 `setup_required / ready / active` 状态。场景按钮只负责路由和预填提示词；实际执行仍由
+Responses Worker 完成，不能绕过工具审批、幂等账本、资源边界或记忆治理。
 
 ## 连续对话与个人日历
 

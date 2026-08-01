@@ -49,5 +49,6 @@ python -m pytest \
   tests/test_enterprise_refactoring_contract.py \
   tests/test_enterprise_worker_metrics_contract.py \
   tests/test_enterprise_trace_contract.py \
+  tests/test_enterprise_work_scenarios_contract.py \
   -q --tb=short "$@"
 echo "=== Enterprise contracts OK ==="

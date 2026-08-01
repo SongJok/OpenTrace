@@ -1512,6 +1512,28 @@ export interface WorkbenchActivityItem {
   created_at?: string | null
 }
 
+export interface EnterpriseWorkbenchScenario {
+  id: string
+  category: string
+  title: string
+  description: string
+  status: 'ready' | 'setup_required' | 'active'
+  recommended: boolean
+  launch_mode: 'chat' | 'goal' | 'skills'
+  action_route: string
+  action_label: string
+  starter_prompt: string
+  capabilities: string[]
+  tools: string[]
+  memory_scope: 'conversation' | 'user' | 'project'
+  risk: 'read' | 'mixed' | 'write'
+  approval_policy: 'none' | 'required_before_write' | 'inherited'
+  approval_required: boolean
+  evidence_requirements: string[]
+  deliverables: string[]
+  blockers: Array<{ code: string; title: string; description: string; route: string }>
+}
+
 export interface EnterpriseWorkbenchOverview {
   generated_at: string
   scope: { tenant_id: string; workspace_id: string; user_id: string }
@@ -1533,10 +1555,15 @@ export interface EnterpriseWorkbenchOverview {
     accessible_data_sources: number
     knowledge_spaces: number
     published_knowledge: number
+    installed_skills: number
+    company_skills: number
+    available_work_scenarios: number
+    active_work_scenarios: number
     enterprise_cognitive_entities?: number
     company_context_ready?: boolean
   }
   knowledge_health: KnowledgeGovernanceHealth
+  scenarios: EnterpriseWorkbenchScenario[]
   attention_items: WorkbenchAttentionItem[]
   recent_activity: WorkbenchActivityItem[]
 }

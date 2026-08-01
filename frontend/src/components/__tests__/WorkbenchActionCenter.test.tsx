@@ -31,8 +31,13 @@ const overview: EnterpriseWorkbenchOverview = {
     accessible_data_sources: 1,
     knowledge_spaces: 1,
     published_knowledge: 1,
+    installed_skills: 1,
+    company_skills: 1,
+    available_work_scenarios: 1,
+    active_work_scenarios: 1,
   },
   knowledge_health: { score: 90, status: 'healthy', scope: { space_count: 1 }, metrics: {} },
+  scenarios: [],
   attention_items: [
     {
       id: 'approval-1',

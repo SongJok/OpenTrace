@@ -7,9 +7,9 @@ from evals.runner import evaluate_dataset, load_dataset, score_output
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_four_golden_datasets_are_non_empty_and_uniquely_identified():
+def test_enterprise_golden_datasets_are_non_empty_and_uniquely_identified():
     ids: set[str] = set()
-    for name in ("agent_loop", "rag", "text2sql", "memory"):
+    for name in ("agent_loop", "rag", "text2sql", "memory", "workbench"):
         cases = load_dataset(ROOT / "evals" / "datasets" / f"{name}.jsonl")
         assert len(cases) >= 3
         assert not ids.intersection(case.case_id for case in cases)

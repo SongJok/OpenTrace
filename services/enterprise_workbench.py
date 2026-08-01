@@ -20,6 +20,7 @@ from infra.storage.models import (
     AlertRule,
     AssistantProfile,
     CalendarEvent,
+    EnterpriseSkill,
     GoalRun,
     KnowledgeSource,
     Project,
@@ -28,10 +29,16 @@ from infra.storage.models import (
     TaskDefinition,
     TaskNotification,
     User,
+    UserSkillInstallation,
 )
-from knowledge.access import accessible_source_predicate, resolve_access_context
+from knowledge.access import (
+    accessible_source_predicate,
+    classification_allows,
+    resolve_access_context,
+)
 from knowledge.governance import knowledge_governance_health
 from services.enterprise_cognition import load_enterprise_context
+from services.enterprise_scenarios import build_enterprise_scenarios
 
 ACTIVE_RESPONSE_STATUSES = {"queued", "in_progress", "requires_action"}
 ACTIVE_GOAL_STATUSES = {"queued", "in_progress", "requires_action", "paused"}
@@ -449,6 +456,33 @@ async def enterprise_workbench_overview(
         )
         or 0
     )
+    installed_skill_count = int(
+        await db.scalar(
+            select(func.count(UserSkillInstallation.id)).where(
+                UserSkillInstallation.user_id == user.id,
+                UserSkillInstallation.tenant_id == tenant_id,
+                UserSkillInstallation.workspace_id == workspace_id,
+                UserSkillInstallation.status == "installed",
+            )
+        )
+        or 0
+    )
+    company_skill_classifications = list(
+        (
+            await db.execute(
+                select(EnterpriseSkill.classification).where(
+                    EnterpriseSkill.tenant_id == tenant_id,
+                    EnterpriseSkill.workspace_id == workspace_id,
+                    EnterpriseSkill.status == "published",
+                )
+            )
+        ).scalars()
+    )
+    company_skill_count = sum(
+        1
+        for classification in company_skill_classifications
+        if classification_allows(knowledge_context.clearance, classification)
+    )
     knowledge_health = await knowledge_governance_health(
         db,
         user=user,
@@ -468,6 +502,7 @@ async def enterprise_workbench_overview(
     active_tasks = [row for row in tasks if row.status == "active"]
     active_alerts = [row for row in alerts if row.status == "active"]
     critical_alerts = [row for row in alert_events if row.severity == "critical"]
+    active_data_sources = [row for row in data_sources if getattr(row, "status", None) == "active"]
 
     readiness = build_enterprise_readiness(
         projects=projects,
@@ -486,6 +521,16 @@ async def enterprise_workbench_overview(
         published_company_context=any(
             item.get("entity_type") == "company" for item in cognitive_context.entities
         ),
+    )
+    scenarios = build_enterprise_scenarios(
+        project_count=len(projects),
+        published_knowledge_count=published_knowledge_count,
+        active_data_source_count=len(active_data_sources),
+        installed_skill_count=installed_skill_count,
+        company_skill_count=company_skill_count,
+        active_goal_count=len(active_goals),
+        active_task_count=len(active_tasks),
+        active_alert_count=len(active_alerts),
     )
 
     attention_items: list[dict[str, Any]] = []
@@ -608,12 +653,19 @@ async def enterprise_workbench_overview(
             "accessible_data_sources": len(data_sources),
             "knowledge_spaces": len(knowledge_context.accessible_space_ids),
             "published_knowledge": published_knowledge_count,
+            "installed_skills": installed_skill_count,
+            "company_skills": company_skill_count,
+            "available_work_scenarios": sum(
+                1 for item in scenarios if item["status"] != "setup_required"
+            ),
+            "active_work_scenarios": sum(1 for item in scenarios if item["status"] == "active"),
             "enterprise_cognitive_entities": len(cognitive_context.entities),
             "company_context_ready": any(
                 item.get("entity_type") == "company" for item in cognitive_context.entities
             ),
         },
         "knowledge_health": knowledge_health,
+        "scenarios": scenarios,
         "attention_items": attention_items,
         "recent_activity": _sort_by_created_at(recent_activity)[:recent_limit],
     }

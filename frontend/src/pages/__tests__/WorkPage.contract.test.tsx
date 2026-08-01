@@ -1,17 +1,63 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiGetEnterpriseWorkbench } from '../../api/client'
+import { apiGetEnterpriseWorkbench, type EnterpriseWorkbenchScenario } from '../../api/client'
+import { scenarioLaunchIntent } from '../WorkPage'
 
 describe('enterprise AI workbench contracts', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('uses one actionable entry for enterprise work', async () => {
-    const source = (await import('../WorkPage')).default.toString()
+    const workPage = await import('../WorkPage')
+    const source = workPage.default.toString()
+    const overviewSource = workPage.OverviewPanel.toString()
     expect(source).toContain('企业 AI 工作台')
     expect(source).toContain('apiGetEnterpriseWorkbench')
     expect(source).toContain('OverviewPanel')
     expect(source).toContain('WorkbenchActionCenter')
     expect(source).toContain('apiListProjects')
     expect(source).toContain('apiListGoals')
+    expect(overviewSource).toContain('企业日常工作场景')
+    expect(overviewSource).toContain('scenarioLaunchIntent')
+  })
+
+  it('prefills ready chat scenarios but routes setup gaps without unsafe execution', () => {
+    const base = {
+      id: 'decision_brief',
+      category: '管理协作',
+      title: '决策简报',
+      description: '说明',
+      status: 'ready',
+      recommended: true,
+      launch_mode: 'chat',
+      action_route: '/chat',
+      action_label: '开始工作',
+      starter_prompt: '请生成可追溯决策简报：',
+      capabilities: ['document_retrieval', 'data_query'],
+      tools: [],
+      memory_scope: 'project',
+      risk: 'read',
+      approval_policy: 'none',
+      approval_required: false,
+      evidence_requirements: ['知识引用'],
+      deliverables: ['决策摘要'],
+      blockers: [],
+    } satisfies EnterpriseWorkbenchScenario
+
+    expect(scenarioLaunchIntent(base)).toEqual({
+      route: '/chat',
+      prefillText: '请生成可追溯决策简报：',
+    })
+    expect(scenarioLaunchIntent({
+      ...base,
+      status: 'setup_required',
+      action_route: '/databases',
+      blockers: [{ code: 'data', title: '连接数据', description: '说明', route: '/databases' }],
+    })).toEqual({ route: '/databases', prefillText: null })
+    expect(scenarioLaunchIntent({
+      ...base,
+      status: 'active',
+      action_route: '/tasks',
+      action_label: '查看运行',
+    })).toEqual({ route: '/tasks', prefillText: null })
   })
 
   it('offers all six assistant personality styles when creating a role', async () => {
