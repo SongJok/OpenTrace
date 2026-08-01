@@ -30,9 +30,9 @@ from infra.responses.repository import (
     release_lease,
     renew_lease,
 )
+from infra.security.resource_scope import load_scoped_conversation
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import (
-    ChatSession,
     GoalCheckpoint,
     GoalRun,
     ResponseItem,
@@ -389,7 +389,13 @@ async def execute_response(response_id: str | None = None) -> bool:
                 },
             )
             await _persist_model_calls(db, response_id, result.metadata)
-            session = await db.get(ChatSession, response.conversation_id)
+            session = await load_scoped_conversation(
+                db,
+                conversation_id=response.conversation_id,
+                user_id=response.user_id,
+                tenant_id=response.tenant_id,
+                workspace_id=response.workspace_id,
+            )
             if session:
                 # Creation/retry already chooses the active branch. A slower
                 # older/background response must never rewind a conversation

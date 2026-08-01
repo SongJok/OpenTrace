@@ -171,13 +171,20 @@ async def list_knowledge_sources(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    """统一来源查询：默认返回我的来源，指定空间时应用企业 ACL。"""
+    """统一来源查询：返回当前用户可用于问答的来源，始终应用企业 ACL。"""
     tenant_id, workspace_id = normalized_tenant_scope(
         build_tenant_metadata(http_request, user_id=current_user.id)
     )
     stmt = select(KnowledgeSource).where(
         KnowledgeSource.tenant_id == tenant_id,
         KnowledgeSource.workspace_id == workspace_id,
+    )
+    context = await resolve_access_context(
+        db,
+        user=current_user,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        project_id=project_id,
     )
     if space_id:
         try:
@@ -191,18 +198,8 @@ async def list_knowledge_sources(
             )
         except PermissionError as exc:
             raise AppException(ErrorCodes.PERMISSION_DENIED.code, message=str(exc)) from exc
-        context = await resolve_access_context(
-            db,
-            user=current_user,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-        )
-        stmt = stmt.where(
-            KnowledgeSource.space_id == space_id,
-            accessible_source_predicate(context),
-        )
-    else:
-        stmt = stmt.where(KnowledgeSource.owner_id == current_user.id)
+        stmt = stmt.where(KnowledgeSource.space_id == space_id)
+    stmt = stmt.where(accessible_source_predicate(context, project_id=project_id))
     if project_id:
         stmt = stmt.where(KnowledgeSource.project_id == project_id)
     if status:

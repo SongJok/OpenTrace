@@ -119,10 +119,10 @@ async def test_learning_hook_strategy_shadow_when_auto_apply_off(monkeypatch):
     assert not out.get("strategy_hint_stored")
 
 
-def test_document_retrieval_owner_scope():
+def test_document_retrieval_uses_enterprise_read_scope():
     text = (ROOT / "plugins/document_retrieval.py").read_text(encoding="utf-8")
-    assert "_document_owner_clause" in text
-    assert "Document.owner_id" in text
+    assert "accessible_document_predicate" in text
+    assert "tenant_metadata" in text
 
 
 def test_data_supervisor_data_source_context():

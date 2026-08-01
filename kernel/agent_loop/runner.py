@@ -2790,11 +2790,13 @@ class AgentLoop:
         params: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Resolve trusted scope server-side; never trust model-supplied ids."""
-        from infra.security.resource_scope import accessible_data_sources_statement
+        from infra.security.resource_scope import (
+            accessible_data_sources_statement,
+            load_scoped_conversation,
+        )
         from infra.storage.database import AsyncSessionLocal
         from infra.storage.models import (
             AssistantProfile,
-            ChatSession,
             DataSource,
             Project,
             SkillCatalogEntry,
@@ -2813,7 +2815,15 @@ class AgentLoop:
             return hydrated, None
 
         async with AsyncSessionLocal() as scope_db:
-            session = await scope_db.get(ChatSession, response.conversation_id)
+            session = await load_scoped_conversation(
+                scope_db,
+                conversation_id=response.conversation_id,
+                user_id=response.user_id,
+                tenant_id=response.tenant_id,
+                workspace_id=response.workspace_id,
+            )
+            if session is None:
+                return hydrated, {"error": "conversation_scope_mismatch"}
             if agent_name == "rag":
                 hydrated.pop("space_id", None)
                 hydrated.pop("knowledge_space_ids", None)

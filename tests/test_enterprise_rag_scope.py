@@ -224,6 +224,9 @@ async def test_runner_replaces_model_space_scope_with_trusted_enterprise_manifes
         async def get(self, _model, _identifier):
             return session
 
+        async def scalar(self, _statement):
+            return session
+
     monkeypatch.setattr(database, "AsyncSessionLocal", ScopeSession)
     response = SimpleNamespace(
         conversation_id="session-1",
@@ -273,6 +276,9 @@ async def test_runner_ignores_model_enterprise_grounding_without_trusted_manifes
             return None
 
         async def get(self, _model, _identifier):
+            return session
+
+        async def scalar(self, _statement):
             return session
 
     monkeypatch.setattr(database, "AsyncSessionLocal", ScopeSession)

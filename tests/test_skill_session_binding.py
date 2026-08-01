@@ -217,6 +217,9 @@ async def test_agent_runtime_uses_server_session_allowlist_when_request_sends_em
         async def get(self, _model, _identifier):
             return session
 
+        async def scalar(self, _statement):
+            return session
+
         async def execute(self, _statement):
             return allowed_result
 
@@ -272,6 +275,9 @@ async def test_agent_runtime_filters_legacy_company_binding_by_current_clearance
             if model is User:
                 return user
             return None
+
+        async def scalar(self, _statement):
+            return session
 
         async def execute(self, _statement):
             return company_result

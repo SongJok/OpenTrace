@@ -1,7 +1,6 @@
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -13,7 +12,7 @@ class DocumentsRagRetrievalContractTests(unittest.TestCase):
         txt = self._read("gateway/api_gateway/routers/documents.py")
         self.assertIn("for table in document.tables", txt)
         self.assertIn("for row in table.rows", txt)
-        self.assertIn("row_text = \" \".join", txt)
+        self.assertIn('row_text = " ".join', txt)
 
     def test_document_plugin_has_lexical_hybrid_scoring(self):
         txt = self._read("plugins/document_plugin.py")
@@ -27,15 +26,15 @@ class DocumentsRagRetrievalContractTests(unittest.TestCase):
         self.assertIn('"chunk_index": meta.get("chunk_index")', txt)
         self.assertIn('"document_id": meta.get("document_id")', txt)
 
-    def test_document_retrieval_scoped_by_owner(self):
+    def test_document_retrieval_uses_central_read_scope(self):
         txt = self._read("plugins/document_retrieval.py")
-        self.assertIn("_document_owner_clause", txt)
-        self.assertIn("Document.owner_id", txt)
+        self.assertIn("accessible_document_predicate", txt)
+        self.assertIn("user_id=user_id", txt)
 
     def test_document_retrieval_tenant_equality_columns(self):
-        txt = self._read("plugins/document_retrieval.py")
-        self.assertIn("Document.tenant_id == tid", txt)
-        self.assertIn("Document.workspace_id == wid", txt)
+        txt = self._read("infra/security/resource_scope.py")
+        self.assertIn("Document.tenant_id == tenant_id", txt)
+        self.assertIn("Document.workspace_id == workspace_id", txt)
 
     def test_document_model_has_tenant_columns(self):
         txt = self._read("infra/storage/models.py")
@@ -47,9 +46,9 @@ class DocumentsRagRetrievalContractTests(unittest.TestCase):
         self.assertIn("build_tenant_metadata", txt)
         self.assertIn("tenant_id=doc_tenant", txt)
 
-    def test_document_plugin_llmwiki_scoped_by_owner(self):
+    def test_document_plugin_llmwiki_uses_central_read_scope(self):
         txt = self._read("plugins/document_plugin.py")
-        self.assertIn("Document.owner_id == uid", txt)
+        self.assertIn("accessible_document_predicate", txt)
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ def test_finalize_turn_calls_world_finalize():
 
 def test_document_retrieval_tenant_scope_helpers():
     text = (ROOT / "plugins/document_retrieval.py").read_text(encoding="utf-8")
-    assert "_document_tenant_clause" in text
+    assert "accessible_document_predicate" in text
     assert "_apply_document_scope" in text
 
 

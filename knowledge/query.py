@@ -15,6 +15,7 @@ from infra.config.settings import settings
 from infra.observability.logger import get_logger
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import (
+    ChatSession,
     ConversationState,
     KnowledgeClaim,
     KnowledgePage,
@@ -208,6 +209,8 @@ async def search_knowledge(
                 if user is not None
                 else None
             )
+            if access_context is None:
+                return []
             explicit_space_scope = knowledge_space_ids is not None or bool(space_id)
             requested_space_ids = list(
                 dict.fromkeys(
@@ -243,7 +246,14 @@ async def search_knowledge(
             hot_results: list[dict[str, Any]] = []
             if session_id:
                 state = await db.scalar(
-                    select(ConversationState).where(ConversationState.session_id == session_id)
+                    select(ConversationState)
+                    .join(ChatSession, ConversationState.session_id == ChatSession.id)
+                    .where(
+                        ConversationState.session_id == session_id,
+                        ChatSession.user_id == user_id,
+                        ChatSession.tenant_id == tenant,
+                        ChatSession.workspace_id == workspace,
+                    )
                 )
                 for item in (
                     (getattr(state, "last_results", None) or []) if state is not None else []

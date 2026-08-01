@@ -2,6 +2,7 @@
 DocumentPlugin — 文档认知插件
 将文档系统接入 Cognitive Kernel，通过向量检索和 LLMwiki 双路检索用户上传文档。
 """
+
 from __future__ import annotations
 
 import json
@@ -15,6 +16,7 @@ from sqlalchemy import delete, or_, select, text
 
 from infra.config.settings import settings
 from infra.observability.logger import get_logger
+from infra.security.resource_scope import accessible_document_predicate
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import Document, DocumentChunk, DocumentLLMWiki
 from kernel.json_parser import parse_llm_json
@@ -91,33 +93,63 @@ def _normalize_keywords(keywords: Any, fallback_text: str) -> list[str]:
         terms = [str(item).strip().lower() for item in keywords if str(item).strip()]
     else:
         terms = []
-    
+
     # 2. 🔥 规则兜底：从原文提取业务术语
     business_terms = [
-        "队长","负责人","组长","管理员","操作员","录入大厅","大厅","准入",
-        "资质","资格","认证","账号","账户","权限","角色","身份","资质账号",
-        "任务","分发","审核","审批","任务分发","结果审核","定级","等级",
-        "级别","职级","初级","中级","高级","L1","L2","L3"
+        "队长",
+        "负责人",
+        "组长",
+        "管理员",
+        "操作员",
+        "录入大厅",
+        "大厅",
+        "准入",
+        "资质",
+        "资格",
+        "认证",
+        "账号",
+        "账户",
+        "权限",
+        "角色",
+        "身份",
+        "资质账号",
+        "任务",
+        "分发",
+        "审核",
+        "审批",
+        "任务分发",
+        "结果审核",
+        "定级",
+        "等级",
+        "级别",
+        "职级",
+        "初级",
+        "中级",
+        "高级",
+        "L1",
+        "L2",
+        "L3",
     ]
     for term in business_terms:
         if term in fallback_text.lower():
             terms.append(term.lower())
-    
+
     # 3. 🔥 提取"X：Y"定义句式中的关键实体
     import re
-    definitions = re.findall(r'([^\s：:]+)\s*[:：是指即]\s*([^\n。.!?;；]+)', fallback_text)
+
+    definitions = re.findall(r"([^\s：:]+)\s*[:：是指即]\s*([^\n。.!?;；]+)", fallback_text)
     for subject, predicate in definitions:
         subject = subject.strip().lower()
         if subject and len(subject) >= 2:
             terms.append(subject)
-        nouns = re.findall(r'[\u4e00-\u9fff]{2,4}|[a-zA-Z]{3,}', predicate)
+        nouns = re.findall(r"[\u4e00-\u9fff]{2,4}|[a-zA-Z]{3,}", predicate)
         for noun in nouns:
             terms.append(noun.lower())
-    
+
     # 4. 兜底分词
     if not terms:
         terms = tokenize(fallback_text)[:12]
-    
+
     # 5. 去重+截断
     unique: list[str] = []
     seen: set[str] = set()
@@ -125,7 +157,7 @@ def _normalize_keywords(keywords: Any, fallback_text: str) -> list[str]:
         if term and len(term.strip()) >= 2 and term not in seen:
             seen.add(term.strip())
             unique.append(term.strip())
-    
+
     return unique[:15]
 
 
@@ -140,10 +172,13 @@ def _fallback_llmwiki_entry(chunk: DocumentChunk, title: str) -> dict[str, Any]:
 
     # Extract first definition-pattern sentence for a better question hint
     import re
+
     def_pattern = re.search(
         r"([^\n。.!?;；]{2,40}?(?:是指|即为|就是|：|:)[^\n。.!?;；]{2,60})", body
     )
-    entity_pattern = re.search(r"([^\n。.!?;；]{2,30}?(?:队长|负责人|管理员|操作员|角色|权限|资质|账号|任务|流程))", body)
+    entity_pattern = re.search(
+        r"([^\n。.!?;；]{2,30}?(?:队长|负责人|管理员|操作员|角色|权限|资质|账号|任务|流程))", body
+    )
     first_sentence = body[:120].rsplit("。", 1)[0] if "。" in body[:120] else body[:120]
 
     if def_pattern:
@@ -204,13 +239,13 @@ async def _generate_llmwiki_entry_with_llm(
 ) -> dict[str, Any]:
     # 🔥 优化 prompt：显式要求生成定义类问答
     prompt = (
-        '你是一名企业知识库整理专家。请分析文档片段，生成用户可能提问的问题和答案。\n\n'
-        '生成要求:\n'
+        "你是一名企业知识库整理专家。请分析文档片段，生成用户可能提问的问题和答案。\n\n"
+        "生成要求:\n"
         '1. [定义优先] 如果片段包含定义句式(如"队长：录入大厅账号")，优先生成"什么是队长？"类型问题\n'
-        '2. [答案简洁] answer 必须包含核心定义，≤80字，保留关键业务术语\n'
-        '3. [关键词完整] keywords 必须包含：实体名+属性+场景词+同义词\n'
-        '4. [业务术语] 特别关注：录入大厅/资质/账号/队长/负责人/任务/审核/定级等词汇\n\n'
-        '输出格式(严格JSON):\n'
+        "2. [答案简洁] answer 必须包含核心定义，≤80字，保留关键业务术语\n"
+        "3. [关键词完整] keywords 必须包含：实体名+属性+场景词+同义词\n"
+        "4. [业务术语] 特别关注：录入大厅/资质/账号/队长/负责人/任务/审核/定级等词汇\n\n"
+        "输出格式(严格JSON):\n"
         '{"question":"...","answer":"...","keywords":["实体","属性","场景","同义词"]}\n\n'
         f"文档标题：{title or '未命名文档'}\n"
         f"片段内容：\n{(chunk.content or '')[:1600]}"
@@ -233,10 +268,14 @@ async def _generate_llmwiki_entry_with_llm(
         return {
             "question": question or fallback["question"],
             "answer": answer or fallback["answer"],
-            "keywords": _normalize_keywords(parsed.get("keywords"), f"{title}\n{chunk.content or ''}"),
+            "keywords": _normalize_keywords(
+                parsed.get("keywords"), f"{title}\n{chunk.content or ''}"
+            ),
         }
     except Exception as exc:
-        logger.warning("LLMwiki generation failed; using fallback summary", error=str(exc), chunk_id=chunk.id)
+        logger.warning(
+            "LLMwiki generation failed; using fallback summary", error=str(exc), chunk_id=chunk.id
+        )
         return _fallback_llmwiki_entry(chunk, title)
 
 
@@ -258,7 +297,11 @@ async def _build_llmwiki_drafts(title: str, chunks: list[DocumentChunk]) -> list
     try:
         raw_vectors = await get_embedder().embed(embedding_inputs, input_type="document")
         embeddings = [
-            normalize_embedding_vector(vec, settings.embedding_dims) if isinstance(vec, list) else None
+            (
+                normalize_embedding_vector(vec, settings.embedding_dims)
+                if isinstance(vec, list)
+                else None
+            )
             for vec in raw_vectors
         ]
     except Exception as exc:
@@ -270,7 +313,9 @@ async def _build_llmwiki_drafts(title: str, chunks: list[DocumentChunk]) -> list
                 chunk_id=chunk.id,
                 question=str(payload.get("question") or "").strip(),
                 answer=str(payload.get("answer") or "").strip(),
-                keywords=_normalize_keywords(payload.get("keywords"), f"{title}\n{chunk.content or ''}"),
+                keywords=_normalize_keywords(
+                    payload.get("keywords"), f"{title}\n{chunk.content or ''}"
+                ),
                 embedding_json=json.dumps(embedding) if embedding else None,
                 embedding_vector=None,
             )
@@ -286,9 +331,7 @@ async def generate_llmwiki_entries(document_id: str) -> int:
         return 0
 
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(Document).where(Document.id == document_id).limit(1)
-        )
+        result = await db.execute(select(Document).where(Document.id == document_id).limit(1))
         document = result.scalar_one_or_none()
         if not document or document.status != "ready":
             return 0
@@ -362,10 +405,7 @@ class DocumentPlugin(BasePlugin):
             user_id=user_id,
             top_k=min(3, max(1, settings.llmwiki_top_k)),
         )
-        content_parts = [
-            f"[文档片段 {i + 1}] {c.content[:400]}"
-            for i, c in enumerate(chunks)
-        ]
+        content_parts = [f"[文档片段 {i + 1}] {c.content[:400]}" for i, c in enumerate(chunks)]
         content_parts.extend(
             f"[LLMWiki {i + 1}] {entry.metadata.get('question', '摘要')}：{entry.content[:240]}"
             for i, entry in enumerate(llmwiki_entries)
@@ -461,12 +501,12 @@ class DocumentPlugin(BasePlugin):
                 .join(Document, DocumentLLMWiki.document_id == Document.id)
                 .where(Document.status == "ready")
             )
-            uid = (user_id or "").strip()
-            if uid and uid != "shared":
-                stmt = stmt.where(Document.owner_id == uid)
-            tid = (tenant_id or "").strip() or "default"
-            wid = (workspace_id or "").strip() or "default"
-            stmt = stmt.where(Document.tenant_id == tid).where(Document.workspace_id == wid)
+            stmt = stmt.where(
+                accessible_document_predicate(
+                    user_id=user_id,
+                    tenant_metadata={"tenant_id": tenant_id, "workspace_id": workspace_id},
+                )
+            )
             if project_id:
                 stmt = stmt.where(Document.project_id == project_id)
             if terms:

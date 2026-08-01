@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import and_, exists, false, or_, select
+from sqlalchemy import and_, exists, false, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from infra.security.identity import is_enterprise_admin
 from infra.storage.models import (
     KnowledgePrincipalMembership,
     KnowledgeSource,
@@ -31,6 +32,7 @@ class KnowledgeAccessContext:
     subjects: tuple[tuple[str, str], ...]
     clearance: str
     space_roles: dict[str, str]
+    workspace_admin: bool = False
 
     @property
     def accessible_space_ids(self) -> tuple[str, ...]:
@@ -79,7 +81,8 @@ async def resolve_access_context(
             )
         ).scalars()
     )
-    clearance = "restricted" if user.is_superuser else "internal"
+    workspace_admin = is_enterprise_admin(user)
+    clearance = "restricted" if workspace_admin else "internal"
     for membership in memberships:
         if membership.principal_type == "clearance":
             if CLASSIFICATION_RANK.get(membership.principal_id, 0) > CLASSIFICATION_RANK.get(
@@ -108,6 +111,15 @@ async def resolve_access_context(
         )
         for subject_type, subject_id in sorted(subjects)
     ]
+    visibility_scope = (
+        true()
+        if workspace_admin
+        else or_(
+            KnowledgeSpace.owner_id == user.id,
+            KnowledgeSpace.visibility == "tenant",
+            KnowledgeSpaceMember.id.is_not(None),
+        )
+    )
     stmt = (
         select(KnowledgeSpace, KnowledgeSpaceMember.role)
         .outerjoin(
@@ -125,11 +137,7 @@ async def resolve_access_context(
             KnowledgeSpace.tenant_id == tenant_id,
             KnowledgeSpace.workspace_id == workspace_id,
             KnowledgeSpace.status == "active",
-            or_(
-                KnowledgeSpace.owner_id == user.id,
-                KnowledgeSpace.visibility == "tenant",
-                KnowledgeSpaceMember.id.is_not(None),
-            ),
+            visibility_scope,
         )
     )
     if project_id:
@@ -143,7 +151,9 @@ async def resolve_access_context(
 
     roles: dict[str, str] = {}
     for space, member_role in (await db.execute(stmt)).all():
-        role = "admin" if space.owner_id == user.id else (member_role or "viewer")
+        role = (
+            "admin" if workspace_admin or space.owner_id == user.id else (member_role or "viewer")
+        )
         previous = roles.get(space.id)
         if previous is None or SPACE_ROLE_RANK[role] > SPACE_ROLE_RANK[previous]:
             roles[space.id] = role
@@ -154,6 +164,7 @@ async def resolve_access_context(
         subjects=tuple(sorted(subjects)),
         clearance=clearance,
         space_roles=roles,
+        workspace_admin=workspace_admin,
     )
 
 
@@ -220,16 +231,24 @@ def accessible_source_predicate(
             ),
         )
     )
-    scope_access = or_(
-        KnowledgeSource.owner_id == context.user_id,
-        and_(
-            (
-                KnowledgeSource.space_id.in_(context.accessible_space_ids)
-                if context.accessible_space_ids
-                else false()
+    scope_access = (
+        true()
+        if context.workspace_admin
+        else or_(
+            KnowledgeSource.owner_id == context.user_id,
+            and_(
+                (
+                    KnowledgeSource.space_id.in_(context.accessible_space_ids)
+                    if context.accessible_space_ids
+                    else false()
+                ),
+                or_(~has_source_acl, matches_source_acl),
             ),
-            or_(~has_source_acl, matches_source_acl),
-        ),
+        )
+    )
+    tenant_scope = and_(
+        KnowledgeSource.tenant_id == context.tenant_id,
+        KnowledgeSource.workspace_id == context.workspace_id,
     )
     validity = and_(
         KnowledgeSource.deleted_at.is_(None),
@@ -260,4 +279,4 @@ def accessible_source_predicate(
             mounted,
             enterprise_space,
         )
-    return and_(scope_access, validity, or_(*classification_filters), project_scope)
+    return and_(tenant_scope, scope_access, validity, or_(*classification_filters), project_scope)

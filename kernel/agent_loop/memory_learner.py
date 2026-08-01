@@ -10,9 +10,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from infra.security.resource_scope import load_scoped_conversation
 from infra.storage.models import (
     AssistantProfile,
-    ChatSession,
     MemoryCandidate,
     MemoryEvidence,
     Project,
@@ -86,7 +86,13 @@ class MemoryLearner:
         response: ResponseRecord,
         deterministic_only: bool = False,
     ) -> list[str]:
-        session = await db.get(ChatSession, response.conversation_id)
+        session = await load_scoped_conversation(
+            db,
+            conversation_id=response.conversation_id,
+            user_id=response.user_id,
+            tenant_id=response.tenant_id,
+            workspace_id=response.workspace_id,
+        )
         if session is None or session.is_temporary:
             return []
         extension = dict((response.request_payload or {}).get("opentrace") or {})
@@ -97,11 +103,34 @@ class MemoryLearner:
         )
         if mode != "enabled":
             return []
-        project = await db.get(Project, session.project_id) if session.project_id else None
+        project = (
+            await db.scalar(
+                select(Project).where(
+                    Project.id == session.project_id,
+                    Project.user_id == response.user_id,
+                    Project.tenant_id == response.tenant_id,
+                    Project.workspace_id == response.workspace_id,
+                    Project.archived_at.is_(None),
+                )
+            )
+            if session.project_id
+            else None
+        )
         profile_id = session.assistant_profile_id or (
             project.assistant_profile_id if project else None
         )
-        profile = await db.get(AssistantProfile, profile_id) if profile_id else None
+        profile = (
+            await db.scalar(
+                select(AssistantProfile).where(
+                    AssistantProfile.id == profile_id,
+                    AssistantProfile.user_id == response.user_id,
+                    AssistantProfile.tenant_id == response.tenant_id,
+                    AssistantProfile.workspace_id == response.workspace_id,
+                )
+            )
+            if profile_id
+            else None
+        )
         memory_policy = dict(profile.memory_policy or {}) if profile else {}
         if memory_policy.get("enabled") is False or memory_policy.get("learn") is False:
             return []

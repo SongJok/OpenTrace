@@ -11,6 +11,12 @@ from jwt import InvalidTokenError, PyJWKClient
 from infra.config.settings import settings
 
 
+def is_enterprise_admin(user: Any) -> bool:
+    """统一管理员语义，避免 role=admin 与 superuser 在业务面产生权限分叉。"""
+
+    return bool(getattr(user, "is_superuser", False) or getattr(user, "role", "") == "admin")
+
+
 @lru_cache(maxsize=4)
 def _jwks_client(url: str) -> PyJWKClient:
     return PyJWKClient(url, cache_keys=True, lifespan=300)

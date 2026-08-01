@@ -14,11 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from infra.assistant_profiles import personality_instruction
 from infra.config.settings import settings
 from infra.observability.tracer import traced_async
-from infra.security.resource_scope import accessible_data_sources_statement
+from infra.security import resource_scope
 from infra.storage.models import (
     AssistantProfile,
     Attachment,
-    ChatSession,
     DataSource,
     DataSourceSchema,
     EnterpriseSkill,
@@ -141,7 +140,7 @@ class ContextAssembler:
         user_query: str,
         request_payload: dict[str, Any],
     ) -> AssembledContext:
-        session = await db.get(ChatSession, response.conversation_id)
+        session = await resource_scope.require_response_conversation(db, response=response)
         extension = dict(request_payload.get("opentrace") or {})
         try:
             calendar_timezone = ensure_timezone(str(extension.get("timezone") or ""))
@@ -275,7 +274,7 @@ class ContextAssembler:
             if project and project.instructions.strip():
                 system_blocks.append("Project 指令：\n" + project.instructions.strip())
             if project and project.data_source_ids:
-                source_stmt = accessible_data_sources_statement(
+                source_stmt = resource_scope.accessible_data_sources_statement(
                     user_id=response.user_id,
                     tenant_metadata={
                         "tenant_id": response.tenant_id,

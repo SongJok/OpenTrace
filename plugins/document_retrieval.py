@@ -1,4 +1,5 @@
 """Shared document retrieval helpers for RAG and document search."""
+
 from __future__ import annotations
 
 import json
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from sqlalchemy import or_, select
 
 from infra.config.settings import settings
+from infra.security.resource_scope import accessible_document_predicate
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import Document, DocumentChunk
 from model.embedding.base import get_embedder, normalize_embedding_vector
@@ -58,23 +60,6 @@ async def build_query_embedding(query: str) -> list[float]:
     return normalize_embedding_vector(vec, settings.embedding_dims)
 
 
-def _document_owner_clause(user_id: str):
-    """Restrict retrieval to documents owned by the requesting user."""
-    uid = (user_id or "").strip()
-    if not uid or uid == "shared":
-        return None
-    return Document.owner_id == uid
-
-
-def _document_tenant_clause(tenant_id: str | None, workspace_id: str | None):
-    """Filter by documents.tenant_id / workspace_id columns (equality)."""
-    from sqlalchemy import and_
-
-    tid = (tenant_id or "").strip() or "default"
-    wid = (workspace_id or "").strip() or "default"
-    return and_(Document.tenant_id == tid, Document.workspace_id == wid)
-
-
 def _apply_document_scope(
     stmt,
     *,
@@ -83,12 +68,12 @@ def _apply_document_scope(
     workspace_id: str | None = None,
     project_id: str | None = None,
 ):
-    owner = _document_owner_clause(user_id)
-    if owner is not None:
-        stmt = stmt.where(owner)
-    tenant = _document_tenant_clause(tenant_id, workspace_id)
-    if tenant is not None:
-        stmt = stmt.where(tenant)
+    stmt = stmt.where(
+        accessible_document_predicate(
+            user_id=user_id,
+            tenant_metadata={"tenant_id": tenant_id, "workspace_id": workspace_id},
+        )
+    )
     if project_id:
         stmt = stmt.where(Document.project_id == project_id)
     return stmt
@@ -180,7 +165,12 @@ async def score_document_candidates(
             except Exception:
                 vector_score = 0.0
 
-        score = max(vector_score, lexical_score * 0.92, (vector_score * vw) + (lexical_score * lw), lexical_score * 0.65)
+        score = max(
+            vector_score,
+            lexical_score * 0.92,
+            (vector_score * vw) + (lexical_score * lw),
+            lexical_score * 0.65,
+        )
         score += title_boost(title, query_terms)
         score = apply_rerank_boost(score, query_terms, title, chunk.content or "")
 
@@ -236,7 +226,9 @@ def apply_rerank_boost(score: float, query_terms: list[str], title: str, content
     # Position bonus: terms in the first 20% of content
     position_bonus = 0.0
     content_l = (content or "").lower()
-    if content_l and any(term in content_l[: max(1, len(content_l) // 5)] for term in query_terms[:4]):
+    if content_l and any(
+        term in content_l[: max(1, len(content_l) // 5)] for term in query_terms[:4]
+    ):
         position_bonus = 0.05
 
     return min(0.999, score + proportional_bonus + phrase_bonus + position_bonus)
@@ -269,7 +261,9 @@ async def _fetch_document_candidates_vector(
                 workspace_id=workspace_id,
                 project_id=project_id,
             )
-            stmt = stmt.order_by(DocumentChunk.embedding_vector.l2_distance(query_embedding)).limit(limit)
+            stmt = stmt.order_by(DocumentChunk.embedding_vector.l2_distance(query_embedding)).limit(
+                limit
+            )
             result = await db.execute(stmt)
             rows = result.all()
 

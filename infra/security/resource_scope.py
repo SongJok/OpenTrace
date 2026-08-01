@@ -5,10 +5,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Select, exists, or_, select
+from sqlalchemy import Select, and_, exists, false, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from infra.storage.models import DataSource, Document, ResourcePermission
+from infra.storage.models import ChatSession, DataSource, Document, ResourcePermission, User
 
 PERMISSION_RANK = {"view": 1, "query": 2, "edit": 3, "admin": 4}
 
@@ -38,6 +38,66 @@ def scoped_documents_statement(
     if project_id:
         stmt = stmt.where(Document.project_id == project_id)
     return stmt
+
+
+def accessible_document_predicate(
+    *,
+    user_id: str,
+    tenant_metadata: dict[str, Any] | None = None,
+):
+    """构造文档问答只读范围；管理员可读当前工作区全部文档，普通用户仅可读本人文档。"""
+
+    tenant_id, workspace_id = normalized_tenant_scope(tenant_metadata)
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id or normalized_user_id == "shared":
+        return false()
+    requester_is_admin = exists(
+        select(User.id).where(
+            User.id == normalized_user_id,
+            User.status == "active",
+            or_(User.role == "admin", User.is_superuser.is_(True)),
+        )
+    )
+    return and_(
+        Document.tenant_id == tenant_id,
+        Document.workspace_id == workspace_id,
+        or_(Document.owner_id == normalized_user_id, requester_is_admin),
+    )
+
+
+async def load_scoped_conversation(
+    db: AsyncSession,
+    *,
+    conversation_id: str,
+    user_id: str,
+    tenant_id: str,
+    workspace_id: str,
+) -> ChatSession | None:
+    """按完整执行主体加载会话；不存在和越权统一返回空，避免泄露会话存在性。"""
+
+    return await db.scalar(
+        select(ChatSession).where(
+            ChatSession.id == conversation_id,
+            ChatSession.user_id == user_id,
+            ChatSession.tenant_id == tenant_id,
+            ChatSession.workspace_id == workspace_id,
+        )
+    )
+
+
+async def require_response_conversation(db: AsyncSession, *, response: Any) -> ChatSession:
+    """为 Worker/Agent Loop 加载 Response 对应会话，作用域失配时立即拒绝。"""
+
+    session = await load_scoped_conversation(
+        db,
+        conversation_id=response.conversation_id,
+        user_id=response.user_id,
+        tenant_id=response.tenant_id,
+        workspace_id=response.workspace_id,
+    )
+    if session is None:
+        raise PermissionError("conversation_scope_mismatch")
+    return session
 
 
 def owned_data_sources_statement(

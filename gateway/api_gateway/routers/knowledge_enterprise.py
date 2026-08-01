@@ -19,6 +19,7 @@ from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.audit.logger import write_audit_log
 from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
+from infra.security.identity import is_enterprise_admin
 from infra.security.resource_scope import normalized_tenant_scope
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
@@ -381,7 +382,7 @@ async def create_space(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     tenant_id, workspace_id = _scope(request, current_user)
-    if not current_user.is_superuser and (
+    if not is_enterprise_admin(current_user) and (
         payload.space_type not in {"personal", "project"} or payload.visibility == "tenant"
     ):
         raise AppException(
@@ -438,7 +439,7 @@ async def update_space(
     space, _, _ = await _space_or_error(
         db, request=request, user=current_user, space_id=space_id, role="admin"
     )
-    if not current_user.is_superuser and payload.visibility == "tenant":
+    if not is_enterprise_admin(current_user) and payload.visibility == "tenant":
         raise AppException(
             ErrorCodes.PERMISSION_DENIED.code,
             message="Tenant-visible knowledge spaces require admin permission",
@@ -579,7 +580,7 @@ async def upsert_principal_membership(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    if not current_user.is_superuser:
+    if not is_enterprise_admin(current_user):
         raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="Admin permission required")
     tenant_id, workspace_id = _scope(request, current_user)
     subject = await db.get(User, payload.user_id)
