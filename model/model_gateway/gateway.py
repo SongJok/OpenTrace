@@ -74,6 +74,15 @@ def _post_process_identity_response(messages: list[LLMMessage], content: str) ->
     return enforce_identity_output(content, last_user_text(messages))
 
 
+def _has_invalid_empty_output(result: LLMResponse) -> bool:
+    """拒绝供应商把空值占位符当作正常自然语言响应。"""
+
+    if result.tool_calls:
+        return False
+    text = str(result.content or "").strip().casefold()
+    return text in {"", "null", "undefined", "nil"}
+
+
 def _offline_fallback_response(messages: list[LLMMessage], role: LLMRole) -> LLMResponse:
     user_text = (last_user_text(messages) or "").strip()
     if role == LLMRole.ROUTER:
@@ -388,7 +397,10 @@ class ModelGateway:
         max_attempts = int(kwargs.pop("max_attempts", 3))
         for attempt in range(max_attempts):
             try:
-                return await adapter.complete(messages, **kwargs)
+                result = await adapter.complete(messages, **kwargs)
+                if _has_invalid_empty_output(result):
+                    raise RuntimeError("model_invalid_empty_output")
+                return result
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 should_retry, base_delay = self._retry_policy(exc)

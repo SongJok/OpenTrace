@@ -39,6 +39,7 @@ from kernel.agent_loop.contracts import (
     PlanningDecision,
     SideEffect,
     ToolSpec,
+    normalize_optional_text,
     parse_tool_specs,
 )
 from kernel.agent_loop.discovery import CapabilityDiscovery
@@ -620,8 +621,8 @@ class AgentLoop:
                     "direct_memory_answer": True,
                 },
             )
-        if intent.clarification_question:
-            question = intent.clarification_question.strip()
+        question = normalize_optional_text(intent.clarification_question)
+        if question:
             await self._emit_text(emit, question)
             return AgentLoopResult(
                 status="completed",
@@ -2004,7 +2005,7 @@ class AgentLoop:
             goal=str(parsed.get("goal") or query),
             task_type=str(parsed.get("task_type") or ("goal" if goal_mode else "chat")),
             capabilities=selected,
-            ambiguity=str(parsed.get("ambiguity")) if parsed.get("ambiguity") else None,
+            ambiguity=normalize_optional_text(parsed.get("ambiguity")),
             risk=risk,
             execution_profile=profile,
             execution_mode=str(
@@ -2013,11 +2014,7 @@ class AgentLoop:
             expected_outputs=tuple(
                 str(item) for item in (parsed.get("expected_outputs") or ["answer"])
             ),
-            clarification_question=(
-                str(parsed.get("clarification_question"))
-                if parsed.get("clarification_question")
-                else None
-            ),
+            clarification_question=normalize_optional_text(parsed.get("clarification_question")),
         )
         raw_plan: dict[str, Any] = {
             "goal": intent.goal,

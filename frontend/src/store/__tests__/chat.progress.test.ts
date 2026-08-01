@@ -35,6 +35,28 @@ describe('chat progress channel', () => {
     expect(useChatStore.getState().messages['session-1'][0].progress).toEqual(['调用工具'])
   })
 
+  it('replaces persisted assistant null sentinels without changing user text', () => {
+    const store = useChatStore.getState()
+    store.setMessages('session-1', [
+      { id: 'user-1', role: 'user', content: 'null' },
+      { id: 'assistant-1', role: 'assistant', content: ' null ' },
+    ] as any)
+
+    const messages = useChatStore.getState().messages['session-1']
+    expect(messages[0].finalText).toBe('null')
+    expect(messages[1].finalText).toBe('本次回复生成异常，请点击“重新生成”。')
+  })
+
+  it('replaces a live assistant null final answer', () => {
+    const store = useChatStore.getState()
+    store.appendAssistantStreamingMessage('session-1', { id: 'assistant-1' })
+    store.finishAssistantMessage('session-1', 'assistant-1', 'NULL')
+
+    expect(useChatStore.getState().messages['session-1'][0].finalText).toBe(
+      '本次回复生成异常，请点击“重新生成”。',
+    )
+  })
+
   it('keeps approval content on resolve failure and removes only the resolved card while resuming', () => {
     useChatStore.setState({
       messages: {

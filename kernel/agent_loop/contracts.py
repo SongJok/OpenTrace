@@ -17,6 +17,20 @@ class ExecutionProfile(StrEnum):
     DEEP = "deep"
 
 
+_NULLISH_OPTIONAL_TEXT = frozenset({"null", "none", "undefined", "nil"})
+
+
+def normalize_optional_text(value: Any) -> str | None:
+    """将规划模型输出的伪空值归一为真正的空值。"""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.casefold() in _NULLISH_OPTIONAL_TEXT:
+        return None
+    return text
+
+
 @dataclass(frozen=True)
 class IntentPlan:
     goal: str
@@ -61,18 +75,14 @@ class IntentPlan:
             goal=str(value.get("goal") or "").strip(),
             task_type=str(value.get("task_type") or "chat"),
             capabilities=tuple(str(item) for item in value.get("capabilities") or []),
-            ambiguity=str(value.get("ambiguity")) if value.get("ambiguity") else None,
+            ambiguity=normalize_optional_text(value.get("ambiguity")),
             risk=risk,
             execution_profile=profile,
             execution_mode=execution_mode,
             expected_outputs=tuple(
                 str(item) for item in (value.get("expected_outputs") or ["answer"])
             ),
-            clarification_question=(
-                str(value.get("clarification_question"))
-                if value.get("clarification_question")
-                else None
-            ),
+            clarification_question=normalize_optional_text(value.get("clarification_question")),
         )
 
 

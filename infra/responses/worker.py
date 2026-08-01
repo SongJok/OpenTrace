@@ -54,6 +54,14 @@ STREAM = "opentrace:responses:v2"
 GROUP = "opentrace-response-workers"
 OWNER = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 _TENANT_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
+_INVALID_TERMINAL_CONTENT = frozenset({"", "null", "undefined", "nil"})
+
+
+def _valid_terminal_content(value: object) -> str | None:
+    text = str(value or "").strip()
+    if text.casefold() in _INVALID_TERMINAL_CONTENT:
+        return None
+    return text
 
 
 def _tenant_semaphore(tenant_id: str) -> asyncio.Semaphore:
@@ -297,6 +305,22 @@ async def execute_response(response_id: str | None = None) -> bool:
                 await release_lease(db, response)
                 await db.commit()
                 return False
+
+            terminal_content = _valid_terminal_content(result.content)
+            if terminal_content is None:
+                result.status = "incomplete"
+                result.content = "本次模型未返回有效回答，请点击“重新生成”或稍后重试。"
+                result.metadata = {
+                    **dict(result.metadata or {}),
+                    "incomplete_details": {
+                        **dict((result.metadata or {}).get("incomplete_details") or {}),
+                        "reason": "invalid_empty_model_output",
+                    },
+                }
+                await emit(
+                    "response.output_text.done",
+                    {"text": result.content, "recovered_from_invalid_output": True},
+                )
 
             query = AgentLoop._query(dict(response.request_payload or {}))
             if MemoryLearner.deterministic_candidates(query):

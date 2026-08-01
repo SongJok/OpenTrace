@@ -170,8 +170,22 @@ function normalizeMessageText(input: unknown): string {
   return ''
 }
 
+const INVALID_ASSISTANT_TEXT = new Set(['null', 'undefined', 'nil'])
+const INVALID_ASSISTANT_FALLBACK = '本次回复生成异常，请点击“重新生成”。'
+
+function normalizeAssistantMessageText(input: unknown): string {
+  const text = normalizeMessageText(input)
+  return INVALID_ASSISTANT_TEXT.has(text.trim().toLowerCase())
+    ? INVALID_ASSISTANT_FALLBACK
+    : text
+}
+
 function asDoneMessage(raw: any): Message {
-  const text = normalizeMessageText(raw?.content ?? raw?.finalText ?? '')
+  const role = (raw?.role ?? 'assistant') as Message['role']
+  const rawText = raw?.content ?? raw?.finalText ?? ''
+  const text = role === 'assistant'
+    ? normalizeAssistantMessageText(rawText)
+    : normalizeMessageText(rawText)
   const reasoningSteps = Array.isArray(raw?.reasoning_steps) ? raw.reasoning_steps : undefined
   const executionGraph = raw?.execution_graph && typeof raw.execution_graph === 'object'
     ? (raw.execution_graph as ExecutionGraphData)
@@ -196,7 +210,7 @@ function asDoneMessage(raw: any): Message {
       : undefined
   return {
     id: String(raw?.id ?? `m_${Date.now()}`),
-    role: (raw?.role ?? 'assistant') as Message['role'],
+    role,
     status,
     streamText: '',
     finalText: text,
@@ -370,7 +384,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       list[idx] = {
         ...last,
         status: 'done',
-        finalText: normalizeMessageText(finalText),
+        finalText: normalizeAssistantMessageText(finalText),
         streamText: '',
       }
       return { messages: { ...s.messages, [id]: list }, streaming: false }
@@ -382,7 +396,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
         ...s.messages,
         [conversationId]: (s.messages[conversationId] ?? []).map((message) =>
           message.id === messageId && message.role === 'assistant'
-            ? { ...message, approvals: [], status: 'done', finalText: normalizeMessageText(finalText), streamText: '' }
+            ? { ...message, approvals: [], status: 'done', finalText: normalizeAssistantMessageText(finalText), streamText: '' }
             : message
         ),
       },

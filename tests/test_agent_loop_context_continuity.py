@@ -31,6 +31,19 @@ def _spec(name: str, description: str, side_effect: SideEffect = SideEffect.READ
     )
 
 
+def test_intent_plan_normalizes_string_null_optional_fields() -> None:
+    intent = IntentPlan.from_dict(
+        {
+            "goal": "回答普通问题",
+            "ambiguity": "null",
+            "clarification_question": " NULL ",
+        }
+    )
+
+    assert intent.ambiguity is None
+    assert intent.clarification_question is None
+
+
 def test_small_capability_catalogue_excludes_zero_score_tools() -> None:
     result = CapabilityDiscovery(catalogue_limit=48).discover(
         "明天上午帮我记录到日历",
@@ -1005,6 +1018,60 @@ async def test_default_plan_does_not_invent_capability_dependencies(monkeypatch)
         "create_calendar_event",
     ]
     assert all(step.depends_on == () for step in decision.execution_plan.steps)
+
+
+@pytest.mark.asyncio
+async def test_planner_string_null_does_not_short_circuit_normal_question(monkeypatch) -> None:
+    class FakeGateway:
+        async def complete(self, *args, **kwargs):
+            return LLMResponse(
+                content="",
+                model="planner",
+                tool_calls=[
+                    {
+                        "id": "plan-call",
+                        "type": "function",
+                        "function": {
+                            "name": "emit_intent_plan",
+                            "arguments": {
+                                "goal": "直接回答用户问题",
+                                "task_type": "chat",
+                                "capabilities": [],
+                                "ambiguity": "null",
+                                "execution_mode": "interactive",
+                                "expected_outputs": ["自然语言回答"],
+                                "clarification_question": "null",
+                                "complexity": "simple",
+                                "steps": [
+                                    {
+                                        "id": "answer",
+                                        "objective": "直接回答用户",
+                                        "capability": None,
+                                        "depends_on": [],
+                                        "success_criteria": "返回有效正文",
+                                    }
+                                ],
+                                "success_criteria": ["回答不是空值占位符"],
+                                "replan_limit": 0,
+                            },
+                        },
+                    }
+                ],
+            )
+
+    monkeypatch.setattr("kernel.agent_loop.runner.get_model_gateway", lambda: FakeGateway())
+    decision = await AgentLoop()._plan_turn(
+        query="你是谁",
+        attachment_context="",
+        profile=ExecutionProfile.AUTO,
+        tool_specs=[],
+        goal_mode=False,
+        capability_catalogue=[],
+    )
+
+    assert decision.intent.ambiguity is None
+    assert decision.intent.clarification_question is None
+    assert decision.execution_plan.steps[0].objective == "直接回答用户"
 
 
 @pytest.mark.asyncio

@@ -20,8 +20,16 @@ from gateway.api_gateway.routers.responses import (
     extract_user_input,
 )
 from infra.errors import AppException
+from infra.responses.worker import _valid_terminal_content
 from infra.storage.models import ResponseRecord, ResponseToolExecution
 from kernel.agent_loop.contracts import parse_tool_specs
+
+
+def test_worker_rejects_null_like_terminal_content() -> None:
+    assert _valid_terminal_content(None) is None
+    assert _valid_terminal_content(" null ") is None
+    assert _valid_terminal_content("undefined") is None
+    assert _valid_terminal_content("正常回答") == "正常回答"
 
 
 def test_extract_user_input_prefers_last_user_item() -> None:
