@@ -76,8 +76,6 @@ class ConversationSummarizer:
                 new_ids = set(ids[start:])
             except ValueError:
                 new_ids = set(ids)
-            if len(new_ids) < self.minimum_new_responses:
-                return None
             candidate_items = [
                 item
                 for item in items
@@ -90,7 +88,12 @@ class ConversationSummarizer:
         candidate_lines = [self._transcript_line(item) for item in candidate_items]
         total_chars = sum(len(line) for line in candidate_lines)
         total_tokens = sum(get_token_counter().count(line) for line in candidate_lines)
-        if total_chars < self.minimum_chars and total_tokens < self.minimum_tokens:
+        candidate_response_count = len({item.response_id for item in candidate_items})
+        if not self._summary_due(
+            total_chars=total_chars,
+            total_tokens=total_tokens,
+            response_count=candidate_response_count,
+        ):
             return None
         transcript_parts: list[str] = []
         if latest_summary:
@@ -100,36 +103,45 @@ class ConversationSummarizer:
             )
         transcript_parts.extend(candidate_lines[-100:])
         transcript = "\n".join(transcript_parts)[-100_000:]
-        result = await get_model_gateway().complete(
-            [
-                LLMMessage(
-                    role="system",
-                    content=(
-                        "将对话压缩为可继续工作的结构化检查点，只输出 JSON 对象。字段必须为："
-                        "current_goal（字符串）、constraints、decisions、open_items、confirmed_facts、"
-                        "tool_evidence、recent_turns（均为字符串数组）。保留仍然有效的用户目标、"
-                        "输出约束、明确决定、未完成事项、工具执行结果和最近三轮关键内容。"
-                        "用户后来的更正覆盖旧说法；相对日期必须保留原文并尽可能附带已知绝对日期。"
-                        "工具调用与工具结果要区分已提议、待审批、成功、失败和结果未知。"
-                        "不要加入原文没有的事实，不要输出隐藏思维链，也不要输出 Markdown 围栏。"
+        structured_state: dict[str, Any] | None = None
+        summary_origin = "model"
+        try:
+            result = await get_model_gateway().complete(
+                [
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "将对话压缩为可继续工作的结构化检查点，只输出 JSON 对象。字段必须为："
+                            "current_goal（字符串）、constraints、decisions、open_items、confirmed_facts、"
+                            "tool_evidence、recent_turns（均为字符串数组）。保留仍然有效的用户目标、"
+                            "输出约束、明确决定、未完成事项、工具执行结果和最近三轮关键内容。"
+                            "用户后来的更正覆盖旧说法；相对日期必须保留原文并尽可能附带已知绝对日期。"
+                            "工具调用与工具结果要区分已提议、待审批、成功、失败和结果未知。"
+                            "不要加入原文没有的事实，不要输出隐藏思维链，也不要输出 Markdown 围栏。"
+                        ),
                     ),
-                ),
-                LLMMessage(role="user", content=transcript),
-            ],
-            role=LLMRole.COMPRESS,
-            fallback_roles=[LLMRole.QUERY],
-            max_output_tokens=3000,
-            store=False,
-        )
-        raw_summary = str(result.content or "").strip()
-        if not raw_summary:
-            return None
-        structured_state = self._parse_structured_state(raw_summary)
-        summary = (
-            self._render_structured_state(structured_state)
-            if structured_state is not None
-            else raw_summary
-        )
+                    LLMMessage(role="user", content=transcript),
+                ],
+                role=LLMRole.COMPRESS,
+                fallback_roles=[LLMRole.QUERY],
+                max_output_tokens=3000,
+                store=False,
+            )
+            structured_state = self._parse_structured_state(str(result.content or ""))
+        except Exception:  # 模型压缩失败时仍必须生成可恢复检查点。
+            structured_state = None
+        if structured_state is None:
+            previous_state = (
+                dict((latest_summary.payload or {}).get("structured_state") or {})
+                if latest_summary
+                else {}
+            )
+            structured_state = self._deterministic_state(
+                candidate_items,
+                previous_state=previous_state,
+            )
+            summary_origin = "deterministic_fallback"
+        summary = self._render_structured_state(structured_state)
         source_response_ids = list(
             dict.fromkeys([*previous_source_ids, *(item.response_id for item in candidate_items)])
         )
@@ -150,8 +162,9 @@ class ConversationSummarizer:
                 "source_response_ids": source_response_ids,
                 "source_checksum": hashlib.sha256(transcript.encode()).hexdigest(),
                 "source_tokens": total_tokens,
-                "summary_format": "structured_v2" if structured_state is not None else "free_text",
-                "structured_state": structured_state or {},
+                "summary_format": "structured_v2",
+                "summary_origin": summary_origin,
+                "structured_state": structured_state,
             },
         )
         db.add(item)
@@ -204,6 +217,19 @@ class ConversationSummarizer:
         serialized = detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False)
         return f"[{item.response_id}] {item.item_type}/{item.role}: {serialized[:5000]}"
 
+    def _summary_due(
+        self,
+        *,
+        total_chars: int,
+        total_tokens: int,
+        response_count: int,
+    ) -> bool:
+        return bool(
+            total_chars >= self.minimum_chars
+            or total_tokens >= self.minimum_tokens
+            or response_count >= self.minimum_new_responses
+        )
+
     @staticmethod
     def _parse_structured_state(raw: str) -> dict[str, Any] | None:
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.I)
@@ -254,3 +280,44 @@ class ConversationSummarizer:
             elif isinstance(value, str) and value:
                 sections.append(f"## {label}\n{value}")
         return "\n\n".join(sections)
+
+    @classmethod
+    def _deterministic_state(
+        cls,
+        items: list[ResponseItem],
+        *,
+        previous_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """模型不可用时只使用持久 Item 生成保守检查点，不推断新事实。"""
+
+        previous = previous_state or {}
+
+        def previous_list(key: str) -> list[str]:
+            value = previous.get(key) or []
+            if not isinstance(value, list):
+                value = [value]
+            return [str(item).strip()[:2000] for item in value if str(item).strip()]
+
+        recent_turns = previous_list("recent_turns")
+        tool_evidence = previous_list("tool_evidence")
+        current_goal = str(previous.get("current_goal") or "").strip()[:2000]
+        for item in items:
+            if item.item_type in {"input_message", "message"}:
+                content = str(item.content or "").strip()
+                if not content:
+                    continue
+                label = "用户" if item.role == "user" else "助手"
+                recent_turns.append(f"{label}：{content[:1800]}")
+                if item.item_type == "input_message" and item.role == "user":
+                    current_goal = content[:2000]
+            elif item.item_type in {"function_call", "function_call_output"}:
+                tool_evidence.append(cls._transcript_line(item)[:2000])
+        return {
+            "current_goal": current_goal,
+            "constraints": previous_list("constraints")[-20:],
+            "decisions": previous_list("decisions")[-20:],
+            "open_items": previous_list("open_items")[-20:],
+            "confirmed_facts": previous_list("confirmed_facts")[-20:],
+            "tool_evidence": tool_evidence[-12:],
+            "recent_turns": recent_turns[-6:],
+        }

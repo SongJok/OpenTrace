@@ -1,5 +1,9 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
+
+from infra.storage.models import UserMemory
 from kernel.agent_loop.context import ContextAssembler
 from kernel.agent_loop.memory_learner import MemoryLearner
 from kernel.agent_loop.summarizer import ConversationSummarizer
@@ -145,3 +149,196 @@ def test_standalone_memory_query_is_not_polluted_by_old_branch_content() -> None
 
     assert expanded == "财务报销制度是什么？"
     assert used_history is False
+
+
+def test_memory_database_search_terms_keep_subject_and_drop_follow_up_noise() -> None:
+    terms = ContextAssembler._memory_search_terms(
+        "那具体怎么操作？\n最近对话主题：\n我的内部项目代号是星轨-9152"
+    )
+
+    assert "代号" in terms
+    assert "星轨" in terms
+    assert "最近" not in terms
+    assert "主题" not in terms
+    assert len(terms) <= 24
+
+
+@pytest.mark.asyncio
+async def test_memory_candidate_pool_merges_priority_and_lexical_hits() -> None:
+    priority = SimpleNamespace(id="memory-priority")
+    lexical = SimpleNamespace(id="memory-old-but-relevant")
+
+    class Rows:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return list(self.rows)
+
+    class Session:
+        def __init__(self):
+            self.calls = 0
+            self.statements = []
+
+        async def execute(self, statement):
+            self.statements.append(statement)
+            self.calls += 1
+            return Rows([priority]) if self.calls == 1 else Rows([lexical, priority])
+
+    db = Session()
+    memories, lexical_count = await ContextAssembler._memory_candidate_pool(
+        db,
+        response=SimpleNamespace(
+            user_id="user-1",
+            tenant_id="tenant-1",
+            workspace_id="workspace-1",
+        ),
+        scope_clause=UserMemory.scope_type == "user",
+        now=datetime.now(UTC),
+        query="我的内部项目代号是什么？",
+    )
+
+    assert [memory.id for memory in memories] == ["memory-priority", "memory-old-but-relevant"]
+    assert lexical_count == 2
+    assert len(db.statements) == 2
+    for statement in db.statements:
+        sql = str(statement)
+        assert "user_memories.user_id" in sql
+        assert "user_memories.tenant_id" in sql
+        assert "user_memories.workspace_id" in sql
+
+
+@pytest.mark.asyncio
+async def test_personal_business_context_is_scoped_and_redacts_raw_tool_payload() -> None:
+    task = SimpleNamespace(
+        id="task-1",
+        title="每日销售简报",
+        status="active",
+        next_run_at=datetime(2026, 8, 2, 1, 0, tzinfo=UTC),
+    )
+    approval = SimpleNamespace(
+        id="approval-1",
+        tool_name="create_calendar_event",
+        created_at=datetime(2026, 8, 1, 1, 0, tzinfo=UTC),
+    )
+    approval_response = SimpleNamespace(id="resp-approval")
+    execution = SimpleNamespace(
+        tool_name="create_calendar_event",
+        completed_at=datetime(2026, 8, 1, 2, 0, tzinfo=UTC),
+        arguments={"title": "客户复盘", "password": "must-not-leak"},
+        result={"event_id": "event-1", "access_token": "must-not-leak"},
+    )
+    execution_response = SimpleNamespace(id="resp-operation")
+
+    class Rows:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return list(self.rows)
+
+    class Session:
+        def __init__(self):
+            self.calls = 0
+            self.statements = []
+
+        async def execute(self, statement):
+            self.statements.append(statement)
+            self.calls += 1
+            return (
+                Rows([task])
+                if self.calls == 1
+                else (
+                    Rows([(approval, approval_response)])
+                    if self.calls == 2
+                    else Rows([(execution, execution_response)])
+                )
+            )
+
+    db = Session()
+    prompt, manifest = await ContextAssembler._personal_business_context(
+        db,
+        response=SimpleNamespace(
+            user_id="user-1",
+            tenant_id="tenant-1",
+            workspace_id="workspace-1",
+        ),
+        query="我刚才创建的任务和待审批操作是什么状态？",
+        timezone_name="Asia/Shanghai",
+    )
+
+    assert "每日销售简报" in prompt
+    assert "approval-1" in prompt
+    assert "客户复盘" in prompt
+    assert "event-1" in prompt
+    assert "must-not-leak" not in prompt
+    assert manifest == {
+        "query_matched": True,
+        "scheduled_task_count": 1,
+        "pending_approval_count": 1,
+        "recent_operation_count": 1,
+    }
+    assert len(db.statements) == 3
+    for statement in db.statements:
+        sql = str(statement)
+        assert "responses.user_id" in sql or "task_definitions.user_id" in sql
+        assert "responses.tenant_id" in sql or "task_definitions.tenant_id" in sql
+        assert "responses.workspace_id" in sql or "task_definitions.workspace_id" in sql
+
+
+def test_summary_is_due_for_many_short_responses() -> None:
+    summarizer = ConversationSummarizer(
+        minimum_chars=40_000,
+        minimum_tokens=48_000,
+        minimum_new_responses=8,
+    )
+
+    assert summarizer._summary_due(total_chars=800, total_tokens=300, response_count=8) is True
+    assert summarizer._summary_due(total_chars=800, total_tokens=300, response_count=7) is False
+
+
+def test_deterministic_checkpoint_preserves_business_continuity() -> None:
+    items = [
+        SimpleNamespace(
+            response_id="resp-8",
+            item_type="input_message",
+            role="user",
+            content="继续完善客户复盘任务",
+            payload={},
+        ),
+        SimpleNamespace(
+            response_id="resp-8",
+            item_type="function_call_output",
+            role="tool",
+            content="任务已创建",
+            payload={
+                "name": "create_scheduled_task",
+                "call_id": "call-8",
+                "status": "succeeded",
+            },
+        ),
+    ]
+
+    state = ConversationSummarizer._deterministic_state(
+        items,
+        previous_state={
+            "current_goal": "旧目标",
+            "constraints": ["仅使用当前工作区数据"],
+            "decisions": [],
+            "open_items": [],
+            "confirmed_facts": [],
+            "tool_evidence": [],
+            "recent_turns": [],
+        },
+    )
+
+    assert state["current_goal"] == "继续完善客户复盘任务"
+    assert state["constraints"] == ["仅使用当前工作区数据"]
+    assert "create_scheduled_task" in state["tool_evidence"][0]
+    assert "任务已创建" in state["tool_evidence"][0]
