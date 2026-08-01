@@ -112,7 +112,7 @@ describe('ChatPage 认证会话隔离', () => {
     expect(screen.queryByText(/旧账号数据源/)).not.toBeInTheDocument()
   })
 
-  it('点击模型名称只展示并切换当前用户可用的模型', async () => {
+  it('模型选择与推理模式使用独立入口并分别保存状态', async () => {
     const initialSettings = {
       active_selection: { source: 'free' as const, model: 'free-model', custom_model_id: null },
       scope: { tenant_id: 'tenant', workspace_id: 'workspace' },
@@ -142,13 +142,26 @@ describe('ChatPage 认证会话隔离', () => {
     render(<MemoryRouter><ChatPage /></MemoryRouter>)
 
     const selector = await screen.findByRole('button', { name: '选择模型' })
+    const profileSelector = screen.getByRole('button', { name: '选择推理模式' })
+
     fireEvent.click(selector)
     const menu = screen.getByRole('menu', { name: '可用模型' })
+    expect(screen.queryByRole('menu', { name: '推理模式' })).not.toBeInTheDocument()
     expect(within(menu).getByText('free-model')).toBeInTheDocument()
     expect(within(menu).getByText('开发模型')).toBeInTheDocument()
     expect(within(menu).queryByText('不可用模型')).not.toBeInTheDocument()
 
-    fireEvent.click(within(menu).getByRole('menuitemradio', { name: /开发模型/ }))
+    fireEvent.click(profileSelector)
+    const profileMenu = screen.getByRole('menu', { name: '推理模式' })
+    expect(screen.queryByRole('menu', { name: '可用模型' })).not.toBeInTheDocument()
+    fireEvent.click(within(profileMenu).getByRole('menuitemradio', { name: '快速' }))
+    expect(useChatPreferences.getState().executionProfile).toBe('fast')
+    expect(selector).toHaveTextContent('free-model')
+    expect(api.selectModel).not.toHaveBeenCalled()
+
+    fireEvent.click(selector)
+    const reopenedMenu = screen.getByRole('menu', { name: '可用模型' })
+    fireEvent.click(within(reopenedMenu).getByRole('menuitemradio', { name: /开发模型/ }))
 
     await waitFor(() => expect(api.selectModel).toHaveBeenCalledWith('token', 'custom', 'custom-1'))
     await waitFor(() => expect(selector).toHaveTextContent('custom-model'))
