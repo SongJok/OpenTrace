@@ -202,6 +202,7 @@ async def execute_response(response_id: str | None = None) -> bool:
 
     heartbeat = asyncio.create_task(_heartbeat(response_id))
     tenant_limit = _tenant_semaphore(response.tenant_id)
+    deterministic_memory_projected = False
     await tenant_limit.acquire()
     try:
         async with AsyncSessionLocal() as db:
@@ -296,6 +297,27 @@ async def execute_response(response_id: str | None = None) -> bool:
                 await release_lease(db, response)
                 await db.commit()
                 return False
+
+            query = AgentLoop._query(dict(response.request_payload or {}))
+            if MemoryLearner.deterministic_candidates(query):
+                try:
+                    async with AsyncSessionLocal() as memory_db:
+                        await set_worker_session(memory_db)
+                        memory_response = await memory_db.get(ResponseRecord, response_id)
+                        if memory_response:
+                            with use_runtime_llm_profile(runtime_profile):
+                                await MemoryLearner().learn(
+                                    memory_db,
+                                    response=memory_response,
+                                    deterministic_only=True,
+                                )
+                            deterministic_memory_projected = True
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "deterministic_memory_projection_failed",
+                        response_id=response_id,
+                        error=str(exc),
+                    )
 
             next_item = await _next_item_sequence(db, response_id)
             message = ResponseItem(
@@ -401,17 +423,18 @@ async def execute_response(response_id: str | None = None) -> bool:
                         )
         except Exception as exc:  # noqa: BLE001
             logger.warning("conversation_summary_failed", response_id=response_id, error=str(exc))
-        try:
-            async with AsyncSessionLocal() as memory_db:
-                await set_worker_session(memory_db)
-                memory_response = await memory_db.get(ResponseRecord, response_id)
-                if memory_response:
-                    with use_runtime_llm_profile(runtime_profile):
-                        await MemoryLearner().learn(memory_db, response=memory_response)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "response_memory_learning_failed", response_id=response_id, error=str(exc)
-            )
+        if not deterministic_memory_projected:
+            try:
+                async with AsyncSessionLocal() as memory_db:
+                    await set_worker_session(memory_db)
+                    memory_response = await memory_db.get(ResponseRecord, response_id)
+                    if memory_response:
+                        with use_runtime_llm_profile(runtime_profile):
+                            await MemoryLearner().learn(memory_db, response=memory_response)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "response_memory_learning_failed", response_id=response_id, error=str(exc)
+                )
         return True
     except asyncio.CancelledError:
         raise

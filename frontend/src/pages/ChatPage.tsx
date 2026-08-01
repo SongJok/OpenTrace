@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { BarChart3, ChevronDown, Copy, Database, FileWarning, FileText, Menu, Package, User, Share2, MoreHorizontal, Sparkles, type LucideIcon } from 'lucide-react'
+import { BarChart3, Check, ChevronDown, Copy, Cpu, Database, FileWarning, FileText, Menu, Package, User, Share2, MoreHorizontal, Sparkles, type LucideIcon } from 'lucide-react'
 import Sidebar from '../components/Sidebar'
 import MessageList, { type MessageListHandle } from '../components/MessageList'
 import ChatInput from '../components/ChatInput'
 import WelcomeScreen from '../components/WelcomeScreen'
 import { apiCreateConversationShare, apiDeleteConversation, apiListAssistantProfiles, apiListConversations, apiListDatabases, apiListProjects, apiUpdateConversation, type AssistantProfileItem, type DataSourceItem, type ProjectItem } from '../api/client'
-import { apiGetModelSettings } from '../api/modelSettings'
+import { apiGetModelSettings, apiSelectModelSettings, withSelectedModel, type ModelSource, type UserModelSettings } from '../api/modelSettings'
 import { getAuthSessionSnapshot, isAuthSessionCurrent, useAuthStore } from '../store/auth'
 import { useChatStore } from '../store/chat'
 import { getShowAvatars, setShowAvatars } from '../store/theme'
@@ -66,7 +66,10 @@ export default function ChatPage() {
   const [projects, setProjects] = useState<ProjectItem[]>([])
   const [dataSources, setDataSources] = useState<DataSourceItem[]>([])
   const [showProfileMenu, setShowProfileMenu] = useState(false)
-  const [activeModel, setActiveModel] = useState('')
+  const [modelSettings, setModelSettings] = useState<UserModelSettings | null>(null)
+  const [modelSettingsSaving, setModelSettingsSaving] = useState(false)
+  const [modelSettingsError, setModelSettingsError] = useState<string | null>(null)
+  const [showModelMenu, setShowModelMenu] = useState(false)
   const [showMoreMenu, setShowMoreMenu] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
 
@@ -75,16 +78,42 @@ export default function ChatPage() {
     setShowProfileMenu(false)
   }
 
+  const selectModel = async (source: ModelSource, selected: string) => {
+    if (!modelSettings || modelSettingsSaving) return
+    const authSession = getAuthSessionSnapshot()
+    if (authSession.token !== token) return
+    const previous = modelSettings
+    try {
+      const optimistic = withSelectedModel(modelSettings, source, selected)
+      setModelSettings(optimistic)
+      setModelSettingsSaving(true)
+      setModelSettingsError(null)
+      const saved = await apiSelectModelSettings(token, source, selected)
+      if (!isAuthSessionCurrent(authSession)) return
+      setModelSettings(saved)
+      setShowModelMenu(false)
+    } catch (error) {
+      if (!isAuthSessionCurrent(authSession)) return
+      setModelSettings(previous)
+      setModelSettingsError(error instanceof Error ? error.message : '切换模型失败')
+    } finally {
+      if (isAuthSessionCurrent(authSession)) setModelSettingsSaving(false)
+    }
+  }
+
   useEffect(() => {
     const authSession = getAuthSessionSnapshot()
-    setActiveModel('')
+    setModelSettings(null)
+    setModelSettingsSaving(false)
+    setModelSettingsError(null)
+    setShowModelMenu(false)
     void apiGetModelSettings(token)
       .then((settings) => {
         if (!isAuthSessionCurrent(authSession)) return
-        setActiveModel(settings.active_selection.model)
+        setModelSettings(settings)
       })
       .catch(() => {
-        if (isAuthSessionCurrent(authSession)) setActiveModel('')
+        if (isAuthSessionCurrent(authSession)) setModelSettingsError('读取可用模型失败')
       })
   }, [token])
 
@@ -137,6 +166,9 @@ export default function ChatPage() {
   }, [token])
 
   const selectedProject = projects.find((item) => item.id === projectId)
+  const activeModel = modelSettings?.active_selection.model || '默认模型'
+  const availableFreeModels = modelSettings?.free.has_api_key ? modelSettings.free.models : []
+  const availableCustomModels = modelSettings?.custom_models.filter((item) => item.has_api_key) ?? []
   const availableDataSources = selectedProject
     ? dataSources.filter((item) => selectedProject.data_source_ids.includes(item.id))
     : dataSources
@@ -253,15 +285,44 @@ export default function ChatPage() {
               >
                 <Menu size={17} />
               </button>
+              <span className="hidden text-sm font-semibold sm:inline">OpenTrace</span>
               <div className="relative min-w-0">
-              <button type="button" onClick={() => setShowProfileMenu((v) => !v)} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--text)] hover:bg-[var(--surface)]" aria-label="选择推理模式">
-                <Sparkles size={16} className="text-[var(--accent)]" />
-                <span>OpenTrace</span>
-                <span className="hidden max-w-52 truncate text-[var(--text-secondary)] sm:inline">· {activeModel || '默认模型'}</span>
-                <span className="hidden text-[var(--text-secondary)] lg:inline">· {profile === 'auto' ? '自动' : profile === 'fast' ? '快速' : '深度思考'}</span>
-                <ChevronDown size={14} className="text-[var(--text-secondary)]" />
-              </button>
-              {showProfileMenu && <div className="absolute left-0 top-10 z-30 w-36 rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] p-1 shadow-lg">{([['auto','自动'], ['fast','快速'], ['deep','深度思考']] as const).map(([value, label]) => <button key={value} onClick={() => selectProfile(value)} className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)]">{label}</button>)}</div>}
+                <button
+                  type="button"
+                  disabled={!modelSettings}
+                  onClick={() => { setShowModelMenu((value) => !value); setShowProfileMenu(false) }}
+                  className="inline-flex max-w-48 items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm text-[var(--text)] hover:bg-[var(--surface)] disabled:opacity-60 sm:max-w-64"
+                  aria-label="选择模型"
+                  aria-expanded={showModelMenu}
+                >
+                  <Cpu size={15} className="shrink-0 text-[var(--accent)]" />
+                  <span className="truncate font-medium">{activeModel}</span>
+                  <ChevronDown size={14} className="shrink-0 text-[var(--text-secondary)]" />
+                </button>
+                {showModelMenu && modelSettings && (
+                  <div role="menu" aria-label="可用模型" className="absolute left-0 top-10 z-30 w-72 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] p-1 shadow-lg">
+                    {availableFreeModels.length > 0 && <div className="px-3 pb-1 pt-2 text-[10px] font-medium text-[var(--text-secondary)]">通用免费模型</div>}
+                    {availableFreeModels.map((model) => {
+                      const selected = modelSettings.active_selection.source === 'free' && modelSettings.active_selection.model === model
+                      return <button key={model} role="menuitemradio" aria-checked={selected} disabled={modelSettingsSaving} onClick={() => void selectModel('free', model)} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)] disabled:opacity-50 ${selected ? 'text-[var(--accent)]' : ''}`}><span className="min-w-0 flex-1 truncate font-mono">{model}</span>{selected && <Check size={14} className="shrink-0" />}</button>
+                    })}
+                    {availableCustomModels.length > 0 && <div className="mt-1 border-t border-[var(--border-subtle)] px-3 pb-1 pt-2 text-[10px] font-medium text-[var(--text-secondary)]">我的模型</div>}
+                    {availableCustomModels.map((model) => {
+                      const selected = modelSettings.active_selection.source === 'custom' && modelSettings.active_selection.custom_model_id === model.id
+                      return <button key={model.id} role="menuitemradio" aria-checked={selected} disabled={modelSettingsSaving} onClick={() => void selectModel('custom', model.id)} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-[var(--surface)] disabled:opacity-50 ${selected ? 'text-[var(--accent)]' : ''}`}><span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{model.name}</span><span className="block truncate font-mono text-[10px] text-[var(--text-secondary)]">{model.model}</span></span>{selected && <Check size={14} className="shrink-0" />}</button>
+                    })}
+                    {availableFreeModels.length === 0 && availableCustomModels.length === 0 && <div className="px-3 py-4 text-sm text-[var(--text-secondary)]">当前账号暂无可用模型</div>}
+                    {modelSettingsError && <div role="alert" className="border-t border-[var(--border-subtle)] px-3 py-2 text-xs text-red-500">{modelSettingsError}</div>}
+                  </div>
+                )}
+              </div>
+              <div className="relative">
+                <button type="button" onClick={() => { setShowProfileMenu((value) => !value); setShowModelMenu(false) }} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]" aria-label="选择推理模式" aria-expanded={showProfileMenu}>
+                  <Sparkles size={15} className="text-[var(--accent)]" />
+                  <span className="hidden sm:inline">{profile === 'auto' ? '自动' : profile === 'fast' ? '快速' : '深度思考'}</span>
+                  <ChevronDown size={14} />
+                </button>
+                {showProfileMenu && <div role="menu" aria-label="推理模式" className="absolute left-0 top-10 z-30 w-36 rounded-xl border border-[var(--border)] bg-[var(--surface-raised)] p-1 shadow-lg">{([['auto','自动'], ['fast','快速'], ['deep','深度思考']] as const).map(([value, label]) => <button key={value} role="menuitemradio" aria-checked={profile === value} onClick={() => selectProfile(value)} className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-[var(--surface)] ${profile === value ? 'text-[var(--accent)]' : ''}`}><span className="flex-1">{label}</span>{profile === value && <Check size={14} />}</button>)}</div>}
               </div>
               </div>
               <div className="flex items-center gap-1.5">

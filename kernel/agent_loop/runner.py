@@ -339,6 +339,10 @@ class AgentLoop:
             response=response,
             tool_specs=available_specs,
         )
+        planning_context = self._planning_context(
+            context.messages,
+            current_message_count=context.current_message_count,
+        )
         calendar_write_arguments = (
             dict(existing_deterministic_approval.arguments or {})
             if existing_deterministic_approval is not None
@@ -347,11 +351,11 @@ class AgentLoop:
                 response=response,
                 extension=extension,
                 tool_specs=available_specs,
+                prior_user_queries=self._recent_user_queries(
+                    context.messages,
+                    current_message_count=context.current_message_count,
+                ),
             )
-        )
-        planning_context = self._planning_context(
-            context.messages,
-            current_message_count=context.current_message_count,
         )
         pending_action = self._pending_action_from_context(
             context.messages,
@@ -1713,6 +1717,23 @@ class AgentLoop:
                         + json.dumps(arguments, ensure_ascii=False, default=str)[:1200]
                     )
         return "\n".join(lines)[-8_000:]
+
+    @staticmethod
+    def _recent_user_queries(
+        messages: list[dict[str, Any]],
+        *,
+        current_message_count: int,
+        limit: int = 4,
+    ) -> list[str]:
+        history_end = max(1, len(messages) - max(0, current_message_count))
+        queries = [
+            str(message.get("content") or "").strip()
+            for message in messages[1:history_end]
+            if str(message.get("role") or "") == "user"
+            and isinstance(message.get("content"), str)
+            and str(message.get("content") or "").strip()
+        ]
+        return queries[-max(1, limit) :]
 
     @staticmethod
     def _pending_action_from_context(

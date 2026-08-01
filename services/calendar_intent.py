@@ -177,6 +177,7 @@ def _title(query: str, time_match: re.Match[str]) -> str:
         "",
         cleaned,
     )
+    cleaned = re.sub(r"^(?:想|要|准备|计划|打算)?(?:安排|进行|参加)?", "", cleaned)
     cleaned = re.sub(r"^(?:请|麻烦)?提醒我", "", cleaned)
     title = cleaned.strip(" ，,。.!！") or "日程"
     title = re.sub(r"(?i)opentrace", "OpenTrace", title)
@@ -192,6 +193,15 @@ def _has_calendar_write_marker(normalized: str) -> bool:
     )
 
 
+def has_calendar_write_intent(query: str) -> bool:
+    """判断当前用户原话是否明确要求日历写入，不继承历史副作用意图。"""
+
+    normalized = re.sub(r"\s+", "", query or "").lower()
+    return _has_calendar_write_marker(normalized) and not any(
+        pattern.search(normalized) for pattern in _COMPETING_WRITE_PATTERNS
+    )
+
+
 def parse_calendar_create_intent(
     query: str,
     *,
@@ -200,10 +210,7 @@ def parse_calendar_create_intent(
 ) -> dict[str, Any] | None:
     """把明确的单次日历写入转换为 typed-tool 参数；模糊输入返回 None。"""
 
-    normalized = re.sub(r"\s+", "", query or "").lower()
-    if not _has_calendar_write_marker(normalized):
-        return None
-    if any(pattern.search(normalized) for pattern in _COMPETING_WRITE_PATTERNS):
+    if not has_calendar_write_intent(query):
         return None
     timezone_name = ensure_timezone(timezone_name)
     zone = ZoneInfo(timezone_name)
@@ -259,7 +266,7 @@ def parse_calendar_create_intent(
     if end <= start:
         return None
     title = _title(query, time_match)
-    if re.search(r"(?:会议|开会|评审会|复盘会|例会|周会|站会)", title, re.I):
+    if re.search(r"(?:会议|开会|评审(?:会)?|复盘会|例会|周会|站会)", title, re.I):
         event_type = "meeting"
     elif re.search(r"(?:开发|学习|写作|专注|编码|code)", title, re.I):
         event_type = "focus"

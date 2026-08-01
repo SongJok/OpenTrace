@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuthStore } from '../../store/auth'
@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({
   projects: vi.fn(),
   databases: vi.fn(),
   modelSettings: vi.fn(),
+  selectModel: vi.fn(),
 }))
 
 vi.mock('../../api/client', async (importOriginal) => {
@@ -23,9 +24,14 @@ vi.mock('../../api/client', async (importOriginal) => {
   }
 })
 
-vi.mock('../../api/modelSettings', () => ({
-  apiGetModelSettings: api.modelSettings,
-}))
+vi.mock('../../api/modelSettings', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../api/modelSettings')>()
+  return {
+    ...actual,
+    apiGetModelSettings: api.modelSettings,
+    apiSelectModelSettings: api.selectModel,
+  }
+})
 
 vi.mock('../../components/Sidebar', () => ({ default: () => <div /> }))
 vi.mock('../../components/ChatInput', () => ({ default: () => <div /> }))
@@ -104,5 +110,47 @@ describe('ChatPage 认证会话隔离', () => {
     expect(screen.queryByText('旧账号角色')).not.toBeInTheDocument()
     expect(screen.queryByText('旧账号项目')).not.toBeInTheDocument()
     expect(screen.queryByText(/旧账号数据源/)).not.toBeInTheDocument()
+  })
+
+  it('点击模型名称只展示并切换当前用户可用的模型', async () => {
+    const initialSettings = {
+      active_selection: { source: 'free' as const, model: 'free-model', custom_model_id: null },
+      scope: { tenant_id: 'tenant', workspace_id: 'workspace' },
+      free: { provider: 'free', base_url: '', models: ['free-model'], api_mode: 'chat_completions' as const, has_api_key: true },
+      custom_models: [
+        { id: 'custom-1', name: '开发模型', provider: 'Custom', base_url: 'https://example.com/v1', model: 'custom-model', api_mode: 'responses' as const, has_api_key: true, api_key_masked: 'sk-a••••z', created_at: null, updated_at: null },
+        { id: 'custom-2', name: '不可用模型', provider: 'Custom', base_url: 'https://example.com/v1', model: 'missing-key-model', api_mode: 'responses' as const, has_api_key: false, api_key_masked: '', created_at: null, updated_at: null },
+      ],
+    }
+    api.assistantProfiles.mockResolvedValue([])
+    api.projects.mockResolvedValue([])
+    api.databases.mockResolvedValue([])
+    api.modelSettings.mockResolvedValue(initialSettings)
+    api.selectModel.mockResolvedValue({
+      ...initialSettings,
+      active_selection: { source: 'custom', model: 'custom-model', custom_model_id: 'custom-1' },
+    })
+    useAuthStore.getState().login('token', 'user', 'user@example.com')
+    useChatStore.setState({
+      conversations: [{ id: 'conversation', title: '会话', turn_count: 1, created_at: '', last_active: '' }],
+      activeId: 'conversation',
+      messages: {
+        conversation: [{ id: 'message', role: 'user', status: 'done', streamText: '', finalText: '你好' }],
+      },
+    })
+
+    render(<MemoryRouter><ChatPage /></MemoryRouter>)
+
+    const selector = await screen.findByRole('button', { name: '选择模型' })
+    fireEvent.click(selector)
+    const menu = screen.getByRole('menu', { name: '可用模型' })
+    expect(within(menu).getByText('free-model')).toBeInTheDocument()
+    expect(within(menu).getByText('开发模型')).toBeInTheDocument()
+    expect(within(menu).queryByText('不可用模型')).not.toBeInTheDocument()
+
+    fireEvent.click(within(menu).getByRole('menuitemradio', { name: /开发模型/ }))
+
+    await waitFor(() => expect(api.selectModel).toHaveBeenCalledWith('token', 'custom', 'custom-1'))
+    await waitFor(() => expect(selector).toHaveTextContent('custom-model'))
   })
 })

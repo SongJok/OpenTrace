@@ -936,23 +936,15 @@ class ContextAssembler:
                 selected_indices.add(summary_index)
                 budget -= summary_tokens
 
-        index = len(history) - 1
-        while index >= 0:
-            if index in selected_indices:
-                index -= 1
-                continue
-            group = [index]
-            if (
-                history[index].get("role") == "tool"
-                and index > 0
-                and history[index - 1].get("tool_calls")
-            ):
-                group.insert(0, index - 1)
+        history_groups = self._history_turn_groups(
+            history,
+            excluded_indices=selected_indices,
+        )
+        for group in reversed(history_groups):
             group_tokens = sum(self._message_tokens(history[item]) for item in group)
             if group_tokens <= budget:
                 selected_indices.update(group)
                 budget -= group_tokens
-            index = min(group) - 1
 
         packed_history = [item for index, item in enumerate(history) if index in selected_indices]
         dropped = len(history) - len(packed_history)
@@ -980,6 +972,31 @@ class ContextAssembler:
             "overflow": estimated > self.max_input_tokens,
             "modality_counts": modality_counts,
         }
+
+    @staticmethod
+    def _history_turn_groups(
+        history: list[dict[str, Any]],
+        *,
+        excluded_indices: set[int] | None = None,
+    ) -> list[list[int]]:
+        """按用户回合打包历史，避免裁剪后留下无来源的回答或工具结果。"""
+
+        excluded = excluded_indices or set()
+        groups: list[list[int]] = []
+        current: list[int] = []
+        for index, message in enumerate(history):
+            if index in excluded:
+                if current:
+                    groups.append(current)
+                    current = []
+                continue
+            if message.get("role") == "user" and current:
+                groups.append(current)
+                current = []
+            current.append(index)
+        if current:
+            groups.append(current)
+        return groups
 
     def repack_for_tool_schemas(
         self,

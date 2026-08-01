@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -20,7 +21,12 @@ from kernel.agent_loop.contracts import (
     ToolSpec,
 )
 from kernel.agent_loop.write_intent import is_affirmative_follow_up
-from services.calendar_intent import parse_calendar_create_intent
+from services.calendar_intent import has_calendar_write_intent, parse_calendar_create_intent
+
+_CONTEXTUAL_CALENDAR_HINT = re.compile(
+    r"日历|日程|会议|评审|复盘|开发|学习|写作|专注|提醒|安排|计划|准备|参加|开会|"
+    r"今天|明天|后天|(?:\d{1,2}|[一二两三四五六七八九十]{1,3})(?:点|[:：])"
+)
 
 _CALENDAR_CAPABILITIES = {
     "list_calendar_events",
@@ -103,6 +109,7 @@ def deterministic_calendar_arguments(
     response: ResponseRecord,
     extension: dict[str, Any],
     tool_specs: list[ToolSpec],
+    prior_user_queries: list[str] | None = None,
 ) -> dict[str, Any] | None:
     spec = next((item for item in tool_specs if item.name == "create_calendar_event"), None)
     if spec is None or spec.side_effect == SideEffect.READ:
@@ -110,11 +117,47 @@ def deterministic_calendar_arguments(
     anchor = getattr(response, "created_at", None)
     if isinstance(anchor, datetime) and anchor.tzinfo is None:
         anchor = anchor.replace(tzinfo=UTC)
-    return parse_calendar_create_intent(
+    parse_kwargs = {
+        "timezone_name": str(extension.get("timezone") or DEFAULT_TIMEZONE),
+        "now": anchor if isinstance(anchor, datetime) else None,
+    }
+    current = parse_calendar_create_intent(
         query,
-        timezone_name=str(extension.get("timezone") or DEFAULT_TIMEZONE),
-        now=anchor if isinstance(anchor, datetime) else None,
+        **parse_kwargs,
     )
+    if current and str(current.get("title") or "").strip() not in {"", "日程"}:
+        return current
+    if not has_calendar_write_intent(query):
+        return current
+
+    # 用户常分两轮给出事项与时间。只尝试最近的用户原话，并要求当前回合本身包含
+    # 明确写入意图，避免从较早对话推断新的副作用操作。
+    for prior_query in reversed(prior_user_queries or []):
+        prior_query = str(prior_query or "").strip()
+        if (
+            not prior_query
+            or "?" in prior_query
+            or "？" in prior_query
+            or not _CONTEXTUAL_CALENDAR_HINT.search(prior_query)
+        ):
+            continue
+        contextual_query = query
+        if not re.search(r"上午|下午|晚上|中午|凌晨", query):
+            period_matches = re.findall(r"上午|下午|晚上|中午|凌晨", prior_query)
+            if period_matches:
+                contextual_query = re.sub(
+                    r"(?P<time>(?:\d{1,2}|[零〇一二两三四五六七八九十]{1,3})(?:点|[:：]))",
+                    period_matches[-1] + r"\g<time>",
+                    query,
+                    count=1,
+                )
+        contextual = parse_calendar_create_intent(
+            f"{prior_query}\n{contextual_query}",
+            **parse_kwargs,
+        )
+        if contextual and str(contextual.get("title") or "").strip() not in {"", "日程"}:
+            return contextual
+    return current
 
 
 async def existing_deterministic_approval(

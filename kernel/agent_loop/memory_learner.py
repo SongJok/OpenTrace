@@ -77,7 +77,13 @@ _FACT_SUBJECTS = {
 class MemoryLearner:
     """Evidence-backed automatic memory candidate extraction."""
 
-    async def learn(self, db: AsyncSession, *, response: ResponseRecord) -> list[str]:
+    async def learn(
+        self,
+        db: AsyncSession,
+        *,
+        response: ResponseRecord,
+        deterministic_only: bool = False,
+    ) -> list[str]:
         session = await db.get(ChatSession, response.conversation_id)
         if session is None or session.is_temporary:
             return []
@@ -147,7 +153,11 @@ class MemoryLearner:
             )
             await db.commit()
             return []
-        candidates = await self._extract(text, constitution=constitution)
+        candidates = (
+            self.deterministic_candidates(text)
+            if deterministic_only
+            else await self._extract(text, constitution=constitution)
+        )
         created: list[str] = []
         for candidate in candidates[:8]:
             content = str(candidate.get("content") or "").strip()[:2000]
@@ -376,9 +386,7 @@ class MemoryLearner:
         *,
         constitution: EffectiveMemoryConstitution | None = None,
     ) -> list[dict[str, Any]]:
-        explicit_candidates = self._extract_explicit(text)
-        proactive_candidates = self._extract_proactive(text)
-        deterministic_candidates = [*explicit_candidates, *proactive_candidates]
+        deterministic_candidates = self.deterministic_candidates(text)
         # 企业主链路优先使用可审计的确定性规则：命中后不再为相同信息额外调用模型，
         # 避免 Response 已完成后记忆投影仍被模型延迟或抖动阻塞。模型只补充规则未覆盖的表达。
         if deterministic_candidates:
@@ -421,13 +429,15 @@ class MemoryLearner:
             model_candidates = []
         # 本地规则提供可审计、无模型依赖的主动学习基线，模型只补充未覆盖的候选。
         # 明确“记住”仍以确定性候选为准，确保模型变化不会破坏稳定 key 和冲突替代。
-        candidates = [*explicit_candidates, *proactive_candidates]
+        candidates = list(deterministic_candidates)
         seen_keys = {
             str(item.get("key") or "").strip().lower() for item in candidates if item.get("key")
         }
         seen_contents = {str(item.get("content") or "").strip() for item in candidates}
         for item in model_candidates:
-            if explicit_candidates and bool(item.get("_model_claimed_explicit")):
+            if any(item.get("explicit") for item in deterministic_candidates) and bool(
+                item.get("_model_claimed_explicit")
+            ):
                 continue
             key = str(item.get("key") or "").strip().lower()
             content = str(item.get("content") or "").strip()
@@ -439,6 +449,12 @@ class MemoryLearner:
             if content:
                 seen_contents.add(content)
         return candidates
+
+    @classmethod
+    def deterministic_candidates(cls, text: str) -> list[dict[str, Any]]:
+        """返回无需模型即可审计和落库的稳定记忆候选。"""
+
+        return [*cls._extract_explicit(text), *cls._extract_proactive(text)]
 
     @staticmethod
     def _extract_proactive(text: str) -> list[dict[str, Any]]:
@@ -529,6 +545,49 @@ class MemoryLearner:
                     kind="profile",
                     confidence=0.94,
                     salience=0.82,
+                )
+                continue
+
+            time_definition_match = re.match(
+                r"^(?:我的)?(?P<subject>时区|常用时区|默认时区|所在地时区|工作时间|办公时间|"
+                r"可用时间|空闲时间|默认会议时长|会议默认时长)(?:是|为|[:：])\s*"
+                r"(?P<value>[^。！？!?]{2,180})",
+                statement,
+                flags=re.I,
+            ) or re.match(
+                r"^my\s+(?P<subject>timezone|working hours|office hours|available hours|"
+                r"default meeting duration)\s+(?:is|are|:)\s+(?P<value>[^.!?]{2,180})",
+                statement,
+                flags=re.I,
+            )
+            if time_definition_match:
+                subject = time_definition_match.group("subject").strip().lower()
+                if "时区" in subject or subject == "timezone":
+                    key = "profile.timezone"
+                    kind = "profile"
+                    salience = 0.90
+                else:
+                    normalized_subject = {
+                        "工作时间": "working_hours",
+                        "办公时间": "working_hours",
+                        "working hours": "working_hours",
+                        "office hours": "working_hours",
+                        "可用时间": "available_hours",
+                        "空闲时间": "available_hours",
+                        "available hours": "available_hours",
+                        "默认会议时长": "meeting_duration",
+                        "会议默认时长": "meeting_duration",
+                        "default meeting duration": "meeting_duration",
+                    }.get(subject, sha256(subject.encode("utf-8")).hexdigest()[:16])
+                    key = f"preference.schedule.{normalized_subject}"
+                    kind = "preference"
+                    salience = 0.88
+                add(
+                    content=statement,
+                    key=key,
+                    kind=kind,
+                    confidence=0.94,
+                    salience=salience,
                 )
                 continue
 

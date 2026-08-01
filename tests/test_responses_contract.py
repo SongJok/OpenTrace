@@ -556,6 +556,18 @@ def test_responses_history_reads_only_typed_items_and_scoped_memory() -> None:
     assert "Message" not in text
 
 
+def test_deterministic_memory_is_projected_before_response_completion_event() -> None:
+    worker = (Path(__file__).resolve().parents[1] / "infra/responses/worker.py").read_text(
+        encoding="utf-8"
+    )
+
+    projection = worker.index("deterministic_only=True")
+    completion = worker.index("event_type=final_event")
+    deferred_learning = worker.index("if not deterministic_memory_projected")
+
+    assert projection < completion < deferred_learning
+
+
 def test_legacy_chat_route_is_explicitly_retired() -> None:
     root = Path(__file__).resolve().parents[1]
     text = (root / "gateway/api_gateway/routers/chat.py").read_text(encoding="utf-8")

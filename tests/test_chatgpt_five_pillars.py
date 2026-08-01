@@ -133,6 +133,31 @@ def test_long_context_packer_keeps_summary_current_turn_and_multimodal_budget():
     assert assembler._content_tokens(messages[-1]["content"]) < 2_000
 
 
+def test_context_packer_never_keeps_an_assistant_answer_without_its_user_turn():
+    assembler = ContextAssembler(max_input_tokens=400)
+    user_message = {"role": "user", "content": "用户定义一" * 40}
+    assistant_message = {"role": "assistant", "content": "助手回答一" * 40}
+    messages = [
+        {"role": "system", "content": "平台安全边界"},
+        user_message,
+        assistant_message,
+        {"role": "user", "content": "当前追问"},
+    ]
+
+    packed, manifest = assembler._pack_messages(
+        messages,
+        current_count=1,
+        modality_counts={"text": 1, "image": 0, "audio": 0, "video": 0},
+    )
+
+    history_contents = {str(item.get("content") or "") for item in packed[1:-1]}
+    assert (user_message["content"] in history_contents) is (
+        assistant_message["content"] in history_contents
+    )
+    assert packed[-1]["content"] == "当前追问"
+    assert manifest["dropped_history_items"] in {0, 2}
+
+
 def test_native_multimodal_inputs_cover_image_audio_and_video():
     request = ResponseCreateRequest(
         input=[

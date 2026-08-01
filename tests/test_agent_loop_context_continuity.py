@@ -100,6 +100,49 @@ def test_short_confirmation_inherits_unfinished_calendar_action() -> None:
     assert governed["steps"][0]["depends_on"] == []
 
 
+def test_short_confirmation_inherits_unfinished_scheduled_task() -> None:
+    messages = [
+        {"role": "system", "content": "平台边界"},
+        {"role": "user", "content": "每天九点生成项目日报"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-task",
+                    "function": {
+                        "name": "create_scheduled_task",
+                        "arguments": '{"title":"项目日报","rrule":"FREQ=DAILY"}',
+                    },
+                }
+            ],
+        },
+        {"role": "assistant", "content": "需要创建这个定时任务吗？"},
+        {"role": "user", "content": "确认"},
+    ]
+    specs = [
+        _spec("create_scheduled_task", "创建定时任务", SideEffect.WRITE),
+        _spec("create_calendar_event", "创建日程", SideEffect.WRITE),
+    ]
+
+    pending = AgentLoop._pending_action_from_context(
+        messages,
+        specs,
+        current_message_count=1,
+    )
+    governed = AgentLoop._apply_pending_action_policy(
+        "确认",
+        {"capabilities": ["create_calendar_event"]},
+        pending,
+    )
+
+    assert pending == {
+        "name": "create_scheduled_task",
+        "call_id": "call-task",
+        "arguments": {"title": "项目日报", "rrule": "FREQ=DAILY"},
+    }
+    assert governed["capabilities"] == ["create_scheduled_task"]
+
+
 def test_completed_write_tool_is_not_treated_as_pending_action() -> None:
     messages = [
         {"role": "system", "content": "平台边界"},
@@ -242,6 +285,65 @@ def test_explicit_calendar_request_is_deterministically_prepared_for_approval() 
         "recurrence_rule": "",
         "reminder_minutes": [15],
     }
+
+
+def test_calendar_write_inherits_title_date_and_period_from_prior_user_turn() -> None:
+    arguments = AgentLoop._deterministic_calendar_arguments(
+        query="两点到三点，帮我记录到日历",
+        response=SimpleNamespace(
+            id="resp-contextual-calendar",
+            created_at=datetime(2026, 7, 31, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+        ),
+        extension={"timezone": "Asia/Shanghai"},
+        tool_specs=[_spec("create_calendar_event", "创建日程", SideEffect.WRITE)],
+        prior_user_queries=["明天下午安排 OpenTrace 架构评审"],
+    )
+
+    assert arguments is not None
+    assert arguments["title"] == "OpenTrace 架构评审"
+    assert arguments["start_at"] == "2026-08-01T14:00:00+08:00"
+    assert arguments["end_at"] == "2026-08-01T15:00:00+08:00"
+    assert arguments["event_type"] == "meeting"
+
+
+def test_calendar_write_does_not_inherit_unrelated_or_question_history() -> None:
+    response = SimpleNamespace(
+        id="resp-safe-context",
+        created_at=datetime(2026, 7, 31, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    spec = _spec("create_calendar_event", "创建日程", SideEffect.WRITE)
+
+    unrelated = AgentLoop._deterministic_calendar_arguments(
+        query="明天下午两点到三点，帮我记录到日历",
+        response=response,
+        extension={"timezone": "Asia/Shanghai"},
+        tool_specs=[spec],
+        prior_user_queries=["谢谢"],
+    )
+    inherited_write = AgentLoop._deterministic_calendar_arguments(
+        query="改成下午四点",
+        response=response,
+        extension={"timezone": "Asia/Shanghai"},
+        tool_specs=[spec],
+        prior_user_queries=["明天下午三点评审会，帮我记录到日历"],
+    )
+
+    assert unrelated is not None
+    assert unrelated["title"] == "日程"
+    assert inherited_write is None
+
+
+def test_recent_user_queries_exclude_current_turn_and_assistant_messages() -> None:
+    messages = [
+        {"role": "system", "content": "平台边界"},
+        {"role": "user", "content": "明天下午安排架构评审"},
+        {"role": "assistant", "content": "几点开始？"},
+        {"role": "user", "content": "两点到三点，记录到日历"},
+    ]
+
+    assert AgentLoop._recent_user_queries(messages, current_message_count=1) == [
+        "明天下午安排架构评审"
+    ]
 
 
 def test_calendar_booking_with_explicit_name_uses_beijing_time() -> None:

@@ -92,6 +92,44 @@ def test_memory_learner_proactively_extracts_goals_workflows_and_project_facts()
     assert project["scope_type"] == "project"
 
 
+def test_memory_learner_extracts_stable_user_time_definitions() -> None:
+    candidates = MemoryLearner.deterministic_candidates(
+        "我的工作时间是周一到周五 09:00-18:00。\n"
+        "我的常用时区是 Asia/Shanghai。\n"
+        "我的默认会议时长是 30 分钟。"
+    )
+
+    assert {(item["key"], item["kind"]) for item in candidates} == {
+        ("preference.schedule.working_hours", "preference"),
+        ("profile.timezone", "profile"),
+        ("preference.schedule.meeting_duration", "preference"),
+    }
+    assert all(item["confidence"] >= 0.9 for item in candidates)
+
+
+def test_time_definition_remains_relevant_for_a_later_scheduling_turn() -> None:
+    now = datetime.now(UTC)
+    working_hours = SimpleNamespace(
+        id="working-hours",
+        content="我的工作时间是周一到周五 09:00-18:00",
+        pinned=False,
+        kind="preference",
+        scope_type="user",
+        salience=0.88,
+        confidence=0.94,
+        updated_at=now,
+    )
+
+    ranked = ContextAssembler._rank_memories([working_hours], "明天帮我安排架构评审")
+    direct = AgentLoop._direct_memory_answer(
+        "我的工作时间是什么？",
+        [{"id": working_hours.id, "content": working_hours.content}],
+    )
+
+    assert ranked == [working_hours]
+    assert direct == "根据你已确认的记忆，我的工作时间是周一到周五 09:00-18:00。"
+
+
 def test_memory_learner_rejects_transient_questions_and_sensitive_profile_data():
     assert MemoryLearner._extract_proactive("今天请用表格回答当前问题。") == []
     assert MemoryLearner._extract_proactive("我的银行卡号是 6222021234567890。") == []
