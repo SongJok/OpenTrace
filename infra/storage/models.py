@@ -728,6 +728,107 @@ class EnterpriseCognitiveVersion(Base):
     )
 
 
+class CompanyProfile(Base):
+    """当前部署唯一绑定的公司；singleton_key 从数据库层保证只能存在一家公司。"""
+
+    __tablename__ = "company_profiles"
+    __table_args__ = (UniqueConstraint("singleton_key", name="uq_company_profiles_singleton"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    singleton_key: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="primary", unique=True
+    )
+    legal_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    short_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    current_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    last_maintenance_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_daily_maintenance_date: Mapped[str | None] = mapped_column(
+        String(10), nullable=True, index=True
+    )
+    created_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CompanyBrainSource(Base):
+    """企业大脑的内部来源；只允许企业大脑服务读取原文并执行蒸馏。"""
+
+    __tablename__ = "company_brain_sources"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    company_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("company_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    folder: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    memory_tier: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_content: Mapped[str] = mapped_column(Text, nullable=False)
+    processed_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    salience: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    processing_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CompanyBrainVersion(Base):
+    """COMPANY.md 的不可变草稿/发布版本。"""
+
+    __tablename__ = "company_brain_versions"
+    __table_args__ = (UniqueConstraint("company_id", "version", name="uq_company_brain_version"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    company_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("company_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    long_term_chars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    medium_term_chars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    short_term_chars: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    trigger: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    change_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    published_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class KnowledgePrincipalMembership(Base):
     """用户到部门、组和岗位主体的映射，可由 SCIM/HR 系统同步。"""
 
@@ -1430,6 +1531,9 @@ class UserMemory(Base):
     )
     memory_type: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
     kind: Mapped[str] = mapped_column(String(30), nullable=False, default="fact")
+    personal_category: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="profile", index=True
+    )
     memory_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1857,6 +1961,9 @@ class MemoryCandidate(Base):
     scope_type: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
     scope_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     kind: Mapped[str] = mapped_column(String(30), nullable=False, default="fact")
+    personal_category: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="profile", index=True
+    )
     memory_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)

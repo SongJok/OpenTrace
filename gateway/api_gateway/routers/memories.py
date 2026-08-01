@@ -45,6 +45,10 @@ def _scope(request: Request, user: User) -> tuple[str, str]:
 class MemoryCreateRequest(BaseModel):
     memory_type: str = Field(..., pattern="^(semantic|episodic|procedural)$")
     kind: str = Field(default="fact")
+    personal_category: str = Field(
+        default="profile",
+        pattern="^(terminology|response_style|approval_habit|template|calendar|task|profile)$",
+    )
     memory_key: str | None = Field(default=None, max_length=128)
     title: str | None = None
     content: str = Field(..., min_length=1, max_length=10000)
@@ -135,6 +139,7 @@ async def list_memories(
                 "id": m.id,
                 "memory_type": m.memory_type,
                 "kind": m.kind,
+                "personal_category": m.personal_category,
                 "memory_key": m.memory_key,
                 "title": m.title,
                 "content": m.content,
@@ -216,6 +221,7 @@ async def create_memory(
         workspace_id=workspace_id,
         memory_type=req.memory_type,
         kind=req.kind,
+        personal_category=req.personal_category,
         memory_key=req.memory_key,
         title=req.title,
         content=req.content,
@@ -266,6 +272,7 @@ async def export_memories(
                 "id": row.id,
                 "memory_type": row.memory_type,
                 "kind": row.kind,
+                "personal_category": row.personal_category,
                 "memory_key": row.memory_key,
                 "title": row.title,
                 "content": row.content,
@@ -470,6 +477,7 @@ async def memory_inbox(
                 "id": row.id,
                 "content": row.content,
                 "kind": row.kind,
+                "personal_category": row.personal_category,
                 "memory_key": row.memory_key,
                 "scope_type": row.scope_type,
                 "scope_id": row.scope_id,
@@ -575,6 +583,7 @@ async def resolve_memory_candidate(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             kind=candidate.kind,
+            personal_category=candidate.personal_category,
             title=content[:80],
             content=content,
             metadata_json=json.dumps(

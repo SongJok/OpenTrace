@@ -13,12 +13,14 @@ import { useChatPreferences } from '../store/chatPreferences'
 import { DEFAULT_TIMEZONE } from '../utils/timezone'
 import { useChatStore } from '../store/chat'
 import { createClientId } from '../utils/clientId'
+import { useCompanyStore } from '../store/company'
 
 
 type ChatInputVariant = 'default' | 'welcome'
 
 
 export default function ChatInput({ variant = 'default' }: { variant?: ChatInputVariant }) {
+  const brandName = useCompanyStore((state) => state.brandName)
   const token = useAuthStore((state) => state.token)!
   const sessionGeneration = useAuthStore((state) => state.sessionGeneration)
   const store = useChatStore()
@@ -293,7 +295,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
           onChange={(event) => setText(event.target.value)}
           onKeyDown={onKeyDown}
           rows={variant === 'welcome' ? 4 : 2}
-          placeholder="给 OpenTrace 发消息"
+          placeholder={`给 ${brandName} 发消息`}
           aria-label="消息"
           className="max-h-56 min-h-12 w-full resize-none bg-transparent px-2 py-1 text-[15px] leading-6 outline-none placeholder:text-[var(--text-secondary)]"
         />
@@ -314,7 +316,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
         </div>
       </div>
       {error && <p role="alert" className="mt-2 px-3 text-xs text-red-500">{error}</p>}
-      <p className="mt-2 text-center text-[11px] text-[var(--text-secondary)]">OpenTrace 可能会出错，请核对重要信息。写入操作会先请求授权。</p>
+      <p className="mt-2 text-center text-[11px] text-[var(--text-secondary)]">{brandName} 可能会出错，请核对重要信息。写入操作会先请求授权。</p>
     </div>
   )
 }

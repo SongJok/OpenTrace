@@ -12,6 +12,7 @@ import {
   Settings,
   Bell,
   Brain,
+  BrainCircuit,
   ShieldAlert,
   Archive,
   ArchiveRestore,
@@ -34,6 +35,7 @@ import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
 import { useChatStore, type Conversation } from '../store/chat'
 import { getAuthSessionSnapshot, isAuthSessionCurrent, useAuthStore } from '../store/auth'
+import { useCompanyStore } from '../store/company'
 import {
   apiListConversations,
   apiCreateConversation,
@@ -70,6 +72,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
   const token = useAuthStore((s) => s.token)!
   const displayName = useAuthStore((s) => s.displayName)
   const role = useAuthStore((s) => s.role)
+  const brandName = useCompanyStore((s) => s.brandName)
   const logout = useAuthStore((s) => s.logout)
   const store = useChatStore()
   const navigate = useNavigate()
@@ -329,6 +332,13 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           <FileText size={16} className="cartoon-icon icon-documents" />
         </button>
         <button
+          onClick={() => navigate('/company-brain')}
+          title="企业大脑"
+          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+        >
+          <BrainCircuit size={16} />
+        </button>
+        <button
           onClick={() => navigate('/databases')}
           className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
         >
@@ -469,7 +479,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           </div>
           {showNotifications && <div className="absolute left-3 right-3 top-14 z-30 max-h-[420px] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg)] shadow-2xl"><div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3"><div><div className="text-sm font-medium">通知</div><div className="text-[11px] text-[var(--text-secondary)]">任务完成与主动预警会显示在这里</div></div>{unreadCount > 0 && <button onClick={() => void readAllNotifications()} className="inline-flex items-center gap-1 text-xs text-[var(--accent)]"><CheckCheck size={13} />全部已读</button>}</div><div className="max-h-[340px] overflow-y-auto p-2">{notifications.length === 0 ? <div className="p-8 text-center text-xs text-[var(--text-secondary)]">暂无通知</div> : notifications.map((notification) => <button key={notification.id} onClick={() => void openNotification(notification)} className={clsx('mb-1 w-full rounded-xl px-3 py-2.5 text-left hover:bg-[var(--surface)]', !notification.read && 'bg-[var(--accent-dim)]')}><div className="flex items-start gap-2"><span className={clsx('mt-1.5 h-2 w-2 flex-none rounded-full', notification.level === 'error' ? 'bg-red-500' : notification.level === 'warning' ? 'bg-amber-500' : notification.level === 'success' ? 'bg-emerald-500' : 'bg-blue-500')} /><div className="min-w-0"><div className="truncate text-xs font-medium">{notification.title}</div>{notification.body && <div className="mt-1 line-clamp-2 text-[11px] text-[var(--text-secondary)]">{notification.body}</div>}<div className="mt-1 text-[10px] text-[var(--text-secondary)]">{notification.created_at ? new Date(notification.created_at).toLocaleString() : ''}</div></div></div></button>)}</div></div>}
           <div className="mt-3">
-            <div className="text-sm font-semibold text-[var(--text)]">OpenTrace</div>
+            <div className="text-sm font-semibold text-[var(--text)]">{brandName}</div>
             <div className="mt-0.5 text-xs text-[var(--text-secondary)]">你的对话</div>
             <button onClick={() => void newTemporaryChat()} className="mt-2 text-xs text-[var(--accent)] hover:underline">开启临时聊天（30 天后删除）</button>
           </div>
@@ -478,6 +488,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
 
       <div className="px-4 pb-3 space-y-2">
         <button onClick={() => navigate('/work')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><FolderKanban size={15} /><span>企业 AI 工作台</span></button>
+        <button onClick={() => navigate('/company-brain')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><BrainCircuit size={15} /><span>企业大脑</span></button>
         <button onClick={() => navigate('/tasks')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Bell size={15} /><span>定时任务</span></button>
         <button onClick={() => navigate('/alerts')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Activity size={15} /><span>主动预警</span></button>
         <div className="relative rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
@@ -582,7 +593,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
         {showTools && <div className="grid grid-cols-2 gap-2">
           <NavButton icon={<FileText size={15} className="cartoon-icon icon-documents" />} label="我的资料" onClick={() => navigate('/documents')} />
           <NavButton icon={<Database size={15} className="cartoon-icon icon-database" />} label="数据库" onClick={() => navigate('/databases')} />
-          <NavButton icon={<Brain size={15} className="cartoon-icon icon-memory" />} label={t('nav.memories')} onClick={() => navigate('/memories')} />
+          <NavButton icon={<Brain size={15} className="cartoon-icon icon-memory" />} label="个人记忆" onClick={() => navigate('/memories')} />
           <NavButton icon={<Bell size={15} className="cartoon-icon icon-task" />} label={t('nav.tasks')} onClick={() => navigate('/tasks')} />
           <NavButton icon={<CalendarDays size={15} />} label="我的日历" onClick={() => navigate('/calendar')} />
           <NavButton icon={<Activity size={15} />} label="主动预警" onClick={() => navigate('/alerts')} />

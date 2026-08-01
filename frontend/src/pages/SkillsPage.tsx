@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, Wrench, Plus, Trash2, Play, Save, Code, FileText, TestTube, Download, Power, Search, ShieldCheck, Star, RefreshCw, ExternalLink, PackageCheck, ArrowRight, BadgeCheck, Boxes, Building2, FolderOpen, UploadCloud } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 import { useChatStore } from '../store/chat'
+import { useCompanyStore } from '../store/company'
 import {
   apiListSkills,
   apiCreateSkill,
@@ -33,6 +34,7 @@ type MarketplaceTab = 'discover' | 'search' | 'installed' | 'developer'
 type CatalogCategory = '全部' | '办公效率' | '数据分析' | '开发工具' | '搜索研究' | '内容创作' | '自动化'
 
 export default function SkillsPage({ onBack }: { onBack: () => void }) {
+  const brandName = useCompanyStore((state) => state.brandName)
   const token = useAuthStore((s) => s.token)!
   const role = useAuthStore((s) => s.role)
   const activeSessionId = useChatStore((s) => s.activeId)
@@ -361,7 +363,7 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
         <div className="mx-auto flex h-16 max-w-[1120px] items-center gap-4 px-4 sm:px-6">
           <button onClick={onBack} className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-[var(--text-secondary)] transition hover:bg-[var(--surface-raised)] hover:text-[var(--text)]" title="返回主问答"><ChevronLeft size={18} /></button>
           <Wrench size={17} className="mr-auto text-[var(--accent)] sm:hidden" />
-          <div className="mr-auto hidden whitespace-nowrap text-base font-bold tracking-tight sm:block"><span className="bg-gradient-to-r from-[var(--accent)] to-violet-500 bg-clip-text text-transparent">OpenTrace</span> SkillHub</div>
+          <div className="mr-auto hidden whitespace-nowrap text-base font-bold tracking-tight sm:block"><span className="bg-gradient-to-r from-[var(--accent)] to-violet-500 bg-clip-text text-transparent">{brandName}</span> SkillHub</div>
           <nav className="flex h-full items-center gap-1 overflow-x-auto" aria-label="Skills 导航">
             {([
               ['discover', '首页'],

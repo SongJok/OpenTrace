@@ -47,6 +47,7 @@ from services.calendar import (
     ensure_timezone,
     upcoming_calendar_context,
 )
+from services.company_brain import retrieve_company_brain
 from services.enterprise_cognition import load_enterprise_context
 
 
@@ -67,6 +68,7 @@ class AssembledContext:
     memory_relation_count: int = 0
     current_message_count: int = 1
     recalled_memories: list[dict[str, Any]] = field(default_factory=list)
+    protected_memory_fragments: list[str] = field(default_factory=list)
 
 
 class ContextAssembler:
@@ -181,6 +183,7 @@ class ContextAssembler:
         )
         if enterprise_context.prompt:
             system_blocks.append(enterprise_context.prompt)
+        company_brain_recall = await retrieve_company_brain(db, query=user_query)
         calendar_context_error: str | None = None
         try:
             calendar_events = await upcoming_calendar_context(
@@ -595,6 +598,7 @@ class ContextAssembler:
                         "id": memory.id,
                         "content": memory.content,
                         "kind": memory.kind,
+                        "personal_category": memory.personal_category,
                         "memory_key": memory.memory_key,
                         "scope_type": memory.scope_type,
                         "scope_id": memory.scope_id,
@@ -608,12 +612,38 @@ class ContextAssembler:
                     memory.access_count = int(memory.access_count or 0) + 1
                     memory.last_accessed_at = now
                     memory.salience = min(1.0, float(memory.salience or 0.0) + 0.01)
-                system_blocks.append(
-                    "已确认的用户记忆（用户提供或确认的个人上下文）：\n"
-                    + "\n".join(f"- {memory.content}" for memory in memories)
-                    + "\n若当前问题直接询问上述信息，必须依据命中的记忆直接回答，"
-                    "不要声称未找到，也不要调用外部检索；若与当前消息冲突，以当前消息为准。"
-                )
+
+        fusion_blocks: list[str] = []
+        if company_brain_recall.prompt:
+            fusion_blocks.append(company_brain_recall.prompt)
+        if recalled_memories:
+            category_labels = {
+                "terminology": "个人术语/黑话",
+                "response_style": "回复风格偏好",
+                "approval_habit": "审批/操作习惯",
+                "template": "常用模板与片段",
+                "calendar": "日历",
+                "task": "任务",
+                "profile": "个人背景与偏好",
+            }
+            personal_lines = [
+                f"- [{category_labels.get(str(memory.get('personal_category')), '个人背景与偏好')}] "
+                f"{memory['content']}"
+                for memory in recalled_memories
+            ]
+            fusion_blocks.append(
+                "个人专属记忆（严格按当前 user_id 分片）：\n"
+                + "\n".join(personal_lines)
+                + "\n若当前问题直接询问上述信息，必须依据命中的记忆直接回答，"
+                "不要声称未找到，也不要调用外部检索；若与当前消息冲突，以当前消息为准。"
+            )
+        if fusion_blocks:
+            system_blocks.append(
+                "企业大脑 + 个人记忆融合检索上下文：\n\n"
+                + "\n\n".join(fusion_blocks)
+                + "\n只注入了与当前问题相关的信息；不得调用任何文件、代码、连接器、Web 或"
+                "其它工具对企业大脑和个人记忆进行蒸馏、收集、训练或另行持久化。"
+            )
 
         history = await self._active_branch_items(db, response)
         messages: list[dict[str, Any]] = [{"role": "system", "content": "\n\n".join(system_blocks)}]
@@ -653,6 +683,8 @@ class ContextAssembler:
                 "calendar_context_available": calendar_context_error is None,
                 "calendar_context_error": calendar_context_error,
                 "enterprise_context": enterprise_context.manifest(),
+                "company_brain": company_brain_recall.manifest(),
+                "memory_isolation": "internal_project_only",
             }
         )
         return AssembledContext(
@@ -671,6 +703,10 @@ class ContextAssembler:
             memory_relation_count=memory_relation_count,
             current_message_count=len(current_messages),
             recalled_memories=recalled_memories,
+            protected_memory_fragments=[
+                *company_brain_recall.entries,
+                *(str(memory.get("content") or "") for memory in recalled_memories),
+            ],
         )
 
     @staticmethod

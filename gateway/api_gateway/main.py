@@ -22,6 +22,7 @@ from gateway.api_gateway.routers import (
     calendar,
     chat,
     cognitive,
+    company_brain,
     connectors,
     conversations,
     data,
@@ -191,6 +192,7 @@ app.include_router(interoperability.router, prefix="/api/v2", tags=["interoperab
 app.include_router(response_aux.router, prefix="/api/v2", tags=["response-resources"])
 app.include_router(agent_resources.router, prefix="/api/v2", tags=["agent-resources"])
 app.include_router(calendar.router, prefix="/api/v2", tags=["calendar"])
+app.include_router(company_brain.router, prefix="/api/v2", tags=["company-brain"])
 app.include_router(workbench.router, prefix="/api/v2", tags=["enterprise-workbench"])
 app.include_router(enterprise_context.router, prefix="/api/v2", tags=["enterprise-context"])
 app.include_router(alerts.router, prefix="/api/v2", tags=["alerts"])

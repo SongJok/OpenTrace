@@ -1,4 +1,5 @@
 import type { Message } from '../store/chat'
+import { getCompanyBrandName } from '../store/company'
 
 /** 在 HTTPS 与普通 HTTP 部署环境中都尽量可靠地写入剪贴板。 */
 export async function copyTextToClipboard(text: string): Promise<boolean> {
@@ -39,7 +40,7 @@ export function formatConversationForCopy(messages: Message[]): string {
     .filter((message) => message.role === 'user' || message.role === 'assistant')
     .map((message) => {
       const content = (message.status === 'streaming' ? message.streamText : message.finalText).trim()
-      const speaker = message.role === 'user' ? '提问者' : 'OpenTrace'
+      const speaker = message.role === 'user' ? '提问者' : getCompanyBrandName()
       return `${speaker}\n${content}`
     })
     .filter((block) => block.split('\n').slice(1).join('\n').trim())

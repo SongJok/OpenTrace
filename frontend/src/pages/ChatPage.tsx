@@ -10,6 +10,7 @@ import { getAuthSessionSnapshot, isAuthSessionCurrent, useAuthStore } from '../s
 import { useChatStore } from '../store/chat'
 import { getShowAvatars, setShowAvatars } from '../store/theme'
 import { useChatPreferences } from '../store/chatPreferences'
+import { useCompanyStore } from '../store/company'
 import { copyTextToClipboard, formatConversationForCopy } from '../utils/clipboard'
 
 const QUICK_TAGS: Array<{ label: string; prefix: string; icon: LucideIcon }> = [
@@ -44,6 +45,7 @@ function QuickTags() {
 }
 
 export default function ChatPage() {
+  const brandName = useCompanyStore((state) => state.brandName)
   const token = useAuthStore((s) => s.token)!
   const activeId = useChatStore((s) => s.activeId)
   const setActiveId = useChatStore((s) => s.setActiveId)
@@ -285,7 +287,7 @@ export default function ChatPage() {
               >
                 <Menu size={17} />
               </button>
-              <span className="hidden text-sm font-semibold sm:inline">OpenTrace</span>
+              <span className="hidden text-sm font-semibold sm:inline">{brandName}</span>
               <div className="relative min-w-0">
                 <button
                   type="button"

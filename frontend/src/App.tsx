@@ -2,6 +2,8 @@ import { lazy, Suspense, useEffect } from 'react'
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import { useAuthStore } from './store/auth'
 import { applyTheme, useThemeStore } from './store/theme'
+import { apiGetCompanyProfile } from './api/client'
+import { useCompanyStore } from './store/company'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 
@@ -24,6 +26,7 @@ const WorkPage = lazy(() => import('./pages/WorkPage'))
 const AlertsPage = lazy(() => import('./pages/AlertsPage'))
 const EnterpriseAdminPage = lazy(() => import('./pages/EnterpriseAdminPage'))
 const CalendarPage = lazy(() => import('./pages/CalendarPage'))
+const CompanyBrainPage = lazy(() => import('./pages/CompanyBrainPage'))
 
 function RouteLoading() {
   return (
@@ -118,11 +121,26 @@ function CalendarRoute() {
   return <CalendarPage onBack={() => navigate('/chat')} />
 }
 
+function CompanyBrainRoute() {
+  const navigate = useNavigate()
+  return <CompanyBrainPage onBack={() => navigate('/chat')} />
+}
+
 
 export default function App() {
   const token = useAuthStore((s) => s.token)
   const mode = useThemeStore((s) => s.mode)
   const accent = useThemeStore((s) => s.accent)
+  const brandName = useCompanyStore((s) => s.brandName)
+  const setCompanyProfile = useCompanyStore((s) => s.setProfile)
+
+  useEffect(() => {
+    void apiGetCompanyProfile().then(setCompanyProfile).catch(() => undefined)
+  }, [setCompanyProfile, token])
+
+  useEffect(() => {
+    document.title = brandName
+  }, [brandName])
 
   useEffect(() => {
     applyTheme(mode, accent)
@@ -147,6 +165,7 @@ export default function App() {
         <Route path="/settings" element={<Protected><SettingsRoute /></Protected>} />
         <Route path="/tasks" element={<Protected><TasksRoute /></Protected>} />
         <Route path="/calendar" element={<Protected><CalendarRoute /></Protected>} />
+        <Route path="/company-brain" element={<Protected><CompanyBrainRoute /></Protected>} />
         <Route path="/work" element={<Protected><WorkRoute /></Protected>} />
         <Route path="/audit" element={<Protected><AuditRoute /></Protected>} />
         <Route path="/memories" element={<Protected><MemoryRoute /></Protected>} />

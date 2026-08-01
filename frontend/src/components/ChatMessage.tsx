@@ -6,6 +6,7 @@ import { getAuthSessionSnapshot, isAuthSessionCurrent, useAuthStore } from '../s
 import { copyTextToClipboard } from '../utils/clipboard'
 import { apiBranchConversation, apiGetMessages, apiGetResponse, apiListConversations, apiListResponseSiblings, apiResolveResponseApproval, apiResumeResponseWithRetry, apiSetActiveResponse, apiSubmitFeedback } from '../api/client'
 import { useChatCommands } from '../store/chatCommands'
+import { useCompanyStore } from '../store/company'
 
 const MarkdownMessage = lazy(() => import('./MarkdownMessage'))
 
@@ -142,6 +143,7 @@ function ToolCardView({ toolCard }: { toolCard: ToolCard | null }) {
 }
 
 export default function ChatMessage({ message, role, content, isStreaming = false, reasoningSteps, citations, onBranch }: ChatMessageProps) {
+  const brandName = useCompanyStore((state) => state.brandName)
   const contentRef = useRef<HTMLDivElement>(null)
   const [isHovered, setIsHovered] = useState(false)
   const [showCitations, setShowCitations] = useState(false)
@@ -344,7 +346,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
         <div className={`flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}>
           <div className={`min-w-0 ${isUser ? 'w-fit max-w-[min(82%,42rem)]' : 'w-full'}`}>
             <div className={`mb-1 flex items-center gap-2 text-[11px] text-[var(--text-secondary)] ${isUser ? 'justify-end pr-1' : ''}`}>
-              {isUser ? <span className="sr-only">你</span> : <span className="font-medium tracking-tight">OpenTrace</span>}
+              {isUser ? <span className="sr-only">你</span> : <span className="font-medium tracking-tight">{brandName}</span>}
               {levelBadge(annotations?.[0]?.annotation?.level ?? epistemic.level)}
               {isHovered && !isUser && (onBranch || message?.id) && (
                 <button onClick={() => void branch()} className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent)]">分支</button>

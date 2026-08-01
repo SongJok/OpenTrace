@@ -211,6 +211,11 @@ class MemoryLearner:
                 continue
             if kind in {"profile", "preference"} and not preference_learning_enabled:
                 continue
+            personal_category = self.personal_category(
+                content=content,
+                memory_key=str(candidate.get("key") or ""),
+                kind=kind,
+            )
             confidence = min(1.0, max(0.0, float(candidate.get("confidence") or 0.0)))
             explicit = bool(candidate.get("explicit", False))
             learning_mode = str(
@@ -297,6 +302,7 @@ class MemoryLearner:
                     scope_type=scope_type,
                     scope_id=scope_id,
                     kind=kind,
+                    personal_category=personal_category,
                     memory_key=memory_key,
                     content=content,
                     confidence=confidence,
@@ -316,6 +322,7 @@ class MemoryLearner:
                     min(1.0, max(0.0, float(candidate.get("salience") or 0.5))),
                 )
                 row.constitution_version = constitution.version
+                row.personal_category = personal_category
                 row.last_observed_at = datetime.now(UTC)
                 if constitution_decision.decision == "allow":
                     status = self._candidate_status(
@@ -373,6 +380,7 @@ class MemoryLearner:
                     tenant_id=response.tenant_id,
                     workspace_id=response.workspace_id,
                     kind=row.kind,
+                    personal_category=row.personal_category,
                     title=content[:80],
                     content=content,
                     enabled=True,
@@ -429,6 +437,7 @@ class MemoryLearner:
             "salience(0-1), explicit(boolean), sensitive(boolean), scope_type(user|project)。"
             "scope_type 可为 user|project|conversation。优先提取用户直接陈述的稳定身份、长期偏好、长期目标、重复工作方式和项目约定。"
             "不要记录问题、一次性请求、临时状态、模型推测、第三方信息、健康/财务/身份号码/联系方式等敏感信息、认证信息或秘密。"
+            "个人记忆应服务于个人术语/黑话、回复风格偏好、审批/操作习惯、常用模板与片段、日历和任务等长期补强。"
         )
         if constitution is not None:
             prompt += (
@@ -491,6 +500,30 @@ class MemoryLearner:
             *cls._extract_corrections(text),
             *cls._extract_proactive(text),
         ]
+
+    @staticmethod
+    def personal_category(*, content: str, memory_key: str, kind: str) -> str:
+        """按产品定义把 user_id 分片记忆投影到稳定的个人记忆类别。"""
+
+        value = f"{memory_key} {content}".lower()
+        rules = (
+            ("terminology", ("术语", "黑话", "简称", "jargon", "glossary")),
+            (
+                "response_style",
+                ("回复风格", "回答风格", "回复要", "回答要", "格式偏好", "response_style"),
+            ),
+            (
+                "approval_habit",
+                ("审批", "批准", "操作习惯", "工作流习惯", "approval", "operation_habit"),
+            ),
+            ("template", ("模板", "片段", "固定格式", "template", "snippet")),
+            ("calendar", ("日历", "日程", "会议时间", "calendar", "schedule")),
+            ("task", ("任务", "待办", "todo", "task")),
+        )
+        for category, markers in rules:
+            if any(marker in value for marker in markers):
+                return category
+        return "response_style" if kind == "preference" and "回答" in value else "profile"
 
     @staticmethod
     def _extract_corrections(text: str) -> list[dict[str, Any]]:

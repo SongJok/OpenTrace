@@ -20,6 +20,146 @@ export type {
   ToolRunStatus,
 } from './responseStream'
 
+export interface CompanyProfileItem {
+  bound: boolean
+  id: string | null
+  legal_name: string
+  short_name: string
+  brand_name: string
+  description: string
+  current_version_id?: string | null
+  last_maintenance_at?: string | null
+}
+
+export type CompanyBrainFolder = '文化' | '行政' | '前端' | '后端' | '产品' | '客服' | '财务' | '数据'
+export type CompanyBrainTier = 'long' | 'medium' | 'short'
+
+export interface CompanyBrainFolderItem {
+  name: CompanyBrainFolder
+  default_tier?: CompanyBrainTier
+  source_count: number
+  ready_count: number
+}
+
+export interface CompanyBrainSourceItem {
+  id: string
+  company_id: string
+  folder: CompanyBrainFolder
+  memory_tier: CompanyBrainTier
+  source_type: 'manual' | 'upload' | 'conversation'
+  title: string
+  processed_content: string
+  source_content?: string
+  source_preview?: string
+  status: 'pending' | 'processing' | 'retry' | 'ready' | 'error'
+  active: boolean
+  salience: number
+  processing_attempts: number
+  error_message?: string | null
+  processed_at?: string | null
+  created_at?: string | null
+}
+
+export interface CompanyBrainVersionItem {
+  id: string
+  company_id: string
+  version: number
+  status: 'draft' | 'published' | 'superseded'
+  content: string
+  char_count: number
+  long_term_chars: number
+  medium_term_chars: number
+  short_term_chars: number
+  source_ids: string[]
+  trigger: string
+  change_summary: string
+  published_at?: string | null
+  created_at?: string | null
+  target_ratios: { long: number; medium: number; short: number }
+  limits: { hard: number; compression_threshold: number; maintenance_target: number }
+}
+
+export interface CompanyBrainSnapshot {
+  profile: CompanyProfileItem
+  folders: CompanyBrainFolderItem[]
+  published: CompanyBrainVersionItem | null
+  draft: CompanyBrainVersionItem | null
+}
+
+export async function apiGetCompanyProfile(): Promise<CompanyProfileItem> {
+  const res = await apiFetchResponses('/company/profile')
+  if (!res.ok) throw new Error(await readApiError(res, '读取公司品牌失败'))
+  return res.json()
+}
+
+export async function apiBindCompany(token: string, payload: {
+  legal_name: string
+  short_name: string
+  description?: string
+}): Promise<CompanyProfileItem> {
+  const res = await apiFetchResponses('/admin/company/profile', { method: 'PUT', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '绑定公司失败'))
+  return res.json()
+}
+
+export async function apiGetCompanyBrain(token: string): Promise<CompanyBrainSnapshot> {
+  const res = await apiFetchResponses('/company/brain', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取企业大脑失败'))
+  return res.json()
+}
+
+export async function apiListCompanyBrainSources(token: string, folder?: CompanyBrainFolder): Promise<CompanyBrainSourceItem[]> {
+  const params = folder ? `?folder=${encodeURIComponent(folder)}` : ''
+  const res = await apiFetchResponses(`/admin/company/brain/sources${params}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取企业大脑来源失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiCreateCompanyBrainManualSource(token: string, payload: {
+  folder: CompanyBrainFolder
+  title: string
+  content: string
+  memory_tier: 'auto' | CompanyBrainTier
+  salience?: number
+}): Promise<CompanyBrainSourceItem> {
+  const res = await apiFetchResponses('/admin/company/brain/sources/manual', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '录入企业大脑信息失败'))
+  return res.json()
+}
+
+export async function apiUploadCompanyBrainSource(token: string, payload: {
+  folder: CompanyBrainFolder
+  memory_tier: 'auto' | CompanyBrainTier
+  file: File
+  title?: string
+}): Promise<CompanyBrainSourceItem> {
+  const body = new FormData()
+  body.append('folder', payload.folder)
+  body.append('memory_tier', payload.memory_tier)
+  body.append('file', payload.file)
+  if (payload.title) body.append('title', payload.title)
+  const res = await apiFetchResponses('/admin/company/brain/sources/upload', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body })
+  if (!res.ok) throw new Error(await readApiError(res, '上传企业大脑文档失败'))
+  return res.json()
+}
+
+export async function apiDeactivateCompanyBrainSource(token: string, sourceId: string): Promise<void> {
+  const res = await apiFetchResponses(`/admin/company/brain/sources/${encodeURIComponent(sourceId)}`, { method: 'DELETE', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '停用企业大脑来源失败'))
+}
+
+export async function apiSaveCompanyBrainDraft(token: string, content: string, changeSummary: string): Promise<CompanyBrainVersionItem> {
+  const res = await apiFetchResponses('/admin/company/brain/draft', { method: 'PUT', headers: authHeaders(token), body: JSON.stringify({ content, change_summary: changeSummary }) })
+  if (!res.ok) throw new Error(await readApiError(res, '保存 COMPANY.md 草稿失败'))
+  return res.json()
+}
+
+export async function apiPublishCompanyBrainDraft(token: string, versionId?: string): Promise<CompanyBrainVersionItem> {
+  const res = await apiFetchResponses('/admin/company/brain/publish', { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ version_id: versionId || null }) })
+  if (!res.ok) throw new Error(await readApiError(res, '发布 COMPANY.md 失败'))
+  return res.json()
+}
+
 export interface ConversationItem {
   id: string
   title: string
@@ -2089,6 +2229,7 @@ export interface MemoryCandidateItem {
   id: string
   content: string
   kind: string
+  personal_category: PersonalMemoryCategory
   scope_type: 'user' | 'project' | 'conversation'
   scope_id?: string | null
   confidence: number
@@ -2206,12 +2347,15 @@ export interface MemoryItem {
   content: string
   memory_type: string
   kind?: string
+  personal_category?: PersonalMemoryCategory
   enabled?: boolean
   pinned?: boolean
   access_count?: number
   tags?: string[]
   metadata?: Record<string, unknown>
 }
+
+export type PersonalMemoryCategory = 'terminology' | 'response_style' | 'approval_habit' | 'template' | 'calendar' | 'task' | 'profile'
 
 export interface DataSourceItem {
   id: string

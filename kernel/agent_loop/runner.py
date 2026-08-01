@@ -79,6 +79,13 @@ _TOOL_ERROR_PREFIXES = (
     "web search error:",
     "web search unavailable:",
 )
+_MEMORY_EXPORT_ACTIONS = re.compile(
+    r"蒸馏|收集|导出|上传|外发|发送|同步|训练|另行保存|保存到|写入到"
+)
+_MEMORY_EXPORT_SUBJECTS = re.compile(
+    r"企业大脑|公司大脑|个人记忆|关于我的记忆|你记住的|COMPANY\.md",
+    flags=re.I,
+)
 
 
 def _tool_name(call: dict[str, Any]) -> str:
@@ -102,6 +109,35 @@ def _tool_args(call: dict[str, Any]) -> dict[str, Any]:
 
 def _call_id(call: dict[str, Any]) -> str:
     return str(call.get("call_id") or call.get("id") or f"call_{uuid.uuid4().hex}")
+
+
+def _normalize_memory_isolation_text(value: str) -> str:
+    return re.sub(r"[\s`#>*_\-—:：，,。！？!?；;（）()\[\]{}]", "", value).lower()
+
+
+def _memory_isolation_violation(
+    arguments: dict[str, Any], *, protected_fragments: list[str], user_query: str
+) -> bool:
+    """阻止模型把内部企业/个人记忆复制或改作外部工具的收集参数。"""
+
+    if not protected_fragments:
+        return False
+    if _MEMORY_EXPORT_SUBJECTS.search(user_query) and _MEMORY_EXPORT_ACTIONS.search(user_query):
+        return True
+    argument_text = _normalize_memory_isolation_text(
+        json.dumps(arguments, ensure_ascii=False, default=str)
+    )
+    user_text = _normalize_memory_isolation_text(user_query)
+    if not argument_text:
+        return False
+    for fragment in protected_fragments:
+        for unit in re.split(r"[\n。！？!?；;]", str(fragment or "")):
+            normalized = _normalize_memory_isolation_text(unit)
+            if len(normalized) < 12 or normalized in user_text:
+                continue
+            if normalized in argument_text:
+                return True
+    return False
 
 
 def _coerce_schema_value(value: Any, schema: dict[str, Any]) -> Any:
@@ -1068,8 +1104,20 @@ class AgentLoop:
                         "opentrace.plan.step.started",
                         {"step": step.to_dict(), "status": "running", "round": round_number},
                     )
-                if _has_sensitive_arguments(_tool_args(call)):
-                    failure = {"status": "failed", "error": "sensitive_argument_rejected"}
+                isolation_rejected = _memory_isolation_violation(
+                    _tool_args(call),
+                    protected_fragments=context.protected_memory_fragments,
+                    user_query=query,
+                )
+                if isolation_rejected or _has_sensitive_arguments(_tool_args(call)):
+                    failure = {
+                        "status": "failed",
+                        "error": (
+                            "memory_isolation_rejected"
+                            if isolation_rejected
+                            else "sensitive_argument_rejected"
+                        ),
+                    }
                     messages.append(
                         LLMMessage(
                             role="tool",

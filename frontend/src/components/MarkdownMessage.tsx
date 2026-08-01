@@ -24,6 +24,7 @@ import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typesc
 import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import 'katex/dist/katex.min.css'
+import { useCompanyStore } from '../store/company'
 
 const HIGHLIGHT_LANGUAGES = {
   bash,
@@ -85,6 +86,7 @@ function nodeText(value: ReactNode): string {
 }
 
 function HtmlPreviewDialog({ code, onClose }: { code: string; onClose: () => void }) {
+  const brandName = useCompanyStore((state) => state.brandName)
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
@@ -108,7 +110,7 @@ function HtmlPreviewDialog({ code, onClose }: { code: string; onClose: () => voi
         <div className="flex items-center gap-3 border-b border-[var(--border)] px-4 py-3">
           <div className="min-w-0">
             <h2 id="html-preview-title" className="text-sm font-semibold text-[var(--text)]">HTML 效果预览</h2>
-            <p className="mt-0.5 text-xs text-[var(--text-secondary)]">内容在隔离沙箱中运行，与 OpenTrace 页面相互隔离。</p>
+            <p className="mt-0.5 text-xs text-[var(--text-secondary)]">内容在隔离沙箱中运行，与 {brandName} 页面相互隔离。</p>
           </div>
           <button
             type="button"

@@ -33,6 +33,9 @@
     },
     "r0011_user_custom_models": {
       "release": "unreleased"
+    },
+    "r0012_company_brain": {
+      "release": "unreleased"
     }
   }
 }

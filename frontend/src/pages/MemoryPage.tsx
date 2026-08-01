@@ -14,13 +14,27 @@ import {
   type MemoryItem,
   type MemoryCandidateItem,
   type MemoryGraph,
+  type PersonalMemoryCategory,
 } from '../api/client'
 
 type MemoryType = 'semantic' | 'episodic' | 'procedural'
+type CategoryFilter = 'all' | PersonalMemoryCategory
+
+const categoryLabels: Record<PersonalMemoryCategory, string> = {
+  terminology: '个人术语/黑话',
+  response_style: '回复风格偏好',
+  approval_habit: '审批/操作习惯',
+  template: '常用模板与片段',
+  calendar: '日历',
+  task: '任务',
+  profile: '个人背景与偏好',
+}
 
 export default function MemoryPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((s) => s.token)!
   const [tab, setTab] = useState<MemoryType>('semantic')
+  const [category, setCategory] = useState<CategoryFilter>('all')
+  const [draftCategory, setDraftCategory] = useState<PersonalMemoryCategory>('profile')
   const [items, setItems] = useState<MemoryItem[]>([])
   const [loading, setLoading] = useState(true)
   const [memoryLearningEnabled, setMemoryLearningEnabled] = useState(true)
@@ -33,7 +47,7 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
   const [inbox, setInbox] = useState<MemoryCandidateItem[]>([])
   const [graph, setGraph] = useState<MemoryGraph>({ nodes: [], edges: [] })
 
-  const filtered = useMemo(() => items.filter((i) => i.memory_type === tab), [items, tab])
+  const filtered = useMemo(() => items.filter((item) => item.memory_type === tab && (category === 'all' || (item.personal_category || 'profile') === category)), [category, items, tab])
 
   const loadAll = async () => {
     setLoading(true)
@@ -74,6 +88,7 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
     await apiCreateMemory(token, {
       memory_type: tab,
       kind: tab === 'procedural' ? 'workflow' : 'fact',
+      personal_category: draftCategory,
       title: draftTitle.trim() || undefined,
       content: draftContent.trim(),
       tags: [],
@@ -125,7 +140,7 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
         <button onClick={onBack} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--surface)]">
           <ChevronLeft size={18} />
         </button>
-        <h1 className="text-sm font-semibold">Memories</h1>
+        <h1 className="text-sm font-semibold">个人记忆</h1>
       </div>
 
       <div className="max-w-4xl mx-auto w-full px-6 py-6 space-y-4 overflow-y-auto">
@@ -151,7 +166,7 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
           {inbox.length === 0 ? <p className="text-sm text-[var(--text-secondary)]">没有待确认记忆</p> : inbox.map((candidate) => (
             <div key={candidate.id} className="rounded-xl border border-[var(--border)] p-3">
               <p className="text-sm">{candidate.content}</p>
-              <p className="mt-1 text-xs text-[var(--text-secondary)]">{candidate.kind} · {candidate.scope_type} · 置信度 {Math.round(candidate.confidence * 100)}%</p>
+              <p className="mt-1 text-xs text-[var(--text-secondary)]">{categoryLabels[candidate.personal_category || 'profile']} · {candidate.kind} · {candidate.scope_type} · 置信度 {Math.round(candidate.confidence * 100)}%</p>
               {candidate.evidence?.excerpt && <blockquote className="mt-2 border-l-2 border-[var(--border)] pl-3 text-xs text-[var(--text-secondary)]">{candidate.evidence.excerpt}</blockquote>}
               <div className="mt-3 flex gap-2"><button onClick={() => void apiResolveMemoryCandidate(token, candidate.id, true).then(loadAll)} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]">保留</button><button onClick={() => void apiResolveMemoryCandidate(token, candidate.id, false).then(loadAll)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">忽略</button></div>
             </div>
@@ -174,6 +189,11 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
           </label>
         </div>
 
+        <div><div className="mb-2 text-xs font-medium text-[var(--text-secondary)]">按个人专属场景分类</div><div className="flex flex-wrap gap-2">
+          <button onClick={() => setCategory('all')} className={`px-3 py-1.5 rounded text-xs border ${category === 'all' ? 'bg-[var(--accent)] text-[var(--accent-foreground)] border-[var(--accent)]' : 'border-[var(--border)]'}`}>全部</button>
+          {(Object.entries(categoryLabels) as Array<[PersonalMemoryCategory, string]>).map(([key, label]) => <button key={key} onClick={() => setCategory(key)} className={`px-3 py-1.5 rounded text-xs border ${category === key ? 'bg-[var(--accent)] text-[var(--accent-foreground)] border-[var(--accent)]' : 'border-[var(--border)]'}`}>{label}</button>)}
+        </div></div>
+
         <div className="flex gap-2">
           {(['semantic', 'episodic', 'procedural'] as MemoryType[]).map((t) => (
             <button
@@ -188,6 +208,9 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
 
         <div className="rounded-xl border border-[var(--border)] p-4 bg-[var(--surface)] space-y-3">
           <h3 className="text-sm font-semibold">新增记忆</h3>
+          <select value={draftCategory} onChange={(event) => setDraftCategory(event.target.value as PersonalMemoryCategory)} className="w-full rounded border border-[var(--border)] bg-transparent px-3 py-2 text-sm">
+            {(Object.entries(categoryLabels) as Array<[PersonalMemoryCategory, string]>).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </select>
           <input
             value={draftTitle}
             onChange={(e) => setDraftTitle(e.target.value)}
@@ -237,7 +260,7 @@ export default function MemoryPage({ onBack }: { onBack: () => void }) {
                         <p className="text-sm whitespace-pre-wrap">{m.content}</p>
                       </>
                     )}
-                    <p className="text-[11px] text-[var(--text-secondary)]">kind={m.kind} · access={m.access_count}{m.metadata?.learning_mode === 'proactive' ? ' · 主动学习' : m.metadata?.learning_mode === 'explicit' ? ' · 用户明确要求' : m.metadata?.learning_mode === 'reviewed' ? ' · 用户已确认' : ''}{m.pinned ? ' · 已置顶（每轮优先使用）' : ''}</p>
+                    <p className="text-[11px] text-[var(--text-secondary)]">{categoryLabels[m.personal_category || 'profile']} · kind={m.kind} · access={m.access_count}{m.metadata?.learning_mode === 'proactive' ? ' · 主动学习' : m.metadata?.learning_mode === 'explicit' ? ' · 用户明确要求' : m.metadata?.learning_mode === 'reviewed' ? ' · 用户已确认' : ''}{m.pinned ? ' · 已置顶（每轮优先使用）' : ''}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     {editingId === m.id ? (

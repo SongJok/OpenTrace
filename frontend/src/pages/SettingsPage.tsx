@@ -6,6 +6,7 @@ import { useAuthStore } from '../store/auth'
 import { apiChangePassword, apiGetCustomInstructions, apiGetUiSettings, apiPatchUiSettings, apiSetCustomInstructions } from '../api/client'
 import { CardShell } from '../components/CardShell'
 import { apiCreateCustomModel, apiDeleteCustomModel, apiGetModelSettings, apiSelectModelSettings, apiUpdateCustomModel, withSelectedModel, type CustomModelInput, type CustomModelSettings, type ModelSource, type UserModelSettings } from '../api/modelSettings'
+import { useCompanyStore } from '../store/company'
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; description: string; icon: ReactNode }[] = [
   { value: 'light', label: 'Light', description: '更适合白底阅读', icon: <Sun size={16} /> },
@@ -172,6 +173,7 @@ function SwitchRow({
 }
 
 export default function SettingsPage({ onBack }: { onBack: () => void }) {
+  const brandName = useCompanyStore((state) => state.brandName)
   const { mode, setMode, accent, setAccent } = useThemeStore()
   const token = useAuthStore((s) => s.token)!
   const displayName = useAuthStore((s) => s.displayName)
@@ -583,7 +585,7 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
                     <span>UI Preview</span>
                     <span>{accent}</span>
                   </div>
-                  <div className="mt-2 text-lg font-semibold text-[var(--text)]">OpenTrace</div>
+                  <div className="mt-2 text-lg font-semibold text-[var(--text)]">{brandName}</div>
                   <div className="mt-4 grid grid-cols-3 gap-2">
                     <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3">
                       <div className="text-[11px] text-[var(--text-secondary)]">Surface</div>
@@ -690,7 +692,7 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
             </div>
           </SectionCard>
 
-          <SectionCard eyebrow="Personalization" title="自定义指令" meta="明确告诉 OpenTrace 应该了解什么，以及如何回答；临时聊天也会遵守这些指令。">
+          <SectionCard eyebrow="Personalization" title="自定义指令" meta={`明确告诉 ${brandName} 应该了解什么，以及如何回答；临时聊天也会遵守这些指令。`}>
             <div className="space-y-3">
               <SwitchRow
                 label="启用自定义指令"
@@ -704,7 +706,7 @@ export default function SettingsPage({ onBack }: { onBack: () => void }) {
                   onChange={(event) => setAboutUser(event.target.value)}
                   maxLength={4000}
                   rows={3}
-                  placeholder="例如：我是产品经理，常用中文沟通，正在做 OpenTrace。"
+                  placeholder={`例如：我是产品经理，常用中文沟通，正在使用 ${brandName}。`}
                   className="mt-1.5 w-full rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
                 />
               </label>

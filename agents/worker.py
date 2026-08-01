@@ -215,6 +215,7 @@ class AgentWorker:
         from infra.response_worker import response_job_loop
         from infra.responses.scheduler import scheduler_loop
         from knowledge.jobs import knowledge_job_loop
+        from services.company_brain import company_brain_worker_loop
         from services.data_governance import deletion_job_loop
         from skills.catalog import skillhub_sync_loop
 
@@ -230,6 +231,7 @@ class AgentWorker:
                     scheduler_loop(),
                     alert_scheduler_loop(),
                     calendar_reminder_loop(),
+                    company_brain_worker_loop(),
                     deletion_job_loop(),
                 )
             )

@@ -11,7 +11,7 @@ describe('SkillsPage marketplace contract', () => {
   it('presents the governed registry discovery hierarchy', async () => {
     const page = await import('../SkillsPage')
     const source = page.default.toString()
-    expect(source).toContain('OpenTrace')
+    expect(source).toContain('brandName')
     expect(source).toContain('首页')
     expect(source).toContain('搜索 Skills')
     expect(source).toContain('热门下载')
