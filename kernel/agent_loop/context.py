@@ -216,6 +216,9 @@ class ContextAssembler:
             f"当前本地时间：{calendar_now.strftime('%Y-%m-%d %H:%M %A')}（{calendar_timezone}）。",
             "用户日历是经过确认的时间型记忆。用户询问今天、明天或未来两周安排时，"
             "直接依据下面的日历回答；其它日期范围调用 list_calendar_events。",
+            "只把 upcoming/in_progress/recurring 视为当前安排；completed 是历史经历，"
+            "cancelled 只保留审计且不得表述为仍有效。查询取消或改期历史时，先用 "
+            "list_calendar_events(include_cancelled=true)，再调用 get_calendar_event_history。",
         ]
         if calendar_events:
             calendar_lines.extend(
@@ -615,6 +618,9 @@ class ContextAssembler:
                         "confidence": float(memory.confidence or 0.0),
                         "salience": float(memory.salience or 0.0),
                         "pinned": bool(memory.pinned),
+                        # 直接事实投影需要在同主题记忆冲突时选择最近确认的值；
+                        # 显著性会因访问次数变化，不能单独代表事实的新鲜度。
+                        "updated_at": memory.updated_at.isoformat() if memory.updated_at else None,
                     }
                     for memory in memories
                 ]

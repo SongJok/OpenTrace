@@ -214,6 +214,7 @@ async def _verify_runtime_schema(conn) -> None:
             "last_observed_at",
         },
         "attachments": {"media_base64", "media_mime", "media_kind"},
+        "calendar_events": {"revision", "cancelled_at"},
     }
     missing: list[str] = []
     for table, columns in required_columns.items():
@@ -281,6 +282,7 @@ async def _verify_runtime_schema(conn) -> None:
         "company_brain_sources",
         "company_brain_versions",
         "calendar_events",
+        "calendar_event_revisions",
         "calendar_reminder_deliveries",
     }
     table_rows = await conn.execute(
@@ -347,6 +349,27 @@ async def _ensure_unified_runtime_columns(conn) -> None:
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS source_response_id VARCHAR(64)",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS supersedes_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE IF EXISTS public.calendar_events ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE IF EXISTS public.calendar_events ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP WITH TIME ZONE",
+        """
+        CREATE TABLE IF NOT EXISTS public.calendar_event_revisions (
+            id VARCHAR(36) PRIMARY KEY,
+            event_id VARCHAR(36) NOT NULL REFERENCES public.calendar_events(id) ON DELETE CASCADE,
+            user_id VARCHAR(36) NOT NULL,
+            tenant_id VARCHAR(128) NOT NULL,
+            workspace_id VARCHAR(128) NOT NULL,
+            revision INTEGER NOT NULL,
+            action VARCHAR(20) NOT NULL,
+            snapshot JSON NOT NULL DEFAULT '{}',
+            changed_fields JSON NOT NULL DEFAULT '[]',
+            source VARCHAR(20) NOT NULL DEFAULT 'manual',
+            source_response_id VARCHAR(64),
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_calendar_event_revision UNIQUE (event_id, revision)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_calendar_event_revisions_event_id ON public.calendar_event_revisions (event_id)",
+        "CREATE INDEX IF NOT EXISTS ix_calendar_event_revisions_scope_created ON public.calendar_event_revisions (user_id, tenant_id, workspace_id, created_at)",
         "ALTER TABLE IF EXISTS public.attachments ADD COLUMN IF NOT EXISTS media_base64 TEXT",
         "ALTER TABLE IF EXISTS public.attachments ADD COLUMN IF NOT EXISTS media_mime VARCHAR(100)",
         "ALTER TABLE IF EXISTS public.attachments ADD COLUMN IF NOT EXISTS media_kind VARCHAR(20)",

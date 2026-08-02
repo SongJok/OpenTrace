@@ -3,7 +3,7 @@
   "policy_effective_date": "2026-07-24",
   "production_baseline_revision": "20260724_chatgpt_runtime_completion",
   "new_revision_format": "^r[0-9]{4}_[a-z0-9_]+$",
-  "next_sequence": 13,
+  "next_sequence": 14,
   "frozen_migrations": [
     {
       "revision": "20260400_core_baseline",
@@ -373,6 +373,13 @@
       "sha256": "b143d5c4773efdce3ccbaaab32add4764cbb72b0c118adf3749d6f27bd938668",
       "governed_format": "r-sequence",
       "frozen_on": "2026-08-01"
+    },
+    {
+      "revision": "r0013_calendar_memory_lifecycle",
+      "file": "alembic/versions/r0013_calendar_memory_lifecycle.py",
+      "sha256": "a26f3df3fc38aec9aae168ac1b5d5f0eab88918a3335cf18b83ccf9678ff6c0f",
+      "governed_format": "r-sequence",
+      "frozen_on": "2026-08-02"
     }
   ],
   "notes": [

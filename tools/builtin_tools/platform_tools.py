@@ -15,13 +15,16 @@ from infra.config.constants import DEFAULT_TIMEZONE
 from infra.responses.scheduler import next_occurrence, parse_schedule_expression
 from infra.security.resource_scope import get_accessible_data_source
 from infra.storage.database import AsyncSessionLocal
-from infra.storage.models import AlertRule, CalendarEvent, ChatSession, Project, TaskDefinition
+from infra.storage.models import AlertRule, ChatSession, Project, TaskDefinition
 from services.calendar import (
-    CalendarValidationError,
+    calendar_event_history,
+    cancel_calendar_event_record,
+    create_calendar_event_record,
     ensure_timezone,
-    normalize_recurrence_rule,
+    event_to_dict,
+    get_scoped_calendar_event,
     parse_calendar_datetime,
-    validate_event_window,
+    update_calendar_event_record,
 )
 from services.calendar import (
     list_calendar_events as query_calendar_events,
@@ -392,6 +395,10 @@ async def create_data_alert(
             "start_at": {"type": "string", "description": "查询开始时间 ISO-8601"},
             "end_at": {"type": "string", "description": "查询结束时间 ISO-8601"},
             "timezone": {"type": "string", "description": "IANA 时区，如 Asia/Shanghai"},
+            "include_cancelled": {
+                "type": "boolean",
+                "description": "仅在查询已取消安排或历史时设为 true",
+            },
         },
         "required": [],
     },
@@ -400,6 +407,7 @@ async def list_calendar_events_tool(
     start_at: str = "",
     end_at: str = "",
     timezone: str = DEFAULT_TIMEZONE,
+    include_cancelled: bool = False,
     user_id: str = "",
     tenant_id: str = "default",
     workspace_id: str = "default",
@@ -423,8 +431,48 @@ async def list_calendar_events_tool(
             end_at=end,
             timezone_name=timezone,
             limit=100,
+            include_cancelled=_as_bool(include_cancelled),
         )
     return {"status": "success", "timezone": timezone, "items": items}
+
+
+@registry.tool(
+    name="get_calendar_event_history",
+    description=(
+        "读取一个日历事件的创建、改期和取消修订历史。仅当用户询问日程是否取消、"
+        "何时改期或原安排是什么时调用；先用 list_calendar_events 获取 event_id。"
+    ),
+    tags=["日程历史", "取消记录", "改期记录", "原安排", "calendar history"],
+    parameters={
+        "type": "object",
+        "properties": {
+            "event_id": {"type": "string"},
+            "timezone": {"type": "string", "description": "IANA 时区"},
+        },
+        "required": ["event_id"],
+    },
+)
+async def get_calendar_event_history_tool(
+    event_id: str,
+    timezone: str = DEFAULT_TIMEZONE,
+    user_id: str = "",
+    tenant_id: str = "default",
+    workspace_id: str = "default",
+    **_: Any,
+) -> dict[str, Any]:
+    timezone = ensure_timezone(timezone)
+    async with AsyncSessionLocal() as db:
+        history = await calendar_event_history(
+            db,
+            event_id=event_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            timezone_name=timezone,
+        )
+    if history is None:
+        raise ValueError("calendar_event_not_found")
+    return {"status": "success", **history}
 
 
 @registry.tool(
@@ -494,46 +542,30 @@ async def create_calendar_event_tool(
         if end_at
         else start + (timedelta(days=1) if all_day else timedelta(hours=1))
     )
-    validate_event_window(start, end, all_day=all_day, timezone_name=timezone)
-    if event_type not in {"event", "meeting", "focus", "reminder"}:
-        raise CalendarValidationError("invalid_event_type")
     reminders = sorted(
         {value for value in _as_int_list(reminder_minutes, default=[15]) if 0 <= value <= 10080}
     )[:5]
     async with AsyncSessionLocal() as db:
-        row = CalendarEvent(
-            id=str(uuid.uuid4()),
+        row = await create_calendar_event_record(
+            db,
             user_id=user_id,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
-            title=title.strip()[:255],
-            description=description.strip(),
-            location=location.strip()[:512],
+            title=title,
+            description=description,
+            location=location,
             event_type=event_type,
             start_at=start,
             end_at=end,
-            timezone=timezone,
+            timezone_name=timezone,
             all_day=all_day,
-            recurrence_rule=normalize_recurrence_rule(recurrence_rule),
+            recurrence_rule=recurrence_rule,
             reminder_minutes=reminders,
-            status="confirmed",
             source="assistant",
             source_response_id=response_id,
         )
-        db.add(row)
         await db.commit()
-        return {
-            "status": "success",
-            "event": {
-                "id": row.id,
-                "title": row.title,
-                "start_at": row.start_at.isoformat(),
-                "end_at": row.end_at.isoformat(),
-                "timezone": row.timezone,
-                "all_day": row.all_day,
-                "source": row.source,
-            },
-        }
+        return {"status": "success", "event": event_to_dict(row, timezone_name=timezone)}
 
 
 @registry.tool(
@@ -562,46 +594,58 @@ async def update_calendar_event_tool(
     title: str = "",
     start_at: str = "",
     end_at: str = "",
-    timezone: str = DEFAULT_TIMEZONE,
+    timezone: str = "",
     description: str = "",
     location: str = "",
     user_id: str = "",
     tenant_id: str = "default",
     workspace_id: str = "default",
+    response_id: str | None = None,
     **_: Any,
 ) -> dict[str, Any]:
-    timezone = ensure_timezone(timezone)
     title = str(title or "")
     start_at = str(start_at or "")
     end_at = str(end_at or "")
     description = str(description or "")
     location = str(location or "")
     async with AsyncSessionLocal() as db:
-        row = await db.scalar(
-            select(CalendarEvent).where(
-                CalendarEvent.id == event_id,
-                CalendarEvent.user_id == user_id,
-                CalendarEvent.tenant_id == tenant_id,
-                CalendarEvent.workspace_id == workspace_id,
-                CalendarEvent.status != "cancelled",
-            )
+        row = await get_scoped_calendar_event(
+            db,
+            event_id=event_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            for_update=True,
         )
         if row is None:
             raise ValueError("calendar_event_not_found")
-        start = parse_calendar_datetime(start_at, timezone) if start_at else row.start_at
-        end = parse_calendar_datetime(end_at, timezone) if end_at else row.end_at
-        validate_event_window(start, end, all_day=row.all_day, timezone_name=timezone)
-        row.start_at = start
-        row.end_at = end
-        row.timezone = timezone
+        changes: dict[str, Any] = {}
         if title.strip():
-            row.title = title.strip()[:255]
+            changes["title"] = title
+        if start_at:
+            changes["start_at"] = start_at
+        if end_at:
+            changes["end_at"] = end_at
+        if timezone:
+            changes["timezone"] = timezone
         if description.strip():
-            row.description = description.strip()
+            changes["description"] = description
         if location.strip():
-            row.location = location.strip()[:512]
+            changes["location"] = location
+        await update_calendar_event_record(
+            db,
+            row=row,
+            changes=changes,
+            source="assistant",
+            source_response_id=response_id,
+        )
         await db.commit()
-        return {"status": "success", "event_id": row.id, "title": row.title}
+        return {
+            "status": "success",
+            "event_id": row.id,
+            "title": row.title,
+            "revision": row.revision,
+        }
 
 
 @registry.tool(
@@ -622,20 +666,30 @@ async def cancel_calendar_event_tool(
     user_id: str = "",
     tenant_id: str = "default",
     workspace_id: str = "default",
+    response_id: str | None = None,
     **_: Any,
 ) -> dict[str, Any]:
     async with AsyncSessionLocal() as db:
-        row = await db.scalar(
-            select(CalendarEvent).where(
-                CalendarEvent.id == event_id,
-                CalendarEvent.user_id == user_id,
-                CalendarEvent.tenant_id == tenant_id,
-                CalendarEvent.workspace_id == workspace_id,
-                CalendarEvent.status != "cancelled",
-            )
+        row = await get_scoped_calendar_event(
+            db,
+            event_id=event_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            for_update=True,
         )
         if row is None:
             raise ValueError("calendar_event_not_found")
-        row.status = "cancelled"
+        await cancel_calendar_event_record(
+            db,
+            row=row,
+            source="assistant",
+            source_response_id=response_id,
+        )
         await db.commit()
-        return {"status": "success", "event_id": row.id, "event_status": "cancelled"}
+        return {
+            "status": "success",
+            "event_id": row.id,
+            "event_status": "cancelled",
+            "revision": row.revision,
+        }

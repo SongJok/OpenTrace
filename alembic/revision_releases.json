@@ -36,6 +36,9 @@
     },
     "r0012_company_brain": {
       "release": "unreleased"
+    },
+    "r0013_calendar_memory_lifecycle": {
+      "release": "unreleased"
     }
   }
 }

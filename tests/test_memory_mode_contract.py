@@ -174,6 +174,28 @@ def test_direct_memory_projection_accepts_value_only_presentation_suffix() -> No
     assert answer == "星轨-9152"
 
 
+def test_direct_memory_projection_prefers_latest_confirmed_fact_over_hot_old_fact() -> None:
+    from kernel.agent_loop.runner import AgentLoop
+
+    answer = AgentLoop._direct_memory_answer(
+        "我的代号是什么？",
+        [
+            {
+                "id": "memory-old",
+                "content": "我的代号是 旧值-1001",
+                "updated_at": "2026-08-02T14:00:00+00:00",
+            },
+            {
+                "id": "memory-current",
+                "content": "我的代号是 新值-2002",
+                "updated_at": "2026-08-02T15:00:00+00:00",
+            },
+        ],
+    )
+
+    assert answer == "根据你已确认的记忆，我的代号是 新值-2002。"
+
+
 def test_disabled_memory_learning_cannot_claim_persistence() -> None:
     from kernel.agent_loop.contracts import ExecutionProfile, IntentPlan, SideEffect
     from kernel.agent_loop.runner import AgentLoop

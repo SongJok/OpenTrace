@@ -10,6 +10,7 @@ from kernel.agent_loop.context import ContextAssembler
 from kernel.agent_loop.contracts import ExecutionProfile, SideEffect, parse_tool_specs
 from kernel.agent_loop.memory_learner import MemoryLearner
 from kernel.agent_loop.runner import AgentLoop
+from memory.quality import temporal_memory_issue
 
 
 def test_tool_schema_is_strict_and_namespaced_policy_is_not_sent_to_provider():
@@ -45,6 +46,35 @@ def test_memory_learner_rejects_secrets_before_model_extraction():
     assert MemoryLearner._contains_secret("api_key = sk-secret-value-123456789")
     assert MemoryLearner._contains_secret("密码：hunter2")
     assert not MemoryLearner._contains_secret("我喜欢简洁的中文回答")
+
+
+def test_memory_quality_rejects_interrogative_fact_nodes():
+    from memory.quality import memory_quality_issue
+
+    assert (
+        memory_quality_issue(
+            "我的代号是什么",
+            kind="fact",
+            memory_key="fact.example",
+        )
+        == "interrogative_fact"
+    )
+    assert (
+        memory_quality_issue(
+            "我的代号是北辰-42",
+            kind="fact",
+            memory_key="fact.example",
+        )
+        is None
+    )
+
+
+def test_memory_learner_rejects_time_bound_business_facts_but_keeps_stable_schedules():
+    assert (
+        temporal_memory_issue("用户有客户评审会议", source_text="明天下午三点有客户评审会议")
+        == "time_bound_business_event"
+    )
+    assert temporal_memory_issue("我的工作时间是每周一到周五九点到六点") is None
 
 
 def test_memory_learner_has_deterministic_fallback_for_explicit_memory():

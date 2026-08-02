@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gateway.api_gateway.routers.auth import get_current_user
@@ -20,13 +18,16 @@ from infra.storage.models import CalendarEvent, User
 from services.calendar import (
     DEFAULT_CALENDAR_TIMEZONE,
     CalendarValidationError,
+    calendar_event_history,
+    cancel_calendar_event_record,
+    create_calendar_event_record,
     default_calendar_window,
     ensure_timezone,
     event_to_dict,
+    get_scoped_calendar_event,
     list_calendar_events,
-    normalize_recurrence_rule,
     parse_calendar_datetime,
-    validate_event_window,
+    update_calendar_event_record,
 )
 
 router = APIRouter()
@@ -70,6 +71,10 @@ def _calendar_error(exc: CalendarValidationError) -> AppException:
         "invalid_recurrence_rule": "重复规则无效",
         "unsupported_recurrence_frequency": "日历重复仅支持每天、每周、每月或每年",
         "calendar_end_must_be_after_start": "查询结束时间必须晚于开始时间",
+        "too_many_calendar_reminders": "最多配置 5 个提醒时间",
+        "calendar_event_cancelled": "已取消的日程不能修改",
+        "calendar_title_required": "日程标题不能为空",
+        "invalid_event_type": "日程类型无效",
     }
     code = str(exc)
     if code.startswith("invalid_timezone"):
@@ -79,13 +84,6 @@ def _calendar_error(exc: CalendarValidationError) -> AppException:
     return AppException(ErrorCodes.PARAM_INVALID.code, message=message)
 
 
-def _normalize_reminders(values: list[int]) -> list[int]:
-    normalized = sorted({int(value) for value in values if 0 <= int(value) <= 10080})
-    if len(normalized) > 5:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="最多配置 5 个提醒时间")
-    return normalized
-
-
 async def _owned_event(
     db: AsyncSession,
     request: Request,
@@ -93,13 +91,12 @@ async def _owned_event(
     event_id: str,
 ) -> CalendarEvent:
     tenant_id, workspace_id = _scope(request, user)
-    row = await db.scalar(
-        select(CalendarEvent).where(
-            CalendarEvent.id == event_id,
-            CalendarEvent.user_id == user.id,
-            CalendarEvent.tenant_id == tenant_id,
-            CalendarEvent.workspace_id == workspace_id,
-        )
+    row = await get_scoped_calendar_event(
+        db,
+        event_id=event_id,
+        user_id=user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
     )
     if row is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="日程不存在")
@@ -113,6 +110,7 @@ async def get_calendar_events(
     end: datetime | None = None,
     timezone: str = Query(default=DEFAULT_CALENDAR_TIMEZONE, max_length=64),
     limit: int = Query(default=200, ge=1, le=200),
+    include_cancelled: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -131,6 +129,7 @@ async def get_calendar_events(
             end_at=end_at,
             timezone_name=timezone,
             limit=limit,
+            include_cancelled=include_cancelled,
         )
     except CalendarValidationError as exc:
         raise _calendar_error(exc) from exc
@@ -158,6 +157,31 @@ async def get_calendar_event(
         raise _calendar_error(exc) from exc
 
 
+@router.get("/calendar/events/{event_id}/history")
+async def get_calendar_event_history(
+    event_id: str,
+    request: Request,
+    timezone: str = Query(default=DEFAULT_CALENDAR_TIMEZONE, max_length=64),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant_id, workspace_id = _scope(request, current_user)
+    try:
+        history = await calendar_event_history(
+            db,
+            event_id=event_id,
+            user_id=current_user.id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            timezone_name=ensure_timezone(timezone),
+        )
+    except CalendarValidationError as exc:
+        raise _calendar_error(exc) from exc
+    if history is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="日程不存在")
+    return history
+
+
 @router.post("/calendar/events")
 async def create_calendar_event(
     request: Request,
@@ -167,40 +191,28 @@ async def create_calendar_event(
 ) -> dict[str, Any]:
     tenant_id, workspace_id = _scope(request, current_user)
     try:
-        timezone = ensure_timezone(payload.timezone)
-        start_at = parse_calendar_datetime(payload.start_at, timezone)
-        end_at = parse_calendar_datetime(payload.end_at, timezone)
-        validate_event_window(
-            start_at,
-            end_at,
+        row = await create_calendar_event_record(
+            db,
+            user_id=current_user.id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            title=payload.title,
+            description=payload.description,
+            location=payload.location,
+            event_type=payload.event_type,
+            start_at=payload.start_at,
+            end_at=payload.end_at,
+            timezone_name=payload.timezone,
             all_day=payload.all_day,
-            timezone_name=timezone,
+            recurrence_rule=payload.recurrence_rule,
+            reminder_minutes=payload.reminder_minutes,
+            source="manual",
         )
-        recurrence_rule = normalize_recurrence_rule(payload.recurrence_rule)
     except CalendarValidationError as exc:
         raise _calendar_error(exc) from exc
-    row = CalendarEvent(
-        id=str(uuid.uuid4()),
-        user_id=current_user.id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        title=payload.title.strip(),
-        description=payload.description.strip(),
-        location=payload.location.strip(),
-        event_type=payload.event_type,
-        start_at=start_at,
-        end_at=end_at,
-        timezone=timezone,
-        all_day=payload.all_day,
-        recurrence_rule=recurrence_rule,
-        reminder_minutes=_normalize_reminders(payload.reminder_minutes),
-        status="confirmed",
-        source="manual",
-    )
-    db.add(row)
     await db.commit()
     await db.refresh(row)
-    return event_to_dict(row, timezone_name=timezone)
+    return event_to_dict(row, timezone_name=row.timezone)
 
 
 @router.patch("/calendar/events/{event_id}")
@@ -211,35 +223,30 @@ async def update_calendar_event(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    row = await _owned_event(db, request, current_user, event_id)
+    tenant_id, workspace_id = _scope(request, current_user)
+    row = await get_scoped_calendar_event(
+        db,
+        event_id=event_id,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        for_update=True,
+    )
+    if row is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="日程不存在")
     changes = payload.model_dump(exclude_unset=True)
     try:
-        timezone = ensure_timezone(str(changes.get("timezone") or row.timezone))
-        start_at = parse_calendar_datetime(changes.get("start_at") or row.start_at, timezone)
-        end_at = parse_calendar_datetime(changes.get("end_at") or row.end_at, timezone)
-        all_day = bool(changes.get("all_day", row.all_day))
-        validate_event_window(start_at, end_at, all_day=all_day, timezone_name=timezone)
-        recurrence_rule = (
-            normalize_recurrence_rule(changes.get("recurrence_rule"))
-            if "recurrence_rule" in changes
-            else row.recurrence_rule
+        await update_calendar_event_record(
+            db,
+            row=row,
+            changes=changes,
+            source="manual",
         )
     except CalendarValidationError as exc:
         raise _calendar_error(exc) from exc
-    row.start_at = start_at
-    row.end_at = end_at
-    row.timezone = timezone
-    row.all_day = all_day
-    row.recurrence_rule = recurrence_rule
-    for field in ("title", "description", "location", "event_type"):
-        if field in changes and changes[field] is not None:
-            setattr(row, field, str(changes[field]).strip())
-    if changes.get("reminder_minutes") is not None:
-        row.reminder_minutes = _normalize_reminders(changes["reminder_minutes"])
-    row.status = "confirmed"
     await db.commit()
     await db.refresh(row)
-    return event_to_dict(row, timezone_name=timezone)
+    return event_to_dict(row, timezone_name=str(changes.get("timezone") or row.timezone))
 
 
 @router.delete("/calendar/events/{event_id}")
@@ -249,7 +256,22 @@ async def cancel_calendar_event(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    row = await _owned_event(db, request, current_user, event_id)
-    row.status = "cancelled"
+    tenant_id, workspace_id = _scope(request, current_user)
+    row = await get_scoped_calendar_event(
+        db,
+        event_id=event_id,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        for_update=True,
+    )
+    if row is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="日程不存在")
+    await cancel_calendar_event_record(db, row=row, source="manual")
     await db.commit()
-    return {"id": row.id, "status": "cancelled"}
+    return {
+        "id": row.id,
+        "status": "cancelled",
+        "revision": row.revision,
+        "cancelled_at": row.cancelled_at.isoformat() if row.cancelled_at else None,
+    }

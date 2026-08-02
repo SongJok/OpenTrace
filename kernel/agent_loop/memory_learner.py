@@ -30,7 +30,7 @@ from memory.constitution import (
     parse_memory_metadata,
 )
 from memory.graph import link_memory_graph, rebuild_memory_graph_links
-from memory.quality import memory_quality_issue
+from memory.quality import memory_quality_issue, temporal_memory_issue
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
 
@@ -240,6 +240,7 @@ class MemoryLearner:
                 or self._contains_secret(content)
                 or self._contains_sensitive(content)
                 or bool(candidate.get("sensitive", False))
+                or temporal_memory_issue(content, source_text=text)
             ):
                 continue
             kind = str(candidate.get("kind") or "fact").strip().lower()
@@ -509,7 +510,9 @@ class MemoryLearner:
             "salience(0-1), explicit(boolean), sensitive(boolean), scope_type(user|project)。"
             "scope_type 可为 user|project|conversation。优先提取用户直接陈述的稳定身份、长期偏好、长期目标、重复工作方式和项目约定。"
             "不要记录问题、一次性请求、临时状态、模型推测、第三方信息、健康/财务/身份号码/联系方式等敏感信息、认证信息或秘密。"
-            "个人记忆应服务于个人术语/黑话、回复风格偏好、审批/操作习惯、常用模板与片段、日历和任务等长期补强。"
+            "个人记忆应服务于个人术语/黑话、回复风格偏好、审批/操作习惯、常用模板与片段，"
+            "以及稳定的时区、工作时间和重复习惯。具体日期的日历、任务和业务状态属于可变事实资源，"
+            "不得输出为长期记忆候选。"
         )
         if constitution is not None:
             prompt += (
@@ -1540,23 +1543,38 @@ class MemoryLearner:
     ) -> UserMemory | None:
         if not memory_key:
             return None
-        conflict = await db.scalar(
-            select(UserMemory)
-            .where(
-                UserMemory.user_id == user_id,
-                UserMemory.tenant_id == tenant_id,
-                UserMemory.workspace_id == workspace_id,
-                UserMemory.scope_type == scope_type,
-                UserMemory.scope_id == scope_id,
-                UserMemory.memory_key == memory_key,
-                UserMemory.enabled.is_(True),
-                UserMemory.status == "active",
-                UserMemory.content != content,
+        conflicts = list(
+            (
+                await db.execute(
+                    select(UserMemory)
+                    .where(
+                        UserMemory.user_id == user_id,
+                        UserMemory.tenant_id == tenant_id,
+                        UserMemory.workspace_id == workspace_id,
+                        UserMemory.scope_type == scope_type,
+                        UserMemory.scope_id == scope_id,
+                        UserMemory.memory_key == memory_key,
+                        UserMemory.enabled.is_(True),
+                        UserMemory.status == "active",
+                        UserMemory.content != content,
+                    )
+                    .order_by(UserMemory.updated_at.desc())
+                    .with_for_update()
+                )
             )
-            .order_by(UserMemory.updated_at.desc())
-            .with_for_update()
+            .scalars()
+            .all()
         )
-        if conflict is not None:
+        for conflict in conflicts:
+            if memory_quality_issue(
+                conflict.content,
+                kind=conflict.kind,
+                memory_key=conflict.memory_key,
+                source_response_id=conflict.source_response_id,
+            ):
+                conflict.enabled = False
+                conflict.status = "rejected"
+                continue
             return conflict
 
         # 兼容旧版 explicit.<kind>.<hash> 键；同一“我的 X 是 Y”主题仍应被更正替代。
@@ -1580,10 +1598,20 @@ class MemoryLearner:
             .scalars()
             .all()
         )
-        return next(
-            (row for row in rows if MemoryLearner._memory_subject(row.content) == subject),
-            None,
-        )
+        for row in rows:
+            if MemoryLearner._memory_subject(row.content) != subject:
+                continue
+            if memory_quality_issue(
+                row.content,
+                kind=row.kind,
+                memory_key=row.memory_key,
+                source_response_id=row.source_response_id,
+            ):
+                row.enabled = False
+                row.status = "rejected"
+                continue
+            return row
+        return None
 
     @staticmethod
     async def _find_candidate(

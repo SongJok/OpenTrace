@@ -72,6 +72,27 @@ def test_default_constitution_blocks_sensitive_profile_even_when_explicit() -> N
     assert contact.decision == "block"
 
 
+def test_dynamic_business_events_are_not_copied_into_semantic_memory() -> None:
+    constitution = _constitution()
+
+    dynamic = evaluate_memory_constitution(
+        "请记住我明天下午三点有客户评审会议",
+        constitution=constitution,
+        learning_mode="explicit",
+    )
+    stable = evaluate_memory_constitution(
+        "我的工作时间是每周一到周五九点到六点",
+        constitution=constitution,
+        kind="preference",
+        learning_mode="proactive",
+        confidence=0.95,
+    )
+
+    assert dynamic.decision == "block"
+    assert dynamic.reason_code == "prohibited_category:ephemeral"
+    assert stable.decision == "allow"
+
+
 def test_admin_can_strengthen_with_custom_terms_but_not_weaken_floor() -> None:
     constitution = _constitution(
         prohibited_categories=[],

@@ -29,6 +29,8 @@ DEFAULT_MEMORY_CONSTITUTION = """# OpenTrace 记忆宪法
 5. 健康、财务、联系方式、精确位置等敏感类别默认禁止；管理员只能在安全底线之外调整工作区规则。
 6. 主动学习应限制类别、置信度与保留期限；不确定、冲突或模型提取的内容进入人工确认。
 7. 宪法修改必须版本化、可审计，并立即约束新写入与后续召回；不合规旧记忆应被隔离。
+8. 具体日期的一次性日程、任务和业务状态必须留在对应事实资源中，不得复制为长期语义记忆；
+   已过期或已取消资源只可按需作为历史证据召回。
 """
 
 IMMUTABLE_PROHIBITED_CATEGORIES = frozenset(
@@ -109,6 +111,24 @@ _CATEGORY_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     "ephemeral": (
         re.compile(
             r"(?i)(?:仅这一次|只在这次|本次请求|当前问题|临时|暂时|今天|今晚|待会|稍后|刚才|这一次|one[- ]?off|for this (?:request|time)|today|tonight)"
+        ),
+        re.compile(
+            r"(?i)(?:明天|后天|(?:本|这|下|上)周(?:[一二三四五六日天])?|"
+            r"(?:\d{4}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*[日号]|"
+            r"\d{4}-\d{1,2}-\d{1,2}|tomorrow|next\s+(?:week|month)|"
+            r"on\s+\d{4}-\d{1,2}-\d{1,2}).{0,100}"
+            r"(?:日历|日程|会议|开会|安排|提醒|预约|截止|到期|提交|拜访|出差|"
+            r"面试|任务|待办|发布|评审|复盘|calendar|event|meeting|appointment|"
+            r"deadline|task|todo)"
+        ),
+        re.compile(
+            r"(?i)(?:日历|日程|会议|开会|安排|提醒|预约|截止|到期|提交|拜访|出差|"
+            r"面试|任务|待办|发布|评审|复盘|calendar|event|meeting|appointment|"
+            r"deadline|task|todo).{0,100}"
+            r"(?:明天|后天|(?:本|这|下|上)周(?:[一二三四五六日天])?|"
+            r"(?:\d{4}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*[日号]|"
+            r"\d{4}-\d{1,2}-\d{1,2}|tomorrow|next\s+(?:week|month)|"
+            r"on\s+\d{4}-\d{1,2}-\d{1,2})"
         ),
     ),
     "memory_poisoning": (

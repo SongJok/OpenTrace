@@ -2859,8 +2859,11 @@ export interface CalendarEventItem {
   recurrence_rule?: string | null
   reminder_minutes: number[]
   status: string
+  lifecycle_status: 'upcoming' | 'in_progress' | 'completed' | 'recurring' | 'cancelled'
   source: 'manual' | 'assistant' | string
   source_response_id?: string | null
+  revision: number
+  cancelled_at?: string | null
   created_at?: string | null
   updated_at?: string | null
 }
@@ -2883,8 +2886,15 @@ export async function apiListCalendarEvents(
   start: string,
   end: string,
   timezone: string,
+  includeCancelled = false,
 ): Promise<CalendarEventItem[]> {
-  const query = new URLSearchParams({ start, end, timezone, limit: '200' })
+  const query = new URLSearchParams({
+    start,
+    end,
+    timezone,
+    limit: '200',
+    include_cancelled: String(includeCancelled),
+  })
   const res = await apiFetchResponses(`/calendar/events?${query.toString()}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取日历失败'))
   return (await res.json()).items ?? []

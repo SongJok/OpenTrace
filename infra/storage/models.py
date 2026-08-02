@@ -1914,10 +1914,34 @@ class CalendarEvent(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="confirmed", index=True)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
     source_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class CalendarEventRevision(Base):
+    """日历事件不可变更的修订账本；当前状态仍以 CalendarEvent 为准。"""
+
+    __tablename__ = "calendar_event_revisions"
+    __table_args__ = (UniqueConstraint("event_id", "revision", name="uq_calendar_event_revision"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    event_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("calendar_events.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    changed_fields: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
+    source_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class CalendarReminderDelivery(Base):

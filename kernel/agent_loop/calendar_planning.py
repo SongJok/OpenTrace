@@ -30,6 +30,7 @@ _CONTEXTUAL_CALENDAR_HINT = re.compile(
 
 _CALENDAR_CAPABILITIES = {
     "list_calendar_events",
+    "get_calendar_event_history",
     "create_calendar_event",
     "update_calendar_event",
     "cancel_calendar_event",

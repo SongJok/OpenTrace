@@ -2217,7 +2217,7 @@ class AgentLoop:
             return None
 
         query_terms = ContextAssembler._search_terms(query)
-        ranked: list[tuple[float, int, dict[str, Any]]] = []
+        ranked: list[tuple[float, str, int, dict[str, Any]]] = []
         for index, memory in enumerate(memories):
             content = str(memory.get("content") or "").strip()
             if not content:
@@ -2226,10 +2226,13 @@ class AgentLoop:
             overlap = len(query_terms & content_terms) / max(1, len(query_terms))
             if overlap < 0.25:
                 continue
-            ranked.append((overlap, -index, memory))
+            # 同一问题命中多个个人事实时，最近确认的值优先。访问次数会抬高
+            # salience，但不能让旧事实覆盖用户后来确认的新事实。
+            updated_at = str(memory.get("updated_at") or "")
+            ranked.append((overlap, updated_at, -index, memory))
         if not ranked:
             return None
-        selected = max(ranked, key=lambda item: (item[0], item[1]))[2]
+        selected = max(ranked, key=lambda item: (item[0], item[1], item[2]))[3]
         content = str(selected.get("content") or "").strip().rstrip("。.!！")
         if value_only:
             value_match = re.search(r"(?:是|为|:|：)\s*(?P<value>.+)$", content)
@@ -2812,26 +2815,28 @@ class AgentLoop:
                 "list_data_alerts",
                 "create_data_alert",
                 "list_calendar_events",
+                "get_calendar_event_history",
                 "create_calendar_event",
                 "update_calendar_event",
                 "cancel_calendar_event",
             }:
                 extension = dict((response.request_payload or {}).get("opentrace") or {})
-                tool_arguments.update(
-                    {
-                        "user_id": response.user_id,
-                        "tenant_id": response.tenant_id,
-                        "workspace_id": response.workspace_id,
-                        "project_id": str(extension.get("project_id") or "") or None,
-                        "conversation_id": response.conversation_id,
-                        "response_id": response.id,
-                        "timezone": str(
-                            extension.get("timezone")
-                            or tool_arguments.get("timezone")
-                            or DEFAULT_TIMEZONE
-                        ),
-                    }
-                )
+                scoped_arguments = {
+                    "user_id": response.user_id,
+                    "tenant_id": response.tenant_id,
+                    "workspace_id": response.workspace_id,
+                    "project_id": str(extension.get("project_id") or "") or None,
+                    "conversation_id": response.conversation_id,
+                    "response_id": response.id,
+                }
+                # 更新事件时，客户端视图时区不等于事件时区；只有模型明确传入才修改。
+                if spec.name != "update_calendar_event":
+                    scoped_arguments["timezone"] = str(
+                        extension.get("timezone")
+                        or tool_arguments.get("timezone")
+                        or DEFAULT_TIMEZONE
+                    )
+                tool_arguments.update(scoped_arguments)
             executor = get_tool_executor()
             if executor.get_schema(spec.name) is None:
                 executor.register_tool(
