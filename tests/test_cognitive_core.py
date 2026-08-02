@@ -1,6 +1,7 @@
 """Contracts for the single production Agent Loop."""
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -76,6 +77,130 @@ def test_memory_learner_proactively_extracts_stable_profile_and_preference():
     ]
     assert all(item["explicit"] is False for item in candidates)
     assert all(item["confidence"] >= 0.85 for item in candidates)
+
+
+def test_memory_learner_extracts_multiple_stable_facts_from_one_line():
+    candidates = MemoryLearner.deterministic_candidates(
+        "我叫林舟，我偏好使用简洁的中文回答，我负责企业架构治理。"
+    )
+
+    assert [item["key"] for item in candidates[:2]] == [
+        "profile.name",
+        "preference.response_style",
+    ]
+    assert any(item["key"].startswith("profile.responsibility.") for item in candidates)
+
+
+def test_explicit_memory_supports_record_variants_and_multiple_facts():
+    candidates = MemoryLearner.deterministic_candidates(
+        "请记下来：我叫林舟；我的工作时间是周一到周五 09:00-18:00。"
+    )
+
+    assert {item["key"] for item in candidates} == {
+        "profile.name",
+        "preference.schedule.working_hours",
+    }
+    assert all(item["explicit"] is True for item in candidates)
+    assert all(item["_learning_mode"] == "explicit" for item in candidates)
+
+
+def test_memory_opt_out_is_not_misclassified_as_explicit_or_proactive():
+    assert MemoryLearner.deterministic_candidates("不要记住我的代号是北辰-42。") == []
+
+
+def test_memory_learner_extracts_governed_personal_work_patterns():
+    candidates = MemoryLearner.deterministic_candidates(
+        "我习惯把项目阿波罗叫做 A7。"
+        "我的审批习惯是先预览影响范围再批准。"
+        "我的周报模板是本周进展、风险和下周计划。"
+    )
+
+    by_key = {item["key"]: item for item in candidates}
+    assert any(key.startswith("terminology.") for key in by_key)
+    assert any(key.startswith("workflow.approval.") for key in by_key)
+    assert any(key.startswith("template.") for key in by_key)
+    assert {
+        MemoryLearner.personal_category(
+            content=item["content"],
+            memory_key=item["key"],
+            kind=item["kind"],
+        )
+        for item in candidates
+    } == {"terminology", "approval_habit", "template"}
+
+
+def test_named_forget_target_is_exact_and_rejects_broad_deletion():
+    target = MemoryLearner._extract_forget_targets("请忘记我的代号。")[0]
+
+    assert MemoryLearner.has_deterministic_action("请忘记我的代号。") is True
+    assert MemoryLearner._matches_forget_target(
+        memory_key=None,
+        content="我的代号是 北辰-42",
+        target=target,
+    )
+    assert not MemoryLearner._matches_forget_target(
+        memory_key=None,
+        content="我的记忆验收代号是 星河-7391",
+        target=target,
+    )
+    assert MemoryLearner._extract_forget_targets("请清除我的所有记忆。") == []
+
+
+def test_repeated_observation_reinforces_existing_memory_without_new_node():
+    memory = SimpleNamespace(
+        metadata_json=json.dumps({"learning_mode": "proactive", "observations": 1}),
+        confidence=0.88,
+        salience=0.72,
+        score=0.72,
+        expires_at=None,
+        pinned=False,
+    )
+    candidate = SimpleNamespace(observations=3, confidence=0.94, salience=0.86)
+    expires_at = datetime.now(UTC)
+
+    MemoryLearner._reinforce_memory(
+        memory,
+        candidate=candidate,
+        response_id="resp-reinforce",
+        constitution_version=4,
+        expires_at=expires_at,
+        learning_mode="proactive",
+        explicit=False,
+    )
+
+    metadata = json.loads(memory.metadata_json)
+    assert metadata["observations"] == 3
+    assert metadata["last_observed_response_id"] == "resp-reinforce"
+    assert metadata["constitution_version"] == 4
+    assert memory.confidence == 0.94
+    assert memory.salience == 0.88
+    assert memory.score == 0.88
+    assert memory.expires_at == expires_at
+
+
+def test_explicit_reaffirmation_promotes_existing_proactive_memory():
+    memory = SimpleNamespace(
+        metadata_json=json.dumps({"learning_mode": "proactive", "observations": 1}),
+        confidence=0.9,
+        salience=0.8,
+        score=0.8,
+        expires_at=None,
+        pinned=False,
+    )
+    candidate = SimpleNamespace(observations=2, confidence=1.0, salience=0.9)
+
+    MemoryLearner._reinforce_memory(
+        memory,
+        candidate=candidate,
+        response_id="resp-explicit",
+        constitution_version=5,
+        expires_at=None,
+        learning_mode="explicit",
+        explicit=True,
+    )
+
+    assert memory.pinned is True
+    assert json.loads(memory.metadata_json)["learning_mode"] == "explicit"
 
 
 def test_memory_learner_proactively_extracts_goals_workflows_and_project_facts():

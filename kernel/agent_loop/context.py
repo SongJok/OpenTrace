@@ -500,13 +500,15 @@ class ContextAssembler:
         if memory_learning_enabled:
             system_blocks.append(
                 "持久记忆由 Response 完成后的受治理 MemoryLearner 统一处理。"
-                "当用户要求‘记住’个人信息或偏好时，正常回应即可；"
+                "当用户要求‘记住’稳定个人信息，或具名要求忘记某项个人记忆时，正常回应即可；"
+                "本回合完成后会在当前用户和资源范围内学习、强化或失效对应记忆。"
                 "不要调用 file_sandbox、代码执行或其他工具自行持久化。"
             )
         else:
             system_blocks.append(
                 "当前会话未启用持久记忆学习。若用户要求‘记住’信息，应诚实说明本次不会"
-                "持久保存；不要调用 file_sandbox、代码执行或其他工具绕过该设置。"
+                "持久保存；具名遗忘也不会修改已有记忆。不要调用 file_sandbox、代码执行或"
+                "其他工具绕过该设置。"
             )
         if memory_mode == "enabled" and not bool(getattr(session, "is_temporary", False)):
             now = datetime.now(UTC)

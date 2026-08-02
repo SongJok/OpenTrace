@@ -323,7 +323,7 @@ async def execute_response(response_id: str | None = None) -> bool:
                 )
 
             query = AgentLoop._query(dict(response.request_payload or {}))
-            if MemoryLearner.deterministic_candidates(query):
+            if MemoryLearner.has_deterministic_action(query):
                 try:
                     async with AsyncSessionLocal() as memory_db:
                         await set_worker_session(memory_db)

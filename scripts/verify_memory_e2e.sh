@@ -123,6 +123,24 @@ def wait_for_memory(marker: str, *, should_exist: bool, timeout: float = 20.0) -
     return found
 
 
+def wait_for_memory_state(
+    memory_id: str,
+    *,
+    enabled: bool,
+    status: str,
+    timeout: float = 20.0,
+) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        found = next((item for item in memories() if item.get("id") == memory_id), None)
+        if found is not None and found.get("enabled") is enabled and found.get("status") == status:
+            return found
+        time.sleep(0.5)
+    raise AssertionError(
+        f"记忆 {memory_id} 未在 {timeout:.0f}s 内变为 enabled={enabled}, status={status}"
+    )
+
+
 def wait_for_candidate(marker: str, *, observations: int, timeout: float = 20.0) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -314,6 +332,27 @@ proactive_recall = respond(proactive_recall_conversation, "我的代号是什么
 assert proactive_memory["id"] in response_memory_ids(proactive_recall)
 assert proactive_marker in proactive_recall.get("output_text", "")
 print("[PASS] 无需明确指令的主动学习与跨会话召回")
+
+reinforce_conversation = create_conversation()
+respond(reinforce_conversation, f"我的代号是 {proactive_marker}。")
+reinforced_rows = [item for item in memories() if proactive_marker in item.get("content", "")]
+assert len(reinforced_rows) == 1, reinforced_rows
+assert reinforced_rows[0]["id"] == proactive_memory["id"]
+assert int(reinforced_rows[0].get("metadata", {}).get("observations") or 0) >= 2
+print("[PASS] 重复观察强化同一记忆且不生成重复节点")
+
+forget_conversation = create_conversation()
+respond(forget_conversation, "请忘记我的代号。")
+forgotten_memory = wait_for_memory_state(
+    proactive_memory["id"],
+    enabled=False,
+    status="rejected",
+)
+assert forgotten_memory.get("metadata", {}).get("forgotten", {}).get("response_id")
+forget_recall_conversation = create_conversation()
+forgotten_recall = respond(forget_recall_conversation, "我的代号是什么？")
+assert proactive_memory["id"] not in response_memory_ids(forgotten_recall)
+print("[PASS] 具名遗忘立即停止跨会话召回且保留审计证据")
 
 reinforcement_rules = dict(original_constitution["rules"])
 reinforcement_rules["proactive_activation_observations"] = 2

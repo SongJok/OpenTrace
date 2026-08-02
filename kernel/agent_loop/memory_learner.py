@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.security.resource_scope import load_scoped_conversation
@@ -27,8 +27,9 @@ from memory.constitution import (
     evaluate_memory_constitution,
     load_effective_memory_constitution,
     memory_expiry,
+    parse_memory_metadata,
 )
-from memory.graph import link_memory_graph
+from memory.graph import link_memory_graph, rebuild_memory_graph_links
 from memory.quality import memory_quality_issue
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
@@ -55,6 +56,27 @@ _SENSITIVE_PATTERNS = (
 _TRANSIENT_MARKERS = re.compile(
     r"(?i)(?:仅这一次|只在这次|本次请求|当前问题|临时|暂时|今天|今晚|待会|稍后|刚才|这一次|one[- ]?off|for this (?:request|time)|today|tonight)"
 )
+
+_MEMORY_OPT_OUT_MARKERS = re.compile(
+    r"(?i)(?:(?:不要|别|无需|不用)(?:再)?(?:记住|记下|记下来|记得|保存到记忆)"
+    r"|(?:do not|don't|dont|never)\s+(?:remember|store|save))"
+)
+
+_BROAD_FORGET_SUBJECTS = {
+    "全部",
+    "全部个人信息",
+    "全部记忆",
+    "所有",
+    "所有个人信息",
+    "所有记忆",
+    "个人信息",
+    "偏好",
+    "记忆",
+    "everything",
+    "all",
+    "allmemories",
+    "personalinformation",
+}
 
 _FACT_SUBJECTS = {
     "名字",
@@ -161,6 +183,18 @@ class MemoryLearner:
             tenant_id=response.tenant_id,
             workspace_id=response.workspace_id,
         )
+        forget_targets = self._extract_forget_targets(text)
+        if forget_targets:
+            await self._forget_memories(
+                db,
+                response=response,
+                session=session,
+                project=project,
+                input_item=input_item,
+                targets=forget_targets,
+                text=text,
+                include_user_scope=not project_only,
+            )
         source_decision = evaluate_memory_constitution(
             text,
             constitution=constitution,
@@ -168,7 +202,12 @@ class MemoryLearner:
             confidence=1.0,
         )
         explicit_memory_request = bool(
-            re.search(r"(?:记住|记下来|remember(?:\s+that)?)", text, flags=re.I)
+            re.search(
+                r"(?:记住|记下|记下来|记得|remember(?:\s+that)?)",
+                text,
+                flags=re.I,
+            )
+            and not _MEMORY_OPT_OUT_MARKERS.search(text)
         )
         if source_decision.decision == "block" and explicit_memory_request:
             add_memory_constitution_audit(
@@ -187,7 +226,11 @@ class MemoryLearner:
         candidates = (
             self.deterministic_candidates(text)
             if deterministic_only
-            else await self._extract(text, constitution=constitution)
+            else await self._extract(
+                text,
+                constitution=constitution,
+                has_forget_directive=bool(forget_targets),
+            )
         )
         created: list[str] = []
         for candidate in candidates[:8]:
@@ -282,7 +325,7 @@ class MemoryLearner:
             )
             if conflict and conflict.content != content and not authoritative:
                 status = "pending"
-            row = await self._find_pending_candidate(
+            row = await self._find_candidate(
                 db,
                 response.user_id,
                 response.tenant_id,
@@ -292,6 +335,13 @@ class MemoryLearner:
                 memory_key,
                 content,
             )
+            if row is not None and await self._has_candidate_evidence(
+                db,
+                candidate_id=row.id,
+                response_id=response.id,
+            ):
+                # Worker 重试不得把同一 Response 计算成多次独立观察。
+                continue
             if row is None:
                 row = MemoryCandidate(
                     id=str(uuid.uuid4()),
@@ -315,6 +365,7 @@ class MemoryLearner:
                 )
                 db.add(row)
             else:
+                was_active = row.status == "active"
                 row.observations = int(row.observations or 1) + 1
                 row.confidence = max(float(row.confidence or 0.0), confidence)
                 row.salience = max(
@@ -324,12 +375,16 @@ class MemoryLearner:
                 row.constitution_version = constitution.version
                 row.personal_category = personal_category
                 row.last_observed_at = datetime.now(UTC)
+                if authoritative:
+                    row.learning_mode = learning_mode
                 if constitution_decision.decision == "allow":
                     status = self._candidate_status(
                         confidence=row.confidence,
-                        explicit=explicit,
+                        explicit=authoritative,
                         learning_mode=learning_mode,
                     )
+                if was_active:
+                    status = "active"
                 row.status = status
             if conflict and conflict.content != content and not authoritative:
                 row.status = "pending"
@@ -362,15 +417,28 @@ class MemoryLearner:
                     response_id=response.id,
                     candidate_id=row.id,
                 )
-            if row.status == "active" and not await self._has_duplicate(
-                db,
-                response.user_id,
-                response.tenant_id,
-                response.workspace_id,
-                scope_type,
-                scope_id,
-                content,
-            ):
+            if row.status == "active":
+                memory = await self._find_duplicate(
+                    db,
+                    response.user_id,
+                    response.tenant_id,
+                    response.workspace_id,
+                    scope_type,
+                    scope_id,
+                    content,
+                )
+                if memory is not None:
+                    self._reinforce_memory(
+                        memory,
+                        candidate=row,
+                        response_id=response.id,
+                        constitution_version=constitution.version,
+                        expires_at=memory_expiry(constitution),
+                        learning_mode=learning_mode,
+                        explicit=explicit,
+                    )
+                    evidence.memory_id = memory.id
+                    continue
                 memory = UserMemory(
                     id=str(uuid.uuid4()),
                     user_id=response.user_id,
@@ -399,7 +467,7 @@ class MemoryLearner:
                     scope_type=scope_type,
                     scope_id=scope_id,
                     status="active",
-                    confidence=confidence,
+                    confidence=row.confidence,
                     salience=row.salience,
                     source_response_id=response.id,
                     supersedes_id=conflict.id if conflict and authoritative else None,
@@ -425,12 +493,16 @@ class MemoryLearner:
         text: str,
         *,
         constitution: EffectiveMemoryConstitution | None = None,
+        has_forget_directive: bool = False,
     ) -> list[dict[str, Any]]:
         deterministic_candidates = self.deterministic_candidates(text)
         # 企业主链路优先使用可审计的确定性规则：命中后不再为相同信息额外调用模型，
         # 避免 Response 已完成后记忆投影仍被模型延迟或抖动阻塞。模型只补充规则未覆盖的表达。
         if deterministic_candidates:
             return deterministic_candidates
+        # 具名遗忘由本地受治理流程执行，不能再把同一句话交给模型反向提取成新记忆。
+        if has_forget_directive:
+            return []
         prompt = (
             "主动从用户消息中提取将来多轮对话中仍有用的稳定记忆，即使用户没有说‘记住’也要识别。只输出 JSON 数组。"
             "每项字段为 content, key(稳定的snake_case主题键), kind(profile|preference|workflow|fact|episodic), confidence(0-1), "
@@ -495,11 +567,54 @@ class MemoryLearner:
     def deterministic_candidates(cls, text: str) -> list[dict[str, Any]]:
         """返回无需模型即可审计和落库的稳定记忆候选。"""
 
-        return [
+        candidates = [
             *cls._extract_explicit(text),
             *cls._extract_corrections(text),
             *cls._extract_proactive(text),
         ]
+        deduplicated: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for candidate in candidates:
+            identity = (
+                str(candidate.get("key") or "").strip().lower(),
+                str(candidate.get("content") or "").strip(),
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            deduplicated.append(candidate)
+        return deduplicated[:8]
+
+    @classmethod
+    def has_deterministic_action(cls, text: str) -> bool:
+        """判断当前回合是否能完全由本地受治理记忆流程处理。"""
+
+        return bool(cls.deterministic_candidates(text) or cls._extract_forget_targets(text))
+
+    @staticmethod
+    def _stable_statements(text: str) -> list[str]:
+        """切分稳定陈述，保留值内部的普通逗号并支持一条消息表达多项信息。"""
+
+        without_code = re.sub(r"```[\s\S]*?```", " ", text)
+        sentences = re.split(r"(?<=[。！？!?；;])\s*|\n+", without_code)
+        clauses: list[str] = []
+        clause_start = (
+            r"(?:我|我的|本项目|这个项目|当前项目|以后|今后|后续|默认情况下|"
+            r"更正|纠正|更新|修改|请|帮我|不要|别|my\b|i\b|this project\b|"
+            r"from now on\b|please\b|forget\b)"
+        )
+        for sentence in sentences:
+            sentence = re.sub(
+                r"^(?P<prefix>(?:更正|纠正|更新|修改)(?:一下)?)[，,]\s*",
+                r"\g<prefix> ",
+                sentence,
+                flags=re.I,
+            )
+            for clause in re.split(rf"[，,](?=\s*{clause_start})", sentence, flags=re.I):
+                normalized = clause.strip(" \t\r\n-•。！？!?；;")
+                if normalized:
+                    clauses.append(normalized)
+        return clauses
 
     @staticmethod
     def personal_category(*, content: str, memory_key: str, kind: str) -> str:
@@ -507,14 +622,26 @@ class MemoryLearner:
 
         value = f"{memory_key} {content}".lower()
         rules = (
-            ("terminology", ("术语", "黑话", "简称", "jargon", "glossary")),
+            (
+                "terminology",
+                ("术语", "黑话", "简称", "称为", "叫做", "terminology", "jargon", "glossary"),
+            ),
             (
                 "response_style",
                 ("回复风格", "回答风格", "回复要", "回答要", "格式偏好", "response_style"),
             ),
             (
                 "approval_habit",
-                ("审批", "批准", "操作习惯", "工作流习惯", "approval", "operation_habit"),
+                (
+                    "审批",
+                    "批准",
+                    "审批习惯",
+                    "审批时",
+                    "操作习惯",
+                    "工作流习惯",
+                    "approval",
+                    "operation_habit",
+                ),
             ),
             ("template", ("模板", "片段", "固定格式", "template", "snippet")),
             (
@@ -544,15 +671,10 @@ class MemoryLearner:
     def _extract_corrections(text: str) -> list[dict[str, Any]]:
         """提取用户对稳定个人事实的明确更正，允许以可审计方式替代旧值。"""
 
-        without_code = re.sub(r"```[\s\S]*?```", " ", text)
-        statements = [
-            part.strip(" \t\r\n-•")
-            for part in re.split(r"(?<=[。！？!?])\s*|\n+", without_code)
-            if part.strip()
-        ]
+        statements = MemoryLearner._stable_statements(text)
         candidates: list[dict[str, Any]] = []
         for statement in statements:
-            if _TRANSIENT_MARKERS.search(statement):
+            if _TRANSIENT_MARKERS.search(statement) or _MEMORY_OPT_OUT_MARKERS.search(statement):
                 continue
             prefixed = re.match(r"^(?:更正|纠正|更新|修改)(?:一下)?[：:，, ]*", statement)
             normalized = (statement[prefixed.end() :] if prefixed else statement).rstrip(
@@ -622,12 +744,7 @@ class MemoryLearner:
     def _extract_proactive(text: str) -> list[dict[str, Any]]:
         """确定性提取用户未显式要求记住、但长期稳定且低风险的信息。"""
 
-        without_code = re.sub(r"```[\s\S]*?```", " ", text)
-        statements = [
-            part.strip(" \t\r\n-•")
-            for part in re.split(r"(?<=[。！？!?])\s*|\n+", without_code)
-            if part.strip()
-        ]
+        statements = MemoryLearner._stable_statements(text)
         candidates: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
 
@@ -669,7 +786,7 @@ class MemoryLearner:
                 break
             if not 3 <= len(statement) <= 280 or "?" in statement or "？" in statement:
                 continue
-            if _TRANSIENT_MARKERS.search(statement):
+            if _TRANSIENT_MARKERS.search(statement) or _MEMORY_OPT_OUT_MARKERS.search(statement):
                 continue
 
             name_match = re.match(
@@ -707,6 +824,29 @@ class MemoryLearner:
                     kind="profile",
                     confidence=0.94,
                     salience=0.82,
+                )
+                continue
+
+            responsibility_match = re.match(
+                r"^(?:我的(?:主要)?职责是|我(?:目前|主要)?负责)\s*"
+                r"(?P<value>[^。！？!?]{2,180})",
+                statement,
+                flags=re.I,
+            ) or re.match(
+                r"^(?:my responsibilities include|i am responsible for)\s+"
+                r"(?P<value>[^.!?]{2,180})",
+                statement,
+                flags=re.I,
+            )
+            if responsibility_match:
+                value = responsibility_match.group("value").strip()
+                digest = sha256(value.lower().encode("utf-8")).hexdigest()[:16]
+                add(
+                    content=statement,
+                    key=f"profile.responsibility.{digest}",
+                    kind="profile",
+                    confidence=0.91,
+                    salience=0.84,
                 )
                 continue
 
@@ -762,7 +902,9 @@ class MemoryLearner:
                 statement,
                 flags=re.I,
             )
-            if preference_match:
+            if preference_match and not re.search(
+                r"把.{1,80}(?:称为|叫做|简称为)", statement, flags=re.I
+            ):
                 value = preference_match.group("value").strip()
                 topic = (
                     "response_style"
@@ -783,7 +925,8 @@ class MemoryLearner:
                 continue
 
             durable_instruction = re.match(
-                r"^(?:以后|今后|后续|默认情况下)(?:请|都请|请你)?\s*(?P<value>[^。！？!?]{2,180})",
+                r"^(?:(?:我希望你)?(?:以后|今后|后续)|默认情况下)(?:请|都请|请你)?\s*"
+                r"(?P<value>[^。！？!?]{2,180})",
                 statement,
                 flags=re.I,
             ) or re.match(
@@ -802,6 +945,75 @@ class MemoryLearner:
                     kind="preference",
                     confidence=0.91,
                     salience=0.88,
+                )
+                continue
+
+            terminology_match = re.match(
+                r"^(?:我(?:通常|习惯)?把)\s*(?P<subject>[^，。:：]{1,60}?)\s*"
+                r"(?:称为|叫做|简称为)\s*(?P<value>[^。！？!?]{1,120})",
+                statement,
+                flags=re.I,
+            ) or re.match(
+                r"^(?:i (?:usually )?call|my shorthand for)\s+"
+                r"(?P<subject>[^,.!:]{1,60}?)\s+(?:is\s+)?(?P<value>[^.!?]{1,120})",
+                statement,
+                flags=re.I,
+            )
+            if terminology_match:
+                subject = terminology_match.group("subject").strip()
+                digest = sha256(subject.lower().encode("utf-8")).hexdigest()[:16]
+                add(
+                    content=statement,
+                    key=f"terminology.{digest}",
+                    kind="fact",
+                    confidence=0.91,
+                    salience=0.83,
+                )
+                continue
+
+            approval_match = re.match(
+                r"^(?:我的审批习惯是|我审批时(?:通常|一般|习惯)?|涉及审批时我(?:通常|一般)?)\s*"
+                r"(?P<value>[^。！？!?]{3,200})",
+                statement,
+                flags=re.I,
+            ) or re.match(
+                r"^(?:my approval habit is|when approving i (?:usually )?)\s*"
+                r"(?P<value>[^.!?]{3,200})",
+                statement,
+                flags=re.I,
+            )
+            if approval_match:
+                value = approval_match.group("value").strip()
+                digest = sha256(value.lower().encode("utf-8")).hexdigest()[:16]
+                add(
+                    content=statement,
+                    key=f"workflow.approval.{digest}",
+                    kind="workflow",
+                    confidence=0.90,
+                    salience=0.86,
+                )
+                continue
+
+            template_match = re.match(
+                r"^(?:我常用的|我的)(?P<subject>[^，。:：]{1,40}模板)(?:是|为|[:：])\s*"
+                r"(?P<value>[^。！？!?]{2,200})",
+                statement,
+                flags=re.I,
+            ) or re.match(
+                r"^my (?:usual )?(?P<subject>[^,.!:]{1,40}template)\s+(?:is|:)\s*"
+                r"(?P<value>[^.!?]{2,200})",
+                statement,
+                flags=re.I,
+            )
+            if template_match:
+                subject = template_match.group("subject").strip()
+                digest = sha256(subject.lower().encode("utf-8")).hexdigest()[:16]
+                add(
+                    content=statement,
+                    key=f"template.{digest}",
+                    kind="workflow",
+                    confidence=0.90,
+                    salience=0.84,
                 )
                 continue
 
@@ -895,17 +1107,24 @@ class MemoryLearner:
     def _extract_explicit(text: str) -> list[dict[str, Any]]:
         """在模型不可用时，可靠保留用户明确要求记住的非敏感信息。"""
 
-        match = re.search(
-            r"(?:请|务必|一定要)?记住(?:一下)?[\s:：,，]*(?P<content>.+)",
-            text.strip(),
-            flags=re.I | re.S,
+        normalized_text = text.strip()
+        if _MEMORY_OPT_OUT_MARKERS.search(normalized_text):
+            return []
+        patterns = (
+            r"^(?:请|务必|一定要|帮我|请你|请帮我)?"
+            r"(?:记下来|记住|记下|记得)(?:一下|这一点|这件事)?[\s:：,，]*(?P<content>.+)$",
+            r"^(?:please\s+)?(?:remember|store in memory)(?:\s+that)?[\s,:]*(?P<content>.+)$",
+            r"^(?P<content>.+?)[，,\s]*(?:请|务必|一定要)?(?:记住|记下来|以后记得)[。.!！]?$",
+            r"^(?P<content>.+?)[,\s]+(?:please\s+)?remember(?:\s+this)?[.!]?$",
         )
-        if match is None:
-            match = re.search(
-                r"(?:please\s+)?remember(?:\s+that)?[\s,:]*(?P<content>.+)",
-                text.strip(),
-                flags=re.I | re.S,
-            )
+        match = next(
+            (
+                matched
+                for pattern in patterns
+                if (matched := re.search(pattern, normalized_text, flags=re.I | re.S)) is not None
+            ),
+            None,
+        )
         if match is None:
             return []
         content = match.group("content").strip()
@@ -921,6 +1140,20 @@ class MemoryLearner:
             or MemoryLearner._contains_sensitive(content)
         ):
             return []
+        structured = MemoryLearner._extract_proactive(content)
+        if structured:
+            explicit_candidates: list[dict[str, Any]] = []
+            for candidate in structured:
+                explicit_candidates.append(
+                    {
+                        **candidate,
+                        "confidence": 1.0,
+                        "salience": max(0.9, float(candidate.get("salience") or 0.0)),
+                        "explicit": True,
+                        "_learning_mode": "explicit",
+                    }
+                )
+            return explicit_candidates[:8]
         lowered = content.lower()
         if re.search(r"偏好|喜欢|习惯|回答方式|prefer|preference", lowered):
             kind = "preference"
@@ -955,6 +1188,221 @@ class MemoryLearner:
                 "_learning_mode": "explicit",
             }
         ]
+
+    @staticmethod
+    def _extract_forget_targets(text: str) -> list[dict[str, Any]]:
+        """提取具名遗忘目标；模糊的全量删除仍交由记忆管理页显式确认。"""
+
+        patterns = (
+            r"^(?:请|帮我|请你|麻烦)?(?:忘记|删除|清除|移除)(?:一下)?(?:关于)?我的"
+            r"(?P<subject>[^，。！？!?]{1,50})$",
+            r"^(?:请|帮我|请你)?(?:不要|别)(?:再)?(?:记住|记得|保留)(?:关于)?我的"
+            r"(?P<subject>[^，。！？!?]{1,50})$",
+            r"^(?:please\s+)?(?:forget|delete|remove)(?:\s+the\s+memory\s+(?:about|of))?"
+            r"\s+my\s+(?P<subject>[^,.!?]{1,50})$",
+        )
+        targets: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for statement in MemoryLearner._stable_statements(text):
+            match = next(
+                (
+                    matched
+                    for pattern in patterns
+                    if (matched := re.match(pattern, statement, flags=re.I)) is not None
+                ),
+                None,
+            )
+            if match is None:
+                continue
+            subject = re.sub(
+                r"(?i)(?:的)?(?:相关)?(?:信息|内容|记忆|memory|information)$",
+                "",
+                match.group("subject").strip(),
+            ).strip(" ：:，,")
+            normalized = MemoryLearner._normalize_subject(subject)
+            if not normalized or normalized in _BROAD_FORGET_SUBJECTS or normalized in seen:
+                continue
+            seen.add(normalized)
+            targets.append(
+                {
+                    "subject": subject,
+                    "normalized_subject": normalized,
+                    "keys": MemoryLearner._forget_keys_for_subject(normalized),
+                }
+            )
+        return targets[:8]
+
+    @staticmethod
+    def _normalize_subject(subject: str) -> str:
+        return re.sub(r"[\s`#>*_\-—:：，,。！？!?；;（）()\[\]{}]", "", subject).lower()
+
+    @staticmethod
+    def _forget_keys_for_subject(subject: str) -> set[str]:
+        known = {
+            "名字": "profile.name",
+            "姓名": "profile.name",
+            "称呼": "profile.name",
+            "name": "profile.name",
+            "职业": "profile.occupation",
+            "岗位": "profile.occupation",
+            "职位": "profile.occupation",
+            "occupation": "profile.occupation",
+            "时区": "profile.timezone",
+            "常用时区": "profile.timezone",
+            "默认时区": "profile.timezone",
+            "timezone": "profile.timezone",
+            "工作时间": "preference.schedule.working_hours",
+            "办公时间": "preference.schedule.working_hours",
+            "默认会议时长": "preference.schedule.meeting_duration",
+            "会议默认时长": "preference.schedule.meeting_duration",
+            "回答风格": "preference.response_style",
+            "回复风格": "preference.response_style",
+            "回答偏好": "preference.response_style",
+            "回复偏好": "preference.response_style",
+            "responsestyle": "preference.response_style",
+        }
+        keys = {known[subject]} if subject in known else set()
+        for kind in ("fact", "profile", "preference", "workflow"):
+            keys.add(MemoryLearner._subject_memory_key(subject, kind=kind))
+        return keys
+
+    @staticmethod
+    def _matches_forget_target(
+        *,
+        memory_key: str | None,
+        content: str,
+        target: dict[str, Any],
+    ) -> bool:
+        if memory_key and memory_key in set(target.get("keys") or set()):
+            return True
+        content_subject = MemoryLearner._memory_subject(content)
+        return bool(
+            content_subject
+            and MemoryLearner._normalize_subject(content_subject)
+            == str(target.get("normalized_subject") or "")
+        )
+
+    @classmethod
+    async def _forget_memories(
+        cls,
+        db: AsyncSession,
+        *,
+        response: ResponseRecord,
+        session: Any,
+        project: Project | None,
+        input_item: ResponseItem | None,
+        targets: list[dict[str, Any]],
+        text: str,
+        include_user_scope: bool,
+    ) -> list[str]:
+        scope_filters = [UserMemory.scope_type == "user"] if include_user_scope else []
+        candidate_scope_filters = (
+            [MemoryCandidate.scope_type == "user"] if include_user_scope else []
+        )
+        if project is not None:
+            scope_filters.append(
+                (UserMemory.scope_type == "project") & (UserMemory.scope_id == project.id)
+            )
+            candidate_scope_filters.append(
+                (MemoryCandidate.scope_type == "project") & (MemoryCandidate.scope_id == project.id)
+            )
+        scope_filters.append(
+            (UserMemory.scope_type == "conversation") & (UserMemory.scope_id == session.id)
+        )
+        candidate_scope_filters.append(
+            (MemoryCandidate.scope_type == "conversation")
+            & (MemoryCandidate.scope_id == session.id)
+        )
+        memories = list(
+            (
+                await db.execute(
+                    select(UserMemory)
+                    .where(
+                        UserMemory.user_id == response.user_id,
+                        UserMemory.tenant_id == response.tenant_id,
+                        UserMemory.workspace_id == response.workspace_id,
+                        UserMemory.enabled.is_(True),
+                        UserMemory.status == "active",
+                        or_(*scope_filters),
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        candidates = list(
+            (
+                await db.execute(
+                    select(MemoryCandidate)
+                    .where(
+                        MemoryCandidate.user_id == response.user_id,
+                        MemoryCandidate.tenant_id == response.tenant_id,
+                        MemoryCandidate.workspace_id == response.workspace_id,
+                        MemoryCandidate.status.in_(("pending", "active")),
+                        or_(*candidate_scope_filters),
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        forgotten: list[str] = []
+        now = datetime.now(UTC)
+        for memory in memories:
+            target = next(
+                (
+                    item
+                    for item in targets
+                    if cls._matches_forget_target(
+                        memory_key=memory.memory_key,
+                        content=memory.content,
+                        target=item,
+                    )
+                ),
+                None,
+            )
+            if target is None:
+                continue
+            metadata = parse_memory_metadata(memory.metadata_json)
+            metadata["forgotten"] = {
+                "response_id": response.id,
+                "at": now.isoformat(),
+                "subject": str(target.get("subject") or "")[:80],
+            }
+            memory.metadata_json = json.dumps(metadata, ensure_ascii=False)
+            memory.enabled = False
+            memory.status = "rejected"
+            db.add(
+                MemoryEvidence(
+                    id=str(uuid.uuid4()),
+                    memory_id=memory.id,
+                    candidate_id=None,
+                    response_id=response.id,
+                    item_id=input_item.id if input_item else None,
+                    excerpt=text[:500],
+                )
+            )
+            await rebuild_memory_graph_links(
+                db,
+                memory=memory,
+                evidence_response_id=response.id,
+            )
+            forgotten.append(memory.id)
+        for candidate in candidates:
+            if not any(
+                cls._matches_forget_target(
+                    memory_key=candidate.memory_key,
+                    content=candidate.content,
+                    target=target,
+                )
+                for target in targets
+            ):
+                continue
+            candidate.status = "rejected"
+            candidate.rejection_reason = "user_forgotten"
+        return forgotten
 
     @staticmethod
     def _subject_memory_key(subject: str, *, kind: str) -> str:
@@ -1005,7 +1453,7 @@ class MemoryLearner:
         return "rejected"
 
     @staticmethod
-    async def _has_duplicate(
+    async def _find_duplicate(
         db: AsyncSession,
         user_id: str,
         tenant_id: str,
@@ -1013,19 +1461,71 @@ class MemoryLearner:
         scope_type: str,
         scope_id: str | None,
         content: str,
-    ) -> bool:
+    ) -> UserMemory | None:
         row = await db.scalar(
-            select(UserMemory.id).where(
+            select(UserMemory)
+            .where(
                 UserMemory.user_id == user_id,
                 UserMemory.tenant_id == tenant_id,
                 UserMemory.workspace_id == workspace_id,
                 UserMemory.scope_type == scope_type,
                 UserMemory.scope_id == scope_id,
                 UserMemory.content == content,
+                UserMemory.enabled.is_(True),
                 UserMemory.status == "active",
             )
+            .with_for_update()
         )
-        return row is not None
+        return row
+
+    @staticmethod
+    def _reinforce_memory(
+        memory: UserMemory,
+        *,
+        candidate: MemoryCandidate,
+        response_id: str,
+        constitution_version: int,
+        expires_at: datetime | None,
+        learning_mode: str,
+        explicit: bool,
+    ) -> None:
+        """把新的独立观察归并到同一活动记忆，避免重复节点和孤立候选。"""
+
+        metadata = parse_memory_metadata(memory.metadata_json)
+        metadata["observations"] = max(
+            int(metadata.get("observations") or 1),
+            int(candidate.observations or 1),
+        )
+        metadata["constitution_version"] = constitution_version
+        if explicit or learning_mode == "correction":
+            metadata["learning_mode"] = learning_mode
+        metadata["last_observed_response_id"] = response_id
+        metadata["last_observed_at"] = datetime.now(UTC).isoformat()
+        memory.metadata_json = json.dumps(metadata, ensure_ascii=False)
+        memory.confidence = max(float(memory.confidence or 0.0), float(candidate.confidence or 0.0))
+        memory.salience = min(
+            1.0,
+            max(float(memory.salience or 0.0), float(candidate.salience or 0.0)) + 0.02,
+        )
+        memory.score = max(float(memory.score or 0.0), memory.salience)
+        memory.expires_at = expires_at
+        if explicit:
+            memory.pinned = True
+
+    @staticmethod
+    async def _has_candidate_evidence(
+        db: AsyncSession,
+        *,
+        candidate_id: str,
+        response_id: str,
+    ) -> bool:
+        evidence_id = await db.scalar(
+            select(MemoryEvidence.id).where(
+                MemoryEvidence.candidate_id == candidate_id,
+                MemoryEvidence.response_id == response_id,
+            )
+        )
+        return evidence_id is not None
 
     @staticmethod
     async def _find_conflict(
@@ -1049,10 +1549,12 @@ class MemoryLearner:
                 UserMemory.scope_type == scope_type,
                 UserMemory.scope_id == scope_id,
                 UserMemory.memory_key == memory_key,
+                UserMemory.enabled.is_(True),
                 UserMemory.status == "active",
                 UserMemory.content != content,
             )
             .order_by(UserMemory.updated_at.desc())
+            .with_for_update()
         )
         if conflict is not None:
             return conflict
@@ -1084,7 +1586,7 @@ class MemoryLearner:
         )
 
     @staticmethod
-    async def _find_pending_candidate(
+    async def _find_candidate(
         db: AsyncSession,
         user_id: str,
         tenant_id: str,
@@ -1101,12 +1603,13 @@ class MemoryLearner:
             MemoryCandidate.scope_type == scope_type,
             MemoryCandidate.scope_id == scope_id,
             MemoryCandidate.content == content,
-            MemoryCandidate.status == "pending",
+            MemoryCandidate.status.in_(("pending", "active")),
         ]
         if memory_key:
             conditions.append(MemoryCandidate.memory_key == memory_key)
         return await db.scalar(
-            select(MemoryCandidate).where(*conditions).order_by(MemoryCandidate.created_at.desc())
+            select(MemoryCandidate)
+            .where(*conditions)
+            .order_by(MemoryCandidate.created_at.desc())
+            .with_for_update()
         )
-
-    Project,

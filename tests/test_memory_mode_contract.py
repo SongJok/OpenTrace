@@ -71,6 +71,8 @@ def test_explicit_file_write_is_not_misclassified_as_memory_learning() -> None:
     assert AgentLoop._is_conversational_memory_capture("请记住：我偏好简洁回答") is True
     assert AgentLoop._is_conversational_memory_capture("请把这段内容写入文件 notes.md") is False
     assert AgentLoop._is_conversational_memory_capture("请记住并保存到文件 notes.md") is False
+    assert AgentLoop._is_conversational_memory_capture("请忘记我的代号") is True
+    assert AgentLoop._is_conversational_memory_capture("请删除我的记忆文件 notes.md") is False
 
 
 def test_context_declares_memory_learning_boundary_to_manager() -> None:
@@ -188,4 +190,4 @@ def test_disabled_memory_learning_cannot_claim_persistence() -> None:
         context_manifest={"memory_learning_enabled": False},
         model_content="好的，我已经永久记住了。",
     )
-    assert governed == "当前持久记忆学习已关闭，本次信息不会被持久保存。"
+    assert governed == "当前持久记忆学习已关闭，本次不会新增、更新或遗忘个人记忆。"

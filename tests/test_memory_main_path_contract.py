@@ -68,6 +68,8 @@ def test_memory_e2e_covers_cross_conversation_and_isolation() -> None:
     assert "Project 记忆隔离" in source
     assert "对话自动学习与新会话召回" in source
     assert "无需明确指令的主动学习与跨会话召回" in source
+    assert "重复观察强化同一记忆且不生成重复节点" in source
+    assert "具名遗忘立即停止跨会话召回且保留审计证据" in source
     assert "敏感信息与一次性请求不会持久化" in source
     assert "冲突记忆替代与旧值失效" in source
     assert "无需记住指令的明确纠正会替代旧记忆" in source

@@ -2142,7 +2142,7 @@ class AgentLoop:
         if intent.task_type != "memory_capture":
             return model_content
         if context_manifest.get("memory_learning_enabled") is False:
-            return "当前持久记忆学习已关闭，本次信息不会被持久保存。"
+            return "当前持久记忆学习已关闭，本次不会新增、更新或遗忘个人记忆。"
         return model_content or "我会按照当前企业记忆策略处理这条信息。"
 
     @staticmethod
@@ -2246,16 +2246,31 @@ class AgentLoop:
             "请记住",
             "帮我记住",
             "请你记住",
+            "请记下",
+            "帮我记下",
+            "记下来：",
+            "记下来:",
             "记住：",
             "记住:",
+            "请忘记我的",
+            "帮我忘记我的",
+            "忘记我的",
+            "删除我的",
+            "删除关于我的",
+            "清除我的",
+            "清除关于我的",
+            "不要记住我的",
+            "不要再记住我的",
             "rememberthis",
             "pleaseremember",
+            "forgetmy",
+            "deletememoryaboutmy",
         )
         if not any(marker in normalized for marker in memory_markers):
             return False
         explicit_file_operation = re.search(
-            r"(?:保存|写入|写到|记录到|导出|创建).{0,12}(?:文件|目录|\.md|\.txt)"
-            r"|(?:save|write|export|create).{0,20}(?:file|directory|\.md|\.txt)"
+            r"(?:保存|写入|写到|记录到|导出|创建|删除|移除).{0,12}(?:文件|目录|\.md|\.txt)"
+            r"|(?:save|write|export|create|delete|remove).{0,20}(?:file|directory|\.md|\.txt)"
             r"|file_sandbox",
             normalized,
         )
@@ -2282,10 +2297,10 @@ class AgentLoop:
         sanitized["steps"] = [
             {
                 "id": "memory-capture",
-                "objective": "回应用户，并由 Response 完成后的受治理记忆学习流程处理",
+                "objective": "回应用户，并由 Response 完成后的受治理记忆流程处理",
                 "capability": None,
                 "depends_on": [],
-                "success_criteria": "明确说明当前记忆策略下是否会持久保存",
+                "success_criteria": "明确说明当前记忆策略下是否会新增、强化或失效记忆",
             }
         ]
         sanitized["success_criteria"] = ["不调用文件或其他副作用工具持久化记忆"]
