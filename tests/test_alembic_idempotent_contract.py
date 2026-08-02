@@ -1,7 +1,6 @@
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_DIR = ROOT / "alembic" / "versions"
 
@@ -58,6 +57,24 @@ class AlembicIdempotentContractTests(unittest.TestCase):
         self.assertIn('settings.app_env in {"staging", "production"}', code)
         self.assertIn("await _verify_runtime_schema(conn)", code)
         self.assertIn("Runtime schema readiness failed", code)
+
+    def test_empty_revision_reconciler_is_data_preserving_and_dependency_aware(self):
+        code = (ROOT / "scripts" / "reconcile_pre_migration_schema.py").read_text(encoding="utf-8")
+        self.assertIn("_reconcile_empty_revision", code)
+        self.assertIn("_runtime_model_tables", code)
+        self.assertIn("_foreign_key_dependencies", code)
+        self.assertIn("pg_catalog.pg_constraint", code)
+        self.assertIn("EMPTY_REVISION_UNSAFE_TABLES", code)
+        self.assertIn("EMPTY_REVISION_ALWAYS_PRESERVE_TABLES", code)
+        self.assertIn("DROP TABLE", code)
+        self.assertIn("拒绝自动清理", code)
+
+    def test_real_postgres_verifies_empty_revision_data_preservation(self):
+        code = (ROOT / "scripts" / "verify_migrations_postgres.sh").read_text(encoding="utf-8")
+        self.assertIn("MIGRATION_EMPTY_REVISION_TEST_DATABASE_URL", code)
+        self.assertIn("scripts/reconcile_pre_migration_schema.py", code)
+        self.assertIn("migration-company-version", code)
+        self.assertIn("印章借用必须审批并留痕", code)
 
 
 if __name__ == "__main__":
