@@ -67,6 +67,7 @@ services:
       - .env
     volumes:
       - skills_data:/app/skills/installed
+      - skill_catalog_data:/app/skills/catalog_mirror
       - object_data:/var/lib/opentrace/objects
       - dws_data:/var/lib/opentrace/dws
     extra_hosts:
@@ -140,6 +141,7 @@ services:
       - .env
     volumes:
       - skills_data:/app/skills/installed
+      - skill_catalog_data:/app/skills/catalog_mirror
       - object_data:/var/lib/opentrace/objects
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -223,5 +225,6 @@ volumes:
   postgres_data:
   redis_data:
   skills_data:
+  skill_catalog_data:
   object_data:
   dws_data:

@@ -49,14 +49,22 @@
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `SKILLS_GIT_INSTALL_ENABLED` | `false` | 是否允许管理员从 Git 安装动态 Skill |
+| `SKILLS_GIT_INSTALL_ENABLED` | `false` | 兼容字段；外部 Git 即时安装入口已停用，第三方 Skill 统一由后台镜像同步 |
+| `SKILLHUB_SYNC_ENABLED` | `true` | 是否启用公共 Skill 本地镜像同步 |
+| `SKILLHUB_SYNC_HOUR` / `SKILLHUB_SYNC_MINUTE` | `6` / `30` | 每日本地镜像同步时间 |
+| `SKILLHUB_SYNC_TIMEZONE` | `Asia/Shanghai` | 每日同步计划使用的时区 |
+| `SKILLHUB_SYNC_RETRY_SECONDS` | `60` | 同步失败后的重试间隔 |
+| `SKILLHUB_SYNC_DOWNLOAD_CONCURRENCY` | `8` | 后台下载 Skill 文件的最大并发 |
+| `SKILLHUB_LOCAL_MIRROR_DIR` | `skills/catalog_mirror` | API 与 Worker 共享的本地 Skill 镜像目录 |
+| `SKILLHUB_CATALOG_URL` | `https://skills.palebluedot.live` | 兼容 `/api/skills` 的目录来源，可替换为其他 SkillHub |
+| `SKILLHUB_GITHUB_TOKEN` | 空 | 仅后台同步读取 GitHub 时使用，不进入用户安装请求链路 |
 | `SKILLS_LOCAL_CREATE_ENABLED` | `false` | 是否允许管理员在平台创建动态 Skill |
 | `SKILLS_SUBPROCESS_EXECUTION_ENABLED` | `false` | 是否允许受限子进程执行 Python Skill |
 | `SKILLS_EXECUTION_TIMEOUT_SECONDS` | `10` | 单次动态 Skill 执行超时（最大 60 秒） |
 | `ALERT_SCHEDULER_POLL_SECONDS` | `10` | Worker 扫描到期预警规则的周期 |
 | `ALERT_SCHEDULER_RETRY_SECONDS` | `60` | 主动预警查询失败后的恢复重试间隔 |
 
-`staging` 与 `production` 会强制关闭动态 Skill 安装、创建、进程内执行和子进程执行。生产部署应把第三方 Skill 放入独立容器/微虚机，并增加网络出口、密钥和文件系统策略；仓库内子进程运行器只用于显式开启的开发环境。
+`staging` 与 `production` 会强制关闭动态 Skill 安装、创建、进程内执行和子进程执行。公共 Skill 由 Knowledge Worker 启动时补齐，并按 `SKILLHUB_SYNC_TIMEZONE` 每天 06:30 下载到共享本地镜像；Skills 页面和安装接口只读取该镜像，不在用户请求中访问 GitHub 或 SkillHub。公司 Skill 由管理员蒸馏时写入同一共享卷下的租户/工作区隔离目录。生产部署应为 `skills/catalog_mirror` 配置 API/Worker 共享持久卷。
 
 ## LLM 配置组命名与用户模型选择
 

@@ -61,6 +61,7 @@ logs/
 data/
 uploads/
 opentrace_attachments/
+skills/catalog_mirror/
 
 # 当前部署发布的企业大脑镜像，包含公司内部信息，绝不能提交到 Git。
 memory/COMPANY.md

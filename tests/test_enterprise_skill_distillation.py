@@ -71,6 +71,47 @@ def test_distillation_produces_traceable_enterprise_value_without_executable_cod
     assert result.use_cases
 
 
+def test_enterprise_skill_uses_chinese_summary_when_description_is_english() -> None:
+    result = distill_enterprise_skill(
+        name="Delivery Playbook",
+        description="Standardize customer delivery and acceptance.",
+        sources=[
+            DistillationSource(
+                path="delivery.md",
+                content="项目经理必须在交付前完成安全检查并确认客户验收。",
+                sha256="b" * 64,
+                size=64,
+            )
+        ],
+    )
+
+    assert "企业资料" in result.value_summary
+    assert "Standardize" not in result.value_summary
+
+
+def test_company_skill_is_projected_to_tenant_scoped_local_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(skills.settings, "skillhub_local_mirror_dir", str(tmp_path / "mirror"))
+    row = SimpleNamespace(
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+        runtime_id="company-local@1.0.0",
+        source_digest="c" * 64,
+        name="本地公司流程",
+        description="",
+        value_summary="统一公司流程。",
+        instructions="# 本地公司流程\n\n必须遵循公司审批。",
+        classification="internal",
+    )
+
+    assert skills._ensure_enterprise_skill_local(row) is True
+    files = list((tmp_path / "mirror" / "company").rglob("SKILL.md"))
+    assert len(files) == 1
+    assert "必须遵循公司审批" in files[0].read_text(encoding="utf-8")
+    assert "tenant-1" not in files[0].as_posix()
+
+
 def test_company_skill_routes_and_runtime_context_are_scoped() -> None:
     paths = app.openapi()["paths"]
     assert {"get"}.issubset(paths["/api/v1/skills/company"])

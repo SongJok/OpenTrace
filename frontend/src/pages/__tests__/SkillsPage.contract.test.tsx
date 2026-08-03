@@ -20,13 +20,22 @@ describe('SkillsPage marketplace contract', () => {
     expect(source).toContain('当前会话启用')
   })
 
-  it('exposes append-only catalog governance to administrators', async () => {
+  it('exposes local mirror governance to administrators', async () => {
     const page = await import('../SkillsPage')
     const source = page.CatalogGovernancePanel.toString()
-    expect(source).toContain('平台目录治理')
-    expect(source).toContain('只增不删')
+    expect(source).toContain('本地 Skill 镜像治理')
+    expect(source).toContain('06:30')
+    expect(source).toContain('不访问外网')
     expect(source).toContain('暂停使用')
     expect(source).toContain('立即同步')
+  })
+
+  it('installs only from the local mirror and does not expose Git installation', async () => {
+    const page = await import('../SkillsPage')
+    const source = page.default.toString()
+    expect(source).toContain('本地镜像安装策略')
+    expect(source).toContain('只复制本地镜像')
+    expect(source).not.toContain('从 Git 安装')
   })
 
   it('restores a usable conversation so installed Skills can be powered on', async () => {

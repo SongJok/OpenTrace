@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -30,7 +33,9 @@ class _FakeAsyncClient:
         return self.handler(url, headers)
 
 
-def _response(status: int, url: str, *, content: bytes = b"", headers: dict[str, str] | None = None) -> httpx.Response:
+def _response(
+    status: int, url: str, *, content: bytes = b"", headers: dict[str, str] | None = None
+) -> httpx.Response:
     return httpx.Response(
         status,
         content=content,
@@ -55,7 +60,9 @@ def test_github_api_token_is_server_side_authorization_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_public_install_uses_raw_source_without_rest_quota(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_public_install_uses_raw_source_without_rest_quota(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     markdown = b"---\nname: debugging-agent\n---\n# Debugging Agent\n"
 
     def handler(url: str, _headers: dict[str, str]) -> httpx.Response:
@@ -79,7 +86,9 @@ async def test_public_install_uses_raw_source_without_rest_quota(monkeypatch: py
 
 
 @pytest.mark.asyncio
-async def test_authenticated_rate_limit_falls_back_to_raw_source(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_authenticated_rate_limit_falls_back_to_raw_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     markdown = b"---\nname: debugging-agent\n---\n# Installed after fallback\n"
 
     def handler(url: str, headers: dict[str, str]) -> httpx.Response:
@@ -110,14 +119,18 @@ async def test_authenticated_rate_limit_falls_back_to_raw_source(monkeypatch: py
     ]
 
 
-def test_compose_shares_installed_skills_between_api_and_worker() -> None:
+def test_compose_shares_installed_and_mirrored_skills_between_api_and_worker() -> None:
     compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
     assert compose.count("skills_data:/app/skills/installed") == 2
+    assert compose.count("skill_catalog_data:/app/skills/catalog_mirror") == 2
     assert "skills_data:" in compose
+    assert "skill_catalog_data:" in compose
 
 
 @pytest.mark.asyncio
-async def test_catalog_loop_retries_quickly_after_startup_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_catalog_loop_retries_quickly_after_startup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     attempts = 0
     delays: list[int] = []
 
@@ -125,7 +138,7 @@ async def test_catalog_loop_retries_quickly_after_startup_failure(monkeypatch: p
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            raise RuntimeError('catalog table is not ready')
+            raise RuntimeError("catalog table is not ready")
         return {"popular": 30, "recent": 30, "stored": 50}
 
     async def fake_sleep(seconds: int) -> None:
@@ -134,20 +147,41 @@ async def test_catalog_loop_retries_quickly_after_startup_failure(monkeypatch: p
             raise asyncio.CancelledError
 
     monkeypatch.setattr(catalog.settings, "skillhub_sync_enabled", True)
-    monkeypatch.setattr(catalog.settings, "skillhub_sync_interval_seconds", 21600)
     monkeypatch.setattr(catalog.settings, "skillhub_sync_retry_seconds", 60)
     monkeypatch.setattr(catalog, "sync_skillhub_catalog", fake_sync)
+    monkeypatch.setattr(catalog, "_seconds_until_next_sync", lambda: 3600)
     monkeypatch.setattr(catalog.asyncio, "sleep", fake_sleep)
 
     with pytest.raises(asyncio.CancelledError):
         await catalog.skillhub_sync_loop()
 
     assert attempts == 2
-    assert delays == [60, 21600]
+    assert delays == [60, 3600]
+
+
+def test_daily_sync_targets_0630_in_configured_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(catalog.settings, "skillhub_sync_hour", 6)
+    monkeypatch.setattr(catalog.settings, "skillhub_sync_minute", 30)
+    monkeypatch.setattr(catalog.settings, "skillhub_sync_timezone", "Asia/Shanghai")
+    timezone = ZoneInfo("Asia/Shanghai")
+
+    assert catalog._seconds_until_next_sync(datetime(2026, 8, 3, 6, 29, tzinfo=timezone)) == 60
+    assert catalog._seconds_until_next_sync(datetime(2026, 8, 3, 6, 30, tzinfo=timezone)) == 86400
+
+
+def test_english_catalog_description_is_presented_in_chinese() -> None:
+    description = catalog._localized_description(
+        {"name": "debugging-agent", "description": "Diagnose software failures"}
+    )
+
+    assert "故障" in description
+    assert any("\u3400" <= char <= "\u9fff" for char in description)
 
 
 @pytest.mark.asyncio
-async def test_catalog_sync_is_append_only_and_preserves_platform_disable(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_catalog_sync_is_append_only_and_preserves_platform_disable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     row = SkillCatalogEntry(
         id="catalog-1",
         external_id="owner/repo/skill",
@@ -181,24 +215,35 @@ async def test_catalog_sync_is_append_only_and_preserves_platform_disable(monkey
             return None
 
     async def fake_fetch(_sort: str, _limit: int) -> list[dict[str, Any]]:
-        return [{
-            "id": "owner/repo/skill",
-            "name": "skill-v2",
-            "description": "new",
-            "githubOwner": "owner",
-            "githubRepo": "repo",
-            "skillPath": "skills/skill",
-            "securityStatus": "pass",
-        }]
+        return [
+            {
+                "id": "owner/repo/skill",
+                "name": "skill-v2",
+                "description": "new",
+                "githubOwner": "owner",
+                "githubRepo": "repo",
+                "skillPath": "skills/skill",
+                "securityStatus": "pass",
+            }
+        ]
+
+    async def fake_markdown(_entry: Any) -> tuple[str, str]:
+        content = "# Skill\n\nFollow reviewed instructions."
+        return content, hashlib.sha256(content.encode()).hexdigest()
 
     monkeypatch.setattr(catalog, "AsyncSessionLocal", FakeSession)
     monkeypatch.setattr(catalog, "_fetch_catalog", fake_fetch)
+    monkeypatch.setattr(catalog, "_fetch_skill_markdown", fake_markdown)
+    monkeypatch.setattr(catalog.settings, "skillhub_local_mirror_dir", str(tmp_path / "mirror"))
 
     result = await catalog.sync_skillhub_catalog(limit=30)
 
     assert row.status == "disabled"
     assert row.name == "skill-v2"
     assert row.source_metadata["platform_note"] == "暂不适合平台"
+    assert row.source_metadata["local_status"] == "ready"
+    assert "用于" in row.description
+    assert result["downloaded"] == 1
     assert result["added"] == 0
     assert result["preserved_disabled"] == 1
 
@@ -245,11 +290,25 @@ async def test_reviewed_skill_can_be_installed_and_executed_as_instruction(
 
     markdown = "---\nname: debugging-agent\n---\n# Debugging Agent\nInspect evidence before proposing a fix.\n"
 
-    async def fake_fetch(_entry: SkillCatalogEntry) -> tuple[str, str]:
-        return markdown, hashlib.sha256(markdown.encode()).hexdigest()
+    async def fail_if_network_is_used(_entry: SkillCatalogEntry) -> tuple[str, str]:
+        raise AssertionError("安装请求不应访问 GitHub")
 
     monkeypatch.setattr(catalog, "AsyncSessionLocal", FakeSession)
-    monkeypatch.setattr(catalog, "_fetch_skill_markdown", fake_fetch)
+    monkeypatch.setattr(catalog, "_fetch_skill_markdown", fail_if_network_is_used)
+    monkeypatch.setattr(catalog.settings, "skillhub_local_mirror_dir", str(tmp_path / "mirror"))
+    artifact = catalog.local_skill_store.write_catalog_skill(
+        external_id=entry.external_id,
+        content=markdown,
+        source_revision=hashlib.sha256(markdown.encode()).hexdigest(),
+        metadata={"name": entry.name},
+    )
+    entry.source_metadata = {
+        "local_path": artifact.relative_path,
+        "local_revision": artifact.source_revision,
+        "local_sha256": artifact.content_sha256,
+        "local_cached_at": artifact.cached_at,
+        "local_status": "ready",
+    }
     monkeypatch.setattr(marketplace_module, "INSTALLED_DIR", tmp_path / "installed")
     marketplace_module.INSTALLED_DIR.mkdir(parents=True)
 
@@ -264,7 +323,10 @@ async def test_reviewed_skill_can_be_installed_and_executed_as_instruction(
     assert installed["installed_skill_id"].startswith("acct-")
     assert len(added) == 1
     assert added[0].status == "installed"
-    outcome = catalog.marketplace.test_skill(installed["installed_skill_id"], {"query": "定位服务报错"})
+    assert added[0].manifest_snapshot["delivery"] == "local_mirror"
+    outcome = catalog.marketplace.test_skill(
+        installed["installed_skill_id"], {"query": "定位服务报错"}
+    )
     assert outcome["success"] is True
     assert outcome["output"]["trust"] == "user_enabled_instruction_skill"
     assert "Inspect evidence" in outcome["output"]["instructions"]

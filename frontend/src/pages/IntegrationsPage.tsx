@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ChevronLeft, Plug, Wrench, Download, Trash2, KeyRound, RefreshCw, FolderTree } from 'lucide-react'
+import { ChevronLeft, Plug, Wrench, PackageCheck, Trash2, KeyRound, RefreshCw, FolderTree } from 'lucide-react'
 import { t } from '../i18n'
 import { useAuthStore } from '../store/auth'
 import {
@@ -7,7 +7,6 @@ import {
   apiConnectorCallback,
   apiConnectorResources,
   apiConnectorSync,
-  apiInstallSkill,
   apiListConnectors,
   apiListSkills,
   apiUninstallSkill,
@@ -19,8 +18,6 @@ export default function IntegrationsPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((s) => s.token)!
   const [connectors, setConnectors] = useState<ConnectorItem[]>([])
   const [skills, setSkills] = useState<SkillItem[]>([])
-  const [gitUrl, setGitUrl] = useState('')
-  const [ref, setRef] = useState('main')
   const [provider, setProvider] = useState('github')
   const [redirectUri, setRedirectUri] = useState('http://localhost/callback')
   const [authCode, setAuthCode] = useState('')
@@ -42,12 +39,6 @@ export default function IntegrationsPage({ onBack }: { onBack: () => void }) {
     void load()
   }, [])
 
-  const install = async () => {
-    if (!gitUrl.trim()) return
-    await apiInstallSkill(token, gitUrl.trim(), ref.trim() || 'main')
-    setGitUrl('')
-    await load()
-  }
 
   const uninstall = async (id: string) => {
     await apiUninstallSkill(token, id)
@@ -117,10 +108,8 @@ export default function IntegrationsPage({ onBack }: { onBack: () => void }) {
         <div className="col-span-6 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 space-y-3">
           <h2 className="text-sm font-semibold inline-flex items-center gap-2"><Wrench size={14} /> Skills</h2>
           <div className="rounded border border-[var(--border)] p-3 space-y-2">
-            <p className="text-xs text-[var(--text-secondary)]">从 Git 安装技能</p>
-            <input value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} placeholder="git url" className="w-full rounded border border-[var(--border)] bg-transparent px-2 py-1 text-sm" />
-            <input value={ref} onChange={(e) => setRef(e.target.value)} placeholder="ref" className="w-full rounded border border-[var(--border)] bg-transparent px-2 py-1 text-sm" />
-            <button onClick={() => void install()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs inline-flex items-center gap-1"><Download size={12} /> 安装</button>
+            <p className="inline-flex items-center gap-1 text-xs font-medium"><PackageCheck size={12} className="text-emerald-500" />本地 Skill 管理</p>
+            <p className="text-xs leading-5 text-[var(--text-secondary)]">外部 Skill 由后台每天 06:30 统一下载到本地镜像。请前往 Skills 页面从本地目录安装；此处只管理平台已安装的自有 Skill。</p>
           </div>
           <div className="space-y-2">
             {skills.length === 0 ? <p className="text-sm text-[var(--text-secondary)]">暂无技能</p> : skills.map((s) => (

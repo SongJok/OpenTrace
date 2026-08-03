@@ -9,7 +9,6 @@ import {
   apiGetSkill,
   apiTestSkill,
   apiUninstallSkill,
-  apiInstallSkill,
   apiGetSessionSkills,
   apiSetSessionSkills,
   apiListSkillCatalog,
@@ -46,8 +45,6 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
   const [loading, setLoading] = useState(false)
   const [enabledSkills, setEnabledSkills] = useState<string[]>([])
   const [disabledSkills, setDisabledSkills] = useState<string[]>([])
-  const [gitUrl, setGitUrl] = useState('')
-  const [gitRef, setGitRef] = useState('main')
   const [popularCatalog, setPopularCatalog] = useState<SkillCatalogItem[]>([])
   const [recentCatalog, setRecentCatalog] = useState<SkillCatalogItem[]>([])
   const [accountCatalog, setAccountCatalog] = useState<SkillCatalogItem[]>([])
@@ -186,22 +183,6 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
     finally { setBusyCatalogId(null) }
   }
 
-  const handleInstall = async () => {
-    if (!gitUrl.trim()) return
-    setLoading(true)
-    setOutput('')
-    try {
-      await apiInstallSkill(token, gitUrl.trim(), gitRef.trim() || 'main')
-      setGitUrl('')
-      setGitRef('main')
-      setOutput('Skill 已安装。请先测试，再为当前会话启用。')
-      await load()
-    } catch (e: any) {
-      setOutput(`安装失败：${e?.message || e}`)
-    } finally {
-      setLoading(false)
-    }
-  }
 
   const toggleSessionSkill = async (skillId: string) => {
     if (!activeSessionId) return
@@ -383,17 +364,17 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
 
             {marketplaceTab === 'discover' && <div className="space-y-20">
               {allCatalog.length === 0 ? <EmptyCatalog /> : <>
-                <section className="space-y-6"><SectionTitle title="热门下载" subtitle="社区最受欢迎的技能" action={<button onClick={() => { setCatalogSort('popular'); setMarketplaceTab('search') }} className="inline-flex items-center gap-1 text-xs font-medium hover:text-[var(--accent)]">查看全部 <ArrowRight size={13} /></button>} /><CatalogGrid items={popularCatalog.slice(0, 6)} busyId={busyCatalogId} activeSessionId={activeSessionId} enabledSkills={enabledSkills} onInstall={installCatalog} onUninstall={uninstallCatalog} onToggle={toggleSessionSkill} /></section>
-                <section className="space-y-6"><SectionTitle title="最新发布" subtitle="刚刚发布的新技能" action={<button onClick={() => { setCatalogSort('recent'); setMarketplaceTab('search') }} className="inline-flex items-center gap-1 text-xs font-medium hover:text-[var(--accent)]">查看全部 <ArrowRight size={13} /></button>} /><CatalogGrid items={recentCatalog.slice(0, 6)} busyId={busyCatalogId} activeSessionId={activeSessionId} enabledSkills={enabledSkills} onInstall={installCatalog} onUninstall={uninstallCatalog} onToggle={toggleSessionSkill} /></section>
+                <section className="space-y-6"><SectionTitle title="热门下载" subtitle="已下载到本地镜像、按社区热度排序的技能" action={<button onClick={() => { setCatalogSort('popular'); setMarketplaceTab('search') }} className="inline-flex items-center gap-1 text-xs font-medium hover:text-[var(--accent)]">查看全部 <ArrowRight size={13} /></button>} /><CatalogGrid items={popularCatalog.slice(0, 6)} busyId={busyCatalogId} activeSessionId={activeSessionId} enabledSkills={enabledSkills} onInstall={installCatalog} onUninstall={uninstallCatalog} onToggle={toggleSessionSkill} /></section>
+                <section className="space-y-6"><SectionTitle title="最新发布" subtitle="每天 06:30 收集并下载到本地的最新技能" action={<button onClick={() => { setCatalogSort('recent'); setMarketplaceTab('search') }} className="inline-flex items-center gap-1 text-xs font-medium hover:text-[var(--accent)]">查看全部 <ArrowRight size={13} /></button>} /><CatalogGrid items={recentCatalog.slice(0, 6)} busyId={busyCatalogId} activeSessionId={activeSessionId} enabledSkills={enabledSkills} onInstall={installCatalog} onUninstall={uninstallCatalog} onToggle={toggleSessionSkill} /></section>
               </>}
-              <section className="grid gap-4 border-t border-[var(--border)] pt-7 sm:grid-cols-4">{[[allCatalog.length, '已同步'], [safeCatalogCount, '安全通过'], [installedCatalog.length, '账户已安装'], [enabledSkills.length, '当前会话启用']].map(([value, label]) => <div key={label} className="text-center sm:text-left"><p className="text-xl font-semibold">{value}</p><p className="mt-1 text-[11px] text-[var(--text-secondary)]">{label}</p></div>)}</section>
+              <section className="grid gap-4 border-t border-[var(--border)] pt-7 sm:grid-cols-4">{[[allCatalog.length, '本地可用'], [safeCatalogCount, '安全通过'], [installedCatalog.length, '账户已安装'], [enabledSkills.length, '当前会话启用']].map(([value, label]) => <div key={label} className="text-center sm:text-left"><p className="text-xl font-semibold">{value}</p><p className="mt-1 text-[11px] text-[var(--text-secondary)]">{label}</p></div>)}</section>
             </div>}
 
             {marketplaceTab === 'search' && <section className="space-y-7">
-              <SectionTitle title="搜索 Skills" subtitle="查找、审核并安装适合当前项目的能力" action={<button onClick={() => void refreshCatalog()} className="rounded-full border border-[var(--border)] p-2.5 text-[var(--text-secondary)] hover:text-[var(--text)]" title="刷新目录"><RefreshCw size={14} /></button>} />
+              <SectionTitle title="搜索 Skills" subtitle="仅搜索并安装已经下载到本地系统的能力" action={<button onClick={() => void refreshCatalog()} className="rounded-full border border-[var(--border)] p-2.5 text-[var(--text-secondary)] hover:text-[var(--text)]" title="刷新目录"><RefreshCw size={14} /></button>} />
               <div className="flex items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-2 shadow-sm">
                 <Search size={18} className="ml-3 shrink-0 text-[var(--text-secondary)]" />
-                <input value={catalogQuery} onChange={(e) => setCatalogQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void refreshCatalog() }} placeholder="搜索 Skill 名称、描述或 GitHub 仓库" className="min-w-0 flex-1 bg-transparent px-2 py-2.5 text-sm outline-none" />
+                <input value={catalogQuery} onChange={(e) => setCatalogQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void refreshCatalog() }} placeholder="搜索 Skill 名称或中文说明" className="min-w-0 flex-1 bg-transparent px-2 py-2.5 text-sm outline-none" />
                 <button onClick={() => void refreshCatalog()} className="rounded-xl bg-[var(--accent)] px-5 py-2.5 text-xs font-medium text-[var(--accent-foreground)]">搜索</button>
               </div>
               <div className="flex flex-wrap items-center gap-2">{(['全部', '办公效率', '数据分析', '开发工具', '搜索研究', '内容创作', '自动化'] as CatalogCategory[]).map((item) => <button key={item} onClick={() => setCategory(item)} className={`rounded-full border px-3 py-1.5 text-[11px] transition ${category === item ? 'border-[var(--accent)] bg-[var(--accent-dim)] font-medium text-[var(--accent)]' : 'border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text)]'}`}>{item}</button>)}{role === 'admin' && <button disabled={loading} onClick={() => void syncCatalog()} className="ml-auto rounded-full border border-[var(--border)] px-3 py-1.5 text-[11px] disabled:opacity-50">{loading ? '同步中…' : '同步目录'}</button>}</div>
@@ -405,7 +386,7 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
 
             {marketplaceTab === 'developer' && role === 'admin' && <CatalogGovernancePanel items={adminCatalog} policy={catalogPolicy} busyId={busyCatalogId} syncing={loading} onSync={syncCatalog} onSetAvailability={setCatalogAvailability} />}
 
-            {marketplaceTab === 'developer' && role === 'admin' && <section className="space-y-5"><SectionTitle title="开发者工具" subtitle="创建、测试和管理平台自有的可执行 Skills" action={<button onClick={() => { resetCreateForm(); setCode(defaultCodeTemplate); setView('create') }} className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)]"><Plus size={13} />创建 Skill</button>} /><div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="flex items-center gap-2 text-sm font-medium"><Download size={14} />从 Git 安装</div><div className="mt-3 grid gap-2 sm:grid-cols-[1fr_140px_auto]"><input value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} placeholder="https://github.com/org/skill.git" className="rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /><input value={gitRef} onChange={(e) => setGitRef(e.target.value)} placeholder="分支或标签" className="rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /><button disabled={loading || !gitUrl.trim()} onClick={() => void handleInstall()} className="rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-50">安装</button></div><p className="mt-2 text-[11px] text-[var(--text-secondary)]">可执行 Skill 受平台策略控制，生产环境默认禁止动态安装。</p></div>{skills.length === 0 ? <div className="rounded-2xl border border-dashed border-[var(--border)] p-12 text-center text-xs text-[var(--text-secondary)]">暂无平台自有 Skill</div> : <div className="space-y-2">{skills.map((skill) => <div key={skill.skill_id || skill.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="grid h-9 w-9 place-items-center rounded-lg bg-[var(--accent-dim)] text-[var(--accent)]"><Boxes size={16} /></div><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{skill.name || skill.id}</p><p className="text-[11px] text-[var(--text-secondary)]">v{skill.version} · {skill.skill_type || 'generic'} · {skill.entrypoint || 'main.py'}</p></div><button onClick={() => void handleSelectSkill(skill)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs"><FileText size={12} className="mr-1 inline" />详情</button><button onClick={() => void handleUninstall(skill.skill_id || skill.id)} className="rounded-lg border border-red-500/20 px-3 py-1.5 text-xs text-red-500"><Trash2 size={12} className="mr-1 inline" />移除</button></div>)}</div>}</section>}
+            {marketplaceTab === 'developer' && role === 'admin' && <section className="space-y-5"><SectionTitle title="开发者工具" subtitle="创建、测试和管理平台自有的可执行 Skills" action={<button onClick={() => { resetCreateForm(); setCode(defaultCodeTemplate); setView('create') }} className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)]"><Plus size={13} />创建 Skill</button>} /><div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="flex items-center gap-2 text-sm font-medium"><PackageCheck size={14} className="text-emerald-500" />本地镜像安装策略</div><p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">外部 Git 即时安装已停用。后台 Worker 每天 06:30 收集新增或更新的 Skill，先下载到本地共享存储；用户安装时只复制本地镜像，不再访问 GitHub 或其他 SkillHub。</p></div>{skills.length === 0 ? <div className="rounded-2xl border border-dashed border-[var(--border)] p-12 text-center text-xs text-[var(--text-secondary)]">暂无平台自有 Skill</div> : <div className="space-y-2">{skills.map((skill) => <div key={skill.skill_id || skill.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="grid h-9 w-9 place-items-center rounded-lg bg-[var(--accent-dim)] text-[var(--accent)]"><Boxes size={16} /></div><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{skill.name || skill.id}</p><p className="text-[11px] text-[var(--text-secondary)]">v{skill.version} · {skill.skill_type || 'generic'} · {skill.entrypoint || 'main.py'}</p></div><button onClick={() => void handleSelectSkill(skill)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs"><FileText size={12} className="mr-1 inline" />详情</button><button onClick={() => void handleUninstall(skill.skill_id || skill.id)} className="rounded-lg border border-red-500/20 px-3 py-1.5 text-xs text-red-500"><Trash2 size={12} className="mr-1 inline" />移除</button></div>)}</div>}</section>}
 
             <CompanySkillsSection skills={companySkills} role={role} activeSessionId={activeSessionId} enabledSkills={enabledSkills} onDistill={() => setView('distill')} onToggle={toggleSessionSkill} />
           </main>
@@ -555,14 +536,14 @@ export function CatalogGovernancePanel({ items, policy, busyId, syncing, onSync,
   const disabledCount = items.filter((item) => item.platform_disabled).length
   return <section className="mb-8 space-y-5">
     <SectionTitle
-      title="平台目录治理"
-      subtitle="目录只增不删；定时拉取新增与更新，平台停用状态不会被同步覆盖"
+      title="本地 Skill 镜像治理"
+      subtitle="每天 06:30 收集新增与更新并下载到本地；用户安装链路不访问外网"
       action={<button disabled={syncing} onClick={() => void onSync()} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-2 text-xs disabled:opacity-50"><RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />{syncing ? '同步中…' : '立即同步'}</button>}
     />
     <div className="grid gap-3 sm:grid-cols-4">
       {[
         [policy?.sync_enabled ? '运行中' : '已暂停', '自动同步'],
-        [formatDuration(policy?.sync_interval_seconds), '同步周期'],
+        [formatSyncSchedule(policy), '每日同步'],
         [formatDuration(policy?.sync_retry_seconds), '失败重试'],
         [`${disabledCount}/${items.length}`, '暂停使用'],
       ].map(([value, label]) => <div key={label} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3"><p className="text-sm font-semibold">{value}</p><p className="mt-1 text-[10px] text-[var(--text-secondary)]">{label}</p></div>)}
@@ -572,10 +553,10 @@ export function CatalogGovernancePanel({ items, policy, busyId, syncing, onSync,
       <div className="max-h-[420px] divide-y divide-[var(--border)] overflow-y-auto">
         {items.map((item) => <div key={item.id} className="grid grid-cols-[minmax(0,1fr)_110px_110px] items-center px-4 py-3 text-xs">
           <div className="min-w-0"><p className="truncate font-medium">{item.name}</p><p className="mt-0.5 truncate text-[10px] text-[var(--text-secondary)]">{item.github_owner}/{item.github_repo}{item.platform_note ? ` · ${item.platform_note}` : ''}</p></div>
-          <span className={item.platform_disabled ? 'text-amber-500' : 'text-emerald-500'}>{item.platform_disabled ? '暂停使用' : '正常使用'}</span>
+          <span className={item.platform_disabled ? 'text-amber-500' : 'text-emerald-500'}>{item.platform_disabled ? '暂停使用' : '本地可用'}</span>
           <button disabled={busyId === item.id} onClick={() => void onSetAvailability(item)} className="justify-self-end rounded-lg border border-[var(--border)] px-3 py-1.5 text-[11px] disabled:opacity-50">{busyId === item.id ? '处理中…' : item.platform_disabled ? '恢复使用' : '暂停使用'}</button>
         </div>)}
-        {!items.length && <div className="p-8 text-center text-xs text-[var(--text-secondary)]">目录尚未同步</div>}
+        {!items.length && <div className="p-8 text-center text-xs text-[var(--text-secondary)]">本地镜像尚未同步</div>}
       </div>
     </div>
   </section>
@@ -590,13 +571,13 @@ function CompanySkillsSection({ skills, role, activeSessionId, enabledSkills, on
   onToggle: (skillId: string) => Promise<void>
 }) {
   return <section className="mt-20 space-y-6 border-t border-[var(--border)] pt-10">
-    <SectionTitle title="公司 Skills" subtitle="由企业资料蒸馏、经过公司发布的工作方法，沉淀组织经验并服务实际业务" action={role === 'admin' ? <button onClick={onDistill} className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] px-4 py-2 text-xs text-[var(--accent-foreground)]"><UploadCloud size={14} />蒸馏 Skill</button> : undefined} />
+    <SectionTitle title="公司 Skills" subtitle="由管理员主动蒸馏并保存到本地系统的公司工作方法，沉淀组织经验并服务实际业务" action={role === 'admin' ? <button onClick={onDistill} className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] px-4 py-2 text-xs text-[var(--accent-foreground)]"><UploadCloud size={14} />蒸馏 Skill</button> : undefined} />
     {skills.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{skills.map((skill) => {
       const enabled = enabledSkills.includes(skill.runtime_id)
       return <article key={skill.id} className="flex min-h-56 flex-col rounded-2xl border border-emerald-500/20 bg-[var(--surface)] p-5 shadow-sm">
         <div className="flex items-start gap-3"><div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-emerald-500/10 text-emerald-500"><Building2 size={18} /></div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{skill.name}</h3><span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600">公司发布</span></div><p className="mt-1 text-[10px] text-[var(--text-secondary)]">{skill.classification === 'public' ? '公开' : skill.classification === 'confidential' ? '机密' : '内部'} · {skill.source_files.length} 个来源文件</p></div></div>
         <p className="mt-4 line-clamp-3 text-xs leading-5 text-[var(--text-secondary)]">{skill.value_summary}</p>
-        <div className="mt-auto flex items-center justify-between border-t border-[var(--border)] pt-4"><span className="text-[10px] text-[var(--text-secondary)]">可追溯 · 不执行文件代码</span><button disabled={!activeSessionId} onClick={() => void onToggle(skill.runtime_id)} className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] disabled:opacity-40 ${enabled ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600' : 'border-[var(--border)]'}`}><Power size={12} />{enabled ? '已启用' : '会话启用'}</button></div>
+        <div className="mt-auto flex items-center justify-between border-t border-[var(--border)] pt-4"><span className="text-[10px] text-[var(--text-secondary)]">本地保存 · 可追溯 · 不执行文件代码</span><button disabled={!activeSessionId} onClick={() => void onToggle(skill.runtime_id)} className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-[11px] disabled:opacity-40 ${enabled ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600' : 'border-[var(--border)]'}`}><Power size={12} />{enabled ? '已启用' : '会话启用'}</button></div>
       </article>
     })}</div> : <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] py-14 text-center"><Building2 size={28} className="mx-auto text-[var(--text-secondary)]" /><p className="mt-3 text-sm font-medium">还没有公司发布的 Skill</p><p className="mt-1 text-xs text-[var(--text-secondary)]">管理员可以选择企业文件或文件夹，将高价值工作经验蒸馏为可复用能力。</p></div>}
   </section>
@@ -604,6 +585,13 @@ function CompanySkillsSection({ skills, role, activeSessionId, enabledSkills, on
 
 function SectionTitle({ title, subtitle, action }: { title: string; subtitle: string; action?: React.ReactNode }) {
   return <div className="flex flex-wrap items-end justify-between gap-3"><div><h2 className="text-2xl font-semibold tracking-tight">{title}</h2><p className="mt-1.5 text-xs text-[var(--text-secondary)]">{subtitle}</p></div>{action}</div>
+}
+
+function formatSyncSchedule(policy: SkillCatalogSyncPolicy | null): string {
+  if (!policy) return '—'
+  const hour = String(policy.sync_hour).padStart(2, '0')
+  const minute = String(policy.sync_minute).padStart(2, '0')
+  return `${hour}:${minute}`
 }
 
 function formatDuration(seconds?: number): string {
@@ -636,9 +624,9 @@ function CatalogCard({ item, busy, activeSessionId, enabled, onInstall, onUninst
 }) {
   const label = catalogCategory(item)
   const platformAvailable = !item.platform_disabled && item.status !== 'disabled'
-  const installable = platformAvailable && item.security_status === 'pass'
+  const installable = platformAvailable && item.local_available && item.security_status === 'pass'
   return <article className="group flex min-h-[170px] flex-col rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-[var(--accent-border)] hover:shadow-md">
-    <div className="flex min-w-0 items-center gap-2"><h3 className="truncate text-sm font-semibold">{item.name}</h3>{item.is_verified && <BadgeCheck size={14} className="shrink-0 text-sky-500" />}<span className="ml-auto shrink-0 rounded-full border border-violet-500/20 bg-violet-500/10 px-2.5 py-0.5 text-[10px] text-violet-500">@global</span></div>
+    <div className="flex min-w-0 items-center gap-2"><h3 className="truncate text-sm font-semibold">{item.name}</h3>{item.is_verified && <BadgeCheck size={14} className="shrink-0 text-sky-500" />}<span className="ml-auto shrink-0 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-0.5 text-[10px] text-emerald-600">本地镜像</span></div>
     <p className="mt-3 line-clamp-2 text-xs leading-5 text-[var(--text-secondary)]">{item.description || '该 Skill 暂无详细描述。'}</p>
     <div className="mt-auto flex min-w-0 items-center gap-2 pt-4 text-[10px] text-[var(--text-secondary)]">
       <span className="max-w-[104px] truncate rounded-full bg-[var(--surface-raised)] px-2 py-1">v{item.version || 'latest'}</span>
@@ -648,15 +636,15 @@ function CatalogCard({ item, busy, activeSessionId, enabled, onInstall, onUninst
     </div>
     <div className="mt-3 flex items-center gap-2 border-t border-[var(--border)] pt-3">
       <span className="mr-auto rounded-full bg-[var(--surface-raised)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)]">{label}</span>
-      <a href={item.source_url} target="_blank" rel="noreferrer" className="grid h-7 w-7 place-items-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--accent)]" title={`${item.github_owner}/${item.github_repo}`}><ExternalLink size={12} /></a>
-      <button disabled={busy || (!item.installed && !installable) || !platformAvailable} onClick={() => void (item.installed ? onUninstall(item) : onInstall(item))} className={`rounded-full px-3 py-1.5 text-[11px] font-medium disabled:cursor-not-allowed disabled:opacity-40 ${item.installed ? 'border border-[var(--border)] text-[var(--text-secondary)]' : 'bg-[var(--accent)] text-[var(--accent-foreground)]'}`}>{busy ? '处理中…' : !platformAvailable ? '平台已暂停' : item.installed ? '卸载' : installable ? '安装' : '审核未通过'}</button>
+      <a href={item.source_url} target="_blank" rel="noreferrer" className="grid h-7 w-7 place-items-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--surface-raised)] hover:text-[var(--accent)]" title={`查看原始来源：${item.github_owner}/${item.github_repo}`}><ExternalLink size={12} /></a>
+      <button disabled={busy || (!item.installed && !installable) || !platformAvailable} onClick={() => void (item.installed ? onUninstall(item) : onInstall(item))} className={`rounded-full px-3 py-1.5 text-[11px] font-medium disabled:cursor-not-allowed disabled:opacity-40 ${item.installed ? 'border border-[var(--border)] text-[var(--text-secondary)]' : 'bg-[var(--accent)] text-[var(--accent-foreground)]'}`}>{busy ? '处理中…' : !platformAvailable ? '平台已暂停' : !item.local_available ? '本地未就绪' : item.installed ? '卸载' : installable ? '本地安装' : '审核未通过'}</button>
       {item.installed && item.installed_skill_id && <button disabled={!activeSessionId || !platformAvailable} onClick={() => void onToggle(item.installed_skill_id!)} className={`grid h-7 w-7 place-items-center rounded-full border disabled:opacity-40 ${enabled ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500' : 'border-[var(--border)]'}`} title={!platformAvailable ? '平台已暂停该 Skill' : activeSessionId ? '切换当前会话权限' : '请先选择会话'}><Power size={12} /></button>}
     </div>
   </article>
 }
 
 function EmptyCatalog() {
-  return <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] py-20 text-center"><Wrench size={30} className="mx-auto text-[var(--text-secondary)]" /><p className="mt-3 text-sm font-medium">Skill 目录尚未同步</p><p className="mt-1 text-xs text-[var(--text-secondary)]">后台 Worker 会定时同步，管理员也可以手动触发。</p></div>
+  return <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] py-20 text-center"><Wrench size={30} className="mx-auto text-[var(--text-secondary)]" /><p className="mt-3 text-sm font-medium">本地 Skill 镜像尚未就绪</p><p className="mt-1 text-xs text-[var(--text-secondary)]">后台 Worker 会在启动时补齐，并于每天 06:30 自动收集和下载。</p></div>
 }
 
 function formatCount(value: number): string {

@@ -491,8 +491,13 @@ class AppSettings(BaseSettings):
     skills_execution_timeout_seconds: int = 10
     skillhub_catalog_url: str = "https://skills.palebluedot.live"
     skillhub_sync_enabled: bool = True
-    skillhub_sync_interval_seconds: int = 21600
+    skillhub_sync_interval_seconds: int = 86400
     skillhub_sync_retry_seconds: int = 60
+    skillhub_sync_hour: int = 6
+    skillhub_sync_minute: int = 30
+    skillhub_sync_timezone: str = "Asia/Shanghai"
+    skillhub_sync_download_concurrency: int = 8
+    skillhub_local_mirror_dir: str = "skills/catalog_mirror"
     skillhub_catalog_size: int = 30
     skillhub_min_security_score: int = 80
     # Server-side credential only. Never expose this token through frontend

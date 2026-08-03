@@ -2428,12 +2428,19 @@ export interface SkillCatalogItem {
   status: 'active' | 'disabled' | string
   platform_disabled: boolean
   platform_note?: string
+  local_available: boolean
+  local_revision?: string | null
+  local_cached_at?: string | null
 }
 
 export interface SkillCatalogSyncPolicy {
   sync_enabled: boolean
   sync_interval_seconds: number
   sync_retry_seconds: number
+  sync_hour: number
+  sync_minute: number
+  sync_timezone: string
+  delivery: 'local_mirror' | string
   catalog_size: number
   retention: 'append_only' | string
 }
@@ -2451,12 +2458,13 @@ export interface EnterpriseSkillItem {
   status: 'published' | 'archived'
   published_at?: string | null
   publication: 'company'
+  local_available: boolean
 }
 
-export async function apiListSkillCatalog(token: string, sort: 'popular' | 'recent', q = ''): Promise<SkillCatalogItem[]> { const p = new URLSearchParams({ sort, limit: '30' }); if (q.trim()) p.set('q', q.trim()); const res = await apiFetch(`/skills/catalog?${p}`, { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取 SkillHub 失败')); return (await res.json()).items ?? [] }
+export async function apiListSkillCatalog(token: string, sort: 'popular' | 'recent', q = ''): Promise<SkillCatalogItem[]> { const p = new URLSearchParams({ sort, limit: '30' }); if (q.trim()) p.set('q', q.trim()); const res = await apiFetch(`/skills/catalog?${p}`, { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取本地 Skill 目录失败')); return (await res.json()).items ?? [] }
 export async function apiListMyInstalledSkills(token: string): Promise<SkillCatalogItem[]> { const res = await apiFetch('/skills/installed/me', { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取账户 Skills 失败')); return (await res.json()).items ?? [] }
 export async function apiListAdminSkillCatalog(token: string): Promise<{ items: SkillCatalogItem[]; policy: SkillCatalogSyncPolicy }> { const res = await apiFetch('/skills/catalog/admin?limit=500', { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取 Skill 治理目录失败')); return res.json() }
-export async function apiSyncSkillCatalog(token: string): Promise<any> { const res = await apiFetch('/skills/catalog/sync', { method: 'POST', headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '同步 SkillHub 失败')); return res.json() }
+export async function apiSyncSkillCatalog(token: string): Promise<any> { const res = await apiFetch('/skills/catalog/sync', { method: 'POST', headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '同步本地 Skill 镜像失败')); return res.json() }
 export async function apiSetCatalogSkillAvailability(token: string, catalogSkillId: string, enabled: boolean, reason = ''): Promise<SkillCatalogItem> { const res = await apiFetch(`/skills/catalog/${encodeURIComponent(catalogSkillId)}/availability`, { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify({ enabled, reason }) }); if (!res.ok) throw new Error(await readApiError(res, enabled ? '恢复 Skill 失败' : '暂停 Skill 失败')); return (await res.json()).item }
 export async function apiInstallCatalogSkill(token: string, catalogSkillId: string): Promise<any> { const res = await apiFetch('/skills/catalog/install', { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ catalog_skill_id: catalogSkillId }) }); if (!res.ok) throw new Error(await readApiError(res, '安装 Skill 失败')); return res.json() }
 export async function apiUninstallCatalogSkill(token: string, installationId: string): Promise<any> { const res = await apiFetch(`/skills/installations/${encodeURIComponent(installationId)}`, { method: 'DELETE', headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '卸载 Skill 失败')); return res.json() }
@@ -2509,11 +2517,6 @@ export async function apiListSkills(token: string): Promise<SkillItem[]> {
   return Array.isArray(data) ? data : data.items ?? []
 }
 
-export async function apiInstallSkill(token: string, gitUrl: string, ref: string): Promise<any> {
-  const res = await apiFetch('/skills/install', { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ git_url: gitUrl, ref }) })
-  if (!res.ok) throw new Error(await readApiError(res, '安装 Skill 失败'))
-  return res.json()
-}
 
 export async function apiUninstallSkill(token: string, id: string): Promise<any> {
   const res = await apiFetch('/skills/uninstall', { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ skill_id: id }) })

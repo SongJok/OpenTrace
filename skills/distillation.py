@@ -97,9 +97,14 @@ def distill_enterprise_skill(
     if not use_cases:
         use_cases = [f"在处理与“{name}”相关的企业任务时提供统一方法和检查项"]
 
-    value_summary = description.strip() or (
-        f"将 {len(sources)} 份企业资料中的流程、规则与判断标准沉淀为可复用能力，"
-        "帮助员工以一致、可追溯的方式完成工作。"
+    provided_description = description.strip()
+    value_summary = (
+        provided_description
+        if re.search(r"[\u3400-\u9fff]", provided_description)
+        else (
+            f"将 {len(sources)} 份企业资料中的流程、规则与判断标准沉淀为可复用能力，"
+            "帮助员工以一致、可追溯的方式完成工作。"
+        )
     )
     source_lines = "\n".join(
         f"- `{source.path}`（SHA-256: `{source.sha256[:12]}`，{source.size} bytes）"

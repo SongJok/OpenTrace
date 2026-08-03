@@ -6,7 +6,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
@@ -30,6 +29,7 @@ from infra.storage.models import (
 from knowledge.access import classification_allows, resolve_access_context
 from skills.catalog import _catalog_item, install_catalog_skill, sync_skillhub_catalog
 from skills.distillation import DistillationSource, distill_enterprise_skill
+from skills.local_store import local_skill_store
 from skills.store.marketplace import marketplace
 
 router = APIRouter()
@@ -91,12 +91,40 @@ _DISTILLABLE_SUFFIXES = {
 }
 
 
+def _ensure_enterprise_skill_local(row: EnterpriseSkill) -> bool:
+    tenant_id = str(getattr(row, "tenant_id", ""))
+    workspace_id = str(getattr(row, "workspace_id", ""))
+    source_digest = str(getattr(row, "source_digest", ""))
+    if not tenant_id or not workspace_id or not source_digest:
+        return True
+    try:
+        if not local_skill_store.company_available(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            runtime_id=row.runtime_id,
+            source_digest=source_digest,
+        ):
+            local_skill_store.write_company_skill(
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                runtime_id=row.runtime_id,
+                name=row.name,
+                description=row.value_summary or row.description,
+                instructions=row.instructions,
+                classification=row.classification,
+                source_digest=source_digest,
+            )
+    except (AttributeError, OSError, ValueError):
+        return False
+    return True
+
+
 def _enterprise_skill_item(row: EnterpriseSkill) -> dict[str, Any]:
     return {
         "id": row.id,
         "runtime_id": row.runtime_id,
         "name": row.name,
-        "description": row.description,
+        "description": row.value_summary or row.description,
         "value_summary": row.value_summary,
         "instructions": row.instructions,
         "source_files": list(row.source_files or []),
@@ -105,6 +133,7 @@ def _enterprise_skill_item(row: EnterpriseSkill) -> dict[str, Any]:
         "status": row.status,
         "published_at": row.published_at.isoformat() if row.published_at else None,
         "publication": "company",
+        "local_available": _ensure_enterprise_skill_local(row),
     }
 
 
@@ -131,13 +160,16 @@ async def list_skill_catalog(
         (
             await db.execute(
                 stmt.order_by(order.asc().nullslast(), SkillCatalogEntry.ai_score.desc()).limit(
-                    limit
+                    max(limit * 5, 100)
                 )
             )
         )
         .scalars()
         .all()
     )
+    rows = [
+        row for row in rows if local_skill_store.catalog_available(dict(row.source_metadata or {}))
+    ][:limit]
     installs = list(
         (
             await db.execute(
@@ -180,12 +212,19 @@ async def list_admin_skill_catalog(
         .scalars()
         .all()
     )
+    rows = [
+        row for row in rows if local_skill_store.catalog_available(dict(row.source_metadata or {}))
+    ]
     return {
         "items": [_catalog_item(row) for row in rows],
         "policy": {
             "sync_enabled": bool(settings.skillhub_sync_enabled),
             "sync_interval_seconds": int(settings.skillhub_sync_interval_seconds),
             "sync_retry_seconds": int(settings.skillhub_sync_retry_seconds),
+            "sync_hour": int(settings.skillhub_sync_hour),
+            "sync_minute": int(settings.skillhub_sync_minute),
+            "sync_timezone": str(settings.skillhub_sync_timezone),
+            "delivery": "local_mirror",
             "catalog_size": int(settings.skillhub_catalog_size),
             "retention": "append_only",
         },
@@ -243,10 +282,6 @@ async def install_catalog_entry(
         raise AppException(ErrorCodes.PERMISSION_DENIED.code, message=str(exc))
     except (ValueError, OSError) as exc:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc))
-    except httpx.HTTPError as exc:
-        raise AppException(
-            ErrorCodes.INTERNAL_ERROR.code, message=f"SkillHub source unavailable: {exc}"
-        )
     return {"installed": item}
 
 
@@ -315,6 +350,7 @@ async def list_company_skills(
             _enterprise_skill_item(row)
             for row in rows
             if classification_allows(access.clearance, row.classification)
+            and _ensure_enterprise_skill_local(row)
         ]
     }
 
@@ -402,6 +438,10 @@ async def distill_company_skill(
         )
     )
     if existing is not None:
+        if not _ensure_enterprise_skill_local(existing):
+            raise AppException(
+                ErrorCodes.INTERNAL_ERROR.code, message="公司 Skill 写入本地镜像失败"
+            )
         return {"skill": _enterprise_skill_item(existing), "deduplicated": True}
 
     skill_id = str(uuid.uuid4())
@@ -411,7 +451,7 @@ async def distill_company_skill(
         workspace_id=workspace_id,
         runtime_id=f"company-{skill_id}@1.0.0",
         name=name.strip(),
-        description=description.strip(),
+        description=distilled.value_summary,
         value_summary=distilled.value_summary,
         instructions=distilled.instructions,
         source_digest=distilled.source_digest,
@@ -422,6 +462,8 @@ async def distill_company_skill(
         created_by=current_user.id,
         published_by=current_user.id,
     )
+    if not _ensure_enterprise_skill_local(row):
+        raise AppException(ErrorCodes.INTERNAL_ERROR.code, message="公司 Skill 写入本地镜像失败")
     db.add(row)
     await db.commit()
     await db.refresh(row)
@@ -479,11 +521,11 @@ async def list_skills(current_user: User = Depends(get_current_admin_user)) -> d
 async def install_skill(
     req: SkillInstallRequest, current_user: User = Depends(get_current_admin_user)
 ) -> dict[str, Any]:
-    try:
-        installed = marketplace.install_from_git(req.git_url, req.ref)
-    except Exception as exc:  # noqa: BLE001
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message=f"install failed: {exc}")
-    return {"installed": installed.__dict__, "user_id": current_user.id}
+    del req, current_user
+    raise AppException(
+        ErrorCodes.PERMISSION_DENIED.code,
+        message="外部 Git 即时安装已停用；请等待每天 06:30 的本地镜像同步或由管理员手动同步目录",
+    )
 
 
 @router.post("/skills/create")
