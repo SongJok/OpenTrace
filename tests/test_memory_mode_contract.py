@@ -213,3 +213,68 @@ def test_disabled_memory_learning_cannot_claim_persistence() -> None:
         model_content="好的，我已经永久记住了。",
     )
     assert governed == "当前持久记忆学习已关闭，本次不会新增、更新或遗忘个人记忆。"
+
+
+def test_direct_memory_answer_understands_colloquial_personal_name_question() -> None:
+    from kernel.agent_loop.runner import AgentLoop
+
+    answer = AgentLoop._direct_memory_answer(
+        "你还记得我怎么称呼吗？",
+        [
+            {
+                "id": "memory-name",
+                "content": "我的代号是 星轨-9152",
+                "memory_key": "profile.name",
+                "updated_at": "2026-08-03T08:00:00+00:00",
+            }
+        ],
+    )
+
+    assert answer == "根据你已确认的记忆，我的代号是 星轨-9152。"
+
+
+def test_grounded_company_context_prevents_false_unavailable_clarification() -> None:
+    from kernel.agent_loop.contracts import (
+        ExecutionPlan,
+        ExecutionProfile,
+        ExecutionStep,
+        IntentPlan,
+        PlanningDecision,
+        SideEffect,
+    )
+    from kernel.agent_loop.runner import AgentLoop
+
+    decision = PlanningDecision(
+        intent=IntentPlan(
+            goal="查询公司全称",
+            task_type="information_query",
+            capabilities=(),
+            ambiguity="当前能力无法读取企业大脑",
+            risk=SideEffect.READ,
+            execution_profile=ExecutionProfile.AUTO,
+            clarification_question="请提供公司信息所在页面。",
+        ),
+        execution_plan=ExecutionPlan(
+            goal="查询公司全称",
+            steps=(ExecutionStep(id="s1", objective="澄清公司信息来源"),),
+        ),
+    )
+
+    grounded = AgentLoop._apply_grounded_context_policy(
+        decision,
+        context_manifest={
+            "company_brain": {
+                "answer_context_available": True,
+                "entry_count": 1,
+                "top_score": 0.88,
+            }
+        },
+    )
+
+    assert grounded.intent.ambiguity is None
+    assert grounded.intent.clarification_question is None
+    prompt = AgentLoop._planning_grounding_context(
+        {"company_brain": {"answer_context_available": True}, "memory_count": 2}
+    )
+    assert "不得声称无法访问企业大脑" in prompt
+    assert "2 条" in prompt

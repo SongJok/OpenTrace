@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -26,6 +25,7 @@ from infra.storage.models import (
 )
 from knowledge.access import accessible_source_predicate, resolve_access_context
 from knowledge.domain import KNOWLEDGE_QUERY_PLAN_VERSION
+from services.retrieval_matching import expand_retrieval_terms, semantic_relevance_score
 
 logger = get_logger(__name__)
 
@@ -89,51 +89,20 @@ def infer_knowledge_query_type(query: str) -> str:
 
 
 def _tokens(query: str) -> list[str]:
-    """为中英文查询生成可用于 ILIKE/FTS 兜底的轻量词元。
+    """为中英文查询生成 ILIKE/FTS 粗召回词，并补充稳定的业务同义表达。
 
-    PostgreSQL ``simple`` 配置不会对中文分词。旧逻辑会把“退款政策是什么”
-    当成一个完整词元，导致页面只包含“退款政策”时无法命中。这里保留完整
-    语义片段，同时补充 2-4 字窗口，让中文查询无需额外分词服务也能工作。
+    PostgreSQL ``simple`` 配置不会对中文分词；统一召回词生成器会保留原始语义片段、
+    2-4 字窗口和命中业务概念的同义词，不依赖外部分词服务。
     """
-    text = (query or "").lower()
-    for marker in (
-        "请问",
-        "麻烦",
-        "帮我",
-        "根据知识库",
-        "根据文档",
-        "介绍一下",
-        "是什么",
-        "什么是",
-        "为什么",
-        "如何",
-        "怎么",
-        "有哪些",
-    ):
-        text = text.replace(marker, " ")
 
-    tokens: list[str] = []
-    for segment in re.findall(r"[a-z0-9][a-z0-9._-]*|[\u4e00-\u9fff]{2,}", text):
-        if segment not in tokens:
-            tokens.append(segment)
-        if re.fullmatch(r"[\u4e00-\u9fff]{3,}", segment):
-            for width in (4, 3, 2):
-                if len(segment) < width:
-                    continue
-                for index in range(len(segment) - width + 1):
-                    candidate = segment[index : index + width]
-                    if candidate not in tokens:
-                        tokens.append(candidate)
-    return tokens[:24]
+    return expand_retrieval_terms(query, limit=32)
 
 
-def _score(text: str, title: str, tokens: list[str]) -> float:
+def _score(text: str, title: str, tokens: list[str], *, query: str = "") -> float:
     if not tokens:
         return 0.0
-    haystack = f"{title}\n{text}".lower()
-    matches = sum(1 for token in tokens if token in haystack)
-    title_matches = sum(1 for token in tokens if token in (title or "").lower())
-    return min(0.99, matches / len(tokens) * 0.72 + title_matches / len(tokens) * 0.22)
+    effective_query = query or " ".join(tokens)
+    return semantic_relevance_score(effective_query, text, title=title)
 
 
 def _governed_score(base_score: float, source: KnowledgeSource, authority: str) -> float:
@@ -493,7 +462,7 @@ async def search_knowledge(
             seen.add(key)
             results.append(hot)
     for page, source, version in rows:
-        score = _score(page.content, page.title, tokens)
+        score = _score(page.content, page.title, tokens, query=query)
         if score <= 0:
             continue
         key = f"page:{page.id}"
@@ -525,7 +494,7 @@ async def search_knowledge(
         key = f"claim:{claim.id}"
         if key in seen:
             continue
-        score = _score(claim.text, page.title, tokens)
+        score = _score(claim.text, page.title, tokens, query=query)
         if score <= 0:
             continue
         results.append(

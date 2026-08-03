@@ -53,6 +53,7 @@ from services.calendar import (
 )
 from services.company_brain import retrieve_company_brain
 from services.enterprise_cognition import load_enterprise_context
+from services.retrieval_matching import expand_retrieval_terms, semantic_relevance_score
 
 
 @dataclass
@@ -835,12 +836,15 @@ class ContextAssembler:
         *,
         graph_boosts: dict[str, float] | None = None,
     ) -> list[UserMemory]:
-        query_terms = ContextAssembler._search_terms(query)
         boosts = graph_boosts or {}
 
         def relevance(item: UserMemory) -> tuple[bool, float, datetime]:
-            content_terms = ContextAssembler._search_terms(item.content or "")
-            overlap = len(query_terms & content_terms) / max(1, len(query_terms))
+            title = str(getattr(item, "title", "") or "")
+            memory_key = str(getattr(item, "memory_key", "") or "")
+            tags_json = str(getattr(item, "tags_json", "") or "")
+            content = str(getattr(item, "content", "") or "")
+            searchable = "\n".join((title, memory_key, tags_json, content))
+            semantic_score = semantic_relevance_score(query, searchable, title=title)
             updated_at = item.updated_at or datetime.min.replace(tzinfo=UTC)
             if updated_at.tzinfo is None:
                 updated_at = updated_at.replace(tzinfo=UTC)
@@ -848,19 +852,28 @@ class ContextAssembler:
             salience_decay = 1.0 if item.pinned else max(0.60, 0.995**age_days)
             # 置顶项和回答风格偏好可跨主题生效；其余个人事实、工作流及项目记忆
             # 必须与当前检索主题相关，避免把最多 24 条无关记忆灌入每一轮。
-            always_relevant = bool(item.pinned) or (
+            schedule_relevant = bool(
                 item.kind == "preference"
-                and getattr(item, "personal_category", "response_style") == "response_style"
+                and re.search(r"工作时间|常用时区|默认会议时长|可用时间", content)
+                and re.search(r"安排|日程|会议|预约|排期|明天|后天|下周", query or "")
+            )
+            always_relevant = (
+                bool(item.pinned)
+                or schedule_relevant
+                or (
+                    item.kind == "preference"
+                    and getattr(item, "personal_category", "response_style") == "response_style"
+                )
             )
             value = (
                 (3.0 if item.pinned else 0.0)
-                + overlap * 2.5
+                + semantic_score * 2.5
                 + float(item.salience or 0.0) * salience_decay
                 + float(item.confidence or 0.0) * 0.25
                 + float(boosts.get(item.id, 0.0)) * 1.5
             )
             return (
-                always_relevant or overlap > 0 or item.id in boosts,
+                always_relevant or semantic_score >= 0.20 or item.id in boosts,
                 value,
                 updated_at,
             )
@@ -949,38 +962,9 @@ class ContextAssembler:
 
     @staticmethod
     def _memory_search_terms(text: str, *, limit: int = 24) -> list[str]:
-        """生成适合数据库粗召回的稳定词项；精排仍由 `_rank_memories` 完成。"""
+        """生成数据库粗召回词，并补充个人称呼、流程等常见口语同义表达。"""
 
-        normalized = str(text or "").lower()
-        stop_terms = {
-            "什么",
-            "怎么",
-            "这个",
-            "那个",
-            "最近",
-            "对话",
-            "主题",
-            "当前",
-            "一下",
-            "please",
-            "what",
-            "which",
-        }
-        candidates: list[str] = re.findall(r"[a-z0-9_:-]{2,}", normalized)
-        for run in re.findall(r"[\u4e00-\u9fff]{2,}", normalized):
-            if len(run) <= 8:
-                candidates.append(run)
-            candidates.extend(run[index : index + 2] for index in range(len(run) - 1))
-        result: list[str] = []
-        seen: set[str] = set()
-        for term in candidates:
-            if term in stop_terms or term in seen:
-                continue
-            seen.add(term)
-            result.append(term)
-            if len(result) >= limit:
-                break
-        return result
+        return expand_retrieval_terms(text, limit=limit)
 
     @staticmethod
     def _business_context_requested(query: str) -> bool:

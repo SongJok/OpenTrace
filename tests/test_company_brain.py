@@ -108,6 +108,7 @@ async def test_company_brain_retrieval_explores_only_query_relevant_units() -> N
     assert any("Worker 执行" in entry for entry in recall.entries)
     assert not any("报销" in entry for entry in recall.entries)
     assert recall.manifest()["isolation"] == "internal_only"
+    assert "不得用常识或未引用的外部知识补全" in recall.prompt
 
 
 def test_company_brain_rejects_planner_and_offline_fallback_outputs() -> None:
@@ -294,3 +295,46 @@ def test_company_source_status_is_flushed_before_recompilation() -> None:
     flush = source.rindex("await db.flush()", processing, compilation)
 
     assert flush < compilation
+
+
+@pytest.mark.asyncio
+async def test_company_brain_retrieval_handles_colloquial_enterprise_questions() -> None:
+    profile = SimpleNamespace(
+        id="company-1",
+        legal_name="北京陶乐科技有限公司",
+        short_name="陶乐",
+        description="总部位于北京，在成都设有办公地点，主营游戏社交产品。",
+        current_version_id="version-3",
+    )
+    version = SimpleNamespace(
+        version=3,
+        content=(
+            "# 🧠 陶乐 企业大脑（COMPANY.md）\n\n"
+            "## 🔒 长期记忆\n\n"
+            "### 人事管理与考勤制度\n\n"
+            "- 工作时间：支持岗 9:00-18:00；运营岗 10:00-19:00。\n\n"
+            "### OA审批-印章使用借用审批流程\n\n"
+            "- 钉钉工作台进入 OA 审批，选择用印盖章或因公借出。\n"
+            "- 借出须填写原因和归还日期，审批通过后向保管人领用。\n\n"
+            "### 报销与差旅管理\n\n"
+            "- 每周三提交财务，周四出款。"
+        ),
+    )
+
+    async def retrieve(query: str):
+        db = AsyncMock()
+        db.scalar = AsyncMock(side_effect=[profile, version])
+        return await company_brain.retrieve_company_brain(db, query=query)
+
+    company_name = await retrieve("我们单位全称叫什么？")
+    work_hours = await retrieve("上下班几点？")
+    seal_borrow = await retrieve("我想拿公章外出怎么办？")
+    personal_name = await retrieve("你记得我怎么称呼吗？")
+
+    assert company_name.entries[0].startswith("### 公司档案")
+    assert "北京陶乐科技有限公司" in company_name.entries[0]
+    assert work_hours.entries[0].startswith("### 人事管理与考勤制度")
+    assert all("报销与差旅" not in entry for entry in work_hours.entries)
+    assert seal_borrow.entries[0].startswith("### OA审批-印章使用借用审批流程")
+    assert seal_borrow.manifest()["answer_context_available"] is True
+    assert personal_name.entries == ()

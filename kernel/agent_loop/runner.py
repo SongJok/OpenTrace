@@ -50,6 +50,7 @@ from kernel.agent_loop.write_intent import (
 )
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, capture_model_calls, get_model_gateway
+from services.retrieval_matching import semantic_relevance_score
 
 EventEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
 _SENSITIVE_KEYS = {
@@ -380,6 +381,11 @@ class AgentLoop:
             context.messages,
             current_message_count=context.current_message_count,
         )
+        grounding_context = self._planning_grounding_context(context.context_manifest)
+        if grounding_context:
+            planning_context = "\n".join(
+                part for part in (grounding_context, planning_context) if part
+            )
         calendar_write_arguments = (
             dict(existing_deterministic_approval.arguments or {})
             if existing_deterministic_approval is not None
@@ -440,6 +446,10 @@ class AgentLoop:
                     pending_action=pending_action,
                 )
             model_calls.extend(planning_calls)
+        decision = self._apply_grounded_context_policy(
+            decision,
+            context_manifest=context.context_manifest,
+        )
         if deterministic_calendar_enabled:
             calendar_spec = next(
                 (spec for spec in tool_specs if spec.name == "create_calendar_event"),
@@ -1742,6 +1752,56 @@ class AgentLoop:
         return sanitized
 
     @staticmethod
+    def _planning_grounding_context(context_manifest: dict[str, Any]) -> str:
+        """只向规划器暴露命中状态，避免其误判“无能力读取”已装配的内部上下文。"""
+
+        company = dict(context_manifest.get("company_brain") or {})
+        memory_count = int(context_manifest.get("memory_count") or 0)
+        lines: list[str] = []
+        if company.get("answer_context_available"):
+            lines.append(
+                "当前回合已经命中并注入与问题相关的企业大脑资料，可直接依据上下文回答；"
+                "不得声称无法访问企业大脑，也不得仅因缺少工具而要求用户重复提供资料。"
+            )
+        if memory_count:
+            lines.append(
+                f"当前回合已经命中 {memory_count} 条当前用户的受治理个人记忆；"
+                "直接询问命中事实时无需外部能力。"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _apply_grounded_context_policy(
+        decision: PlanningDecision,
+        *,
+        context_manifest: dict[str, Any],
+    ) -> PlanningDecision:
+        """已有相关企业证据时，阻止规划器用“能力不支持”提前结束问答。"""
+
+        company = dict(context_manifest.get("company_brain") or {})
+        if not company.get("answer_context_available"):
+            return decision
+        intent = decision.intent
+        if (
+            intent.risk != SideEffect.READ
+            or intent.capabilities
+            or not intent.clarification_question
+        ):
+            return decision
+        grounded_intent = IntentPlan(
+            goal=intent.goal,
+            task_type=intent.task_type,
+            capabilities=intent.capabilities,
+            ambiguity=None,
+            risk=intent.risk,
+            execution_profile=intent.execution_profile,
+            execution_mode=intent.execution_mode,
+            expected_outputs=intent.expected_outputs,
+            clarification_question=None,
+        )
+        return PlanningDecision(intent=grounded_intent, execution_plan=decision.execution_plan)
+
+    @staticmethod
     def _planning_context(
         messages: list[dict[str, Any]],
         *,
@@ -2206,9 +2266,24 @@ class AgentLoop:
             }
             if not allowed_trailing:
                 return None
-        chinese_question = "我的" in normalized and any(
+        personal_subject = any(
             marker in normalized
-            for marker in ("是什么", "叫什么", "多少", "哪个", "哪一个", "还记得", "记得吗")
+            for marker in ("我的", "我叫", "记得我", "称呼我", "我怎么", "我平时", "我通常")
+        )
+        chinese_question = personal_subject and any(
+            marker in normalized
+            for marker in (
+                "是什么",
+                "叫什么",
+                "多少",
+                "哪个",
+                "哪一个",
+                "还记得",
+                "记得吗",
+                "称呼",
+                "喜欢什么",
+                "偏好什么",
+            )
         )
         english_question = bool(
             re.search(r"(?:what(?:'s| is)|do you remember)\s+my\b", query or "", flags=re.I)
@@ -2216,15 +2291,20 @@ class AgentLoop:
         if not chinese_question and not english_question:
             return None
 
-        query_terms = ContextAssembler._search_terms(query)
         ranked: list[tuple[float, str, int, dict[str, Any]]] = []
         for index, memory in enumerate(memories):
             content = str(memory.get("content") or "").strip()
             if not content:
                 continue
-            content_terms = ContextAssembler._search_terms(content)
-            overlap = len(query_terms & content_terms) / max(1, len(query_terms))
-            if overlap < 0.25:
+            searchable = "\n".join(
+                (
+                    str(memory.get("memory_key") or ""),
+                    str(memory.get("personal_category") or ""),
+                    content,
+                )
+            )
+            overlap = semantic_relevance_score(query, searchable)
+            if overlap < 0.24:
                 continue
             # 同一问题命中多个个人事实时，最近确认的值优先。访问次数会抬高
             # salience，但不能让旧事实覆盖用户后来确认的新事实。

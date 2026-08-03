@@ -34,6 +34,10 @@ from services.rag_query_planning import (
     lane_weight,
     normalize_rag_evidence,
 )
+from services.retrieval_matching import (
+    expand_retrieval_terms,
+    semantic_relevance_score,
+)
 
 
 class RagAgent(BaseAgent):
@@ -127,6 +131,8 @@ class RagAgent(BaseAgent):
                 seen.add(term)
                 expanded.append(term)
 
+        for term in expand_retrieval_terms(q, limit=48):
+            add(term)
         for term in terms:
             add(term)
 
@@ -317,7 +323,21 @@ class RagAgent(BaseAgent):
             "怎么操作",
         ]
         comparison_kw = ["区别", "对比", "不同", "一样吗", "哪个更好", "比较", "vs"]
-        memory_kw = ["偏好", "之前", "上次", "历史", "我记得", "我的设置", "我设置", "记忆"]
+        memory_kw = [
+            "偏好",
+            "之前",
+            "上次",
+            "历史",
+            "我记得",
+            "记得我",
+            "还记得",
+            "我的设置",
+            "我设置",
+            "我的名字",
+            "我的代号",
+            "怎么称呼我",
+            "记忆",
+        ]
 
         scores = {
             "definition": sum(1 for k in definition_kw if k in q),
@@ -765,9 +785,6 @@ class RagAgent(BaseAgent):
                     if quarantined:
                         await db.commit()
 
-                import re
-
-                q_tokens = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{1,}", rewritten_query.lower())
                 for m in rows:
                     mt = str(m.memory_type or "")
                     if mt == "semantic" and "semantic_memory" not in sources:
@@ -775,8 +792,16 @@ class RagAgent(BaseAgent):
                     if mt == "episodic" and "episodic_memory" not in sources:
                         continue
 
-                    hay = f"{m.title or ''} {m.content or ''}".lower()
-                    hit = any(tok in hay for tok in q_tokens) if q_tokens else False
+                    hay = " ".join(
+                        (
+                            str(m.title or ""),
+                            str(m.memory_key or ""),
+                            str(m.tags_json or ""),
+                            str(m.content or ""),
+                        )
+                    )
+                    memory_relevance = semantic_relevance_score(rewritten_query, hay)
+                    hit = memory_relevance >= 0.24
                     if not hit:
                         if not (
                             mt == "semantic" and getattr(m, "pinned", False) and is_memory_intent
@@ -785,7 +810,9 @@ class RagAgent(BaseAgent):
 
                     txt = (m.content or "")[:500]
                     memory_tier = "supporting" if is_memory_intent else "contextual"
-                    memory_score = 0.72 if hit else 0.55
+                    memory_score = (
+                        min(0.88, max(0.55, 0.48 + memory_relevance * 0.42)) if hit else 0.55
+                    )
                     if not is_memory_intent:
                         memory_score = max(0.35, memory_score - 0.15)
                     evidence.append(

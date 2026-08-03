@@ -222,3 +222,9 @@ def test_materializer_creates_meta_wiki_data_and_bidirectional_links(tmp_path: P
     assert "[[actions/" in overview
     assert "## 反向链接" in action
     assert "managed_by: opentrace" in action
+
+
+def test_knowledge_query_tokens_expand_colloquial_enterprise_synonyms():
+    tokens = _tokens("我想拿公章外出怎么办")
+
+    assert {"公章", "印章", "借用", "流程"} <= set(tokens)
