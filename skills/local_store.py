@@ -5,11 +5,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import fcntl
 import hashlib
 import json
 import os
 import re
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -61,6 +65,29 @@ class LocalSkillStore:
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         temporary.write_bytes(content)
         os.replace(temporary, path)
+
+    def _acquire_bootstrap_lock(self):
+        handle = (self.root() / ".bootstrap.lock").open("a+", encoding="utf-8")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return handle
+
+    @asynccontextmanager
+    async def bootstrap_lock(self) -> AsyncIterator[None]:
+        """跨 API/Worker 进程串行化首次镜像同步。"""
+
+        handle = await asyncio.to_thread(self._acquire_bootstrap_lock)
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(fcntl.flock, handle.fileno(), fcntl.LOCK_UN)
+            await asyncio.to_thread(handle.close)
+
+    def has_catalog_files(self) -> bool:
+        catalog_root = self.root() / "catalog"
+        try:
+            return any(catalog_root.glob("*/*/SKILL.md"))
+        except OSError:
+            return False
 
     def write_catalog_skill(
         self,

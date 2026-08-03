@@ -73,6 +73,12 @@ async def lifespan(_: FastAPI):
             enabled=True,
         )
     await ensure_runtime_schema()
+    from skills.catalog import bootstrap_skill_catalog_if_empty
+
+    try:
+        await bootstrap_skill_catalog_if_empty()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("skillhub_startup_bootstrap_failed", error=str(exc))
     yield
 
 

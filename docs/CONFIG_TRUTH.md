@@ -64,7 +64,7 @@
 | `ALERT_SCHEDULER_POLL_SECONDS` | `10` | Worker 扫描到期预警规则的周期 |
 | `ALERT_SCHEDULER_RETRY_SECONDS` | `60` | 主动预警查询失败后的恢复重试间隔 |
 
-`staging` 与 `production` 会强制关闭动态 Skill 安装、创建、进程内执行和子进程执行。公共 Skill 由 Knowledge Worker 启动时补齐，并按 `SKILLHUB_SYNC_TIMEZONE` 每天 06:30 下载到共享本地镜像；Skills 页面和安装接口只读取该镜像，不在用户请求中访问 GitHub 或 SkillHub。公司 Skill 由管理员蒸馏时写入同一共享卷下的租户/工作区隔离目录。生产部署应为 `skills/catalog_mirror` 配置 API/Worker 共享持久卷。
+`staging` 与 `production` 会强制关闭动态 Skill 安装、创建、进程内执行和子进程执行。API 与 Knowledge Worker 启动时会检测公共 Skill 本地镜像，仅在没有可用 Skill 时立即补齐一次，并按 `SKILLHUB_SYNC_TIMEZONE` 每天 06:30 下载更新到共享本地镜像；Skills 页面和安装接口只读取该镜像，不在用户请求中访问 GitHub 或 SkillHub。公司 Skill 由管理员蒸馏时写入同一共享卷下的租户/工作区隔离目录。生产部署应为 `skills/catalog_mirror` 配置 API/Worker 共享持久卷。
 
 ## LLM 配置组命名与用户模型选择
 

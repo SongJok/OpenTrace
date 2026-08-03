@@ -500,6 +500,40 @@ async def install_catalog_skill(
         return _catalog_item(entry, row)
 
 
+async def _has_usable_local_catalog() -> bool:
+    if not local_skill_store.has_catalog_files():
+        return False
+    async with AsyncSessionLocal() as db:
+        rows = list(
+            (
+                await db.execute(
+                    select(SkillCatalogEntry)
+                    .order_by(SkillCatalogEntry.synced_at.desc())
+                    .limit(max(100, int(settings.skillhub_catalog_size) * 4))
+                )
+            )
+            .scalars()
+            .all()
+        )
+    return any(local_skill_store.catalog_available(dict(row.source_metadata or {})) for row in rows)
+
+
+async def bootstrap_skill_catalog_if_empty() -> dict[str, Any]:
+    """本地目录为空时在启动阶段同步一次，避免首次打开 Skills 页面为空。"""
+
+    if not settings.skillhub_sync_enabled:
+        return {"triggered": False, "reason": "sync_disabled"}
+    async with local_skill_store.bootstrap_lock():
+        if await _has_usable_local_catalog():
+            return {"triggered": False, "reason": "local_mirror_ready"}
+        logger.info("skillhub_startup_bootstrap_started")
+        result = await sync_skillhub_catalog()
+        if not await _has_usable_local_catalog():
+            raise RuntimeError("skillhub_startup_bootstrap_empty")
+        logger.info("skillhub_startup_bootstrap_completed", **result)
+        return {"triggered": True, "reason": "local_mirror_empty", "synced": result}
+
+
 def _seconds_until_next_sync(now: datetime | None = None) -> int:
     try:
         timezone = ZoneInfo(str(settings.skillhub_sync_timezone or "Asia/Shanghai"))
@@ -523,9 +557,13 @@ def _seconds_until_next_sync(now: datetime | None = None) -> int:
 
 async def skillhub_sync_loop() -> None:
     retry_interval = max(5, int(settings.skillhub_sync_retry_seconds))
+    startup_checked = False
     while True:
         try:
-            if settings.skillhub_sync_enabled:
+            if not startup_checked:
+                await bootstrap_skill_catalog_if_empty()
+                startup_checked = True
+            elif settings.skillhub_sync_enabled:
                 await sync_skillhub_catalog()
         except asyncio.CancelledError:
             raise

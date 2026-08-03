@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -134,12 +135,12 @@ async def test_catalog_loop_retries_quickly_after_startup_failure(
     attempts = 0
     delays: list[int] = []
 
-    async def fake_sync() -> dict[str, int]:
+    async def fake_bootstrap() -> dict[str, Any]:
         nonlocal attempts
         attempts += 1
         if attempts == 1:
             raise RuntimeError("catalog table is not ready")
-        return {"popular": 30, "recent": 30, "stored": 50}
+        return {"triggered": True}
 
     async def fake_sleep(seconds: int) -> None:
         delays.append(seconds)
@@ -148,7 +149,7 @@ async def test_catalog_loop_retries_quickly_after_startup_failure(
 
     monkeypatch.setattr(catalog.settings, "skillhub_sync_enabled", True)
     monkeypatch.setattr(catalog.settings, "skillhub_sync_retry_seconds", 60)
-    monkeypatch.setattr(catalog, "sync_skillhub_catalog", fake_sync)
+    monkeypatch.setattr(catalog, "bootstrap_skill_catalog_if_empty", fake_bootstrap)
     monkeypatch.setattr(catalog, "_seconds_until_next_sync", lambda: 3600)
     monkeypatch.setattr(catalog.asyncio, "sleep", fake_sleep)
 
@@ -157,6 +158,60 @@ async def test_catalog_loop_retries_quickly_after_startup_failure(
 
     assert attempts == 2
     assert delays == [60, 3600]
+
+
+@pytest.mark.asyncio
+async def test_startup_bootstrap_syncs_once_when_local_mirror_is_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checks = iter([False, True])
+    sync_calls = 0
+
+    async def fake_has_catalog() -> bool:
+        return next(checks)
+
+    async def fake_sync() -> dict[str, int]:
+        nonlocal sync_calls
+        sync_calls += 1
+        return {"downloaded": 3, "preserved_local": 0}
+
+    monkeypatch.setattr(catalog.settings, "skillhub_sync_enabled", True)
+    monkeypatch.setattr(catalog.settings, "skillhub_local_mirror_dir", str(tmp_path / "mirror"))
+    monkeypatch.setattr(catalog, "_has_usable_local_catalog", fake_has_catalog)
+    monkeypatch.setattr(catalog, "sync_skillhub_catalog", fake_sync)
+
+    result = await catalog.bootstrap_skill_catalog_if_empty()
+
+    assert result["triggered"] is True
+    assert result["reason"] == "local_mirror_empty"
+    assert sync_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_startup_bootstrap_skips_when_local_mirror_is_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fail_if_synced() -> dict[str, int]:
+        raise AssertionError("本地镜像已就绪时不应重复启动同步")
+
+    monkeypatch.setattr(catalog.settings, "skillhub_sync_enabled", True)
+    monkeypatch.setattr(catalog.settings, "skillhub_local_mirror_dir", str(tmp_path / "mirror"))
+    monkeypatch.setattr(catalog, "_has_usable_local_catalog", AsyncMock(return_value=True))
+    monkeypatch.setattr(catalog, "sync_skillhub_catalog", fail_if_synced)
+
+    result = await catalog.bootstrap_skill_catalog_if_empty()
+
+    assert result == {"triggered": False, "reason": "local_mirror_ready"}
+
+
+def test_api_startup_checks_empty_skill_mirror_after_schema_guard() -> None:
+    source = (Path(__file__).resolve().parents[1] / "gateway/api_gateway/main.py").read_text(
+        encoding="utf-8"
+    )
+
+    schema_index = source.index("await ensure_runtime_schema()")
+    bootstrap_index = source.index("await bootstrap_skill_catalog_if_empty()")
+    assert schema_index < bootstrap_index
 
 
 def test_daily_sync_targets_0630_in_configured_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
