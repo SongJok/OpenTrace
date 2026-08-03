@@ -2429,13 +2429,10 @@ export interface SkillCatalogItem {
   platform_disabled: boolean
   platform_note?: string
   local_available: boolean
-  local_revision?: string | null
-  local_cached_at?: string | null
 }
 
 export interface SkillCatalogSyncPolicy {
   sync_enabled: boolean
-  sync_interval_seconds: number
   sync_retry_seconds: number
   sync_hour: number
   sync_minute: number

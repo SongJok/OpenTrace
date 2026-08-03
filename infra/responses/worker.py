@@ -26,6 +26,7 @@ from infra.observability.tracer import get_tracer
 from infra.responses.repository import (
     add_outbox,
     append_event,
+    claim_exhausted_response,
     claim_response,
     release_lease,
     renew_lease,
@@ -194,7 +195,43 @@ async def execute_response(response_id: str | None = None) -> bool:
         await set_worker_session(db)
         response = await claim_response(db, owner=OWNER, response_id=response_id)
         if response is None:
-            return False
+            response = await claim_exhausted_response(db, response_id=response_id)
+            if response is None:
+                return False
+            response.status = "failed"
+            response.error_code = "response_attempts_exhausted"
+            response.error_message = "响应执行多次失败且恢复次数已耗尽。"
+            response.completed_at = datetime.now(UTC)
+            await append_event(
+                db,
+                response_id=response.id,
+                event_type="response.failed",
+                payload={
+                    "status": "failed",
+                    "code": response.error_code,
+                    "message": response.error_message,
+                },
+            )
+            if response.goal_id:
+                goal = await db.get(GoalRun, response.goal_id)
+                if goal:
+                    goal.status = "failed"
+            await _update_task_run(
+                db,
+                response,
+                status="failed",
+                error=response.error_message,
+                finished=True,
+            )
+            await release_lease(db, response)
+            await db.commit()
+            logger.warning(
+                "response_attempts_exhausted",
+                response_id=response.id,
+                attempt_count=response.attempt_count,
+                max_attempts=response.max_attempts,
+            )
+            return True
         response_id = response.id
         await append_event(
             db,
@@ -211,8 +248,10 @@ async def execute_response(response_id: str | None = None) -> bool:
     heartbeat = asyncio.create_task(_heartbeat(response_id))
     tenant_limit = _tenant_semaphore(response.tenant_id)
     deterministic_memory_projected = False
-    await tenant_limit.acquire()
+    tenant_slot_acquired = False
     try:
+        await tenant_limit.acquire()
+        tenant_slot_acquired = True
         async with AsyncSessionLocal() as db:
             await set_worker_session(db)
             response = await db.get(ResponseRecord, response_id, with_for_update=True)
@@ -510,12 +549,19 @@ async def execute_response(response_id: str | None = None) -> bool:
                 await db.commit()
         return False
     finally:
-        tenant_limit.release()
+        if tenant_slot_acquired:
+            tenant_limit.release()
         heartbeat.cancel()
-        try:
-            await heartbeat
-        except asyncio.CancelledError:
-            pass
+        heartbeat_result = await asyncio.gather(heartbeat, return_exceptions=True)
+        heartbeat_error = heartbeat_result[0] if heartbeat_result else None
+        if isinstance(heartbeat_error, BaseException) and not isinstance(
+            heartbeat_error, asyncio.CancelledError
+        ):
+            logger.warning(
+                "response_heartbeat_task_failed",
+                response_id=response_id,
+                error=str(heartbeat_error),
+            )
 
 
 async def _heartbeat(response_id: str) -> None:
@@ -525,6 +571,21 @@ async def _heartbeat(response_id: str) -> None:
             await set_worker_session(db)
             if not await renew_lease(db, response_id, OWNER):
                 return
+
+
+def _response_id_from_stream_fields(fields: dict) -> str:
+    raw = fields.get("data")
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    if not isinstance(raw, str):
+        raise ValueError("Redis Stream 消息缺少字符串 data 字段")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("Redis Stream data 必须是 JSON 对象")
+    response_id = str(payload.get("response_id") or "").strip()
+    if not response_id:
+        raise ValueError("Redis Stream 消息缺少 response_id")
+    return response_id
 
 
 async def _next_item_sequence(db, response_id: str) -> int:
@@ -589,8 +650,18 @@ async def _reclaim_pending(redis, *, idle_ms: int = 150_000, count: int = 20) ->
     if claimed:
         RESPONSE_LEASE_RECOVERY_TOTAL.inc(len(claimed))
     for message_id, fields in claimed:
-        data = json.loads(str(fields.get("data") or "{}"))
-        await execute_response(str(data.get("response_id") or "") or None)
+        try:
+            response_id = _response_id_from_stream_fields(fields)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.warning(
+                "response_stream_invalid_message",
+                message_id=message_id,
+                error=str(exc),
+            )
+            await redis.xack(STREAM, GROUP, message_id)
+            processed += 1
+            continue
+        await execute_response(response_id)
         await redis.xack(STREAM, GROUP, message_id)
         processed += 1
     return processed
@@ -600,8 +671,17 @@ async def _process_stream_message(
     redis, message_id: str, fields: dict, semaphore: asyncio.Semaphore
 ) -> bool:
     async with semaphore:
-        data = json.loads(str(fields.get("data") or "{}"))
-        await execute_response(str(data.get("response_id") or "") or None)
+        try:
+            response_id = _response_id_from_stream_fields(fields)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.warning(
+                "response_stream_invalid_message",
+                message_id=message_id,
+                error=str(exc),
+            )
+            await redis.xack(STREAM, GROUP, message_id)
+            return False
+        await execute_response(response_id)
         await redis.xack(STREAM, GROUP, message_id)
         return True
 

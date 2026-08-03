@@ -6,7 +6,7 @@ import hashlib
 import re
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, HttpUrl
@@ -934,11 +934,11 @@ async def sync_dingtalk_connector(
     }
     if bundle.knowledge_items:
         snapshots = []
-        configured_acl = (
-            config.get("default_acl") if isinstance(config.get("default_acl"), list) else []
-        )
+        default_acl: object = config.get("default_acl")
+        configured_acl: list[Any] = default_acl if isinstance(default_acl, list) else []
         for item in bundle.knowledge_items:
-            raw_acl = item.acl or configured_acl
+            item_acl: object = item.acl
+            raw_acl: list[Any] = item_acl if isinstance(item_acl, list) else configured_acl
             snapshots.append(
                 ConnectorSnapshot(
                     external_id=item.external_id,

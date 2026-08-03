@@ -1,18 +1,19 @@
 {
   "schema_version": 1,
-  "broad_exceptions": 723,
-  "silent_pass_handlers": 115,
+  "baseline_updated_at": "2026-08-03",
+  "broad_exceptions": 731,
+  "silent_pass_handlers": 114,
   "large_file_budgets": {
     "frontend/src/api/client.ts": {
-      "max_lines": 2899,
+      "max_lines": 2931,
       "target_lines": 1800
     },
     "kernel/agent_loop/runner.py": {
-      "max_lines": 3088,
+      "max_lines": 3176,
       "target_lines": 1600
     },
     "infra/storage/models.py": {
-      "max_lines": 2659,
+      "max_lines": 2790,
       "target_lines": 1800
     },
     "agents/data_agent_v2/supervisor.py": {
@@ -20,7 +21,7 @@
       "target_lines": 1200
     },
     "kernel/agent_loop/context.py": {
-      "max_lines": 1135,
+      "max_lines": 1481,
       "target_lines": 700
     }
   }

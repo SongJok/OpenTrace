@@ -93,6 +93,30 @@ async def claim_response(
     return row
 
 
+async def claim_exhausted_response(
+    db: AsyncSession,
+    *,
+    response_id: str | None = None,
+) -> ResponseRecord | None:
+    """领取已耗尽尝试次数且租约失效的 Response，供 Worker 收敛为终态。"""
+
+    now = datetime.now(UTC)
+    query = (
+        select(ResponseRecord)
+        .where(
+            ResponseRecord.status.in_(["queued", "in_progress"]),
+            ResponseRecord.attempt_count >= ResponseRecord.max_attempts,
+            or_(ResponseRecord.lease_expires_at.is_(None), ResponseRecord.lease_expires_at < now),
+        )
+        .order_by(ResponseRecord.created_at)
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    if response_id:
+        query = query.where(ResponseRecord.id == response_id)
+    return await db.scalar(query)
+
+
 async def renew_lease(
     db: AsyncSession, response_id: str, owner: str, lease_seconds: int = 120
 ) -> bool:
