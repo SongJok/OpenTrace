@@ -38,6 +38,13 @@ describe('SkillsPage marketplace contract', () => {
     expect(source).not.toContain('从 Git 安装')
   })
 
+  it('refreshes an initially empty local mirror without a manual reload', async () => {
+    const page = await import('../SkillsPage')
+    const source = page.default.toString()
+    expect(source).toContain('window.setInterval')
+    expect(source).toContain('refreshCatalog')
+  })
+
   it('restores a usable conversation so installed Skills can be powered on', async () => {
     const page = await import('../SkillsPage')
     const sessions = [

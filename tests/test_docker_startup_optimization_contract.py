@@ -28,13 +28,13 @@ def test_backend_build_context_excludes_large_local_artifacts():
         assert entry in dockerignore
 
 
-def test_api_and_worker_share_one_application_image_and_base():
+def test_api_worker_and_storage_init_share_one_application_image_and_base():
     compose = _read("docker-compose.yml")
 
     assert "x-opentrace-build: &opentrace-build" in compose
-    assert compose.count("image: ${OPENTRACE_IMAGE:-opentrace-app:local}") == 2
+    assert compose.count("image: ${OPENTRACE_IMAGE:-opentrace-app:local}") == 3
     assert "python:3.11-bookworm" not in compose
-    assert compose.count("build: *opentrace-build") == 2
+    assert compose.count("build: *opentrace-build") == 3
 
 
 def test_normal_start_reuses_image_and_build_is_explicit():

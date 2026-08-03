@@ -54,6 +54,24 @@ services:
       retries: 5
 
   # -------------------------------------------------------------------------
+  # Skill 共享存储权限初始化，同时修复旧镜像创建的存量卷
+  # -------------------------------------------------------------------------
+  skill-storage-init:
+    image: ${OPENTRACE_IMAGE:-opentrace-app:local}
+    build: *opentrace-build
+    user: "0:0"
+    restart: "no"
+    volumes:
+      - skills_data:/app/skills/installed
+      - skill_catalog_data:/app/skills/catalog_mirror
+    command:
+      - sh
+      - -c
+      - >-
+        mkdir -p /app/skills/installed /app/skills/catalog_mirror &&
+        chown -R 10001:10001 /app/skills/installed /app/skills/catalog_mirror
+
+  # -------------------------------------------------------------------------
   # OpenTrace API Gateway — port 14100
   # -------------------------------------------------------------------------
   api:
@@ -96,6 +114,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      skill-storage-init:
+        condition: service_completed_successfully
     healthcheck:
       test:
         [
@@ -174,6 +194,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      skill-storage-init:
+        condition: service_completed_successfully
 
   # -------------------------------------------------------------------------
   # Disposable contract-test runner — production runtime plus locked dev tools

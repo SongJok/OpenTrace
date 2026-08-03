@@ -5,13 +5,11 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
-import httpx
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException
 
 from gateway.api_gateway.routers import (
@@ -75,12 +73,6 @@ async def lifespan(_: FastAPI):
             enabled=True,
         )
     await ensure_runtime_schema()
-    from skills.catalog import bootstrap_skill_catalog_if_empty
-
-    try:
-        await bootstrap_skill_catalog_if_empty()
-    except (httpx.HTTPError, OSError, RuntimeError, SQLAlchemyError, TypeError, ValueError) as exc:
-        logger.warning("skillhub_startup_bootstrap_failed", error=str(exc))
     yield
 
 

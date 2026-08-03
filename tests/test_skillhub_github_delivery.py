@@ -120,12 +120,27 @@ async def test_authenticated_rate_limit_falls_back_to_raw_source(
     ]
 
 
-def test_compose_shares_installed_and_mirrored_skills_between_api_and_worker() -> None:
+def test_compose_initializes_and_shares_skill_storage_for_non_root_services() -> None:
     compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
-    assert compose.count("skills_data:/app/skills/installed") == 2
-    assert compose.count("skill_catalog_data:/app/skills/catalog_mirror") == 2
+    assert compose.count("skills_data:/app/skills/installed") == 3
+    assert compose.count("skill_catalog_data:/app/skills/catalog_mirror") == 3
     assert "skills_data:" in compose
     assert "skill_catalog_data:" in compose
+    assert "skill-storage-init:" in compose
+    assert 'user: "0:0"' in compose
+    assert "chown -R 10001:10001 /app/skills/installed /app/skills/catalog_mirror" in compose
+    assert compose.count("condition: service_completed_successfully") == 2
+
+
+def test_backend_image_prepares_skill_volume_mountpoints_for_non_root_runtime() -> None:
+    dockerfile = (Path(__file__).resolve().parents[1] / "deploy/docker/Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    mkdir_index = dockerfile.index("/app/skills/catalog_mirror")
+    chown_index = dockerfile.index("chown -R 10001:10001 /app /var/lib/opentrace")
+    user_index = dockerfile.index("USER 10001:10001")
+    assert mkdir_index < chown_index < user_index
 
 
 @pytest.mark.asyncio
@@ -204,14 +219,14 @@ async def test_startup_bootstrap_skips_when_local_mirror_is_ready(
     assert result == {"triggered": False, "reason": "local_mirror_ready"}
 
 
-def test_api_startup_checks_empty_skill_mirror_after_schema_guard() -> None:
-    source = (Path(__file__).resolve().parents[1] / "gateway/api_gateway/main.py").read_text(
-        encoding="utf-8"
-    )
+def test_worker_owns_empty_skill_mirror_bootstrap() -> None:
+    root = Path(__file__).resolve().parents[1]
+    api_source = (root / "gateway/api_gateway/main.py").read_text(encoding="utf-8")
+    worker_source = (root / "agents/worker.py").read_text(encoding="utf-8")
 
-    schema_index = source.index("await ensure_runtime_schema()")
-    bootstrap_index = source.index("await bootstrap_skill_catalog_if_empty()")
-    assert schema_index < bootstrap_index
+    assert "bootstrap_skill_catalog_if_empty" not in api_source
+    assert "from skills.catalog import skillhub_sync_loop" in worker_source
+    assert "tasks.extend((knowledge_job_loop(), skillhub_sync_loop()))" in worker_source
 
 
 def test_daily_sync_targets_0630_in_configured_timezone(monkeypatch: pytest.MonkeyPatch) -> None:

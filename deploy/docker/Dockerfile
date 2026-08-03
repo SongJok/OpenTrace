@@ -15,7 +15,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY . .
 RUN groupadd --gid 10001 opentrace \
     && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin opentrace \
-    && mkdir -p /app/skills/installed /var/lib/opentrace/objects /var/lib/opentrace/dws \
+    && mkdir -p \
+        /app/skills/catalog_mirror \
+        /app/skills/installed \
+        /var/lib/opentrace/objects \
+        /var/lib/opentrace/dws \
     && chown -R 10001:10001 /app /var/lib/opentrace
 
 ARG OPENTRACE_BUILD_FINGERPRINT=unknown

@@ -143,6 +143,12 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
     } catch (e: any) { setOutput(`读取 SkillHub 失败：${e?.message || e}`) }
   }
 
+  useEffect(() => {
+    if (catalogQuery.trim() || popularCatalog.length > 0 || recentCatalog.length > 0) return
+    const timer = window.setInterval(() => { void refreshCatalog('') }, 5000)
+    return () => window.clearInterval(timer)
+  }, [catalogQuery, popularCatalog.length, recentCatalog.length])
+
   const syncCatalog = async () => {
     setLoading(true)
     try {
@@ -644,7 +650,7 @@ function CatalogCard({ item, busy, activeSessionId, enabled, onInstall, onUninst
 }
 
 function EmptyCatalog() {
-  return <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] py-20 text-center"><Wrench size={30} className="mx-auto text-[var(--text-secondary)]" /><p className="mt-3 text-sm font-medium">本地 Skill 镜像尚未就绪</p><p className="mt-1 text-xs text-[var(--text-secondary)]">后台 Worker 会在启动时补齐，并于每天 06:30 自动收集和下载。</p></div>
+  return <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] py-20 text-center"><RefreshCw size={30} className="mx-auto animate-spin text-[var(--text-secondary)]" /><p className="mt-3 text-sm font-medium">正在同步本地 Skill 镜像</p><p className="mt-1 text-xs text-[var(--text-secondary)]">首次启动完成下载后，技能列表会自动显示。</p></div>
 }
 
 function formatCount(value: number): string {
