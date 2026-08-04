@@ -4,7 +4,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -121,6 +121,7 @@ async def test_expired_final_attempt_is_converged_to_failed(monkeypatch) -> None
     append_event = AsyncMock()
     update_task_run = AsyncMock()
     release_lease = AsyncMock()
+    settle_usage = Mock()
 
     monkeypatch.setattr(worker, "AsyncSessionLocal", lambda: _SessionContext(db))
     monkeypatch.setattr(worker, "set_worker_session", AsyncMock())
@@ -133,6 +134,7 @@ async def test_expired_final_attempt_is_converged_to_failed(monkeypatch) -> None
     monkeypatch.setattr(worker, "append_event", append_event)
     monkeypatch.setattr(worker, "_update_task_run", update_task_run)
     monkeypatch.setattr(worker, "release_lease", release_lease)
+    monkeypatch.setattr(worker, "_settle_usage", settle_usage)
 
     processed = await worker.execute_response(response.id)
 
@@ -140,6 +142,7 @@ async def test_expired_final_attempt_is_converged_to_failed(monkeypatch) -> None
     assert response.status == "failed"
     assert response.error_code == "response_attempts_exhausted"
     assert response.completed_at is not None
+    settle_usage.assert_called_once_with(response, include_current_attempt=False)
     append_event.assert_awaited_once()
     update_task_run.assert_awaited_once_with(
         db,

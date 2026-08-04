@@ -18,7 +18,7 @@ class EnterpriseScenarioDefinition:
     category: str
     title: str
     description: str
-    launch_mode: Literal["chat", "goal", "skills"]
+    launch_mode: Literal["chat", "goal", "skills", "report"]
     launch_route: str
     starter_prompt: str
     prerequisites: tuple[str, ...]
@@ -87,8 +87,8 @@ ENTERPRISE_SCENARIO_CATALOG: tuple[EnterpriseScenarioDefinition, ...] = (
         category="数据决策",
         title="经营指标复盘",
         description="在授权数据源内完成只读分析、口径解释、异常定位和可视化建议。",
-        launch_mode="chat",
-        launch_route="/chat",
+        launch_mode="report",
+        launch_route="/reports?type=data_insight",
         starter_prompt=(
             "请对以下经营问题做一次可复核的数据分析：先确认指标口径和时间范围，再使用授权数据源"
             "查询；返回关键指标、同比/环比、异常切片、SQL 或查询依据、风险提示和下一步建议。"
@@ -108,8 +108,8 @@ ENTERPRISE_SCENARIO_CATALOG: tuple[EnterpriseScenarioDefinition, ...] = (
         category="管理协作",
         title="跨知识与数据决策简报",
         description="合并企业制度、项目背景和实时数据，形成可追溯的管理决策材料。",
-        launch_mode="chat",
-        launch_route="/chat",
+        launch_mode="report",
+        launch_route="/reports?type=management_brief",
         starter_prompt=(
             "请围绕以下决策问题生成一份管理简报。分别检索企业知识和授权业务数据，区分事实、"
             "推断与建议，列出关键指标、制度约束、可选方案、风险、待确认事项和来源；不要把未发布"
@@ -168,8 +168,8 @@ ENTERPRISE_SCENARIO_CATALOG: tuple[EnterpriseScenarioDefinition, ...] = (
         category="持续工作",
         title="周期经营简报",
         description="按固定时间运行完整 Agent Loop，生成经营简报并投递持久化通知。",
-        launch_mode="chat",
-        launch_route="/chat",
+        launch_mode="report",
+        launch_route="/reports?type=management_brief",
         starter_prompt=(
             "请为当前 Project 创建一个每周经营简报任务：每周一 09:00 读取授权数据，汇总上周"
             "核心指标、异常、风险和建议，并保留查询依据。先给出任务标题、完整提示词和时间规则，"
@@ -184,7 +184,7 @@ ENTERPRISE_SCENARIO_CATALOG: tuple[EnterpriseScenarioDefinition, ...] = (
         evidence_requirements=("授权数据源", "确定性时间规则", "运行事件"),
         deliverables=("周期简报", "持久化通知", "失败可重试记录"),
         adoption_signal="task",
-        active_route="/tasks",
+        active_route="/reports",
     ),
     EnterpriseScenarioDefinition(
         id="metric_risk_monitor",

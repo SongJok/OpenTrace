@@ -31,6 +31,7 @@ from gateway.api_gateway.routers import (
     documents,
     enterprise_admin,
     enterprise_context,
+    enterprise_reports,
     feedback,
     health,
     interoperability,
@@ -195,6 +196,7 @@ app.include_router(calendar.router, prefix="/api/v2", tags=["calendar"])
 app.include_router(company_brain.router, prefix="/api/v2", tags=["company-brain"])
 app.include_router(workbench.router, prefix="/api/v2", tags=["enterprise-workbench"])
 app.include_router(enterprise_context.router, prefix="/api/v2", tags=["enterprise-context"])
+app.include_router(enterprise_reports.router, prefix="/api/v2", tags=["enterprise-reports"])
 app.include_router(alerts.router, prefix="/api/v2", tags=["alerts"])
 app.include_router(resource_permissions.router, prefix="/api/v2", tags=["resource-permissions"])
 app.include_router(conversations.router, prefix="/api/v2", tags=["conversations-v2"])

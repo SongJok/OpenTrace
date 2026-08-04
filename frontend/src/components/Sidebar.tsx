@@ -30,6 +30,7 @@ import {
   Building2,
   X,
   CalendarDays,
+  BarChartBig,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useNavigate } from 'react-router-dom'
@@ -490,6 +491,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
         <button onClick={() => navigate('/work')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><FolderKanban size={15} /><span>企业 AI 工作台</span></button>
         <button onClick={() => navigate('/company-brain')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><BrainCircuit size={15} /><span>企业大脑</span></button>
         <button onClick={() => navigate('/tasks')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Bell size={15} /><span>定时任务</span></button>
+        <button onClick={() => navigate('/reports')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><BarChartBig size={15} /><span>经营报告</span></button>
         <button onClick={() => navigate('/alerts')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Activity size={15} /><span>主动预警</span></button>
         <div className="relative rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
           <Search size={14} className="absolute left-3 top-3 text-[var(--text-secondary)]" />
@@ -595,6 +597,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           <NavButton icon={<Database size={15} className="cartoon-icon icon-database" />} label="数据库" onClick={() => navigate('/databases')} />
           <NavButton icon={<Brain size={15} className="cartoon-icon icon-memory" />} label="个人记忆" onClick={() => navigate('/memories')} />
           <NavButton icon={<Bell size={15} className="cartoon-icon icon-task" />} label={t('nav.tasks')} onClick={() => navigate('/tasks')} />
+          <NavButton icon={<BarChartBig size={15} />} label="经营报告" onClick={() => navigate('/reports')} />
           <NavButton icon={<CalendarDays size={15} />} label="我的日历" onClick={() => navigate('/calendar')} />
           <NavButton icon={<Activity size={15} />} label="主动预警" onClick={() => navigate('/alerts')} />
           <NavButton icon={<ShieldAlert size={15} className="cartoon-icon icon-audit" />} label={t('nav.audit')} onClick={() => navigate('/audit')} />

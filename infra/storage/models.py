@@ -2046,6 +2046,10 @@ class TaskDefinition(Base):
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
+    task_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="agent_task", index=True
+    )
+    task_config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     trigger_type: Mapped[str] = mapped_column(String(20), nullable=False, default="interval")
     trigger_config_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
@@ -2075,6 +2079,7 @@ class TaskRun(Base):
     user_id: Mapped[str] = mapped_column(String(36), index=True, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
     output: Mapped[str] = mapped_column(Text, nullable=True)
+    output_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     error: Mapped[str] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)

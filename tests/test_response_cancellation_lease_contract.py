@@ -11,6 +11,8 @@ def test_cancellation_keeps_live_worker_lease_until_worker_exits() -> None:
 
     assert "claimed_by_worker = bool(record.lease_owner)" in cancel_source
     assert "if not claimed_by_worker:" in cancel_source
+    assert "settle_response_usage(" in cancel_source
+    assert "TaskRun.response_id == record.id" in cancel_source
 
     repository_source = (ROOT / "infra/responses/repository.py").read_text(encoding="utf-8")
     assert 'ResponseRecord.status.in_(("in_progress", "cancelled"))' in repository_source

@@ -51,10 +51,9 @@ class UsageMeteringService:
         prompt_tokens: int,
         completion_tokens: int,
     ) -> float:
-        return (
-            (prompt_tokens / 1000.0) * self._COST_PER_1K_PROMPT
-            + (completion_tokens / 1000.0) * self._COST_PER_1K_COMPLETION
-        )
+        return (prompt_tokens / 1000.0) * self._COST_PER_1K_PROMPT + (
+            completion_tokens / 1000.0
+        ) * self._COST_PER_1K_COMPLETION
 
     def record_turn(
         self,
@@ -66,16 +65,24 @@ class UsageMeteringService:
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
         extra_cost: float = 0.0,
+        estimated_cost: float | None = None,
     ) -> UsageRecord:
-        if prompt_tokens == 0 and completion_tokens == 0:
-            prompt_tokens = int(getattr(settings, "kernel_default_prompt_tokens_per_turn", 800) or 800)
+        if prompt_tokens == 0 and completion_tokens == 0 and estimated_cost is None:
+            prompt_tokens = int(
+                getattr(settings, "kernel_default_prompt_tokens_per_turn", 800) or 800
+            )
             completion_tokens = int(
                 getattr(settings, "kernel_default_completion_tokens_per_turn", 400) or 400
             )
-        est = self.estimate_from_tokens(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-        ) + extra_cost
+        est = (
+            float(estimated_cost)
+            if estimated_cost is not None
+            else self.estimate_from_tokens(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+            + extra_cost
+        )
         rec = UsageRecord(
             tenant_id=ctx.tenant_id,
             session_id=session_id,

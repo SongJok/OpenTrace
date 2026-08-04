@@ -18,7 +18,8 @@ async def test_incomplete_task_run_is_not_reported_as_success() -> None:
         finished_at=None,
     )
     db = MagicMock()
-    db.scalar = AsyncMock(side_effect=[run, "日报生成", None])
+    task = SimpleNamespace(title="日报生成", task_type="agent_task")
+    db.scalar = AsyncMock(side_effect=[run, task, None])
     response = SimpleNamespace(id="resp-1")
 
     await _update_task_run(
@@ -48,7 +49,8 @@ async def test_task_waiting_for_approval_remains_resumable() -> None:
         finished_at=None,
     )
     db = MagicMock()
-    db.scalar = AsyncMock(side_effect=[run, "发布报告", None])
+    task = SimpleNamespace(title="发布报告", task_type="agent_task")
+    db.scalar = AsyncMock(side_effect=[run, task, None])
 
     await _update_task_run(
         db,

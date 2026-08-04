@@ -43,9 +43,18 @@ def _fixture_executor(case: EvaluationCase) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results-dir", type=Path)
+    parser.add_argument(
+        "--require-results",
+        action="store_true",
+        help="禁止 fixture 执行器；企业 Beta/发布门禁必须提供真实主链结果目录",
+    )
     parser.add_argument("--minimum-pass-rate", type=float, default=1.0)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.require_results and not args.results_dir:
+        parser.error("--require-results 必须与 --results-dir 一起使用")
+    if args.results_dir and not args.results_dir.is_dir():
+        parser.error(f"结果目录不存在: {args.results_dir}")
     paths = sorted(DATASETS.glob("*.jsonl"))
 
     if args.results_dir:

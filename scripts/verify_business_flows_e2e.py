@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 import os
+import socket
 import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import httpx
+
+from execution.data.database_hosts import is_docker_internal_database_host
 
 BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:14100").rstrip("/")
 EMAIL = os.getenv("VERIFY_EMAIL", "dev@example.com")
@@ -27,6 +31,23 @@ def _env_value(name: str, default: str = "") -> str:
             if separator and key.strip() == name:
                 return raw_value.strip().strip("\"'")
     return default
+
+
+def _database_connection() -> dict[str, Any]:
+    parsed = urlparse(os.getenv("DATABASE_URL", ""))
+    configured_host = os.getenv("VERIFY_DATABASE_HOST") or parsed.hostname or "host.docker.internal"
+    if not os.getenv("VERIFY_DATABASE_HOST") and is_docker_internal_database_host(configured_host):
+        configured_host = socket.gethostbyname(configured_host)
+    return {
+        "host": configured_host,
+        "port": int(os.getenv("VERIFY_DATABASE_PORT") or parsed.port or 5432),
+        "database": os.getenv("VERIFY_DATABASE_NAME") or parsed.path.lstrip("/") or "opentrace_v2",
+        "username": os.getenv("VERIFY_DATABASE_USER")
+        or (unquote(parsed.username) if parsed.username else "postgres"),
+        "password": _env_value("VERIFY_DATABASE_PASSWORD")
+        or (unquote(parsed.password) if parsed.password else "")
+        or _env_value("POSTGRES_PASSWORD", "changeme"),
+    }
 
 
 class BusinessFlowVerifier:
@@ -69,7 +90,10 @@ class BusinessFlowVerifier:
                     f"{response.status_code}: {response.text[:500]}"
                 )
         else:
-            response.raise_for_status()
+            if not response.is_success:
+                raise AssertionError(
+                    f"{method} {path}: HTTP {response.status_code}: {response.text[:500]}"
+                )
         if not response.content:
             return {}
         return response.json()
@@ -149,20 +173,14 @@ class BusinessFlowVerifier:
         )
         assert profile["personality"] == "friendly"
 
-        database_password = _env_value("VERIFY_DATABASE_PASSWORD") or _env_value(
-            "POSTGRES_PASSWORD", "changeme"
-        )
+        database_connection = _database_connection()
         database = self.request(
             "POST",
             "/api/v1/databases",
             body={
                 "name": f"验收数据源-{marker}",
                 "source_type": "postgres",
-                "host": os.getenv("VERIFY_DATABASE_HOST", "host.docker.internal"),
-                "port": int(os.getenv("VERIFY_DATABASE_PORT", "5432")),
-                "database": os.getenv("VERIFY_DATABASE_NAME", "opentrace_v2"),
-                "username": os.getenv("VERIFY_DATABASE_USER", "postgres"),
-                "password": database_password,
+                **database_connection,
             },
         )
         self.database_id = database["id"]

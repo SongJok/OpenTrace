@@ -1829,6 +1829,8 @@ export interface ScheduledTaskItem {
   next_run_at?: string | null
   last_run_at?: string | null
   requires_confirmation: boolean
+  task_type?: 'agent_task' | 'enterprise_report'
+  task_config?: Record<string, unknown>
 }
 
 export interface ScheduledTaskRunItem {
@@ -1838,6 +1840,7 @@ export interface ScheduledTaskRunItem {
   scheduled_for?: string | null
   output?: string | null
   error?: string | null
+  output_metadata?: Record<string, unknown>
 }
 
 export interface ScheduledTaskDetail extends ScheduledTaskItem {
@@ -1901,6 +1904,134 @@ export async function apiRunScheduledTask(token: string, taskId: string): Promis
     method: 'POST', headers: authHeaders(token),
   })
   if (!res.ok) throw new Error(await readApiError(res, '立即运行任务失败'))
+  return res.json()
+}
+
+export type EnterpriseReportType = 'data_insight' | 'monthly_report' | 'management_brief'
+
+export interface EnterpriseReportTemplate {
+  id: EnterpriseReportType
+  title: string
+  description: string
+  default_objective: string
+  default_rrule: string
+  sections: string[]
+  evidence_requirements: string[]
+  knowledge_required: boolean
+}
+
+export interface EnterpriseReportTaskConfig {
+  schema_version: number
+  report_type: EnterpriseReportType
+  objective: string
+  audience: string
+  data_source_ids: string[]
+  data_sources: Array<{ id: string; name: string; type: string }>
+  include_knowledge: boolean
+  sections: string[]
+  evidence_requirements: string[]
+}
+
+export interface EnterpriseReportDataEvidence {
+  data_source_id?: string | null
+  sql: string
+  row_count: number
+  rows: Array<Record<string, unknown>>
+  verification: Record<string, unknown>
+  verification_status: string
+  readonly_sql: boolean
+  metrics: string[]
+  insights?: unknown
+  result_refs: Array<Record<string, unknown>>
+}
+
+export interface EnterpriseReportArtifact {
+  schema_version: number
+  report_type: EnterpriseReportType
+  title: string
+  objective: string
+  audience: string
+  response_id: string
+  status: 'verified' | 'needs_review'
+  generated_at: string
+  content: string
+  data_evidence: EnterpriseReportDataEvidence[]
+  knowledge_citations: Array<Record<string, unknown>>
+  charts: Array<{
+    config: Record<string, unknown>
+    rows: Array<Record<string, unknown>>
+    data_source_id?: string | null
+  }>
+  tool_trace: Array<Record<string, unknown>>
+  verification: {
+    status: 'pass' | 'needs_review'
+    data_verified: boolean
+    readonly_sql: boolean
+    data_source_coverage: { expected: string[]; covered: string[]; missing: string[] }
+    knowledge_verified: boolean
+    chart_verified: boolean
+    missing: string[]
+  }
+}
+
+export interface EnterpriseReportRun {
+  id: string
+  status: string
+  response_id?: string | null
+  scheduled_for?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  output?: string | null
+  output_metadata?: EnterpriseReportArtifact | Record<string, never>
+  error?: string | null
+}
+
+export interface EnterpriseReportItem {
+  id: string
+  title: string
+  report_type: EnterpriseReportType
+  task_config: EnterpriseReportTaskConfig
+  project_id: string
+  rrule: string
+  timezone: string
+  starts_at?: string | null
+  ends_at?: string | null
+  status: string
+  next_run_at?: string | null
+  last_run_at?: string | null
+  created_at?: string | null
+}
+
+export interface EnterpriseReportDetail extends EnterpriseReportItem {
+  runs: EnterpriseReportRun[]
+}
+
+export async function apiListEnterpriseReportTemplates(token: string): Promise<EnterpriseReportTemplate[]> {
+  const res = await apiFetchResponses('/reports/templates', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取报告模板失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiListEnterpriseReports(token: string): Promise<EnterpriseReportItem[]> {
+  const res = await apiFetchResponses('/reports', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取企业报告失败'))
+  return (await res.json()).items ?? []
+}
+
+export async function apiCreateEnterpriseReport(
+  token: string,
+  payload: Record<string, unknown>,
+): Promise<EnterpriseReportItem> {
+  const res = await apiFetchResponses('/reports', {
+    method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '创建企业报告失败'))
+  return res.json()
+}
+
+export async function apiGetEnterpriseReport(token: string, reportId: string): Promise<EnterpriseReportDetail> {
+  const res = await apiFetchResponses(`/reports/${encodeURIComponent(reportId)}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取报告运行记录失败'))
   return res.json()
 }
 

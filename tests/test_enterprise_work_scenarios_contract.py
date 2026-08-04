@@ -85,7 +85,7 @@ def test_ready_workspace_marks_adopted_processes_active_and_recommends_immediate
     assert scenarios["decision_brief"]["status"] == "ready"
     assert scenarios["decision_brief"]["memory_scope"] == "project"
     assert scenarios["long_running_goal"]["status"] == "active"
-    assert scenarios["recurring_management_brief"]["action_route"] == "/tasks"
+    assert scenarios["recurring_management_brief"]["action_route"] == "/reports"
     assert scenarios["metric_risk_monitor"]["action_route"] == "/alerts"
     assert scenarios["governed_skill_workflow"]["status"] == "active"
     recommended = [item for item in scenarios.values() if item["recommended"]]

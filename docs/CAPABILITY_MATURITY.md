@@ -1,10 +1,11 @@
 # OpenTrace 能力成熟度
 
-> **产品整体状态：Alpha。** OpenTrace 对外只使用 Alpha / Beta / GA，不再以单个模块“生产级”替代产品交付成熟度。在线架构以 `docs/architecture/runtime_manifest.yaml` 为准。
+> **产品整体状态：Alpha；Responses 主链为受控企业 Beta。** Beta 仅表示可进入受控企业试点，不代表整个平台 GA。在线架构以 `docs/architecture/runtime_manifest.yaml` 为准。
 
 | 产品能力 | 当前状态 | 进入 Beta 前的主要缺口 |
 |---|---|---|
-| Responses 持久化运行时 | **Alpha** | 真实故障注入、SLO、容量和备份恢复门禁 |
+| Responses 持久化运行时 | **Beta** | 企业准入、恢复、审批、结算和发布门禁已闭环；GA 仍需生产 SLO、容量和备份恢复长期基线 |
+| 数据洞察 / 月报 / 经营简报 | **Beta lighthouse** | DataAgent、RAG、图表、定时任务与证据链已纵向打通；继续提升真实数据集证据完整率 |
 | Agent Loop 与持久化审批 | **Alpha** | Golden Dataset、Trace Grading、副作用 reconciliation 演练 |
 | DataAgent / Text2SQL | **Alpha** | 脱敏评测集、方言黑盒覆盖、跨租户负向测试 |
 | RAG 与知识发布 | **Alpha** | 发布治理评测、引用准确率基线、生产规模召回测试 |

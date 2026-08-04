@@ -45,6 +45,7 @@ from infra.storage.models import (
     ResponseEvent,
     ResponseItem,
     ResponseRecord,
+    TaskRun,
     User,
 )
 from tenant.tenant_rls import set_session_scope
@@ -669,6 +670,17 @@ async def create_response(
     parent_id = await _resolve_parent(
         db, request=request, session=session, user=current_user, tenant_id=tenant_id
     )
+    from services.response_enterprise_runtime import evaluate_response_admission
+
+    admission = await evaluate_response_admission(
+        query=query,
+        user_id=current_user.id,
+        session_id=session.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        org_id=org_id,
+        tenant_policy=dict(tenant.get("tenant_policy") or {}),
+    )
     model_selection = await snapshot_runtime_llm_selection(
         db,
         user_id=current_user.id,
@@ -695,6 +707,7 @@ async def create_response(
             "model_selection": model_selection,
             "org_id": org_id,
             "tenant_policy": _json_safe(tenant.get("tenant_policy") or {}),
+            "enterprise_admission": admission,
         },
         goal_id=request.opentrace.goal_id,
     )
@@ -921,6 +934,37 @@ async def cancel_response(
         if not claimed_by_worker:
             record.lease_owner = None
             record.lease_expires_at = None
+            from services.response_enterprise_runtime import settle_response_usage
+
+            enterprise_report = dict(
+                (record.response_metadata or {}).get("enterprise_report") or {}
+            )
+            record.response_metadata = settle_response_usage(
+                response_id=record.id,
+                response_metadata=record.response_metadata,
+                result_metadata=None,
+                user_id=record.user_id,
+                conversation_id=record.conversation_id,
+                tenant_id=record.tenant_id,
+                workspace_id=record.workspace_id,
+                org_id=str((record.response_metadata or {}).get("org_id") or "default"),
+                goal_id=record.goal_id,
+                capability_type=(
+                    f"enterprise_report:{enterprise_report.get('report_type')}"
+                    if enterprise_report
+                    else "responses"
+                ),
+                include_current_attempt=False,
+            )
+            task_run = await db.scalar(select(TaskRun).where(TaskRun.response_id == record.id))
+            if task_run is not None and task_run.status not in {
+                "succeeded",
+                "incomplete",
+                "failed",
+                "cancelled",
+            }:
+                task_run.status = "cancelled"
+                task_run.finished_at = record.completed_at
         await append_event(
             db,
             response_id=response_id,

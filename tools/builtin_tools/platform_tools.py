@@ -174,7 +174,7 @@ async def create_scheduled_task(
 ) -> dict[str, Any]:
     rule = _schedule(schedule, timezone)
     async with AsyncSessionLocal() as db:
-        await _authorized_project(
+        project = await _authorized_project(
             db,
             project_id=project_id,
             user_id=user_id,
@@ -201,6 +201,12 @@ async def create_scheduled_task(
             conversation_id=reusable_conversation,
             title=title.strip()[:255],
             description=prompt.strip(),
+            task_type="agent_task",
+            task_config={
+                "data_source_ids": [
+                    str(item) for item in (project.data_source_ids if project else []) if str(item)
+                ]
+            },
             trigger_type="rrule",
             trigger_config_json=json.dumps({"rrule": rule, "timezone": timezone}),
             rrule=rule,

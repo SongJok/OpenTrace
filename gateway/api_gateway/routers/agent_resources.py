@@ -492,7 +492,7 @@ async def create_goal(
     tenant_id, workspace_id = _scope(request, current_user)
     if payload.project_id:
         project = await db.scalar(
-            select(Project.id).where(
+            select(Project).where(
                 Project.id == payload.project_id,
                 Project.user_id == current_user.id,
                 Project.tenant_id == tenant_id,
@@ -812,9 +812,10 @@ async def create_scheduled_task(
         payload.starts_at, payload.ends_at, payload.timezone
     )
     tenant_id, workspace_id = _scope(request, current_user)
+    project_data_source_ids: list[str] = []
     if payload.project_id:
         project = await db.scalar(
-            select(Project.id).where(
+            select(Project).where(
                 Project.id == payload.project_id,
                 Project.user_id == current_user.id,
                 Project.tenant_id == tenant_id,
@@ -824,6 +825,7 @@ async def create_scheduled_task(
         )
         if project is None:
             raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project 不存在或无权限")
+        project_data_source_ids = [str(item) for item in project.data_source_ids or [] if str(item)]
     if payload.conversation_id:
         conversation = await db.scalar(
             select(ChatSession.id).where(
@@ -848,6 +850,8 @@ async def create_scheduled_task(
         workspace_id=workspace_id,
         title=payload.title,
         description=payload.prompt,
+        task_type="agent_task",
+        task_config={"data_source_ids": project_data_source_ids},
         trigger_type="rrule",
         trigger_config_json=json.dumps(
             {
@@ -918,6 +922,7 @@ async def get_scheduled_task(
                 "response_id": run.response_id,
                 "scheduled_for": run.scheduled_for.isoformat() if run.scheduled_for else None,
                 "output": run.output,
+                "output_metadata": dict(run.output_metadata or {}),
                 "error": run.error,
             }
             for run in runs
@@ -1016,6 +1021,8 @@ def _scheduled_task(row: TaskDefinition) -> dict[str, Any]:
         "id": row.id,
         "title": row.title,
         "prompt": row.description,
+        "task_type": getattr(row, "task_type", "agent_task"),
+        "task_config": dict(getattr(row, "task_config", None) or {}),
         "rrule": row.rrule,
         "timezone": row.timezone,
         "starts_at": trigger_config.get("starts_at"),

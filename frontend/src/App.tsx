@@ -13,6 +13,7 @@ const DocumentsPage = lazy(() => import('./pages/DocumentsPage'))
 const PermissionsPage = lazy(() => import('./pages/PermissionsPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 const TasksPage = lazy(() => import('./pages/TasksPage'))
+const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const AuditPage = lazy(() => import('./pages/AuditPage'))
 const MemoryPage = lazy(() => import('./pages/MemoryPage'))
 const IntegrationsPage = lazy(() => import('./pages/IntegrationsPage'))
@@ -59,6 +60,11 @@ function SettingsRoute() {
 function TasksRoute() {
   const navigate = useNavigate()
   return <TasksPage onBack={() => navigate('/chat')} />
+}
+
+function ReportsRoute() {
+  const navigate = useNavigate()
+  return <ReportsPage onBack={() => navigate('/work')} />
 }
 
 function WorkRoute() {
@@ -164,6 +170,7 @@ export default function App() {
         <Route path="/documents" element={<Protected><DocumentsRoute /></Protected>} />
         <Route path="/settings" element={<Protected><SettingsRoute /></Protected>} />
         <Route path="/tasks" element={<Protected><TasksRoute /></Protected>} />
+        <Route path="/reports" element={<Protected><ReportsRoute /></Protected>} />
         <Route path="/calendar" element={<Protected><CalendarRoute /></Protected>} />
         <Route path="/company-brain" element={<Protected><CompanyBrainRoute /></Protected>} />
         <Route path="/work" element={<Protected><WorkRoute /></Protected>} />

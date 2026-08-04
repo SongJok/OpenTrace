@@ -326,6 +326,9 @@ tests/            Unit, integration, and architecture contract tests
 
 ## Documentation
 
+- [Product vision: enterprise organization OS](docs/PRODUCT_VISION.md)
+- [Enterprise organization OS architecture](docs/architecture/enterprise_organization_os.md)
+- [Responses enterprise Beta runbook](docs/runbooks/responses_enterprise_beta.md)
 - [Architecture overview](docs/architecture_overview.md)
 - [Enterprise AI workbench](docs/architecture/enterprise_ai_workbench.md)
 - [Enterprise identity and operations](docs/architecture/enterprise_identity_and_operations.md)

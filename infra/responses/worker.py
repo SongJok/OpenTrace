@@ -23,6 +23,7 @@ from infra.observability.metrics import (
     WORKER_ITERATION_FAILURES_TOTAL,
 )
 from infra.observability.tracer import get_tracer
+from infra.observability.turn_metering import reset_turn_tokens
 from infra.responses.repository import (
     add_outbox,
     append_event,
@@ -74,6 +75,46 @@ def _tenant_semaphore(tenant_id: str) -> asyncio.Semaphore:
     return semaphore
 
 
+def _accumulate_attempt_usage(
+    response: ResponseRecord,
+    result_metadata: dict | None = None,
+) -> None:
+    from services.response_enterprise_runtime import accumulate_response_attempt_usage
+
+    response.response_metadata = accumulate_response_attempt_usage(
+        response.response_metadata,
+        result_metadata,
+    )
+
+
+def _settle_usage(
+    response: ResponseRecord,
+    result_metadata: dict | None = None,
+    *,
+    include_current_attempt: bool = True,
+) -> None:
+    from services.response_enterprise_runtime import settle_response_usage
+
+    enterprise_report = dict((response.response_metadata or {}).get("enterprise_report") or {})
+    response.response_metadata = settle_response_usage(
+        response_id=response.id,
+        response_metadata=response.response_metadata,
+        result_metadata=result_metadata,
+        user_id=response.user_id,
+        conversation_id=response.conversation_id,
+        tenant_id=response.tenant_id,
+        workspace_id=response.workspace_id,
+        org_id=str((response.response_metadata or {}).get("org_id") or "default"),
+        goal_id=response.goal_id,
+        capability_type=(
+            f"enterprise_report:{enterprise_report.get('report_type')}"
+            if enterprise_report
+            else "responses"
+        ),
+        include_current_attempt=include_current_attempt,
+    )
+
+
 async def _update_task_run(
     db,
     response: ResponseRecord,
@@ -87,6 +128,25 @@ async def _update_task_run(
     task_run = await db.scalar(select(TaskRun).where(TaskRun.response_id == response.id))
     if task_run is None:
         return
+    task = await db.scalar(select(TaskDefinition).where(TaskDefinition.id == task_run.task_id))
+    if (
+        task is not None
+        and getattr(task, "task_type", "agent_task") == "enterprise_report"
+        and finished
+        and output
+    ):
+        from services.enterprise_reports import build_report_artifact
+
+        artifact = await build_report_artifact(
+            db,
+            task=task,
+            response=response,
+            output=output,
+            response_status=response.status,
+        )
+        task_run.output_metadata = artifact
+        if status == "succeeded" and artifact["verification"]["status"] != "pass":
+            status = "incomplete"
     task_run.status = status
     task_run.output = output
     task_run.error = error
@@ -100,9 +160,7 @@ async def _update_task_run(
         "failed": ("error", "执行失败"),
     }
     level, label = labels.get(status, ("info", status))
-    title = await db.scalar(
-        select(TaskDefinition.title).where(TaskDefinition.id == task_run.task_id)
-    )
+    title = task.title if task is not None else None
     notification_title = f"{title or '定时任务'}{label}"
     existing = await db.scalar(
         select(TaskNotification.id).where(
@@ -198,6 +256,7 @@ async def execute_response(response_id: str | None = None) -> bool:
             response = await claim_exhausted_response(db, response_id=response_id)
             if response is None:
                 return False
+            _settle_usage(response, include_current_attempt=False)
             response.status = "failed"
             response.error_code = "response_attempts_exhausted"
             response.error_message = "响应执行多次失败且恢复次数已耗尽。"
@@ -257,6 +316,7 @@ async def execute_response(response_id: str | None = None) -> bool:
             response = await db.get(ResponseRecord, response_id, with_for_update=True)
             if response is None or response.lease_owner != OWNER or response.status == "cancelled":
                 return False
+            reset_turn_tokens()
             if response.goal_id:
                 goal = await db.get(GoalRun, response.goal_id)
                 if goal:
@@ -320,6 +380,7 @@ async def execute_response(response_id: str | None = None) -> bool:
                         span.set_attribute("opentrace.llm.model", runtime_profile.model)
                     result = await AgentLoop().run(db, response=response, emit=emit)
             if result.status == "requires_action":
+                _accumulate_attempt_usage(response, result.metadata)
                 if response.goal_id:
                     goal = await db.get(GoalRun, response.goal_id)
                     if goal:
@@ -334,6 +395,7 @@ async def execute_response(response_id: str | None = None) -> bool:
                 await db.commit()
                 return True
             if result.status == "cancelled":
+                _settle_usage(response, result.metadata)
                 await _update_task_run(db, response, status="cancelled", finished=True)
                 await release_lease(db, response)
                 await db.commit()
@@ -341,6 +403,14 @@ async def execute_response(response_id: str | None = None) -> bool:
 
             await db.refresh(response)
             if response.status == "cancelled":
+                _settle_usage(response, result.metadata)
+                await _update_task_run(
+                    db,
+                    response,
+                    status="cancelled",
+                    output=result.content,
+                    finished=True,
+                )
                 await release_lease(db, response)
                 await db.commit()
                 return False
@@ -382,6 +452,13 @@ async def execute_response(response_id: str | None = None) -> bool:
                         error=str(exc),
                     )
 
+            _settle_usage(
+                response,
+                {
+                    **dict(result.metadata or {}),
+                    "intent": result.intent.to_dict() if result.intent else None,
+                },
+            )
             next_item = await _next_item_sequence(db, response_id)
             message = ResponseItem(
                 id=f"item_{uuid.uuid4().hex}",
@@ -396,11 +473,6 @@ async def execute_response(response_id: str | None = None) -> bool:
             response.status = "incomplete" if result.status == "incomplete" else "completed"
             response.model = result.model
             response.completed_at = datetime.now(UTC)
-            response.response_metadata = {
-                **dict(response.response_metadata or {}),
-                **result.metadata,
-                "intent": result.intent.to_dict() if result.intent else None,
-            }
             await release_lease(db, response)
             await append_event(
                 db,
@@ -513,12 +585,14 @@ async def execute_response(response_id: str | None = None) -> bool:
             await set_worker_session(db)
             response = await db.get(ResponseRecord, response_id, with_for_update=True)
             if response and response.status not in {"cancelled", "completed", "requires_action"}:
+                _accumulate_attempt_usage(response)
                 response.status = (
                     "failed" if response.attempt_count >= response.max_attempts else "queued"
                 )
                 response.error_code = "response_execution_failed"
                 response.error_message = "响应执行失败，请稍后重试。"
                 if response.status == "failed":
+                    _settle_usage(response, include_current_attempt=False)
                     response.completed_at = datetime.now(UTC)
                     await append_event(
                         db,

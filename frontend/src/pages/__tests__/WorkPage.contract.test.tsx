@@ -55,9 +55,9 @@ describe('enterprise AI workbench contracts', () => {
     expect(scenarioLaunchIntent({
       ...base,
       status: 'active',
-      action_route: '/tasks',
+      action_route: '/reports',
       action_label: '查看运行',
-    })).toEqual({ route: '/tasks', prefillText: null })
+    })).toEqual({ route: '/reports', prefillText: null })
   })
 
   it('offers all six assistant personality styles when creating a role', async () => {
