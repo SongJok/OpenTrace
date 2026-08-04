@@ -585,6 +585,7 @@ async def search_documents(
         tenant_id=tenant_id,
         workspace_id=workspace_id,
         project_id=req.project_id,
+        include_personal_unscoped=False,
     )
     scored = await score_document_candidates(query=req.query, candidates=candidates)
     return [

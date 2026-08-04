@@ -7,13 +7,14 @@ import math
 import re
 from dataclasses import dataclass
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 
 from infra.config.settings import settings
 from infra.security.resource_scope import accessible_document_predicate
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import Document, DocumentChunk
 from model.embedding.base import get_embedder, normalize_embedding_vector
+from services.retrieval_matching import expand_retrieval_terms
 
 
 @dataclass(slots=True)
@@ -43,7 +44,12 @@ class DocumentEvidenceGate:
 
 
 def tokenize(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{2,}", (text or "").lower())
+    """中文 query 使用可审计的业务词群与 n-gram，避免整句被当成一个词。"""
+
+    normalized = (text or "").lower()
+    expanded = expand_retrieval_terms(normalized, limit=48)
+    lexical = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]{2,}", normalized)
+    return list(dict.fromkeys([*expanded, *lexical]))[:64]
 
 
 def cosine_score(a: list[float], b: list[float]) -> float:
@@ -67,6 +73,7 @@ def _apply_document_scope(
     tenant_id: str | None = None,
     workspace_id: str | None = None,
     project_id: str | None = None,
+    include_personal_unscoped: bool = False,
 ):
     stmt = stmt.where(
         accessible_document_predicate(
@@ -75,7 +82,17 @@ def _apply_document_scope(
         )
     )
     if project_id:
-        stmt = stmt.where(Document.project_id == project_id)
+        if include_personal_unscoped:
+            # RAG 的 Project 会话优先检索项目文档，同时保留当前用户未绑定 Project 的“我的资料”。
+            # 管理员的工作区读取能力不能借此扩大到其他用户的个人文档。
+            stmt = stmt.where(
+                or_(
+                    Document.project_id == project_id,
+                    and_(Document.project_id.is_(None), Document.owner_id == user_id),
+                )
+            )
+        else:
+            stmt = stmt.where(Document.project_id == project_id)
     return stmt
 
 
@@ -87,6 +104,7 @@ async def fetch_document_candidates(
     tenant_id: str | None = None,
     workspace_id: str | None = None,
     project_id: str | None = None,
+    include_personal_unscoped: bool = True,
 ) -> list[DocumentCandidate]:
     candidates = await _fetch_document_candidates_vector(
         user_id=user_id,
@@ -95,6 +113,7 @@ async def fetch_document_candidates(
         tenant_id=tenant_id,
         workspace_id=workspace_id,
         project_id=project_id,
+        include_personal_unscoped=include_personal_unscoped,
     )
     if candidates:
         return candidates
@@ -112,6 +131,7 @@ async def fetch_document_candidates(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             project_id=project_id,
+            include_personal_unscoped=include_personal_unscoped,
         )
         if terms:
             filters = []
@@ -242,6 +262,7 @@ async def _fetch_document_candidates_vector(
     tenant_id: str | None = None,
     workspace_id: str | None = None,
     project_id: str | None = None,
+    include_personal_unscoped: bool = True,
 ) -> list[DocumentCandidate]:
     if not getattr(settings, "use_pgvector", True):
         return []
@@ -260,6 +281,7 @@ async def _fetch_document_candidates_vector(
                 tenant_id=tenant_id,
                 workspace_id=workspace_id,
                 project_id=project_id,
+                include_personal_unscoped=include_personal_unscoped,
             )
             stmt = stmt.order_by(DocumentChunk.embedding_vector.l2_distance(query_embedding)).limit(
                 limit
@@ -280,6 +302,7 @@ async def _fetch_document_candidates_vector(
                     tenant_id=tenant_id,
                     workspace_id=workspace_id,
                     project_id=project_id,
+                    include_personal_unscoped=include_personal_unscoped,
                 )
                 stmt = stmt.limit(limit)
                 result = await db.execute(stmt)
@@ -297,6 +320,7 @@ async def fetch_document_candidates_fallback(
     tenant_id: str | None = None,
     workspace_id: str | None = None,
     project_id: str | None = None,
+    include_personal_unscoped: bool = True,
 ) -> list[DocumentCandidate]:
     terms = tokenize(query)
     async with AsyncSessionLocal() as db:
@@ -311,6 +335,7 @@ async def fetch_document_candidates_fallback(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             project_id=project_id,
+            include_personal_unscoped=include_personal_unscoped,
         )
         if terms:
             filters = []

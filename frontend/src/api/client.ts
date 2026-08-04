@@ -2193,6 +2193,9 @@ export async function apiChatStream(
           opentrace: {
             execution_profile: mode === 'fast' || mode === 'deep' ? mode : 'auto',
             memory_mode: payload?.memory_mode === 'temporary' ? 'temporary' : 'enabled',
+            knowledge_mode: payload?.knowledge_mode === 'required' || /^\s*\/(?:rag|kb|knowledge)(?=$|[\s:：])/i.test(query)
+              ? 'required'
+              : 'auto',
             ...(Array.isArray(payload?.enabled_skills) ? { enabled_skills: payload.enabled_skills } : {}),
             project_id: typeof payload?.project_id === 'string' ? payload.project_id : undefined,
             data_source_ids: Array.isArray(payload?.data_source_ids) ? payload.data_source_ids : [],

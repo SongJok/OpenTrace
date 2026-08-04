@@ -43,6 +43,7 @@ from kernel.agent_loop.contracts import (
     parse_tool_specs,
 )
 from kernel.agent_loop.discovery import CapabilityDiscovery
+from kernel.agent_loop.rag_routing import RagRoutingDecision, resolve_rag_routing
 from kernel.agent_loop.write_intent import (
     is_affirmative_follow_up,
     is_contextual_follow_up,
@@ -357,9 +358,18 @@ class AgentLoop:
         context = await self.context_assembler.assemble(
             db, response=response, user_query=query, request_payload=payload
         )
+        enterprise_manifest = dict(context.context_manifest.get("enterprise_context") or {})
+        enterprise_grounding_required = bool(enterprise_manifest.get("requires_grounding"))
+        rag_routing = resolve_rag_routing(
+            query,
+            knowledge_mode=str(extension.get("knowledge_mode") or "auto"),
+            enterprise_grounding=enterprise_grounding_required,
+        )
+        context.context_manifest["rag_routing"] = rag_routing.to_dict()
         response.response_metadata = {
             **dict(getattr(response, "response_metadata", None) or {}),
-            "enterprise_context": dict(context.context_manifest.get("enterprise_context") or {}),
+            "enterprise_context": enterprise_manifest,
+            "rag_routing": rag_routing.to_dict(),
         }
         flush = getattr(db, "flush", None)
         if flush is not None:
@@ -416,13 +426,22 @@ class AgentLoop:
         )
         if deterministic_calendar_enabled:
             pinned_names.add("create_calendar_event")
-        discovery_query = query
-        if planning_context and self._is_contextual_follow_up(query):
-            discovery_query = f"{planning_context}\n当前追问：{query}"
+        if rag_routing.required and str(payload.get("tool_choice") or "auto") != "none":
+            pinned_names.add("rag")
+        discovery_query = rag_routing.query
+        if planning_context and self._is_contextual_follow_up(rag_routing.query):
+            discovery_query = f"{planning_context}\n当前追问：{rag_routing.query}"
         discovery = CapabilityDiscovery(
             catalogue_limit=int(settings.responses_capability_catalog_limit)
         ).discover(discovery_query, available_specs, pinned_names=pinned_names)
         tool_specs = list(discovery.specs)
+        await emit(
+            "opentrace.rag.routing",
+            {
+                **rag_routing.to_dict(),
+                "stage": "知识库检索" if rag_routing.required else "",
+            },
+        )
         await emit(
             "opentrace.capabilities.discovered",
             {
@@ -436,7 +455,7 @@ class AgentLoop:
         if decision is None:
             with capture_model_calls() as planning_calls:
                 decision = await self._plan_turn(
-                    query=query,
+                    query=rag_routing.query,
                     attachment_context=context.attachment_context,
                     profile=profile,
                     tool_specs=tool_specs,
@@ -450,6 +469,12 @@ class AgentLoop:
             decision,
             context_manifest=context.context_manifest,
         )
+        if (
+            rag_routing.required
+            and str(payload.get("tool_choice") or "auto") != "none"
+            and any(spec.name == "rag" for spec in available_specs)
+        ):
+            decision = self._apply_required_rag_policy(decision)
         if deterministic_calendar_enabled:
             calendar_spec = next(
                 (spec for spec in tool_specs if spec.name == "create_calendar_event"),
@@ -483,9 +508,7 @@ class AgentLoop:
         )
 
         selected_capabilities = set(intent.capabilities)
-        enterprise_manifest = dict(context.context_manifest.get("enterprise_context") or {})
-        enterprise_grounding_required = bool(enterprise_manifest.get("requires_grounding"))
-        if enterprise_grounding_required and str(payload.get("tool_choice") or "auto") != "none":
+        if rag_routing.required and str(payload.get("tool_choice") or "auto") != "none":
             rag_spec = next((spec for spec in available_specs if spec.name == "rag"), None)
             if rag_spec is not None:
                 selected_capabilities.add("rag")
@@ -638,7 +661,7 @@ class AgentLoop:
                     },
                 )
         direct_memory_answer = None
-        if str(payload.get("tool_choice") or "auto") != "required":
+        if str(payload.get("tool_choice") or "auto") != "required" and not rag_routing.required:
             direct_memory_answer = self._direct_memory_answer(query, context.recalled_memories)
         if direct_memory_answer:
             await self._emit_text(emit, direct_memory_answer)
@@ -776,21 +799,54 @@ class AgentLoop:
             )
 
         spec_by_name = {spec.name: spec for spec in tool_specs}
+        prefetched_rag = False
         if (
             str(payload.get("tool_choice") or "auto") != "none"
             and "rag" in spec_by_name
-            and (self._requires_knowledge_grounding(query) or enterprise_grounding_required)
+            and rag_routing.required
         ):
-            await self._prefetch_knowledge_grounding(
+            rag_result = await self._prefetch_knowledge_grounding(
                 db,
                 response=response,
-                query=query,
+                routing=rag_routing,
                 spec=spec_by_name["rag"],
                 messages=messages,
                 emit=emit,
             )
+            prefetched_rag = self._tool_result_succeeded(rag_result)
+            rag_step = self._plan_step_for_capability(
+                execution_plan,
+                plan_statuses,
+                "rag",
+                recovering=True,
+            )
+            if rag_step is not None:
+                plan_statuses[rag_step.id] = "completed" if prefetched_rag else "failed"
+                await emit(
+                    (
+                        "opentrace.plan.step.completed"
+                        if prefetched_rag
+                        else "opentrace.plan.step.failed"
+                    ),
+                    {
+                        "step": rag_step.to_dict(),
+                        "status": plan_statuses[rag_step.id],
+                        "tool": "rag",
+                        "prefetched": True,
+                    },
+                )
+                await self._persist_execution_plan_runtime(
+                    db,
+                    response=response,
+                    statuses=plan_statuses,
+                    replan_count=replan_count,
+                )
 
-        public_tools = [spec.as_openai_tool() for spec in tool_specs]
+        public_tools = [
+            spec.as_openai_tool()
+            for spec in tool_specs
+            if not (prefetched_rag and spec.name == "rag")
+        ]
         if str(payload.get("tool_choice") or "auto") == "none":
             public_tools = []
         model_name, reasoning = self._model_profile(profile, payload)
@@ -1802,6 +1858,42 @@ class AgentLoop:
         return PlanningDecision(intent=grounded_intent, execution_plan=decision.execution_plan)
 
     @staticmethod
+    def _apply_required_rag_policy(decision: PlanningDecision) -> PlanningDecision:
+        """显式知识检索请求不能被规划模型降级为普通问答或澄清。"""
+
+        intent = decision.intent
+        capabilities = tuple(dict.fromkeys([*intent.capabilities, "rag"]))
+        grounded_intent = IntentPlan(
+            goal=intent.goal,
+            task_type="document_qa" if intent.task_type == "chat" else intent.task_type,
+            capabilities=capabilities,
+            ambiguity=None,
+            risk=SideEffect.READ,
+            execution_profile=intent.execution_profile,
+            execution_mode=intent.execution_mode,
+            expected_outputs=intent.expected_outputs,
+            clarification_question=None,
+        )
+        plan = decision.execution_plan
+        if any(step.capability == "rag" for step in plan.steps):
+            return PlanningDecision(intent=grounded_intent, execution_plan=plan)
+        rag_step = ExecutionStep(
+            id="rag-grounding",
+            objective="检索当前用户有权访问的企业知识与个人上传文档",
+            capability="rag",
+            depends_on=(),
+            success_criteria="返回带来源与作用域信息的可核验证据，证据不足时明确说明",
+        )
+        grounded_plan = ExecutionPlan(
+            goal=plan.goal or grounded_intent.goal,
+            complexity=plan.complexity,
+            steps=(rag_step, *plan.steps),
+            success_criteria=plan.success_criteria,
+            replan_limit=plan.replan_limit,
+        )
+        return PlanningDecision(intent=grounded_intent, execution_plan=grounded_plan)
+
+    @staticmethod
     def _planning_context(
         messages: list[dict[str, Any]],
         *,
@@ -2543,58 +2635,42 @@ class AgentLoop:
 
     @staticmethod
     def _requires_knowledge_grounding(query: str) -> bool:
-        """识别用户明确要求以知识库或文档为事实依据的请求。"""
-        normalized = re.sub(r"\s+", "", (query or "").lower())
-        markers = (
-            "根据知识库",
-            "基于知识库",
-            "使用知识库",
-            "参考知识库",
-            "查询知识库",
-            "检索知识库",
-            "从知识库",
-            "知识库中",
-            "知识库证据",
-            "已发布知识",
-            "根据文档",
-            "基于文档",
-            "参考文档",
-            "查询文档",
-            "检索文档",
-            "从文档",
-            "文档中",
-            "上传的文档",
-            "basedontheknowledgebase",
-            "fromtheknowledgebase",
-            "basedonthedocument",
-            "fromthedocument",
-            "uploadeddocument",
-        )
-        return any(marker in normalized for marker in markers)
+        """兼容入口：统一复用 Responses RAG 路由语义。"""
+
+        return resolve_rag_routing(query).required
 
     async def _prefetch_knowledge_grounding(
         self,
         db: AsyncSession,
         *,
         response: ResponseRecord,
-        query: str,
+        routing: RagRoutingDecision,
         spec: ToolSpec,
         messages: list[LLMMessage],
         emit: EventEmitter,
-    ) -> None:
-        """在用户明确要求事实依据时，先执行只读 RAG 再进入 Manager 合成。"""
+    ) -> dict[str, Any]:
+        """在用户明确要求事实依据时，先执行一次只读 RAG 再进入 Manager 合成。"""
+
         call_id = f"call_grounding_{hashlib.sha256(response.id.encode()).hexdigest()[:20]}"
-        enterprise_manifest = dict(
-            (response.response_metadata or {}).get("enterprise_context") or {}
-        )
-        parameters: dict[str, Any] = {}
-        if enterprise_manifest.get("requires_grounding"):
-            parameters = {
-                "enterprise_grounding_required": True,
-                "knowledge_space_ids": list(enterprise_manifest.get("knowledge_space_ids") or []),
-            }
+        parameters: dict[str, Any] = {
+            "sources": list(routing.sources or ("knowledge", "documents")),
+            "raw_user_query": routing.query,
+            "rag_routing_reason": routing.reason,
+        }
+        if routing.enterprise_grounding:
+            enterprise_manifest = dict(
+                (response.response_metadata or {}).get("enterprise_context") or {}
+            )
+            parameters.update(
+                {
+                    "knowledge_space_ids": list(
+                        enterprise_manifest.get("knowledge_space_ids") or []
+                    ),
+                    "enterprise_grounding_required": True,
+                }
+            )
         arguments = {
-            "query": query,
+            "query": routing.query,
             "parameters_json": json.dumps(parameters, ensure_ascii=False),
         }
         call = {"call_id": call_id, "name": "rag", "arguments": arguments}
@@ -2616,6 +2692,7 @@ class AgentLoop:
                 "item_type": "function_call",
                 "call_id": call_id,
                 "name": "rag",
+                "deterministic": True,
             },
         )
         result = await self._execute_tool(
@@ -2625,12 +2702,24 @@ class AgentLoop:
             spec=spec,
             emit=emit,
         )
+        await emit(
+            "opentrace.rag.prefetched",
+            {
+                **routing.to_dict(),
+                "status": str(result.get("status") or "unknown"),
+                "answerable": bool(
+                    ((result.get("metadata") or {}).get("quality") or {}).get("answerable")
+                ),
+                "evidence_count": len((result.get("metadata") or {}).get("chunks") or []),
+                "stage": "知识库检索完成",
+            },
+        )
         messages.append(
             LLMMessage(
                 role="system",
                 content=(
                     "用户明确要求依据知识库或文档回答。必须优先依据紧随其后的 rag 工具证据，"
-                    "不要用模型记忆替代；证据不足时应明确说明。"
+                    "不要用模型记忆或个人记忆替代；引用可核验来源，证据不足时应明确说明。"
                 ),
             )
         )
@@ -2659,6 +2748,7 @@ class AgentLoop:
                 content=json.dumps(result, ensure_ascii=False, default=str),
             )
         )
+        return result
 
     async def _ensure_approval(
         self,

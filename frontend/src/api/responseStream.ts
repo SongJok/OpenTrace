@@ -182,7 +182,7 @@ export async function streamSseResponse(
           })
           continue
         }
-        if (type.startsWith('opentrace.intent.') || type.startsWith('opentrace.context.') || type.startsWith('opentrace.model.') || type.startsWith('opentrace.capabilities.') || type === 'opentrace.plan.replanned') {
+        if (type.startsWith('opentrace.intent.') || type.startsWith('opentrace.context.') || type.startsWith('opentrace.model.') || type.startsWith('opentrace.capabilities.') || type.startsWith('opentrace.rag.') || type === 'opentrace.plan.replanned') {
           callbacks.onThinking?.(data)
           continue
         }

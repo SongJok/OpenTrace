@@ -19,6 +19,25 @@ Lint 会记录 `KnowledgeObservation`，并通过 `/api/v1/knowledge/evolution/p
 
 排序在文本相关性之外加入权威级别与过期复审惩罚；RAG 仍通过多 lane RRF 融合受治理知识和原始文档证据。
 
+## Responses 主链路的 RAG 路由
+
+当前在线入口不再依赖旧 `force_mode`。`/api/v2/responses` 通过 `opentrace.knowledge_mode`
+和服务端语义判定形成确定性 RAG 路由：
+
+- 消息以 `/rag`、`/kb` 或 `/knowledge` 开头时，前端发送
+  `opentrace.knowledge_mode=required`，Worker 会移除命令前缀后执行一次受治理 RAG 预取；
+- “根据/查询/检索/搜索知识库或文档”等明确请求会自动进入同一路由，且不会被规划模型降级为
+  普通问答或个人记忆直答；
+- 企业认知 manifest 标记 `requires_grounding=true` 时，RAG 只允许查询已发布且当前用户有权
+  访问的 `KnowledgeSource`，空间范围为空时 fail closed，不回退到个人记忆或未发布文档；
+- 普通 `/rag` 同时查询受治理知识和用户文档，但不把个人记忆作为知识库证据兜底；
+- 路由与预取状态通过 `opentrace.rag.routing`、`opentrace.rag.prefetched` 事件及
+  `context_manifest.rag_routing` 持久化，便于前端展示和审计。
+
+Project 会话中的 RAG 文档 lane 会检索“当前 Project 文档 + 当前用户未绑定 Project 的我的资料”。
+该兼容范围只用于 RAG；`POST /documents/search` 的 `project_id` 仍保持严格 Project 过滤。所有候选继续先
+执行 user/tenant/workspace 权限谓词，管理员权限也不能借此读取其他用户的未绑定个人文档。
+
 ## 2. 核心职责
 
 - **文档分块检索**：从向量数据库中检索与查询相关的文档片段

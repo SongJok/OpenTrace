@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, or_, select, text
+from sqlalchemy import and_, delete, or_, select, text
 
 from infra.config.settings import settings
 from infra.observability.logger import get_logger
@@ -508,7 +508,12 @@ class DocumentPlugin(BasePlugin):
                 )
             )
             if project_id:
-                stmt = stmt.where(Document.project_id == project_id)
+                stmt = stmt.where(
+                    or_(
+                        Document.project_id == project_id,
+                        and_(Document.project_id.is_(None), Document.owner_id == user_id),
+                    )
+                )
             if terms:
                 like_filters = []
                 for term in terms[:8]:

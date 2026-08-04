@@ -90,6 +90,7 @@ class OpenTraceOptions(BaseModel):
     assistant_profile_id: str | None = None
     execution_profile: str = Field(default="auto", pattern="^(auto|fast|deep)$")
     memory_mode: str = Field(default="enabled", pattern="^(enabled|disabled|temporary)$")
+    knowledge_mode: str = Field(default="auto", pattern="^(auto|required)$")
     enabled_skills: list[str] = Field(default_factory=list)
     data_source_ids: list[str] = Field(default_factory=list)
     attachment_ids: list[str] = Field(default_factory=list, max_length=10)

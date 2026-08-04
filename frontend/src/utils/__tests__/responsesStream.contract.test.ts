@@ -29,6 +29,23 @@ describe('Responses API stream compatibility', () => {
     expect(finals).toEqual(['你好'])
   })
 
+  it('surfaces RAG routing events as visible thinking stages', async () => {
+    const stages: string[] = []
+    const response = new Response(
+      [
+        'data: {"sequence_number":1,"type":"opentrace.rag.routing","data":{"stage":"知识库检索","required":true}}\n\n',
+        'data: {"sequence_number":2,"type":"response.completed","data":{"content":"完成"}}\n\n',
+      ].join(''),
+      { headers: { 'content-type': 'text/event-stream' } },
+    )
+
+    await streamSseResponse(response, {
+      onThinking: (payload) => { stages.push(String(payload.stage || '')) },
+    })
+
+    expect(stages).toEqual(['知识库检索'])
+  })
+
   it('treats response.incomplete as a terminal answer with resumable details', async () => {
     const finals: string[] = []
     const response = new Response(
@@ -225,5 +242,22 @@ describe('Responses API stream compatibility', () => {
 
     expect(body.opentrace.project_id).toBe('project-1')
     expect(body.opentrace.data_source_ids).toEqual(['doris-1'])
+    expect(body.opentrace.knowledge_mode).toBe('auto')
+  })
+
+  it('maps /rag to the Responses knowledge_mode contract', async () => {
+    let body: any
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_url, init) => {
+      body = JSON.parse(String(init?.body || '{}'))
+      return Promise.resolve(new Response(
+        'data: {"sequence_number":1,"type":"response.completed","data":{"content":"完成"}}\n\n',
+        { headers: { 'content-type': 'text/event-stream' } },
+      ))
+    }))
+
+    await apiChatStream('token', 'conversation-1', '/rag 请假流程是什么', {})
+
+    expect(body.opentrace.knowledge_mode).toBe('required')
+    expect(body.input).toBe('/rag 请假流程是什么')
   })
 })

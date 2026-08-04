@@ -518,6 +518,17 @@ class RagAgent(BaseAgent):
             sources = task.params.get("sources", ["knowledge", "documents", "semantic_memory"])
             if not isinstance(sources, list):
                 sources = ["knowledge", "documents", "semantic_memory"]
+            allowed_sources = {
+                "knowledge",
+                "documents",
+                "semantic_memory",
+                "episodic_memory",
+            }
+            sources = list(
+                dict.fromkeys(str(source) for source in sources if str(source) in allowed_sources)
+            )
+            if not sources:
+                sources = ["knowledge", "documents", "semantic_memory"]
             enterprise_grounding_required = bool(
                 task.params.get("enterprise_grounding_required", False)
             )
@@ -581,6 +592,10 @@ class RagAgent(BaseAgent):
             )
             if has_knowledge_space_scope:
                 rag_plan.filters["knowledge_space_ids"] = list(knowledge_space_ids)
+            if project_id:
+                rag_plan.filters["document_scope"] = "project_and_user_personal"
+            rag_routing_reason = str(task.params.get("rag_routing_reason") or "auto")
+            rag_plan.filters["rag_routing_reason"] = rag_routing_reason
             if enterprise_grounding_required:
                 rag_plan.filters["enterprise_grounding_required"] = True
             doc_evidence_count = 0

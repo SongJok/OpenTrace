@@ -48,4 +48,9 @@ OpenTrace 对外只使用 **Alpha / Beta / GA**：
 
 ## 企业知识库主链
 
-知识编排继续作为内部控制面，员工产品面为企业知识库。`KnowledgeSpace` 提供公司、部门、岗位、项目和个人治理边界；连接器增量同步来源内容与 ACL，编译结果经过密级、有效期、Lint 和 Review Task 后才能成为 Active Published Version。RAG 在召回前统一执行空间与来源权限过滤。详细设计见 `docs/architecture/enterprise_knowledge_base.md`。
+知识编排继续作为内部控制面，员工产品面为企业知识库。`KnowledgeSpace` 提供公司、部门、岗位、项目和个人治理边界；连接器增量同步来源内容与 ACL，编译结果经过密级、有效期、Lint 和 Review Task 后才能成为 Active Published Version。RAG 在召回前统一执行空间与来源权限过滤。
+
+Responses 通过 `opentrace.knowledge_mode=auto|required` 表达检索模式。`/rag`、`/kb`、`/knowledge`
+会映射为 `required`；明确要求“根据企业知识库/文档回答”或企业认知要求 grounding 时，Worker 会在
+Manager 合成前确定性执行 RAG，并持久化 `opentrace.rag.*` 事件。详细设计见
+`docs/architecture/enterprise_knowledge_base.md` 与 `docs/catalog/rag_retrieval.md`。

@@ -10,7 +10,6 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-
 _CAPABILITY_HELP_RE = re.compile(
     r"(你能做什么|你可以做什么|你会什么|你能干什么|你能帮我.*什么|"
     r"怎么帮我|如何帮我|可以帮我什么|有哪些?功能|你的能力|你有什么用)",
@@ -18,8 +17,7 @@ _CAPABILITY_HELP_RE = re.compile(
 )
 _USAGE_HELP_RE = re.compile(r"(怎么用|怎么使用|使用帮助|帮助|help)", re.IGNORECASE)
 _GREETING_RE = re.compile(
-    r"^(你好|您好|hi|hello|hey|嗨|早上好|晚上好|下午好|好久不见|在吗|在不在)"
-    r"[\s!！。.,，]*$",
+    r"^(你好|您好|hi|hello|hey|嗨|早上好|晚上好|下午好|好久不见|在吗|在不在)" r"[\s!！。.,，]*$",
     re.IGNORECASE,
 )
 _IDENTITY_RE = re.compile(
@@ -154,7 +152,9 @@ def classify_intent(
             max_capabilities=1,
             max_replans=0,
             max_memory_tokens=512 if (follow and prior_matches) else 0,
-            max_context_expansion=256 if light_tool else (1024 if (follow and prior_matches) else 512),
+            max_context_expansion=(
+                256 if light_tool else (1024 if (follow and prior_matches) else 512)
+            ),
             max_reasoning_steps=1 if light_tool else 2,
             memory_injection=bool(follow and prior_matches),
             workspace_context=False,
@@ -314,6 +314,11 @@ _ZH_RAG_STOPWORDS = frozenset(
 
 
 _RAG_ROUTING_PREFIXES = (
+    "/rag ",
+    "/rag：",
+    "/rag:",
+    "/kb ",
+    "/knowledge ",
     "从文档中获取：",
     "从文档中获取:",
     "根据文档回答：",
@@ -337,6 +342,13 @@ _RAG_USER_PREAMBLE_RE = re.compile(
 def _strip_rag_routing_query(query: str) -> str:
     """Remove planner/RAG routing prefixes so anchors match user intent."""
     q = (query or "").strip()
+    q = re.sub(
+        r"^/(?:rag|kb|knowledge)(?=$|[\s:：])(?:[\s:：]+)?",
+        "",
+        q,
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
     for _ in range(6):
         changed = False
         m = _RAG_USER_PREAMBLE_RE.match(q)
@@ -418,7 +430,9 @@ def relevance_score(query: str, text: str) -> float:
         overlap = max(overlap, substantive_ratio)
 
     if _CAPABILITY_HELP_RE.search(query or ""):
-        help_hits = sum(1 for k in ["数据", "文档", "搜索", "工具", "能力", "功能", "帮你"] if k in text)
+        help_hits = sum(
+            1 for k in ["数据", "文档", "搜索", "工具", "能力", "功能", "帮你"] if k in text
+        )
         overlap = max(overlap, min(1.0, help_hits / 3.0))
     return round(max(0.0, min(1.0, overlap)), 3)
 
@@ -508,7 +522,9 @@ def _light_lock(raw: str, normalized: str, task_type: str, allowed: list[str]) -
     )
 
 
-def _rich_lock(raw: str, normalized: str, task_type: str, allowed: list[str], confidence: float = 0.78) -> IntentLock:
+def _rich_lock(
+    raw: str, normalized: str, task_type: str, allowed: list[str], confidence: float = 0.78
+) -> IntentLock:
     return IntentLock(
         raw_user_query=raw,
         normalized_query=normalized,
