@@ -28,6 +28,7 @@ import {
 import { useAuthStore } from '../store/auth'
 import { useChatPreferences } from '../store/chatPreferences'
 import { WorkbenchActionCenter } from '../components/WorkbenchActionCenter'
+import { WorkbenchTodayPulse } from '../components/WorkbenchTodayPulse'
 import {
   apiCreateAssistantProfile,
   apiCreateGoal,
@@ -331,6 +332,7 @@ export function OverviewPanel({ overview, displayName, navigate }: { overview: E
   }
 
   return <div className="space-y-6">
+    <WorkbenchTodayPulse pulse={overview.operating_pulse} />
     <section className="overflow-hidden rounded-3xl border border-[var(--border)] bg-[var(--surface)]">
       <div className="grid gap-6 p-6 lg:grid-cols-[1.35fr_1fr] lg:p-8">
         <div><div className="mb-4 inline-flex items-center gap-2 rounded-full bg-[var(--accent-dim)] px-3 py-1 text-xs text-[var(--accent)]"><Sparkles size={13} />最懂公司的 AI</div><h2 className="max-w-2xl text-2xl font-semibold leading-tight sm:text-3xl">{displayName ? `${displayName}，` : ''}今天从企业上下文出发，让 AI 与你一起完成工作。</h2><p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">工作台汇总 PostgreSQL 中的真实执行状态，不以 Redis 或前端缓存代替事实源；所有内容均受用户、租户和工作区边界约束。</p><div className="mt-5 flex flex-wrap gap-2"><button onClick={() => navigate('/chat')} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm text-[var(--accent-foreground)]"><Sparkles size={15} />开始一项工作</button><button onClick={() => navigate('/knowledge-base')} className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm"><BookOpen size={15} />查询企业知识</button></div></div>

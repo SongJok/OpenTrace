@@ -1645,15 +1645,55 @@ export async function apiArchiveEnterpriseCognitiveEntity(token: string, entityI
   return res.json()
 }
 
+export type WorkbenchPriority = 'p0' | 'p1' | 'p2' | 'p3'
+
 export interface WorkbenchAttentionItem {
   id: string
-  type: 'approval' | 'alert' | 'response' | 'knowledge' | string
-  severity: 'info' | 'warning' | 'critical' | 'error' | string
+  type: 'approval' | 'alert' | 'response' | 'knowledge' | 'notification' | 'automation' | 'goal' | string
+  severity: 'info' | 'success' | 'warning' | 'critical' | 'error' | string
   title: string
   description: string
   route: string
   resource_id?: string | null
   created_at?: string | null
+  due_at?: string | null
+  overdue?: boolean
+  age_minutes?: number
+  priority?: WorkbenchPriority
+  priority_score?: number
+  priority_reason?: string
+}
+
+export interface WorkbenchTimelineItem {
+  id: string
+  type: 'calendar' | 'task' | 'alert' | string
+  title: string
+  description: string
+  status: 'upcoming' | 'in_progress' | 'completed' | 'scheduled' | 'overdue' | string
+  route: string
+  start_at: string
+  end_at?: string | null
+  event_type?: 'event' | 'meeting' | 'focus' | 'reminder' | string
+}
+
+export interface WorkbenchOperatingPulse {
+  timezone: string
+  local_date: string
+  day_start: string
+  day_end: string
+  status: 'clear' | 'attention' | 'critical'
+  headline: string
+  summary: {
+    urgent_items: number
+    calendar_events: number
+    due_automations: number
+    overdue_automations: number
+    stale_goals: number
+    focus_minutes: number
+    meeting_minutes: number
+  }
+  focus_items: WorkbenchAttentionItem[]
+  timeline: WorkbenchTimelineItem[]
 }
 
 export interface WorkbenchActivityItem {
@@ -1717,6 +1757,7 @@ export interface EnterpriseWorkbenchOverview {
     company_context_ready?: boolean
   }
   knowledge_health: KnowledgeGovernanceHealth
+  operating_pulse: WorkbenchOperatingPulse
   scenarios: EnterpriseWorkbenchScenario[]
   attention_items: WorkbenchAttentionItem[]
   recent_activity: WorkbenchActivityItem[]
@@ -1726,8 +1767,9 @@ export async function apiGetEnterpriseWorkbench(
   token: string,
   recentLimit = 6,
   attentionLimit?: number,
+  timezone = DEFAULT_TIMEZONE,
 ): Promise<EnterpriseWorkbenchOverview> {
-  const query = new URLSearchParams({ recent_limit: String(recentLimit) })
+  const query = new URLSearchParams({ recent_limit: String(recentLimit), timezone })
   if (attentionLimit !== undefined) query.set('attention_limit', String(attentionLimit))
   const res = await apiFetchResponses(`/workbench/overview?${query.toString()}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取企业 AI 工作台失败'))

@@ -37,6 +37,12 @@ const overview: EnterpriseWorkbenchOverview = {
     active_work_scenarios: 1,
   },
   knowledge_health: { score: 90, status: 'healthy', scope: { space_count: 1 }, metrics: {} },
+  operating_pulse: {
+    timezone: 'Asia/Shanghai', local_date: '2026-07-29', day_start: '2026-07-28T16:00:00Z', day_end: '2026-07-29T16:00:00Z',
+    status: 'attention', headline: '有 1 项优先工作等待处理',
+    summary: { urgent_items: 1, calendar_events: 0, due_automations: 0, overdue_automations: 0, stale_goals: 0, focus_minutes: 0, meeting_minutes: 0 },
+    focus_items: [], timeline: [],
+  },
   scenarios: [],
   attention_items: [
     {
@@ -47,6 +53,9 @@ const overview: EnterpriseWorkbenchOverview = {
       description: 'write 操作正在等待你的确认。',
       route: '/chat',
       created_at: '2026-07-29T01:00:00Z',
+      priority: 'p1',
+      priority_score: 96,
+      priority_reason: '审批已等待 5 小时',
     },
   ],
   recent_activity: [],
@@ -78,6 +87,8 @@ describe('企业工作台行动中心', () => {
 
     expect(await screen.findByText('日报已生成')).toBeInTheDocument()
     expect(screen.getByText('待审批：写入工单')).toBeInTheDocument()
+    expect(screen.getByText('P1')).toBeInTheDocument()
+    expect(screen.getByText('排序依据：审批已等待 5 小时')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('tab', { name: '审批 1' }))
     expect(screen.getByText('待审批：写入工单')).toBeInTheDocument()
     expect(screen.queryByText('日报已生成')).not.toBeInTheDocument()

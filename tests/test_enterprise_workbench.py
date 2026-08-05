@@ -120,4 +120,8 @@ def test_workbench_is_a_projection_not_a_second_execution_plane() -> None:
 def test_workbench_attention_queue_has_a_bounded_enterprise_limit() -> None:
     source = (ROOT / "services/enterprise_workbench.py").read_text(encoding="utf-8")
     assert "attention_limit = max(5, min(attention_limit, 100))" in source
-    assert "attention_items = _sort_by_created_at(attention_items)[:attention_limit]" in source
+    assert "candidate_limit = max(attention_limit, 50)" in source
+    assert "rank_workbench_actions(attention_items, now=generated_at)[:attention_limit]" in source
+    assert "focus_limit=min(attention_limit, 8)" in source
+    assert "unacknowledged_alert_count" in source
+    assert '"unacknowledged_alerts": unacknowledged_alert_count' in source

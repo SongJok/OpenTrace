@@ -15,6 +15,7 @@ describe('enterprise AI workbench contracts', () => {
     expect(source).toContain('WorkbenchActionCenter')
     expect(source).toContain('apiListProjects')
     expect(source).toContain('apiListGoals')
+    expect(overviewSource).toContain('WorkbenchTodayPulse')
     expect(overviewSource).toContain('企业日常工作场景')
     expect(overviewSource).toContain('scenarioLaunchIntent')
   })
@@ -107,7 +108,7 @@ describe('enterprise AI workbench contracts', () => {
     expect(result.readiness.score).toBe(88)
     expect(result.scope).toMatchObject({ tenant_id: 'tenant-a', workspace_id: 'workspace-a' })
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/v2/workbench/overview?recent_limit=8',
+      '/api/v2/workbench/overview?recent_limit=8&timezone=Asia%2FShanghai',
       expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer token' }) }),
     )
   })
@@ -128,7 +129,7 @@ describe('enterprise AI workbench contracts', () => {
     await apiGetEnterpriseWorkbench('token', 12, 50)
 
     expect(fetchMock).toHaveBeenCalledWith(
-      '/api/v2/workbench/overview?recent_limit=12&attention_limit=50',
+      '/api/v2/workbench/overview?recent_limit=12&timezone=Asia%2FShanghai&attention_limit=50',
       expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer token' }) }),
     )
   })

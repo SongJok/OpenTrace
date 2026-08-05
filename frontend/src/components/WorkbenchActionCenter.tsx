@@ -37,6 +37,22 @@ const categoryOptions: Array<{ id: ActionCategory; label: string }> = [
   { id: 'notification', label: '通知' },
 ]
 
+const priorityLabels = { p0: 'P0', p1: 'P1', p2: 'P2', p3: 'P3' } as const
+
+function notificationPriority(level: NotificationItem['level']) {
+  if (level === 'critical') return { priority: 'p0' as const, score: 130 }
+  if (level === 'error') return { priority: 'p1' as const, score: 105 }
+  if (level === 'warning') return { priority: 'p2' as const, score: 65 }
+  return { priority: 'p3' as const, score: 25 }
+}
+
+function actionPriorityScore(item: UnifiedActionItem) {
+  const score = typeof item.priority_score === 'number'
+    ? item.priority_score
+    : notificationPriority(item.severity).score
+  return item.read ? Math.min(score, 5) : score
+}
+
 const categoryLabels: Record<string, string> = {
   approval: '待审批',
   alert: '主动预警',
@@ -106,21 +122,29 @@ export function WorkbenchActionCenter({
 
   const items = useMemo<UnifiedActionItem[]>(() => {
     const attentionItems = overview.attention_items.filter((item) => item.type !== 'notification')
-    const notificationItems: UnifiedActionItem[] = notifications.map((item) => ({
-      id: item.id,
-      type: 'notification',
-      severity: item.level,
-      title: item.title,
-      description: item.body || '新的企业主动工作通知等待查看。',
-      route: item.kind === 'alert' ? '/alerts' : item.kind === 'calendar' ? '/calendar' : '/tasks',
-      resource_id: item.task_id,
-      created_at: item.created_at,
-      read: item.read,
-      notificationKind: item.kind,
-    }))
-    return [...attentionItems, ...notificationItems].sort((left, right) =>
-      String(right.created_at || '').localeCompare(String(left.created_at || '')),
-    )
+    const notificationItems: UnifiedActionItem[] = notifications.map((item) => {
+      const priority = notificationPriority(item.level)
+      return {
+        id: item.id,
+        type: 'notification',
+        severity: item.level,
+        title: item.title,
+        description: item.body || '新的企业主动工作通知等待查看。',
+        route: item.kind === 'alert' ? '/alerts' : item.kind === 'calendar' ? '/calendar' : '/tasks',
+        resource_id: item.task_id,
+        created_at: item.created_at,
+        read: item.read,
+        notificationKind: item.kind,
+        priority: priority.priority,
+        priority_score: priority.score,
+        priority_reason: item.read ? '通知已查看' : '新的主动工作通知',
+      }
+    })
+    return [...attentionItems, ...notificationItems].sort((left, right) => {
+      const priorityDelta = actionPriorityScore(right) - actionPriorityScore(left)
+      if (priorityDelta) return priorityDelta
+      return String(right.created_at || '').localeCompare(String(left.created_at || ''))
+    })
   }, [notifications, overview.attention_items])
 
   const visibleItems = useMemo(() => {
@@ -135,7 +159,7 @@ export function WorkbenchActionCenter({
   }, [category, items, query])
 
   const unreadCount = notifications.filter((item) => !item.read).length
-  const criticalCount = items.filter((item) => item.severity === 'critical' || item.severity === 'error').length
+  const criticalCount = items.filter((item) => !item.read && (item.severity === 'critical' || item.severity === 'error')).length
   const approvalCount = items.filter((item) => item.type === 'approval').length
 
   const openItem = async (item: UnifiedActionItem) => {
@@ -236,11 +260,13 @@ export function WorkbenchActionCenter({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="rounded-full bg-[var(--surface-raised)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)]">{categoryLabels[item.type] || item.type}</span>
+                  {item.priority && <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] font-semibold text-[var(--text-secondary)]">{priorityLabels[item.priority]}</span>}
                   {item.type === 'notification' && !item.read && <span className="h-2 w-2 rounded-full bg-[var(--accent)]" aria-label="未读" />}
                   <span className="ml-auto text-[10px] text-[var(--text-secondary)]">{formatTime(item.created_at)}</span>
                 </div>
                 <h3 className="mt-2 text-sm font-medium">{item.title}</h3>
                 <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{item.description}</p>
+                {item.priority_reason && <p className="mt-1 text-[10px] text-[var(--text-secondary)]">排序依据：{item.priority_reason}</p>}
               </div>
               <button
                 type="button"

@@ -10,10 +10,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from infra.config.constants import DEFAULT_TIMEZONE
 from infra.security.resource_scope import accessible_data_sources_statement
 from infra.storage.models import (
     AlertEvent,
@@ -37,8 +39,13 @@ from knowledge.access import (
     resolve_access_context,
 )
 from knowledge.governance import knowledge_governance_health
+from services.calendar import list_calendar_events, local_day_window
 from services.enterprise_cognition import load_enterprise_context
 from services.enterprise_scenarios import build_enterprise_scenarios
+from services.workbench_pulse import (
+    build_workbench_operating_pulse,
+    rank_workbench_actions,
+)
 
 ACTIVE_RESPONSE_STATUSES = {"queued", "in_progress", "requires_action"}
 ACTIVE_GOAL_STATUSES = {"queued", "in_progress", "requires_action", "paused"}
@@ -246,11 +253,14 @@ async def enterprise_workbench_overview(
     org_id: str = "default",
     recent_limit: int = 6,
     attention_limit: int = 10,
+    timezone_name: str = DEFAULT_TIMEZONE,
 ) -> dict[str, Any]:
     """返回当前员工在当前企业空间内的统一工作台投影。"""
 
     recent_limit = max(3, min(recent_limit, 20))
     attention_limit = max(5, min(attention_limit, 100))
+    candidate_limit = max(attention_limit, 50)
+    generated_at = datetime.now(UTC)
     scope = (
         Project.user_id == user.id,
         Project.tenant_id == tenant_id,
@@ -316,7 +326,7 @@ async def enterprise_workbench_overview(
                 .join(ResponseRecord, ResponseApproval.response_id == ResponseRecord.id)
                 .where(ResponseApproval.status == "pending", *response_scope)
                 .order_by(ResponseApproval.created_at.desc())
-                .limit(attention_limit)
+                .limit(candidate_limit)
             )
         ).scalars()
     )
@@ -342,7 +352,7 @@ async def enterprise_workbench_overview(
                 select(ResponseRecord)
                 .where(*response_scope, ResponseRecord.status.in_(FAILED_RESPONSE_STATUSES))
                 .order_by(ResponseRecord.updated_at.desc())
-                .limit(3)
+                .limit(candidate_limit)
             )
         ).scalars()
     )
@@ -382,6 +392,18 @@ async def enterprise_workbench_overview(
             )
         ).scalars()
     )
+    local_date = generated_at.astimezone(ZoneInfo(timezone_name)).date()
+    today_start, today_end = local_day_window(local_date, timezone_name)
+    today_calendar_events = await list_calendar_events(
+        db,
+        user_id=user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        start_at=today_start,
+        end_at=today_end,
+        timezone_name=timezone_name,
+        limit=200,
+    )
     notification_subject_ids = task_ids + alert_ids + calendar_ids
     unread_notifications = 0
     unread_notification_rows: list[TaskNotification] = []
@@ -412,19 +434,33 @@ async def enterprise_workbench_overview(
         )
 
     alert_events: list[AlertEvent] = []
+    unacknowledged_alert_count = 0
+    critical_alert_count = 0
     if alert_ids:
+        alert_scope = (
+            AlertEvent.user_id == user.id,
+            AlertEvent.rule_id.in_(alert_ids),
+            AlertEvent.state == "triggered",
+            AlertEvent.acknowledged_at.is_(None),
+        )
+        unacknowledged_alert_count = int(
+            await db.scalar(select(func.count(AlertEvent.id)).where(*alert_scope)) or 0
+        )
+        critical_alert_count = int(
+            await db.scalar(
+                select(func.count(AlertEvent.id)).where(
+                    *alert_scope, AlertEvent.severity == "critical"
+                )
+            )
+            or 0
+        )
         alert_events = list(
             (
                 await db.execute(
                     select(AlertEvent)
-                    .where(
-                        AlertEvent.user_id == user.id,
-                        AlertEvent.rule_id.in_(alert_ids),
-                        AlertEvent.state == "triggered",
-                        AlertEvent.acknowledged_at.is_(None),
-                    )
+                    .where(*alert_scope)
                     .order_by(AlertEvent.created_at.desc())
-                    .limit(attention_limit)
+                    .limit(candidate_limit)
                 )
             ).scalars()
         )
@@ -501,7 +537,6 @@ async def enterprise_workbench_overview(
     active_goals = [row for row in goals if row.status in ACTIVE_GOAL_STATUSES]
     active_tasks = [row for row in tasks if row.status == "active"]
     active_alerts = [row for row in alerts if row.status == "active"]
-    critical_alerts = [row for row in alert_events if row.severity == "critical"]
     active_data_sources = [row for row in data_sources if getattr(row, "status", None) == "active"]
 
     readiness = build_enterprise_readiness(
@@ -514,7 +549,7 @@ async def enterprise_workbench_overview(
         active_task_count=len(active_tasks),
         active_alert_count=len(active_alerts),
         pending_approval_count=pending_approval_count,
-        critical_alert_count=len(critical_alerts),
+        critical_alert_count=critical_alert_count,
         failed_response_count=failed_response_count,
         knowledge_health=knowledge_health,
         cognitive_entity_count=len(cognitive_context.entities),
@@ -605,10 +640,20 @@ async def enterprise_workbench_overview(
                 "description": "包括到期复审、反馈、阻塞或编排失败，请由治理角色处理。",
                 "route": "/knowledge",
                 "resource_id": None,
-                "created_at": datetime.now(UTC).isoformat(),
+                "created_at": generated_at.isoformat(),
             }
         )
-    attention_items = _sort_by_created_at(attention_items)[:attention_limit]
+    attention_items = rank_workbench_actions(attention_items, now=generated_at)[:attention_limit]
+    operating_pulse = build_workbench_operating_pulse(
+        attention_items=attention_items,
+        tasks=tasks,
+        alerts=alerts,
+        goals=goals,
+        calendar_events=today_calendar_events,
+        timezone_name=timezone_name,
+        focus_limit=min(attention_limit, 8),
+        now=generated_at,
+    )
 
     recent_activity: list[dict[str, Any]] = []
     for response in responses[:recent_limit]:
@@ -638,7 +683,7 @@ async def enterprise_workbench_overview(
         )
 
     return {
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": generated_at.isoformat(),
         "scope": {"tenant_id": tenant_id, "workspace_id": workspace_id, "user_id": user.id},
         "readiness": readiness,
         "summary": {
@@ -649,7 +694,7 @@ async def enterprise_workbench_overview(
             "unread_notifications": unread_notifications,
             "scheduled_tasks": len(active_tasks),
             "active_alerts": len(active_alerts),
-            "unacknowledged_alerts": len(alert_events),
+            "unacknowledged_alerts": unacknowledged_alert_count,
             "accessible_data_sources": len(data_sources),
             "knowledge_spaces": len(knowledge_context.accessible_space_ids),
             "published_knowledge": published_knowledge_count,
@@ -665,6 +710,7 @@ async def enterprise_workbench_overview(
             ),
         },
         "knowledge_health": knowledge_health,
+        "operating_pulse": operating_pulse,
         "scenarios": scenarios,
         "attention_items": attention_items,
         "recent_activity": _sort_by_created_at(recent_activity)[:recent_limit],
