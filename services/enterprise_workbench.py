@@ -22,6 +22,7 @@ from infra.storage.models import (
     AlertRule,
     AssistantProfile,
     CalendarEvent,
+    ChatSession,
     EnterpriseSkill,
     GoalRun,
     KnowledgeSource,
@@ -50,6 +51,7 @@ from services.workbench_pulse import (
 ACTIVE_RESPONSE_STATUSES = {"queued", "in_progress", "requires_action"}
 ACTIVE_GOAL_STATUSES = {"queued", "in_progress", "requires_action", "paused"}
 FAILED_RESPONSE_STATUSES = {"failed", "incomplete"}
+DEFAULT_CONVERSATION_TITLES = {"new conversation", "新对话", "新会话"}
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -244,6 +246,146 @@ def _sort_by_created_at(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
     return sorted(items, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
 
+def _conversation_route(conversation_id: str) -> str:
+    return f"/chat?conversation={conversation_id}"
+
+
+def _work_action(status: str) -> tuple[str, str]:
+    if status == "requires_action":
+        return "approval", "处理审批"
+    if status in {"queued", "in_progress"}:
+        return "monitor", "查看进度"
+    if status in FAILED_RESPONSE_STATUSES:
+        return "retry", "检查并重试"
+    if status == "paused":
+        return "resume", "恢复工作"
+    if status == "completed":
+        return "continue", "继续工作"
+    return "review", "查看记录"
+
+
+def _work_status(response_status: str, goal: Any | None) -> str:
+    if response_status in ACTIVE_RESPONSE_STATUSES | FAILED_RESPONSE_STATUSES:
+        return response_status
+    if goal is not None and str(goal.status) in ACTIVE_GOAL_STATUSES:
+        return str(goal.status)
+    return response_status
+
+
+def _work_title(session: Any, fallback: str) -> str:
+    for candidate in (
+        getattr(session, "display_title", None),
+        getattr(session, "title", None),
+    ):
+        title = _bounded_text(candidate, limit=100)
+        if title and title.casefold() not in DEFAULT_CONVERSATION_TITLES:
+            return title
+    return fallback or "AI 工作"
+
+
+def build_workbench_activity(
+    *,
+    responses: list[Any],
+    goals: list[Any],
+    sessions: list[Any],
+    projects: list[Any],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """按持久会话合并最近工作，并给出确定性的下一步。"""
+
+    session_by_id = {str(row.id): row for row in sessions}
+    project_names = {str(row.id): str(row.name) for row in projects}
+    goals_by_id = {str(row.id): row for row in goals}
+    goals_by_conversation: dict[str, Any] = {}
+    for row in goals:
+        if getattr(row, "conversation_id", None):
+            goals_by_conversation.setdefault(str(row.conversation_id), row)
+    seen_conversations: set[str] = set()
+    activity: list[dict[str, Any]] = []
+
+    for response in responses:
+        conversation_id = str(response.conversation_id)
+        session = session_by_id.get(conversation_id)
+        if session is None or conversation_id in seen_conversations:
+            continue
+        seen_conversations.add(conversation_id)
+        goal = (
+            goals_by_id.get(str(response.goal_id)) if getattr(response, "goal_id", None) else None
+        )
+        goal = goal or goals_by_conversation.get(conversation_id)
+        status = _work_status(str(response.status), goal)
+        project_id = getattr(goal, "project_id", None) or getattr(session, "project_id", None)
+        project_name = project_names.get(str(project_id)) if project_id else None
+        request_title = _bounded_text((response.request_payload or {}).get("input"))
+        fallback_title = _bounded_text(getattr(goal, "objective", "")) or request_title
+        action, action_label = _work_action(status)
+        updated_at = max(
+            value
+            for value in (response.updated_at, getattr(goal, "updated_at", None))
+            if value is not None
+        )
+        activity.append(
+            {
+                "id": str(goal.id) if goal is not None else str(response.id),
+                "type": "goal" if goal is not None else "response",
+                "status": status,
+                "title": _work_title(session, fallback_title),
+                "description": (
+                    f"Goal · 检查点 {goal.current_step}"
+                    if goal is not None
+                    else f"Response · 尝试 {response.attempt_count}/{response.max_attempts}"
+                ),
+                "route": _conversation_route(conversation_id),
+                "action": action,
+                "action_label": action_label,
+                "conversation_id": conversation_id,
+                "response_id": str(response.id),
+                "goal_id": str(goal.id) if goal is not None else None,
+                "project_id": str(project_id) if project_id else None,
+                "project_name": project_name,
+                "created_at": _iso(updated_at),
+            }
+        )
+
+    for goal in goals:
+        goal_conversation_id = str(goal.conversation_id) if goal.conversation_id else None
+        if goal_conversation_id and goal_conversation_id in seen_conversations:
+            continue
+        if goal_conversation_id and goal_conversation_id not in session_by_id:
+            continue
+        if goal_conversation_id:
+            seen_conversations.add(goal_conversation_id)
+        project_id = getattr(goal, "project_id", None)
+        action, action_label = _work_action(str(goal.status))
+        activity.append(
+            {
+                "id": str(goal.id),
+                "type": "goal",
+                "status": str(goal.status),
+                "title": _work_title(
+                    (session_by_id.get(goal_conversation_id) if goal_conversation_id else None),
+                    _bounded_text(goal.objective),
+                ),
+                "description": f"Goal · 检查点 {goal.current_step}",
+                "route": (
+                    _conversation_route(goal_conversation_id)
+                    if goal_conversation_id
+                    else "/work?tab=goals"
+                ),
+                "action": action,
+                "action_label": action_label,
+                "conversation_id": goal_conversation_id,
+                "response_id": str(goal.response_id) if goal.response_id else None,
+                "goal_id": str(goal.id),
+                "project_id": str(project_id) if project_id else None,
+                "project_name": project_names.get(str(project_id)) if project_id else None,
+                "created_at": _iso(goal.updated_at),
+            }
+        )
+
+    return _sort_by_created_at(activity)[: max(0, limit)]
+
+
 async def enterprise_workbench_overview(
     db: AsyncSession,
     *,
@@ -292,6 +434,17 @@ async def enterprise_workbench_overview(
             )
         ).scalars()
     )
+    active_session_ids = (
+        select(ChatSession.id)
+        .where(
+            ChatSession.user_id == user.id,
+            ChatSession.tenant_id == tenant_id,
+            ChatSession.workspace_id == workspace_id,
+            ChatSession.archived_at.is_(None),
+            ChatSession.is_temporary.is_(False),
+        )
+        .scalar_subquery()
+    )
     responses = list(
         (
             await db.execute(
@@ -300,9 +453,25 @@ async def enterprise_workbench_overview(
                     ResponseRecord.user_id == user.id,
                     ResponseRecord.tenant_id == tenant_id,
                     ResponseRecord.workspace_id == workspace_id,
+                    ResponseRecord.conversation_id.in_(active_session_ids),
                 )
                 .order_by(ResponseRecord.updated_at.desc())
-                .limit(max(30, recent_limit * 4))
+                .limit(max(50, recent_limit * 8))
+            )
+        ).scalars()
+    )
+    activity_session_ids = {
+        str(row.conversation_id) for row in responses if row.conversation_id
+    } | {str(row.conversation_id) for row in goals if row.conversation_id}
+    sessions = list(
+        (
+            await db.execute(
+                select(ChatSession)
+                .where(
+                    ChatSession.id.in_(active_session_ids),
+                    ChatSession.id.in_(activity_session_ids),
+                )
+                .order_by(ChatSession.last_active.desc())
             )
         ).scalars()
     )
@@ -310,6 +479,7 @@ async def enterprise_workbench_overview(
         ResponseRecord.user_id == user.id,
         ResponseRecord.tenant_id == tenant_id,
         ResponseRecord.workspace_id == workspace_id,
+        ResponseRecord.conversation_id.in_(active_session_ids),
     )
     pending_approval_count = int(
         await db.scalar(
@@ -319,16 +489,16 @@ async def enterprise_workbench_overview(
         )
         or 0
     )
-    pending_approvals = list(
+    pending_approval_rows = list(
         (
             await db.execute(
-                select(ResponseApproval)
+                select(ResponseApproval, ResponseRecord.conversation_id)
                 .join(ResponseRecord, ResponseApproval.response_id == ResponseRecord.id)
                 .where(ResponseApproval.status == "pending", *response_scope)
                 .order_by(ResponseApproval.created_at.desc())
                 .limit(candidate_limit)
             )
-        ).scalars()
+        ).all()
     )
     active_response_count = int(
         await db.scalar(
@@ -586,7 +756,7 @@ async def enterprise_workbench_overview(
                 "created_at": _iso(notification.created_at),
             }
         )
-    for approval in pending_approvals:
+    for approval, conversation_id in pending_approval_rows:
         attention_items.append(
             {
                 "id": approval.id,
@@ -594,7 +764,7 @@ async def enterprise_workbench_overview(
                 "severity": "warning",
                 "title": f"待审批：{approval.tool_name}",
                 "description": f"{approval.side_effect_level} 操作正在等待你的确认。",
-                "route": "/chat",
+                "route": _conversation_route(str(conversation_id)),
                 "resource_id": approval.response_id,
                 "created_at": _iso(approval.created_at),
             }
@@ -620,7 +790,7 @@ async def enterprise_workbench_overview(
                 "severity": "error",
                 "title": "AI 工作执行未完成",
                 "description": response.error_message or "可进入对话查看执行事件并安全重试。",
-                "route": "/chat",
+                "route": _conversation_route(str(response.conversation_id)),
                 "resource_id": response.id,
                 "created_at": _iso(response.updated_at),
             }
@@ -655,32 +825,13 @@ async def enterprise_workbench_overview(
         now=generated_at,
     )
 
-    recent_activity: list[dict[str, Any]] = []
-    for response in responses[:recent_limit]:
-        recent_activity.append(
-            {
-                "id": response.id,
-                "type": "response",
-                "status": response.status,
-                "title": _bounded_text((response.request_payload or {}).get("input"))
-                or "AI 对话任务",
-                "description": f"Responses 主链路 · 尝试 {response.attempt_count}/{response.max_attempts}",
-                "route": "/chat",
-                "created_at": _iso(response.updated_at),
-            }
-        )
-    for goal in goals[:recent_limit]:
-        recent_activity.append(
-            {
-                "id": goal.id,
-                "type": "goal",
-                "status": goal.status,
-                "title": _bounded_text(goal.objective),
-                "description": f"Goal · 当前检查点 {goal.current_step}",
-                "route": "/work?tab=goals",
-                "created_at": _iso(goal.updated_at),
-            }
-        )
+    recent_activity = build_workbench_activity(
+        responses=responses,
+        goals=goals,
+        sessions=sessions,
+        projects=projects,
+        limit=recent_limit,
+    )
 
     return {
         "generated_at": generated_at.isoformat(),
@@ -713,5 +864,5 @@ async def enterprise_workbench_overview(
         "operating_pulse": operating_pulse,
         "scenarios": scenarios,
         "attention_items": attention_items,
-        "recent_activity": _sort_by_created_at(recent_activity)[:recent_limit],
+        "recent_activity": recent_activity,
     }

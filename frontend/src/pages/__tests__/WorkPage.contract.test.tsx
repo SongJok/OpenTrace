@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiGetEnterpriseWorkbench, type EnterpriseWorkbenchScenario } from '../../api/client'
+import { resolveRequestedConversation } from '../../components/Sidebar'
 import { scenarioLaunchIntent } from '../WorkPage'
 
 describe('enterprise AI workbench contracts', () => {
@@ -9,6 +10,7 @@ describe('enterprise AI workbench contracts', () => {
     const workPage = await import('../WorkPage')
     const source = workPage.default.toString()
     const overviewSource = workPage.OverviewPanel.toString()
+    const continuitySource = workPage.WorkbenchContinuity.toString()
     expect(source).toContain('企业 AI 工作台')
     expect(source).toContain('apiGetEnterpriseWorkbench')
     expect(source).toContain('OverviewPanel')
@@ -16,8 +18,23 @@ describe('enterprise AI workbench contracts', () => {
     expect(source).toContain('apiListProjects')
     expect(source).toContain('apiListGoals')
     expect(overviewSource).toContain('WorkbenchTodayPulse')
+    expect(overviewSource).toContain('WorkbenchContinuity')
     expect(overviewSource).toContain('企业日常工作场景')
     expect(overviewSource).toContain('scenarioLaunchIntent')
+    expect(continuitySource).toContain('工作续接')
+    expect(continuitySource).toContain('action_label')
+  })
+
+  it('restores the exact durable conversation requested by the workbench', () => {
+    const conversations = [
+      { id: 'conversation-1', title: '工作一', turn_count: 2, created_at: '', last_active: '' },
+      { id: 'conversation-2', title: '工作二', turn_count: 3, created_at: '', last_active: '' },
+    ]
+
+    expect(resolveRequestedConversation(conversations, 'conversation-2', 'conversation-1')?.id)
+      .toBe('conversation-2')
+    expect(resolveRequestedConversation(conversations, null, 'conversation-1')).toBeNull()
+    expect(resolveRequestedConversation(conversations, 'missing', null)?.id).toBe('conversation-1')
   })
 
   it('prefills ready chat scenarios but routes setup gaps without unsafe execution', () => {

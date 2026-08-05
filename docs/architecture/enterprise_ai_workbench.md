@@ -11,6 +11,7 @@ OpenTrace 的企业化目标不是把多个 AI 功能堆叠成菜单，而是成
 ```text
 企业 AI 工作台 /work
   ├─ 今日工作脉搏：确定性优先级、逾期自动化、Goal 停滞与统一时间线
+  ├─ 工作续接：按持久会话合并 Response / Goal，并给出精确下一步
   ├─ 员工行动面：待审批、关键预警、失败重试、最近工作
   ├─ 统一行动中心：分类、搜索、未读通知确认与站内处置跳转
   ├─ 企业工作场景：前置条件、能力链、记忆、证据、审批与可验收交付物
@@ -51,6 +52,18 @@ Responses 主链路
 时间线同时展示个人日程、报告/定时任务和指标检查。摘要计数基于服务端读取的当日集合
 （重复日程最多展开 200 项），列表再按企业上限截断，避免 UI 限制造成错误经营判断。API 的 `timezone` 默认值为 `Asia/Shanghai`，
 非法时区返回参数错误；前端显式传递产品时区，不能按浏览器本地缓存自行重算事实日界。
+
+### 工作续接
+
+工作台不再把每个 Response 和 Goal 当作互不相关的“最近动态”。服务端以未归档、非临时的
+`ChatSession` 为工作上下文边界，将同一会话的最新 Response 与关联 Goal 合并为一项工作，
+并保留 Project 名称、Response / Goal 标识和最后更新时间。最新 Response 的审批、失败或执行中
+状态优先于 Goal 的笼统运行态，避免把真实阻塞显示成“进行中”。
+
+下一步由持久状态确定：`requires_action` 进入审批，`queued / in_progress` 查看进度，
+`failed / incomplete` 检查并重试，暂停 Goal 恢复运行，已完成工作继续下一轮。会话型工作返回
+`/chat?conversation=<id>`；聊天页先在当前 user、tenant、workspace 可见会话中解析该 ID，再读取
+消息并恢复 SSE，不能仅切换一个前端活动标识。无会话的 Goal 继续进入 Goal 管理页。
 
 场景目录见[企业日常工作场景目录](../catalog/enterprise_work_scenarios.md)。工作台根据当前
 Project、已发布知识、授权数据源、个人安装 Skill、可见公司 Skill、Goal、定时任务和预警

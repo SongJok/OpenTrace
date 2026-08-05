@@ -75,7 +75,7 @@ export function WorkbenchTodayPulse({ pulse }: { pulse: WorkbenchOperatingPulse 
       : 'border-emerald-500/25 bg-emerald-500/5'
 
   return (
-    <section className={`overflow-hidden rounded-3xl border ${statusTone}`} aria-label="今日工作脉搏">
+    <section className={`overflow-hidden rounded-xl border ${statusTone}`} aria-label="今日工作脉搏">
       <div className="border-b border-[var(--border)] bg-[var(--surface)] px-5 py-4 sm:px-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -95,7 +95,7 @@ export function WorkbenchTodayPulse({ pulse }: { pulse: WorkbenchOperatingPulse 
             打开行动中心<ArrowRight size={13} />
           </button>
         </div>
-        <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-4 grid grid-cols-2 gap-2 xl:grid-cols-4">
           <PulseMetric label="立即处理" value={pulse.summary.urgent_items} detail={pulse.summary.overdue_automations ? `${pulse.summary.overdue_automations} 个自动化逾期` : '无逾期自动化'} />
           <PulseMetric label="今日安排" value={pulse.summary.calendar_events} detail={`会议 ${formatMinutes(pulse.summary.meeting_minutes)}`} />
           <PulseMetric label="自动化节点" value={pulse.summary.due_automations} detail="任务与指标检查" />
@@ -128,7 +128,7 @@ export function WorkbenchTodayPulse({ pulse }: { pulse: WorkbenchOperatingPulse 
                 </button>
               )
             })}
-            {visibleFocusItems.length === 0 && <div className="rounded-2xl border border-dashed border-[var(--border)] p-8 text-center"><CheckCircle2 size={24} className="mx-auto text-emerald-500" /><p className="mt-2 text-sm font-medium">当前没有阻塞事项</p><p className="mt-1 text-xs text-[var(--text-secondary)]">可以按今日时间线继续推进。</p></div>}
+            {visibleFocusItems.length === 0 && <div className="rounded-lg border border-dashed border-[var(--border)] p-5 text-center sm:p-8"><CheckCircle2 size={24} className="mx-auto text-emerald-500" /><p className="mt-2 text-sm font-medium">当前没有阻塞事项</p><p className="mt-1 text-xs text-[var(--text-secondary)]">可以按今日时间线继续推进。</p></div>}
           </div>
         </div>
 
@@ -144,7 +144,7 @@ export function WorkbenchTodayPulse({ pulse }: { pulse: WorkbenchOperatingPulse 
                 </button>
               )
             })}
-            {visibleTimeline.length === 0 && <div className="rounded-2xl border border-dashed border-[var(--border)] p-8 text-center"><Clock3 size={24} className="mx-auto text-[var(--text-secondary)]" /><p className="mt-2 text-sm font-medium">今天暂无计划节点</p><p className="mt-1 text-xs text-[var(--text-secondary)]">可从日历、定时任务或主动预警建立节奏。</p></div>}
+            {visibleTimeline.length === 0 && <div className="rounded-lg border border-dashed border-[var(--border)] p-5 text-center sm:p-8"><Clock3 size={24} className="mx-auto text-[var(--text-secondary)]" /><p className="mt-2 text-sm font-medium">今天暂无计划节点</p><p className="mt-1 text-xs text-[var(--text-secondary)]">可从日历、定时任务或主动预警建立节奏。</p></div>}
           </div>
         </div>
       </div>
@@ -153,5 +153,5 @@ export function WorkbenchTodayPulse({ pulse }: { pulse: WorkbenchOperatingPulse 
 }
 
 function PulseMetric({ label, value, detail }: { label: string; value: number; detail: string }) {
-  return <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg)] px-4 py-3"><div className="flex items-end justify-between gap-2"><span className="text-xs text-[var(--text-secondary)]">{label}</span><span className="text-2xl font-semibold">{value}</span></div><p className="mt-1 truncate text-[10px] text-[var(--text-secondary)]">{detail}</p></div>
+  return <div className="min-w-0 rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-3 sm:px-4"><div className="flex items-end justify-between gap-2"><span className="truncate text-xs text-[var(--text-secondary)]">{label}</span><span className="text-2xl font-semibold">{value}</span></div><p className="mt-1 truncate text-[10px] text-[var(--text-secondary)]">{detail}</p></div>
 }

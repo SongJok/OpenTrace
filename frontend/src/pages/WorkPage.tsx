@@ -333,10 +333,17 @@ export function OverviewPanel({ overview, displayName, navigate }: { overview: E
 
   return <div className="space-y-6">
     <WorkbenchTodayPulse pulse={overview.operating_pulse} />
-    <section className="overflow-hidden rounded-3xl border border-[var(--border)] bg-[var(--surface)]">
-      <div className="grid gap-6 p-6 lg:grid-cols-[1.35fr_1fr] lg:p-8">
-        <div><div className="mb-4 inline-flex items-center gap-2 rounded-full bg-[var(--accent-dim)] px-3 py-1 text-xs text-[var(--accent)]"><Sparkles size={13} />最懂公司的 AI</div><h2 className="max-w-2xl text-2xl font-semibold leading-tight sm:text-3xl">{displayName ? `${displayName}，` : ''}今天从企业上下文出发，让 AI 与你一起完成工作。</h2><p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--text-secondary)]">工作台汇总 PostgreSQL 中的真实执行状态，不以 Redis 或前端缓存代替事实源；所有内容均受用户、租户和工作区边界约束。</p><div className="mt-5 flex flex-wrap gap-2"><button onClick={() => navigate('/chat')} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm text-[var(--accent-foreground)]"><Sparkles size={15} />开始一项工作</button><button onClick={() => navigate('/knowledge-base')} className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm"><BookOpen size={15} />查询企业知识</button></div></div>
-        <div className="rounded-3xl border border-[var(--border)] bg-[var(--bg)] p-5"><div className="flex items-center justify-between"><div><p className="text-xs text-[var(--text-secondary)]">企业 AI 就绪度</p><div className="mt-1 flex items-end gap-2"><span className={`text-5xl font-semibold ${scoreTone(overview.readiness.score)}`}>{overview.readiness.score}</span><span className="mb-1 text-sm text-[var(--text-secondary)]">/100</span></div></div><CircleGauge size={38} className={scoreTone(overview.readiness.score)} /></div><p className="mt-2 text-xs text-[var(--text-secondary)]">{statusLabel[overview.readiness.status]}</p><div className="mt-5 space-y-3">{dimensions.map(([label, value]) => <div key={label}><div className="mb-1 flex justify-between text-[11px]"><span>{label}</span><span className="text-[var(--text-secondary)]">{value}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-[var(--surface-raised)]"><div className="h-full rounded-full bg-[var(--accent)]" style={{ width: `${value}%` }} /></div></div>)}</div></div>
+    <WorkbenchContinuity items={overview.recent_activity} navigate={navigate} />
+
+    <section aria-label="工作台状态" className="grid gap-5 border-y border-[var(--border)] py-5 lg:grid-cols-[1fr_1.1fr] lg:items-center">
+      <div>
+        <h2 className="text-xl font-semibold">{displayName ? `${displayName}，` : ''}继续今天最重要的工作</h2>
+        <p className="mt-2 text-sm text-[var(--text-secondary)]">{overview.summary.running_responses} 项执行中 · {overview.summary.pending_approvals} 项待审批 · {overview.summary.unacknowledged_alerts} 个预警待确认</p>
+        <div className="mt-4 flex flex-wrap gap-2"><button onClick={() => navigate('/chat')} className="inline-flex items-center gap-2 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm text-[var(--accent-foreground)]"><Plus size={15} />新工作</button><button onClick={() => navigate('/knowledge-base')} className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] px-4 py-2 text-sm"><BookOpen size={15} />查询企业知识</button></div>
+      </div>
+      <div>
+        <div className="flex items-center justify-between gap-4"><div className="flex items-center gap-3"><CircleGauge size={24} className={scoreTone(overview.readiness.score)} /><div><p className="text-xs text-[var(--text-secondary)]">企业 AI 就绪度</p><p className="text-sm font-medium">{statusLabel[overview.readiness.status]}</p></div></div><div className={`text-2xl font-semibold ${scoreTone(overview.readiness.score)}`}>{overview.readiness.score}<span className="text-xs font-normal text-[var(--text-secondary)]"> / 100</span></div></div>
+        <div className="mt-4 grid grid-cols-5 gap-2">{dimensions.map(([label, value]) => <div key={label} className="min-w-0"><div className="h-1.5 overflow-hidden rounded-full bg-[var(--surface-raised)]"><div className="h-full rounded-full bg-[var(--accent)]" style={{ width: `${value}%` }} /></div><div className="mt-1 truncate text-[10px] text-[var(--text-secondary)]">{label}</div></div>)}</div>
       </div>
     </section>
 
@@ -380,10 +387,36 @@ export function OverviewPanel({ overview, displayName, navigate }: { overview: E
       </section>
     </div>
 
-    <section><div className="mb-3 flex items-center justify-between"><div><h2 className="font-medium">最近工作</h2><p className="text-xs text-[var(--text-secondary)]">Responses 与 Goal 的持久化活动投影。</p></div><Clock3 size={16} className="text-[var(--text-secondary)]" /></div><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{overview.recent_activity.map((item) => <button key={`${item.type}-${item.id}`} onClick={() => navigate(item.route)} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-left hover:border-[var(--accent)]/40"><div className="flex items-center justify-between gap-3"><span className="inline-flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)]">{item.type === 'goal' ? <Target size={12} /> : <Workflow size={12} />}{item.type === 'goal' ? 'Goal' : 'Response'}</span><span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px]">{statusLabel[item.status] || item.status}</span></div><h3 className="mt-3 line-clamp-2 text-sm font-medium">{item.title}</h3><p className="mt-2 text-xs text-[var(--text-secondary)]">{item.description}</p><p className="mt-3 text-[10px] text-[var(--text-secondary)]">{formatTime(item.created_at)}</p></button>)}{overview.recent_activity.length === 0 && <EmptyState title="还没有工作记录" description="从一次企业问答或长期 Goal 开始。" />}</div></section>
-
     <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5"><QuickLink icon={BarChartBig} title="经营报告" description="洞察、月报与管理简报" route="/reports" navigate={navigate} /><QuickLink icon={CalendarDays} title="我的日历" description="时间型记忆与个人安排" route="/calendar" navigate={navigate} /><QuickLink icon={BellRing} title="定时任务" description={`${overview.summary.scheduled_tasks} 个正在运行`} route="/tasks" navigate={navigate} /><QuickLink icon={Activity} title="主动预警" description={`${overview.summary.unacknowledged_alerts} 个待确认`} route="/alerts" navigate={navigate} /><QuickLink icon={BookOpen} title="企业知识库" description={`${overview.summary.knowledge_spaces} 个授权空间`} route="/knowledge-base" navigate={navigate} /></section>
   </div>
+}
+
+export function WorkbenchContinuity({
+  items,
+  navigate,
+}: {
+  items: EnterpriseWorkbenchOverview['recent_activity']
+  navigate: ReturnType<typeof useNavigate>
+}) {
+  return (
+    <section aria-label="工作续接">
+      <div className="mb-3 flex items-end justify-between gap-3">
+        <div><div className="flex items-center gap-2"><Clock3 size={16} className="text-[var(--accent)]" /><h2 className="font-medium">工作续接</h2></div><p className="mt-1 text-xs text-[var(--text-secondary)]">按会话保留上下文，直接回到审批、执行、重试或下一轮工作。</p></div>
+        <span className="text-xs text-[var(--text-secondary)]">{items.length} 项</span>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {items.map((item) => (
+          <button key={`${item.type}-${item.id}`} onClick={() => navigate(item.route)} className="group flex min-h-40 flex-col rounded-lg border border-[var(--border)] bg-[var(--surface)] p-4 text-left hover:border-[var(--accent)]/40">
+            <div className="flex items-center justify-between gap-3"><span className="inline-flex min-w-0 items-center gap-1.5 text-[11px] text-[var(--text-secondary)]">{item.type === 'goal' ? <Target size={12} /> : <Workflow size={12} />}<span className="truncate">{item.project_name || (item.type === 'goal' ? '独立 Goal' : '未绑定 Project')}</span></span><span className="flex-none rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px]">{statusLabel[item.status] || item.status}</span></div>
+            <h3 className="mt-3 line-clamp-2 text-sm font-medium">{item.title}</h3>
+            <p className="mt-2 text-xs text-[var(--text-secondary)]">{item.description} · {formatTime(item.created_at)}</p>
+            <div className="mt-auto flex items-center justify-between pt-4 text-xs font-medium text-[var(--accent)]"><span>{item.action_label}</span><ArrowRight size={13} className="transition-transform group-hover:translate-x-0.5" /></div>
+          </button>
+        ))}
+        {items.length === 0 && <EmptyState title="还没有可续接工作" description="从一次企业问答或长期 Goal 开始。" />}
+      </div>
+    </section>
+  )
 }
 
 function EmptyState({ title, description }: { title: string; description: string }) {

@@ -1703,6 +1703,13 @@ export interface WorkbenchActivityItem {
   title: string
   description: string
   route: string
+  action: 'approval' | 'monitor' | 'retry' | 'resume' | 'continue' | 'review' | string
+  action_label: string
+  conversation_id?: string | null
+  response_id?: string | null
+  goal_id?: string | null
+  project_id?: string | null
+  project_name?: string | null
   created_at?: string | null
 }
 

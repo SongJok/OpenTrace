@@ -33,7 +33,7 @@ import {
   BarChartBig,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useChatStore, type Conversation } from '../store/chat'
 import { getAuthSessionSnapshot, isAuthSessionCurrent, useAuthStore } from '../store/auth'
 import { useCompanyStore } from '../store/company'
@@ -54,6 +54,18 @@ import {
 interface SidebarProps {
   mobileOpen?: boolean
   onMobileClose?: () => void
+}
+
+export function resolveRequestedConversation(
+  conversations: Conversation[],
+  requestedId: string | null,
+  activeId: string | null,
+): Conversation | null {
+  if (requestedId) {
+    return conversations.find((item) => item.id === requestedId)
+      ?? (activeId ? null : conversations[0] ?? null)
+  }
+  return activeId ? null : conversations[0] ?? null
 }
 
 export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
@@ -77,6 +89,8 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
   const logout = useAuthStore((s) => s.logout)
   const store = useChatStore()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const requestedConversationId = searchParams.get('conversation')
 
   const filteredConversations = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -93,14 +107,15 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
     })
     if (!isAuthSessionCurrent(authSession)) return
     store.setConversations(convs)
-    if (convs.length > 0 && !store.activeId) {
-      await selectConversation(convs[0])
+    const requested = resolveRequestedConversation(convs, requestedConversationId, store.activeId)
+    if (requested) {
+      await selectConversation(requested)
     }
   }
 
   useEffect(() => {
     void refreshConversations().catch(console.error)
-  }, [showArchived, token])
+  }, [requestedConversationId, showArchived, token])
 
   useEffect(() => {
     setNotifications([])
