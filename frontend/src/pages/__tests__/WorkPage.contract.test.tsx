@@ -20,6 +20,8 @@ describe('enterprise AI workbench contracts', () => {
     expect(overviewSource).toContain('WorkbenchTodayPulse')
     expect(overviewSource).toContain('WorkbenchContinuity')
     expect(overviewSource).toContain('企业日常工作场景')
+    expect(overviewSource).toContain('personalization')
+    expect(overviewSource).toContain('organization_recommended')
     expect(overviewSource).toContain('scenarioLaunchIntent')
     expect(continuitySource).toContain('工作续接')
     expect(continuitySource).toContain('action_label')
@@ -45,6 +47,8 @@ describe('enterprise AI workbench contracts', () => {
       description: '说明',
       status: 'ready',
       recommended: true,
+      organization_recommended: false,
+      recommendation_reason: null,
       launch_mode: 'chat',
       action_route: '/chat',
       action_label: '开始工作',

@@ -1518,6 +1518,50 @@ export interface DirectorySyncPayload {
   }>
 }
 
+export interface WorkbenchTemplateScenarioItem {
+  id: string
+  category: string
+  title: string
+  description: string
+}
+
+export interface WorkbenchTemplateItem {
+  id: string
+  name: string
+  description: string
+  audience_type: 'all' | 'principals'
+  principal_ids: string[]
+  principals: Array<{
+    id: string
+    principal_type: 'department' | 'group' | 'role'
+    external_id: string
+    display_name: string
+  }>
+  scenario_ids: string[]
+  priority: number
+  status: 'active' | 'inactive' | 'archived'
+  version: number
+  created_by: string
+  updated_by: string
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface WorkbenchTemplatePayload {
+  name: string
+  description: string
+  audience_type: 'all' | 'principals'
+  principal_ids: string[]
+  scenario_ids: string[]
+  priority: number
+  status: 'active' | 'inactive'
+}
+
+export interface WorkbenchTemplateCollection {
+  items: WorkbenchTemplateItem[]
+  scenario_catalog: WorkbenchTemplateScenarioItem[]
+}
+
 export interface EnterpriseCognitiveVersionItem {
   id: string
   entity_id: string
@@ -1601,6 +1645,31 @@ export async function apiListDirectorySyncRuns(token: string): Promise<Directory
 export async function apiSyncEnterpriseDirectory(token: string, payload: DirectorySyncPayload): Promise<DirectorySyncRunItem> {
   const res = await apiFetch('/admin/enterprise/directory/sync', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
   if (!res.ok) throw new Error(await readApiError(res, '同步企业目录失败'))
+  return res.json()
+}
+
+export async function apiListWorkbenchTemplates(token: string): Promise<WorkbenchTemplateCollection> {
+  const res = await apiFetch('/admin/enterprise/workbench/templates', { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取组织工作台模板失败'))
+  return res.json()
+}
+
+export async function apiCreateWorkbenchTemplate(token: string, payload: WorkbenchTemplatePayload): Promise<WorkbenchTemplateItem> {
+  const res = await apiFetch('/admin/enterprise/workbench/templates', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '创建组织工作台模板失败'))
+  return res.json()
+}
+
+export async function apiUpdateWorkbenchTemplate(token: string, templateId: string, payload: WorkbenchTemplatePayload & { version: number }): Promise<WorkbenchTemplateItem> {
+  const res = await apiFetch(`/admin/enterprise/workbench/templates/${encodeURIComponent(templateId)}`, { method: 'PUT', headers: authHeaders(token), body: JSON.stringify(payload) })
+  if (!res.ok) throw new Error(await readApiError(res, '更新组织工作台模板失败'))
+  return res.json()
+}
+
+export async function apiArchiveWorkbenchTemplate(token: string, templateId: string, version: number): Promise<WorkbenchTemplateItem> {
+  const query = new URLSearchParams({ version: String(version) })
+  const res = await apiFetch(`/admin/enterprise/workbench/templates/${encodeURIComponent(templateId)}?${query.toString()}`, { method: 'DELETE', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '归档组织工作台模板失败'))
   return res.json()
 }
 
@@ -1720,7 +1789,9 @@ export interface EnterpriseWorkbenchScenario {
   description: string
   status: 'ready' | 'setup_required' | 'active'
   recommended: boolean
-  launch_mode: 'chat' | 'goal' | 'skills'
+  organization_recommended: boolean
+  recommendation_reason?: string | null
+  launch_mode: 'chat' | 'goal' | 'skills' | 'report'
   action_route: string
   action_label: string
   starter_prompt: string
@@ -1764,6 +1835,23 @@ export interface EnterpriseWorkbenchOverview {
     company_context_ready?: boolean
   }
   knowledge_health: KnowledgeGovernanceHealth
+  personalization: {
+    applied: boolean
+    templates: Array<{
+      id: string
+      name: string
+      description: string
+      priority: number
+      scenario_ids: string[]
+      matched_principals: string[]
+    }>
+    principals: Array<{
+      id: string
+      principal_type: 'department' | 'group' | 'role'
+      display_name: string
+      inherited: boolean
+    }>
+  }
   operating_pulse: WorkbenchOperatingPulse
   scenarios: EnterpriseWorkbenchScenario[]
   attention_items: WorkbenchAttentionItem[]

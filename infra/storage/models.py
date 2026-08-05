@@ -629,6 +629,78 @@ class EnterpriseDirectorySyncRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class EnterpriseWorkbenchTemplate(Base):
+    """按企业目录主体投影员工场景顺序的组织工作台模板。"""
+
+    __tablename__ = "enterprise_workbench_templates"
+    __table_args__ = (
+        Index(
+            "ix_enterprise_workbench_templates_scope_status",
+            "tenant_id",
+            "workspace_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    audience_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="principals", index=True
+    )
+    scenario_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="inactive", index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    updated_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class EnterpriseWorkbenchTemplateTarget(Base):
+    """组织工作台模板与部门、岗位或用户组的作用范围。"""
+
+    __tablename__ = "enterprise_workbench_template_targets"
+    __table_args__ = (
+        UniqueConstraint(
+            "template_id",
+            "principal_id",
+            name="uq_enterprise_workbench_template_target",
+        ),
+        Index(
+            "ix_enterprise_workbench_template_targets_scope",
+            "tenant_id",
+            "workspace_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    template_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("enterprise_workbench_templates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    principal_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("enterprise_directory_principals.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class EnterpriseCognitiveEntity(Base):
     """公司或部门的一等认知实体，负责绑定目录主体与治理知识空间。"""
 

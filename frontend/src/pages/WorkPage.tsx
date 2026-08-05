@@ -330,6 +330,9 @@ export function OverviewPanel({ overview, displayName, navigate }: { overview: E
     if (intent.prefillText) requestPrefill(intent.prefillText)
     navigate(intent.route)
   }
+  const personalizationLabel = overview.personalization.applied
+    ? `已应用 ${overview.personalization.templates.map((item) => item.name).join('、')}`
+    : '按当前上下文、知识、数据、Skill 和主动工作状态生成'
 
   return <div className="space-y-6">
     <WorkbenchTodayPulse pulse={overview.operating_pulse} />
@@ -353,7 +356,7 @@ export function OverviewPanel({ overview, displayName, navigate }: { overview: E
       <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
         <div>
           <div className="flex items-center gap-2"><Workflow size={17} className="text-[var(--accent)]" /><h2 className="font-medium">企业日常工作场景</h2></div>
-          <p className="mt-1 text-xs text-[var(--text-secondary)]">按当前上下文、知识、数据、Skill 和主动工作状态生成；写操作继续走持久化审批。</p>
+          <p className="mt-1 text-xs text-[var(--text-secondary)]">{personalizationLabel}；写操作继续走持久化审批。</p>
         </div>
         <span className="rounded-full bg-[var(--surface)] px-3 py-1 text-xs text-[var(--text-secondary)]">{overview.summary.available_work_scenarios}/{overview.scenarios.length} 可用 · {overview.summary.active_work_scenarios} 已启用</span>
       </div>
@@ -362,7 +365,7 @@ export function OverviewPanel({ overview, displayName, navigate }: { overview: E
           <button key={scenario.id} onClick={() => launchScenario(scenario)} className="group flex min-h-64 flex-col rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-left hover:border-[var(--accent)]/40">
             <div className="flex items-start justify-between gap-3">
               <span className="rounded-full bg-[var(--surface-raised)] px-2 py-1 text-[10px] text-[var(--text-secondary)]">{scenario.category}</span>
-              <span className={`rounded-full px-2 py-1 text-[10px] ${scenario.status === 'active' ? 'bg-emerald-500/10 text-emerald-500' : scenario.status === 'setup_required' ? 'bg-amber-500/10 text-amber-500' : 'bg-[var(--accent-dim)] text-[var(--accent)]'}`}>{scenarioStatusLabel[scenario.status]}{scenario.recommended ? ' · 推荐' : ''}</span>
+              <span title={scenario.recommendation_reason || undefined} className={`rounded-full px-2 py-1 text-[10px] ${scenario.status === 'active' ? 'bg-emerald-500/10 text-emerald-500' : scenario.status === 'setup_required' ? 'bg-amber-500/10 text-amber-500' : 'bg-[var(--accent-dim)] text-[var(--accent)]'}`}>{scenarioStatusLabel[scenario.status]}{scenario.organization_recommended ? ' · 组织推荐' : scenario.recommended ? ' · 推荐' : ''}</span>
             </div>
             <h3 className="mt-4 text-sm font-medium">{scenario.title}</h3>
             <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">{scenario.description}</p>

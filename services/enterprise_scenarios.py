@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 ScenarioStatus = Literal["ready", "setup_required", "active"]
 
@@ -286,6 +286,8 @@ def build_enterprise_scenarios(
                 "description": definition.description,
                 "status": status,
                 "recommended": False,
+                "organization_recommended": False,
+                "recommendation_reason": None,
                 "launch_mode": definition.launch_mode,
                 "action_route": action_route,
                 "action_label": action_label,
@@ -307,3 +309,50 @@ def build_enterprise_scenarios(
     for index in available_indexes[:3]:
         scenarios[index]["recommended"] = True
     return scenarios
+
+
+def apply_organization_templates(
+    scenarios: list[dict[str, object]],
+    templates: list[dict[str, Any]],
+) -> list[dict[str, object]]:
+    """按已匹配模板重排场景；只改变发现投影，不改变准备度和执行语义。"""
+
+    if not templates:
+        return scenarios
+
+    scenarios_by_id = {str(item["id"]): item for item in scenarios}
+    ordered_ids: list[str] = []
+    sources: dict[str, list[str]] = {}
+    for template in templates:
+        template_name = str(template.get("name") or "组织工作台")
+        for raw_id in template.get("scenario_ids") or []:
+            scenario_id = str(raw_id)
+            if scenario_id not in scenarios_by_id:
+                continue
+            if scenario_id not in ordered_ids:
+                ordered_ids.append(scenario_id)
+            names = sources.setdefault(scenario_id, [])
+            if template_name not in names:
+                names.append(template_name)
+
+    ordered_ids.extend(item_id for item_id in scenarios_by_id if item_id not in ordered_ids)
+    ordered = [scenarios_by_id[item_id] for item_id in ordered_ids]
+    recommended_count = 0
+    for item in ordered:
+        item["recommended"] = False
+        source_names = sources.get(str(item["id"]), [])
+        item["organization_recommended"] = bool(source_names)
+        item["recommendation_reason"] = "、".join(source_names) if source_names else None
+        if source_names and item["status"] != "setup_required" and recommended_count < 3:
+            item["recommended"] = True
+            recommended_count += 1
+
+    if recommended_count < 3:
+        for item in ordered:
+            if item["status"] == "setup_required" or item["recommended"]:
+                continue
+            item["recommended"] = True
+            recommended_count += 1
+            if recommended_count == 3:
+                break
+    return ordered

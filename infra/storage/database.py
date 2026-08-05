@@ -276,6 +276,8 @@ async def _verify_runtime_schema(conn) -> None:
         "enterprise_directory_principals",
         "enterprise_directory_memberships",
         "enterprise_directory_sync_runs",
+        "enterprise_workbench_templates",
+        "enterprise_workbench_template_targets",
         "enterprise_cognitive_entities",
         "enterprise_cognitive_versions",
         "company_profiles",

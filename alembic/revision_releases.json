@@ -42,6 +42,9 @@
     },
     "r0014_enterprise_reports": {
       "release": "unreleased"
+    },
+    "r0015_enterprise_workbench_templates": {
+      "release": "unreleased"
     }
   }
 }

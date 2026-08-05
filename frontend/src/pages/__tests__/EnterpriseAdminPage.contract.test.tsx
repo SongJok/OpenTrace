@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  apiArchiveWorkbenchTemplate,
+  apiCreateWorkbenchTemplate,
   apiGetEnterpriseOperations,
   apiListEnterpriseCognitiveEntities,
   apiListDirectoryPrincipals,
+  apiListWorkbenchTemplates,
   apiPublishEnterpriseCognitiveDraft,
   apiSaveEnterpriseCognitiveDraft,
   apiSyncEnterpriseDirectory,
+  apiUpdateWorkbenchTemplate,
   apiUpsertEnterpriseCognitiveEntity,
 } from '../../api/client'
 
@@ -19,11 +23,43 @@ describe('enterprise admin center contracts', () => {
     expect(page).toContain('企业运营中心')
     expect(page).toContain('apiGetEnterpriseOperations')
     expect(page).toContain('apiSyncEnterpriseDirectory')
+    expect(page).toContain('apiListWorkbenchTemplates')
+    expect(page).toContain('WorkbenchTemplatesPanel')
     expect(page).toContain('同步并投影 ACL')
     expect(page).toContain('成为企业级的工作台、最懂公司的 AI')
     expect(page).toContain('企业认知')
     expect(sidebar).toContain('企业运营中心')
     expect(app).toContain('/enterprise-admin')
+  })
+
+  it('creates, versions, updates and archives organization workbench templates', async () => {
+    const template = {
+      id: 'template-1', name: '财务经营工作台', description: '经营分析优先', audience_type: 'principals',
+      principal_ids: ['principal-1'], principals: [], scenario_ids: ['business_metric_review'],
+      priority: 300, status: 'active', version: 1, created_by: 'admin-1', updated_by: 'admin-1',
+    }
+    const payload = {
+      name: template.name, description: template.description, audience_type: 'principals' as const,
+      principal_ids: template.principal_ids, scenario_ids: template.scenario_ids,
+      priority: template.priority, status: 'active' as const,
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [template], scenario_catalog: [{ id: 'business_metric_review', category: '数据决策', title: '经营指标复盘', description: '说明' }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(template), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...template, version: 2 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...template, status: 'archived', version: 3 }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect((await apiListWorkbenchTemplates('token')).items[0].id).toBe('template-1')
+    await apiCreateWorkbenchTemplate('token', payload)
+    await apiUpdateWorkbenchTemplate('token', 'template-1', { ...payload, version: 1 })
+    await apiArchiveWorkbenchTemplate('token', 'template-1', 2)
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/admin/enterprise/workbench/templates')
+    expect(fetchMock.mock.calls[1][1]?.method).toBe('POST')
+    expect(fetchMock.mock.calls[2][1]?.method).toBe('PUT')
+    expect(fetchMock.mock.calls[3][0]).toContain('/template-1?version=2')
+    expect(fetchMock.mock.calls[3][1]?.method).toBe('DELETE')
   })
 
   it('uses the scoped enterprise admin API envelope', async () => {

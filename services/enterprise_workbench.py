@@ -42,7 +42,8 @@ from knowledge.access import (
 from knowledge.governance import knowledge_governance_health
 from services.calendar import list_calendar_events, local_day_window
 from services.enterprise_cognition import load_enterprise_context
-from services.enterprise_scenarios import build_enterprise_scenarios
+from services.enterprise_scenarios import apply_organization_templates, build_enterprise_scenarios
+from services.enterprise_workbench_templates import resolve_user_workbench_templates
 from services.workbench_pulse import (
     build_workbench_operating_pulse,
     rank_workbench_actions,
@@ -703,6 +704,13 @@ async def enterprise_workbench_overview(
         org_id=org_id,
         query="公司和部门概况",
     )
+    matched_templates, directory_principals = await resolve_user_workbench_templates(
+        db,
+        user_id=user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        now=generated_at,
+    )
 
     active_goals = [row for row in goals if row.status in ACTIVE_GOAL_STATUSES]
     active_tasks = [row for row in tasks if row.status == "active"]
@@ -737,6 +745,7 @@ async def enterprise_workbench_overview(
         active_task_count=len(active_tasks),
         active_alert_count=len(active_alerts),
     )
+    scenarios = apply_organization_templates(scenarios, matched_templates)
 
     attention_items: list[dict[str, Any]] = []
     alert_id_set = set(alert_ids)
@@ -861,6 +870,11 @@ async def enterprise_workbench_overview(
             ),
         },
         "knowledge_health": knowledge_health,
+        "personalization": {
+            "applied": bool(matched_templates),
+            "templates": matched_templates,
+            "principals": directory_principals,
+        },
         "operating_pulse": operating_pulse,
         "scenarios": scenarios,
         "attention_items": attention_items,

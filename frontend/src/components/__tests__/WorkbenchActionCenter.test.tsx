@@ -37,6 +37,7 @@ const overview: EnterpriseWorkbenchOverview = {
     active_work_scenarios: 1,
   },
   knowledge_health: { score: 90, status: 'healthy', scope: { space_count: 1 }, metrics: {} },
+  personalization: { applied: false, templates: [], principals: [] },
   operating_pulse: {
     timezone: 'Asia/Shanghai', local_date: '2026-07-29', day_start: '2026-07-28T16:00:00Z', day_end: '2026-07-29T16:00:00Z',
     status: 'attention', headline: '有 1 项优先工作等待处理',

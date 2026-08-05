@@ -4,7 +4,9 @@ import {
   Activity,
   AlertTriangle,
   Archive,
+  ArrowDown,
   ArrowRight,
+  ArrowUp,
   BookOpen,
   BrainCircuit,
   Building2,
@@ -12,17 +14,22 @@ import {
   ChevronLeft,
   CircleGauge,
   Database,
+  LayoutTemplate,
   Network,
+  Plus,
   RefreshCw,
   Rocket,
   Save,
   ServerCog,
   ShieldCheck,
+  Trash2,
   Users,
   Workflow,
 } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 import {
+  apiArchiveWorkbenchTemplate,
+  apiCreateWorkbenchTemplate,
   apiGetEnterpriseOperations,
   apiArchiveEnterpriseCognitiveEntity,
   apiListEnterpriseCognitiveEntities,
@@ -31,9 +38,11 @@ import {
   apiListDirectoryPrincipals,
   apiListDirectorySyncRuns,
   apiListKnowledgeSpaces,
+  apiListWorkbenchTemplates,
   apiPublishEnterpriseCognitiveDraft,
   apiSaveEnterpriseCognitiveDraft,
   apiSyncEnterpriseDirectory,
+  apiUpdateWorkbenchTemplate,
   apiUpsertEnterpriseCognitiveEntity,
   type DirectoryMembershipItem,
   type DirectoryPrincipalItem,
@@ -42,9 +51,12 @@ import {
   type EnterpriseCognitiveVersionItem,
   type EnterpriseOperationsOverview,
   type KnowledgeSpaceItem,
+  type WorkbenchTemplateItem,
+  type WorkbenchTemplatePayload,
+  type WorkbenchTemplateScenarioItem,
 } from '../api/client'
 
-type AdminTab = 'overview' | 'directory' | 'cognition'
+type AdminTab = 'overview' | 'directory' | 'templates' | 'cognition'
 
 function formatTime(value?: string | null) {
   if (!value) return '—'
@@ -67,6 +79,8 @@ export default function EnterpriseAdminPage({ onBack }: { onBack: () => void }) 
   const [principals, setPrincipals] = useState<DirectoryPrincipalItem[]>([])
   const [memberships, setMemberships] = useState<DirectoryMembershipItem[]>([])
   const [syncRuns, setSyncRuns] = useState<DirectorySyncRunItem[]>([])
+  const [workbenchTemplates, setWorkbenchTemplates] = useState<WorkbenchTemplateItem[]>([])
+  const [scenarioCatalog, setScenarioCatalog] = useState<WorkbenchTemplateScenarioItem[]>([])
   const [cognitiveEntities, setCognitiveEntities] = useState<EnterpriseCognitiveEntityItem[]>([])
   const [knowledgeSpaces, setKnowledgeSpaces] = useState<KnowledgeSpaceItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -83,11 +97,12 @@ export default function EnterpriseAdminPage({ onBack }: { onBack: () => void }) 
     setLoading(true)
     setError('')
     try {
-      const [nextOverview, nextPrincipals, nextMemberships, nextRuns, nextCognition, nextSpaces] = await Promise.all([
+      const [nextOverview, nextPrincipals, nextMemberships, nextRuns, nextTemplates, nextCognition, nextSpaces] = await Promise.all([
         apiGetEnterpriseOperations(token),
         apiListDirectoryPrincipals(token),
         apiListDirectoryMemberships(token),
         apiListDirectorySyncRuns(token),
+        apiListWorkbenchTemplates(token),
         apiListEnterpriseCognitiveEntities(token),
         apiListKnowledgeSpaces(token),
       ])
@@ -95,6 +110,8 @@ export default function EnterpriseAdminPage({ onBack }: { onBack: () => void }) 
       setPrincipals(nextPrincipals)
       setMemberships(nextMemberships)
       setSyncRuns(nextRuns)
+      setWorkbenchTemplates(nextTemplates.items)
+      setScenarioCatalog(nextTemplates.scenario_catalog)
       setCognitiveEntities(nextCognition)
       setKnowledgeSpaces(nextSpaces)
     } catch (nextError) {
@@ -155,7 +172,7 @@ export default function EnterpriseAdminPage({ onBack }: { onBack: () => void }) 
         <div className="min-w-0 flex-1"><h1 className="text-sm font-semibold">企业运营中心</h1><p className="truncate text-xs text-[var(--text-secondary)]">租户采用、执行质量、知识资产、风险与组织目录的统一控制面。</p></div>
         <button onClick={() => void load()} disabled={loading} className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2 text-xs disabled:opacity-50"><RefreshCw size={14} className={loading ? 'animate-spin' : ''} />刷新</button>
       </div>
-      <div className="mx-auto flex w-full max-w-7xl gap-1 px-4 pb-3 sm:px-6">{([{ id: 'overview', label: '运营总览' }, { id: 'directory', label: '企业目录' }, { id: 'cognition', label: '企业认知' }] as const).map((item) => <button key={item.id} onClick={() => setTab(item.id)} className={`rounded-lg px-3 py-1.5 text-xs ${tab === item.id ? 'bg-[var(--accent-dim)] font-medium text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--surface)]'}`}>{item.label}</button>)}</div>
+      <div className="mx-auto flex w-full max-w-7xl gap-1 overflow-x-auto px-4 pb-3 sm:px-6">{([{ id: 'overview', label: '运营总览' }, { id: 'directory', label: '企业目录' }, { id: 'templates', label: '工作台模板' }, { id: 'cognition', label: '企业认知' }] as const).map((item) => <button key={item.id} onClick={() => setTab(item.id)} className={`shrink-0 rounded-lg px-3 py-1.5 text-xs ${tab === item.id ? 'bg-[var(--accent-dim)] font-medium text-[var(--accent)]' : 'text-[var(--text-secondary)] hover:bg-[var(--surface)]'}`}>{item.label}</button>)}</div>
     </header>
     <main className="mx-auto w-full max-w-7xl flex-1 p-4 sm:p-6">
       {error && <div role="alert" className="mb-5 rounded-2xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-500">{error}</div>}
@@ -169,6 +186,7 @@ export default function EnterpriseAdminPage({ onBack }: { onBack: () => void }) 
         </div>
         <section><div className="mb-3"><h2 className="font-medium">目录同步审计</h2><p className="text-xs text-[var(--text-secondary)]">记录来源、游标、权威同步模式和处理统计。</p></div><div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)]"><table className="w-full min-w-[760px] text-left text-xs"><thead className="border-b border-[var(--border)] text-[var(--text-secondary)]"><tr><th className="px-4 py-3">时间</th><th className="px-4 py-3">来源</th><th className="px-4 py-3">状态</th><th className="px-4 py-3">主体</th><th className="px-4 py-3">成员</th><th className="px-4 py-3">未解析</th></tr></thead><tbody>{syncRuns.map((run) => <tr key={run.id} className="border-b border-[var(--border)] last:border-0"><td className="px-4 py-3">{formatTime(run.completed_at || run.started_at)}</td><td className="px-4 py-3">{run.provider}{run.authoritative ? ' · 权威' : ''}</td><td className="px-4 py-3">{run.status}</td><td className="px-4 py-3">+{run.stats.principals_created || 0} / 更新 {run.stats.principals_updated || 0}</td><td className="px-4 py-3">+{run.stats.memberships_created || 0} / 更新 {run.stats.memberships_updated || 0}</td><td className="px-4 py-3">用户 {run.stats.unresolved_users || 0} / 主体 {run.stats.unresolved_principals || 0}</td></tr>)}</tbody></table></div></section>
       </div>}
+      {tab === 'templates' && <WorkbenchTemplatesPanel token={token} templates={workbenchTemplates} catalog={scenarioCatalog} principals={principals.filter((item) => item.status === 'active')} working={working} setWorking={setWorking} setError={setError} reload={load} />}
       {tab === 'cognition' && <CognitionPanel vision={productVision} token={token} entities={cognitiveEntities} principals={groupedPrincipals.department} spaces={knowledgeSpaces} working={working} setWorking={setWorking} setError={setError} reload={load} />}
     </main>
   </div>
@@ -232,6 +250,144 @@ function OperationsOverview({ data, navigate }: { data: EnterpriseOperationsOver
       </div>
     </div>
   )
+}
+
+export function WorkbenchTemplatesPanel({ token, templates, catalog, principals, working, setWorking, setError, reload }: {
+  token: string
+  templates: WorkbenchTemplateItem[]
+  catalog: WorkbenchTemplateScenarioItem[]
+  principals: DirectoryPrincipalItem[]
+  working: boolean
+  setWorking: (value: boolean) => void
+  setError: (value: string) => void
+  reload: () => Promise<void>
+}) {
+  const [selectedId, setSelectedId] = useState('')
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [audienceType, setAudienceType] = useState<'all' | 'principals'>('principals')
+  const [principalIds, setPrincipalIds] = useState<string[]>([])
+  const [scenarioIds, setScenarioIds] = useState<string[]>([])
+  const [priority, setPriority] = useState(100)
+  const [active, setActive] = useState(false)
+
+  const selected = templates.find((item) => item.id === selectedId) ?? null
+  const isNew = selectedId === 'new'
+
+  useEffect(() => {
+    if (!selectedId) setSelectedId(templates[0]?.id ?? 'new')
+    if (selectedId !== 'new' && selectedId && !templates.some((item) => item.id === selectedId)) setSelectedId(templates[0]?.id ?? 'new')
+  }, [selectedId, templates])
+
+  useEffect(() => {
+    if (!selected) return
+    setName(selected.name)
+    setDescription(selected.description)
+    setAudienceType(selected.audience_type)
+    setPrincipalIds(selected.principal_ids)
+    setScenarioIds(selected.scenario_ids)
+    setPriority(selected.priority)
+    setActive(selected.status === 'active')
+  }, [selected])
+
+  const beginNew = () => {
+    setSelectedId('new')
+    setName('')
+    setDescription('')
+    setAudienceType('principals')
+    setPrincipalIds([])
+    setScenarioIds([])
+    setPriority(100)
+    setActive(false)
+    setError('')
+  }
+
+  const togglePrincipal = (principalId: string) => {
+    setPrincipalIds((current) => current.includes(principalId) ? current.filter((item) => item !== principalId) : [...current, principalId])
+  }
+
+  const toggleScenario = (scenarioId: string) => {
+    setScenarioIds((current) => current.includes(scenarioId) ? current.filter((item) => item !== scenarioId) : [...current, scenarioId])
+  }
+
+  const moveScenario = (index: number, offset: -1 | 1) => {
+    const nextIndex = index + offset
+    if (nextIndex < 0 || nextIndex >= scenarioIds.length) return
+    setScenarioIds((current) => {
+      const next = [...current]
+      ;[next[index], next[nextIndex]] = [next[nextIndex], next[index]]
+      return next
+    })
+  }
+
+  const save = async () => {
+    if (!name.trim() || scenarioIds.length === 0 || (audienceType === 'principals' && principalIds.length === 0)) return
+    const payload: WorkbenchTemplatePayload = {
+      name: name.trim(),
+      description: description.trim(),
+      audience_type: audienceType,
+      principal_ids: audienceType === 'all' ? [] : principalIds,
+      scenario_ids: scenarioIds,
+      priority,
+      status: active ? 'active' : 'inactive',
+    }
+    setWorking(true)
+    setError('')
+    try {
+      const saved = selected
+        ? await apiUpdateWorkbenchTemplate(token, selected.id, { ...payload, version: selected.version })
+        : await apiCreateWorkbenchTemplate(token, payload)
+      setSelectedId(saved.id)
+      await reload()
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : '保存组织工作台模板失败')
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const archive = async () => {
+    if (!selected || !window.confirm(`归档“${selected.name}”？员工工作台将立即停止应用该模板。`)) return
+    setWorking(true)
+    setError('')
+    try {
+      await apiArchiveWorkbenchTemplate(token, selected.id, selected.version)
+      setSelectedId('')
+      await reload()
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : '归档组织工作台模板失败')
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const scenarioById = new Map(catalog.map((item) => [item.id, item]))
+  const canSave = Boolean(name.trim() && scenarioIds.length > 0 && (audienceType === 'all' || principalIds.length > 0))
+  return <div className="space-y-6">
+    <section className="border-y border-[var(--border)] py-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex items-start gap-3"><div className="grid h-10 w-10 place-items-center rounded-xl bg-[var(--accent-dim)] text-[var(--accent)]"><LayoutTemplate size={19} /></div><div><h2 className="font-medium">组织级工作台模板</h2><p className="mt-1 max-w-3xl text-xs leading-5 text-[var(--text-secondary)]">按部门、岗位或用户组提供一致的业务场景优先级。模板不改变 Project、知识、数据、工具审批和资源授权。</p></div></div>
+        <button type="button" onClick={beginNew} title="新建模板" aria-label="新建模板" className="grid h-9 w-9 place-items-center rounded-lg border border-[var(--border)] hover:bg-[var(--surface)]"><Plus size={16} /></button>
+      </div>
+    </section>
+    <div className="grid gap-6 xl:grid-cols-[300px_1fr]">
+      <section>
+        <div className="mb-3 flex items-center justify-between"><div><h3 className="text-sm font-medium">模板</h3><p className="text-xs text-[var(--text-secondary)]">{templates.filter((item) => item.status === 'active').length} 个正在应用</p></div></div>
+        <div className="space-y-2">{templates.map((item) => <button type="button" key={item.id} onClick={() => setSelectedId(item.id)} className={`w-full rounded-xl border p-3 text-left ${selectedId === item.id ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--accent)]/40'}`}><div className="flex items-start justify-between gap-2"><span className="min-w-0 break-words text-sm font-medium">{item.name}</span><span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] ${item.status === 'active' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-gray-500/10 text-gray-500'}`}>{item.status === 'active' ? '启用' : '停用'}</span></div><p className="mt-2 text-[11px] text-[var(--text-secondary)]">优先级 {item.priority} · {item.audience_type === 'all' ? '全体员工' : `${item.principals.length} 个组织主体`} · {item.scenario_ids.length} 个场景</p></button>)}{templates.length === 0 && <Empty title="尚无工作台模板" description="新建模板后再选择组织范围和推荐场景。" />}</div>
+      </section>
+      <section className="min-w-0 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-medium">{isNew ? '新建模板' : selected?.name || '模板配置'}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">高优先级模板先参与员工场景排序；相同场景自动去重。</p></div><label className="inline-flex items-center gap-2 text-xs"><input type="checkbox" checked={active} onChange={(event) => setActive(event.target.checked)} className="h-4 w-4 accent-[var(--accent)]" />启用模板</label></div>
+        <div className="mt-5 grid gap-4 sm:grid-cols-[1fr_140px]"><label className="block"><span className="mb-1.5 block text-xs font-medium">模板名称</span><input value={name} onChange={(event) => setName(event.target.value)} maxLength={120} className="w-full rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /></label><label className="block"><span className="mb-1.5 block text-xs font-medium">优先级</span><input type="number" min={0} max={1000} value={priority} onChange={(event) => setPriority(Math.max(0, Math.min(1000, Number(event.target.value) || 0)))} className="w-full rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /></label></div>
+        <label className="mt-4 block"><span className="mb-1.5 block text-xs font-medium">业务说明</span><textarea value={description} onChange={(event) => setDescription(event.target.value)} maxLength={2000} rows={2} className="w-full resize-y rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-sm" /></label>
+        <div className="mt-5"><span className="mb-2 block text-xs font-medium">适用员工</span><div className="inline-flex rounded-lg border border-[var(--border)] p-1"><button type="button" onClick={() => { setAudienceType('all'); setPrincipalIds([]) }} className={`rounded-md px-3 py-1.5 text-xs ${audienceType === 'all' ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'text-[var(--text-secondary)]'}`}>全体员工</button><button type="button" onClick={() => setAudienceType('principals')} className={`rounded-md px-3 py-1.5 text-xs ${audienceType === 'principals' ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'text-[var(--text-secondary)]'}`}>按组织匹配</button></div>{audienceType === 'principals' && <div className="mt-3 flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-lg border border-[var(--border)] p-3">{principals.map((principal) => <label key={principal.id} className={`inline-flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-2 text-xs ${principalIds.includes(principal.id) ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)]'}`}><input type="checkbox" checked={principalIds.includes(principal.id)} onChange={() => togglePrincipal(principal.id)} className="h-3.5 w-3.5 accent-[var(--accent)]" /><span>{principal.display_name}</span><span className="text-[10px] text-[var(--text-secondary)]">{principal.principal_type === 'department' ? '部门' : principal.principal_type === 'role' ? '岗位' : '组'}</span></label>)}{principals.length === 0 && <span className="text-xs text-amber-500">请先在企业目录同步部门、岗位或用户组。</span>}</div>}</div>
+        <div className="mt-6 grid gap-5 lg:grid-cols-2">
+          <section><div className="mb-2"><h4 className="text-xs font-medium">推荐顺序</h4><p className="text-[11px] text-[var(--text-secondary)]">前 3 个当前可用场景会显示为推荐。</p></div><div className="space-y-2">{scenarioIds.map((scenarioId, index) => { const scenario = scenarioById.get(scenarioId); return <div key={scenarioId} className="flex min-h-11 items-center gap-2 rounded-lg border border-[var(--border)] px-3 py-2"><span className="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[var(--accent-dim)] text-[10px] text-[var(--accent)]">{index + 1}</span><span className="min-w-0 flex-1 break-words text-xs">{scenario?.title || scenarioId}</span><button type="button" disabled={index === 0} onClick={() => moveScenario(index, -1)} title="上移" aria-label={`上移 ${scenario?.title || scenarioId}`} className="grid h-7 w-7 place-items-center rounded-md hover:bg-[var(--surface-raised)] disabled:opacity-25"><ArrowUp size={13} /></button><button type="button" disabled={index === scenarioIds.length - 1} onClick={() => moveScenario(index, 1)} title="下移" aria-label={`下移 ${scenario?.title || scenarioId}`} className="grid h-7 w-7 place-items-center rounded-md hover:bg-[var(--surface-raised)] disabled:opacity-25"><ArrowDown size={13} /></button></div>})}{scenarioIds.length === 0 && <div className="rounded-lg border border-dashed border-[var(--border)] p-5 text-center text-xs text-[var(--text-secondary)]">尚未选择场景</div>}</div></section>
+          <section><div className="mb-2"><h4 className="text-xs font-medium">场景目录</h4><p className="text-[11px] text-[var(--text-secondary)]">选择组织日常工作需要优先发现的场景。</p></div><div className="max-h-80 space-y-2 overflow-y-auto pr-1">{catalog.map((scenario) => <label key={scenario.id} className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 ${scenarioIds.includes(scenario.id) ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)]'}`}><input type="checkbox" checked={scenarioIds.includes(scenario.id)} onChange={() => toggleScenario(scenario.id)} className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--accent)]" /><span className="min-w-0"><span className="block text-xs font-medium">{scenario.title}</span><span className="mt-1 block text-[10px] text-[var(--text-secondary)]">{scenario.category}</span></span></label>)}</div></section>
+        </div>
+        <div className="mt-6 flex flex-wrap justify-between gap-3 border-t border-[var(--border)] pt-4"><button type="button" onClick={() => void archive()} disabled={working || !selected} className="inline-flex items-center gap-2 rounded-lg border border-red-500/30 px-3 py-2 text-xs text-red-500 disabled:opacity-40"><Trash2 size={14} />归档</button><button type="button" onClick={() => void save()} disabled={working || !canSave} className="inline-flex items-center gap-2 rounded-lg bg-[var(--accent)] px-4 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-40"><Save size={14} />{working ? '保存中…' : '保存模板'}</button></div>
+      </section>
+    </div>
+  </div>
 }
 
 function CognitionPanel({ vision: productVision, token, entities, principals, spaces, working, setWorking, setError, reload }: {

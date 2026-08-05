@@ -44,6 +44,11 @@ Goal、Skill 和 typed tools 主链路。
 - `ready`：可以从工作台直接进入对话或 Goal/Skills 页面。
 - `active`：Goal、定时任务、主动预警或 Skill 已存在，入口切换到运行管理页面。
 
+组织工作台模板在状态判定之后应用。模板按员工的有效部门、岗位、用户组关系匹配，并可继承
+上级部门；多个模板按管理员优先级合并有序 `scenario_ids`。模板只重排目录并记录
+`organization_recommended` 与 `recommendation_reason`，不能修改前置条件、启动路由、工具、
+记忆范围、证据要求或审批策略。没有匹配模板时继续使用目录默认推荐。
+
 ## 当前场景矩阵
 
 | 场景 | 主能力/工具 | 记忆 | 审批 | 核心交付 |
@@ -78,6 +83,7 @@ Goal、Skill 和 typed tools 主链路。
 
 ```bash
 python -m pytest -q tests/test_enterprise_work_scenarios_contract.py
+python -m pytest -q tests/test_enterprise_workbench_templates.py
 python scripts/run_enterprise_evals.py --minimum-pass-rate 1.0
 cd frontend && npm test -- src/pages/__tests__/WorkPage.contract.test.tsx
 bash scripts/run_enterprise_contract_tests.sh
