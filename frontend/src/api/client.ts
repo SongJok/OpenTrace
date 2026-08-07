@@ -2565,6 +2565,11 @@ export interface SQLAssetItem {
   tags: string[]
   lineage: Record<string, unknown>
   validation_report: { status?: string; errors?: string[]; warnings?: string[] }
+  project_id?: string | null
+  approved_by?: string | null
+  approved_at?: string | null
+  created_at?: string
+  updated_at?: string
 }
 export interface SQLAssetSourceItem {
   id: string
@@ -2589,6 +2594,8 @@ export interface SQLQueryCandidateItem {
   execution_status: 'pending' | 'executing' | 'completed' | 'failed'
   rows: Array<Record<string, unknown>>
   row_count: number
+  returned_row_count: number
+  result_truncated: boolean
   error_message?: string | null
 }
 export interface SQLQueryDraftItem {
@@ -2598,8 +2605,27 @@ export interface SQLQueryDraftItem {
   candidates: SQLQueryCandidateItem[]
   execution_summary?: Record<string, unknown>
 }
-export async function apiListSQLAssets(token: string, databaseId: string): Promise<{ sources: SQLAssetSourceItem[]; assets: SQLAssetItem[] }> {
-  const res = await apiFetch(`/databases/${databaseId}/sql-assets`, { headers: authHeaders(token) })
+export interface SQLAssetListParams {
+  status?: SQLAssetItem['status'] | ''
+  project_id?: string
+  search?: string
+  offset?: number
+  limit?: number
+}
+export interface SQLAssetListResponse {
+  sources: SQLAssetSourceItem[]
+  assets: SQLAssetItem[]
+  pagination: { offset: number; limit: number; total: number; has_more: boolean }
+}
+export async function apiListSQLAssets(token: string, databaseId: string, params: SQLAssetListParams = {}): Promise<SQLAssetListResponse> {
+  const query = new URLSearchParams()
+  if (params.status) query.set('status', params.status)
+  if (params.project_id) query.set('project_id', params.project_id)
+  if (params.search?.trim()) query.set('search', params.search.trim())
+  if (params.offset !== undefined) query.set('offset', String(params.offset))
+  if (params.limit !== undefined) query.set('limit', String(params.limit))
+  const suffix = query.size ? `?${query.toString()}` : ''
+  const res = await apiFetch(`/databases/${databaseId}/sql-assets${suffix}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取 SQL 资产失败'))
   return res.json()
 }
@@ -2627,11 +2653,16 @@ export async function apiDeleteSQLAssetSource(token: string, databaseId: string,
   const res = await apiFetch(`/databases/${databaseId}/sql-assets/sources/${sourceId}`, { method: 'DELETE', headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '删除 SQL 资产源失败'))
 }
-export async function apiExecuteSQLDraft(token: string, databaseId: string, draftId: string, payload: { candidate_ids?: string[]; execute_all?: boolean }): Promise<SQLQueryDraftItem> {
+export async function apiGetSQLDraft(token: string, databaseId: string, draftId: string): Promise<SQLQueryDraftItem> {
+  const res = await apiFetch(`/databases/${databaseId}/sql-drafts/${draftId}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取 SQL 草案失败'))
+  return res.json()
+}
+export async function apiExecuteSQLDraft(token: string, databaseId: string, draftId: string, payload: { candidate_ids?: string[]; execute_all?: boolean; retry_failed?: boolean }): Promise<SQLQueryDraftItem> {
   const res = await apiFetch(`/databases/${databaseId}/sql-drafts/${draftId}/execute`, {
     method: 'POST',
     headers: authHeaders(token),
-    body: JSON.stringify({ candidate_ids: payload.candidate_ids || [], execute_all: !!payload.execute_all }),
+    body: JSON.stringify({ candidate_ids: payload.candidate_ids || [], execute_all: !!payload.execute_all, retry_failed: !!payload.retry_failed }),
   })
   if (!res.ok) throw new Error(await readApiError(res, '执行 SQL 草案失败'))
   return res.json()

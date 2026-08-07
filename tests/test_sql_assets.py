@@ -217,6 +217,120 @@ def test_sql_asset_normalization_provides_stable_dedup_hash() -> None:
     assert first.sql_hash == second.sql_hash
 
 
+def test_schema_fingerprint_only_tracks_query_relevant_structure() -> None:
+    original = {
+        "schema": "public",
+        "table_count": 1,
+        "synced_at": 1,
+        "tables": [
+            {
+                "name": "orders",
+                "comment": "旧描述",
+                "columns": [
+                    {"name": "id", "type": "BIGINT", "comment": "主键"},
+                    {"name": "amount", "type": "DECIMAL(12, 2)"},
+                ],
+            }
+        ],
+    }
+    metadata_only_change = {
+        **original,
+        "table_count": 99,
+        "synced_at": 999,
+        "tables": [
+            {
+                "name": "orders",
+                "comment": "新描述",
+                "columns": [
+                    {"name": "amount", "type": "decimal(12,2)", "comment": "金额"},
+                    {"name": "id", "type": "bigint", "comment": "订单主键"},
+                ],
+            }
+        ],
+    }
+    structural_change = {
+        **metadata_only_change,
+        "tables": [
+            {
+                "name": "orders",
+                "columns": [
+                    {"name": "id", "type": "bigint"},
+                    {"name": "total_amount", "type": "decimal(12,2)"},
+                ],
+            }
+        ],
+    }
+
+    assert sql_assets.schema_fingerprint(original) == sql_assets.schema_fingerprint(
+        metadata_only_change
+    )
+    assert sql_assets.schema_fingerprint(original) != sql_assets.schema_fingerprint(
+        structural_change
+    )
+    assert sql_assets.schema_fingerprint(original, {("orders", "amount")}) != (
+        sql_assets.schema_fingerprint(original)
+    )
+
+
+def test_result_rows_are_bounded_by_storage_budget() -> None:
+    rows = [{"id": index, "payload": "x" * 128} for index in range(10)]
+
+    bounded, truncated = sql_assets._bounded_result_rows(rows, max_bytes=350)
+
+    assert 0 < len(bounded) < len(rows)
+    assert truncated is True
+    assert len(str(bounded).encode("utf-8")) < 500
+
+
+def test_sql_asset_status_transitions_are_governed() -> None:
+    sql_assets.validate_asset_status_transition("draft", "published")
+    sql_assets.validate_asset_status_transition("published", "deprecated")
+    sql_assets.validate_asset_status_transition("deprecated", "published")
+
+    with pytest.raises(ValidationException, match="状态不能从 published 变更为 rejected"):
+        sql_assets.validate_asset_status_transition("published", "rejected")
+
+
+@pytest.mark.asyncio
+async def test_duplicate_upload_is_serialized_and_scoped_to_global_assets() -> None:
+    existing = SimpleNamespace(id="source-existing")
+
+    class EmptyResult:
+        @staticmethod
+        def scalars():
+            return SimpleNamespace(all=lambda: [])
+
+    class CaptureDB:
+        def __init__(self) -> None:
+            self.scalar_statements = []
+
+        async def scalar(self, statement):
+            self.scalar_statements.append(statement)
+            return None if len(self.scalar_statements) == 1 else existing
+
+        async def execute(self, statement):
+            return EmptyResult()
+
+    db = CaptureDB()
+    source, assets, deduplicated = await sql_assets.create_sql_asset_source(
+        db,
+        user_id="user-1",
+        tenant_id="tenant-1",
+        workspace_id="workspace-1",
+        data_source_id="source-1",
+        filename="orders.sql",
+        content_type="application/sql",
+        source_text="SELECT id FROM orders",
+        dialect="postgres",
+    )
+
+    assert source is existing
+    assert assets == []
+    assert deduplicated is True
+    assert "FOR UPDATE" in str(db.scalar_statements[0])
+    assert "sql_asset_sources.project_id IS NULL" in str(db.scalar_statements[1])
+
+
 @pytest.mark.asyncio
 async def test_data_agent_generation_mode_never_enters_v1_or_v2_execution(monkeypatch) -> None:
     expected = AgentResult(
@@ -264,6 +378,7 @@ def _draft(*, fingerprint: str) -> SimpleNamespace:
         schema_fingerprint=fingerprint,
         selected_candidate_ids=[],
         execution_summary={},
+        execution_started_at=None,
         expires_at=datetime.now(UTC) + timedelta(hours=1),
         created_at=datetime.now(UTC),
     )
@@ -323,6 +438,7 @@ async def _patch_execution_scope(monkeypatch, draft, candidates, schema_payload)
             )
         ),
     )
+    monkeypatch.setattr(sql_assets, "_sensitive_columns", AsyncMock(return_value=set()))
 
 
 @pytest.mark.asyncio
@@ -446,10 +562,63 @@ async def test_completed_candidate_is_idempotent_and_not_executed_again(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_failed_candidate_requires_explicit_retry_and_can_succeed(monkeypatch) -> None:
+    schema = {"tables": [{"name": "orders"}]}
+    draft = _draft(fingerprint=sql_assets.schema_fingerprint(schema))
+    draft.status = "failed"
+    candidate = _candidate("candidate-1", "SELECT id FROM orders LIMIT 100", 1)
+    candidate.execution_status = "failed"
+    candidate.error_message = "timeout"
+    draft.selected_candidate_ids = [candidate.id]
+    await _patch_execution_scope(monkeypatch, draft, [candidate], schema)
+    monkeypatch.setattr(sql_assets, "_sensitive_columns", AsyncMock(return_value=set()))
+    monkeypatch.setattr(
+        sql_assets,
+        "_validated_candidate",
+        MagicMock(return_value=("sql", {"status": "pass"}, ["orders"], ["id"])),
+    )
+    monkeypatch.setattr(sql_assets, "decrypt_data_source_secret", MagicMock(return_value="pw"))
+    router = MagicMock()
+    router.build_dsn.return_value = "postgresql+asyncpg://reader:pw@db/app"
+    monkeypatch.setattr(sql_assets, "DBRouter", MagicMock(return_value=router))
+    executor = MagicMock()
+    executor.run_on_dsn = AsyncMock(return_value=[{"id": 1}])
+    monkeypatch.setattr(sql_assets, "SQLExecutor", MagicMock(return_value=executor))
+    db = SimpleNamespace(commit=AsyncMock())
+
+    unchanged = await sql_assets.execute_sql_query_draft(
+        db,
+        draft_id=draft.id,
+        user_id=draft.user_id,
+        tenant_id=draft.tenant_id,
+        workspace_id=draft.workspace_id,
+        candidate_ids=[candidate.id],
+    )
+    assert unchanged["candidates"][0]["execution_status"] == "failed"
+    executor.run_on_dsn.assert_not_awaited()
+
+    retried = await sql_assets.execute_sql_query_draft(
+        db,
+        draft_id=draft.id,
+        user_id=draft.user_id,
+        tenant_id=draft.tenant_id,
+        workspace_id=draft.workspace_id,
+        candidate_ids=[candidate.id],
+        retry_failed=True,
+    )
+
+    assert retried["status"] == "completed"
+    assert retried["candidates"][0]["execution_status"] == "completed"
+    assert retried["candidates"][0]["rows"] == [{"id": 1}]
+    executor.run_on_dsn.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_executing_draft_rejects_concurrent_execution(monkeypatch) -> None:
     schema = {"tables": [{"name": "orders"}]}
     draft = _draft(fingerprint=sql_assets.schema_fingerprint(schema))
     draft.status = "executing"
+    draft.execution_started_at = datetime.now(UTC)
     candidate = _candidate("candidate-1", "SELECT id FROM orders LIMIT 100", 1)
     candidate.execution_status = "executing"
     await _patch_execution_scope(monkeypatch, draft, [candidate], schema)
@@ -468,6 +637,47 @@ async def test_executing_draft_rejects_concurrent_execution(monkeypatch) -> None
         )
 
     executor.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stale_executing_draft_is_recovered_and_retried(monkeypatch) -> None:
+    schema = {"tables": [{"name": "orders"}]}
+    draft = _draft(fingerprint=sql_assets.schema_fingerprint(schema))
+    draft.status = "executing"
+    draft.execution_started_at = (
+        datetime.now(UTC) - sql_assets.EXECUTION_STALE_AFTER - timedelta(seconds=1)
+    )
+    candidate = _candidate("candidate-1", "SELECT id FROM orders LIMIT 100", 1)
+    candidate.execution_status = "executing"
+    await _patch_execution_scope(monkeypatch, draft, [candidate], schema)
+    monkeypatch.setattr(sql_assets, "_sensitive_columns", AsyncMock(return_value=set()))
+    monkeypatch.setattr(
+        sql_assets,
+        "_validated_candidate",
+        MagicMock(return_value=("sql", {"status": "pass"}, ["orders"], ["id"])),
+    )
+    monkeypatch.setattr(sql_assets, "decrypt_data_source_secret", MagicMock(return_value="pw"))
+    router = MagicMock()
+    router.build_dsn.return_value = "postgresql+asyncpg://reader:pw@db/app"
+    monkeypatch.setattr(sql_assets, "DBRouter", MagicMock(return_value=router))
+    executor = MagicMock()
+    executor.run_on_dsn = AsyncMock(return_value=[{"id": 1}])
+    monkeypatch.setattr(sql_assets, "SQLExecutor", MagicMock(return_value=executor))
+    db = SimpleNamespace(commit=AsyncMock())
+
+    result = await sql_assets.execute_sql_query_draft(
+        db,
+        draft_id=draft.id,
+        user_id=draft.user_id,
+        tenant_id=draft.tenant_id,
+        workspace_id=draft.workspace_id,
+        candidate_ids=[candidate.id],
+    )
+
+    assert result["status"] == "completed"
+    assert result["execution_summary"]["recovery_count"] == 1
+    assert candidate.execution_status == "completed"
+    executor.run_on_dsn.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -504,6 +714,14 @@ def test_sql_asset_migration_and_responses_approval_contract() -> None:
     assert "sql_asset_sources" in migration
     assert "sql_query_candidates" in migration
     assert "ENABLE ROW LEVEL SECURITY" in migration
+
+    governance_migration = (root / "alembic/versions/r0017_sql_asset_governance.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'down_revision = "r0016_sql_assets"' in governance_migration
+    assert "execution_started_at" in governance_migration
+    assert "project_id" in governance_migration
+    assert "uq_sql_asset_source_global_hash" in governance_migration
 
     import tools.builtin_tools.analytics_tools  # noqa: F401
     from tools.registry.registry import registry

@@ -242,6 +242,7 @@ async def _verify_runtime_schema(conn) -> None:
             "status",
             "schema_fingerprint",
             "selected_candidate_ids",
+            "execution_started_at",
         },
         "sql_query_candidates": {
             "draft_id",

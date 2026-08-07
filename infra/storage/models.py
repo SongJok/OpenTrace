@@ -2551,8 +2551,19 @@ class SQLAssetSource(Base):
             "tenant_id",
             "workspace_id",
             "data_source_id",
+            "project_id",
             "content_sha256",
             name="uq_sql_asset_source_scope_hash",
+        ),
+        Index(
+            "uq_sql_asset_source_global_hash",
+            "tenant_id",
+            "workspace_id",
+            "data_source_id",
+            "content_sha256",
+            unique=True,
+            postgresql_where=text("project_id IS NULL"),
+            sqlite_where=text("project_id IS NULL"),
         ),
     )
 
@@ -2590,8 +2601,19 @@ class SQLAsset(Base):
             "tenant_id",
             "workspace_id",
             "data_source_id",
+            "project_id",
             "sql_hash",
             name="uq_sql_asset_scope_hash",
+        ),
+        Index(
+            "uq_sql_asset_global_hash",
+            "tenant_id",
+            "workspace_id",
+            "data_source_id",
+            "sql_hash",
+            unique=True,
+            postgresql_where=text("project_id IS NULL"),
+            sqlite_where=text("project_id IS NULL"),
         ),
     )
 
@@ -2662,6 +2684,9 @@ class SQLQueryDraft(Base):
     schema_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     selected_candidate_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     execution_summary: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    execution_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

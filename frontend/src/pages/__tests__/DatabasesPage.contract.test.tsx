@@ -29,6 +29,9 @@ describe('DatabasesPage contract', () => {
     expect(source).toContain('上传 SQL')
     expect(source).toContain('校验通过')
     expect(source).toContain('changeSQLAssetStatus')
+    expect(source).toContain('搜索标题、描述或 SQL')
+    expect(source).toContain('saveSQLAssetMetadata')
+    expect(source).toContain('SQL_ASSET_PAGE_SIZE')
   })
 
   it('uses dedicated draft and asset APIs', async () => {
@@ -37,5 +40,7 @@ describe('DatabasesPage contract', () => {
     expect(client.apiUploadSQLAsset.toString()).toContain('/sql-assets/upload')
     expect(client.apiUpdateSQLAsset.toString()).toContain('/sql-assets/${assetId}')
     expect(client.apiExecuteSQLDraft.toString()).toContain('/sql-drafts/${draftId}/execute')
+    expect(client.apiExecuteSQLDraft.toString()).toContain('retry_failed')
+    expect(client.apiGetSQLDraft.toString()).toContain('/sql-drafts/${draftId}')
   })
 })

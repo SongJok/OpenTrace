@@ -39,7 +39,16 @@ from kernel.data_cognition.sql_validator import SQLValidationError, SQLValidator
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_ASSET_STATEMENTS = 200
 MAX_DRAFT_CANDIDATES = 5
+MAX_RESULT_BYTES = 512 * 1024
+EXECUTION_STALE_AFTER = timedelta(minutes=5)
 PARSER_VERSION = "sqlglot-v1"
+
+_ASSET_STATUS_TRANSITIONS = {
+    "draft": {"draft", "published", "rejected"},
+    "published": {"published", "deprecated"},
+    "deprecated": {"deprecated", "published"},
+    "rejected": {"rejected", "draft"},
+}
 
 
 @dataclass(frozen=True)
@@ -70,11 +79,140 @@ def _sqlglot_dialect(dialect: str) -> str:
     return "mysql"
 
 
-def schema_fingerprint(schema_payload: dict[str, Any]) -> str:
+def _legacy_schema_fingerprint(schema_payload: dict[str, Any]) -> str:
     canonical = json.dumps(
         schema_payload or {}, sort_keys=True, ensure_ascii=False, separators=(",", ":")
     )
     return _hash_text(canonical)
+
+
+def _normalized_schema_structure(
+    schema_payload: dict[str, Any],
+    sensitive_columns: set[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    payload = schema_payload if isinstance(schema_payload, dict) else {}
+    tables = payload.get("tables")
+    if not isinstance(tables, list):
+        nested = payload.get("schema")
+        tables = nested.get("tables") if isinstance(nested, dict) else []
+    if not isinstance(tables, list):
+        tables = []
+
+    sensitive = {
+        (str(table).strip().lower(), str(column).strip().lower())
+        for table, column in (sensitive_columns or set())
+    }
+    normalized_tables: list[dict[str, Any]] = []
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        table_name = str(table.get("name") or "").strip().lower()
+        if not table_name:
+            continue
+        normalized_columns: list[dict[str, Any]] = []
+        columns = table.get("columns")
+        if isinstance(columns, list):
+            for column in columns:
+                if not isinstance(column, dict):
+                    continue
+                column_name = str(column.get("name") or "").strip().lower()
+                if not column_name:
+                    continue
+                column_type = re.sub(
+                    r"\s+",
+                    "",
+                    str(column.get("type") or column.get("data_type") or "").lower(),
+                )
+                is_sensitive = bool(
+                    column.get("is_sensitive")
+                    or column.get("sensitive")
+                    or (table_name, column_name) in sensitive
+                )
+                normalized_columns.append(
+                    {
+                        "name": column_name,
+                        "type": column_type,
+                        "sensitive": is_sensitive,
+                    }
+                )
+        normalized_columns.sort(key=lambda item: (item["name"], item["type"]))
+        normalized_tables.append({"name": table_name, "columns": normalized_columns})
+
+    if not normalized_tables:
+        for key in ("table_names", "tables_names", "names"):
+            names = payload.get(key)
+            if isinstance(names, list):
+                normalized_tables.extend(
+                    {"name": str(name).strip().lower(), "columns": []}
+                    for name in names
+                    if str(name).strip()
+                )
+                break
+    normalized_tables.sort(key=lambda item: item["name"])
+    schema_name = payload.get("schema")
+    if isinstance(schema_name, dict):
+        schema_name = schema_name.get("name")
+    return {
+        "schema": str(schema_name or "").strip().lower(),
+        "tables": normalized_tables,
+    }
+
+
+def schema_fingerprint(
+    schema_payload: dict[str, Any],
+    sensitive_columns: set[tuple[str, str]] | None = None,
+) -> str:
+    """仅对影响 SQL 正确性与数据安全的 Schema 结构生成指纹。"""
+
+    canonical = json.dumps(
+        _normalized_schema_structure(schema_payload, sensitive_columns),
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return _hash_text(canonical)
+
+
+def schema_fingerprint_matches(
+    stored_fingerprint: str | None,
+    schema_payload: dict[str, Any],
+    sensitive_columns: set[tuple[str, str]] | None = None,
+) -> bool:
+    if not stored_fingerprint:
+        return False
+    return stored_fingerprint in {
+        schema_fingerprint(schema_payload, sensitive_columns),
+        _legacy_schema_fingerprint(schema_payload),
+    }
+
+
+def validate_asset_status_transition(current_status: str, target_status: str) -> None:
+    allowed = _ASSET_STATUS_TRANSITIONS.get(str(current_status), {str(current_status)})
+    if target_status not in allowed:
+        raise ValidationException(f"SQL 资产状态不能从 {current_status} 变更为 {target_status}")
+
+
+def _bounded_result_rows(
+    rows: list[dict[str, Any]], *, max_bytes: int = MAX_RESULT_BYTES
+) -> tuple[list[dict[str, Any]], bool]:
+    """按 JSON 字节预算保存完整行，避免单个结果撑大数据库和 API 响应。"""
+
+    budget = max(2, int(max_bytes))
+    used = 2
+    bounded: list[dict[str, Any]] = []
+    for row in rows:
+        encoded = json.dumps(
+            row,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        delimiter = 1 if bounded else 0
+        if used + delimiter + len(encoded) > budget:
+            break
+        bounded.append(row)
+        used += delimiter + len(encoded)
+    return bounded, len(bounded) < len(rows)
 
 
 def _statement_type(expression: Any) -> str:
@@ -391,6 +529,20 @@ async def _sensitive_columns(db: AsyncSession, data_source_id: str) -> set[tuple
     return {(row.table_name, row.column_name) for row in rows}
 
 
+async def evaluate_data_source_schema_fingerprint(
+    db: AsyncSession,
+    *,
+    data_source_id: str,
+    schema_payload: dict[str, Any],
+    stored_fingerprint: str | None,
+) -> tuple[bool, str]:
+    sensitive = await _sensitive_columns(db, data_source_id)
+    return (
+        schema_fingerprint_matches(stored_fingerprint, schema_payload, sensitive),
+        schema_fingerprint(schema_payload, sensitive),
+    )
+
+
 async def _validate_project_scope(
     db: AsyncSession,
     *,
@@ -431,15 +583,30 @@ async def create_sql_asset_source(
     encoded = source_text.encode("utf-8")
     if len(encoded) > MAX_UPLOAD_BYTES:
         raise ValidationException(f"SQL 文件不能超过 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
-    content_hash = _hash_text(source_text)
-    existing = await db.scalar(
-        select(SQLAssetSource).where(
-            SQLAssetSource.tenant_id == tenant_id,
-            SQLAssetSource.workspace_id == workspace_id,
-            SQLAssetSource.data_source_id == data_source_id,
-            SQLAssetSource.content_sha256 == content_hash,
-        )
+    await _validate_project_scope(
+        db,
+        project_id=project_id,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        data_source_id=data_source_id,
     )
+
+    # 同一数据源的上传在事务内串行化，消除“先查再插”的内容去重和版本号竞争。
+    await db.scalar(select(DataSource.id).where(DataSource.id == data_source_id).with_for_update())
+    content_hash = _hash_text(source_text)
+    source_scope = [
+        SQLAssetSource.tenant_id == tenant_id,
+        SQLAssetSource.workspace_id == workspace_id,
+        SQLAssetSource.data_source_id == data_source_id,
+        SQLAssetSource.content_sha256 == content_hash,
+        (
+            SQLAssetSource.project_id == project_id
+            if project_id
+            else SQLAssetSource.project_id.is_(None)
+        ),
+    ]
+    existing = await db.scalar(select(SQLAssetSource).where(*source_scope))
     if existing is not None:
         assets = list(
             (
@@ -455,12 +622,13 @@ async def create_sql_asset_source(
         return existing, assets, True
 
     inspection = await load_schema_inspection(db, data_source_id)
-    fingerprint = schema_fingerprint(inspection.schema_payload)
+    sensitive = await _sensitive_columns(db, data_source_id)
+    fingerprint = schema_fingerprint(inspection.schema_payload, sensitive)
     parsed = parse_sql_assets(
         source_text,
         dialect=dialect,
         table_columns=inspection.column_map,
-        sensitive_columns=await _sensitive_columns(db, data_source_id),
+        sensitive_columns=sensitive,
     )
     version = (
         int(
@@ -471,6 +639,11 @@ async def create_sql_asset_source(
                     SQLAssetSource.workspace_id == workspace_id,
                     SQLAssetSource.data_source_id == data_source_id,
                     SQLAssetSource.filename == filename,
+                    (
+                        SQLAssetSource.project_id == project_id
+                        if project_id
+                        else SQLAssetSource.project_id.is_(None)
+                    ),
                 )
                 .order_by(SQLAssetSource.version.desc())
                 .limit(1)
@@ -507,6 +680,11 @@ async def create_sql_asset_source(
                     SQLAsset.tenant_id == tenant_id,
                     SQLAsset.workspace_id == workspace_id,
                     SQLAsset.data_source_id == data_source_id,
+                    (
+                        SQLAsset.project_id == project_id
+                        if project_id
+                        else SQLAsset.project_id.is_(None)
+                    ),
                     SQLAsset.sql_hash.in_(parsed_hashes),
                 )
             )
@@ -580,6 +758,9 @@ def serialize_asset(asset: SQLAsset, *, include_sql: bool = True) -> dict[str, A
         "lineage": asset.lineage or {},
         "validation_report": asset.validation_report or {},
         "schema_fingerprint": asset.schema_fingerprint,
+        "project_id": asset.project_id,
+        "approved_by": asset.approved_by,
+        "approved_at": asset.approved_at,
         "created_at": asset.created_at,
         "updated_at": asset.updated_at,
     }
@@ -731,7 +912,8 @@ async def generate_sql_query_draft(
     )
     inspection = await load_schema_inspection(db, data_source.id)
     dialect = detect_sql_dialect(data_source.source_type).name
-    fingerprint = schema_fingerprint(inspection.schema_payload)
+    sensitive = await _sensitive_columns(db, data_source.id)
+    fingerprint = schema_fingerprint(inspection.schema_payload, sensitive)
     assets = await retrieve_sql_assets(
         db,
         tenant_id=tenant_id,
@@ -763,7 +945,6 @@ async def generate_sql_query_draft(
         )
         raw_candidates = [candidate.sql for candidate in planned]
 
-    sensitive = await _sensitive_columns(db, data_source.id)
     validated: list[tuple[str, dict[str, Any], list[str], list[str]]] = []
     errors: list[str] = []
     seen: set[str] = set()
@@ -855,6 +1036,8 @@ def serialize_candidate(
         "selected": candidate.selected,
         "execution_status": candidate.execution_status,
         "row_count": candidate.row_count,
+        "returned_row_count": len(candidate.result_rows or []),
+        "result_truncated": candidate.row_count > len(candidate.result_rows or []),
         "error_message": candidate.error_message,
         "executed_at": candidate.executed_at,
     }
@@ -923,6 +1106,7 @@ async def execute_sql_query_draft(
     workspace_id: str,
     candidate_ids: list[str] | None = None,
     execute_all: bool = False,
+    retry_failed: bool = False,
 ) -> dict[str, Any]:
     draft, candidates = await load_scoped_draft(
         db,
@@ -956,8 +1140,13 @@ async def execute_sql_query_draft(
         raise ValidationException("SQL 查询草案已过期，请重新生成")
 
     current_schema = await load_schema_inspection(db, draft.data_source_id)
-    current_fingerprint = schema_fingerprint(current_schema.schema_payload)
-    if draft.schema_fingerprint != current_fingerprint:
+    sensitive = await _sensitive_columns(db, draft.data_source_id)
+    current_fingerprint = schema_fingerprint(current_schema.schema_payload, sensitive)
+    if not schema_fingerprint_matches(
+        draft.schema_fingerprint,
+        current_schema.schema_payload,
+        sensitive,
+    ):
         raise ValidationException(
             "数据源 Schema 已变化，请重新生成 SQL 草案",
             details={
@@ -966,6 +1155,9 @@ async def execute_sql_query_draft(
                 "current_fingerprint": current_fingerprint,
             },
         )
+    if draft.schema_fingerprint != current_fingerprint:
+        # 兼容旧版本基于完整 JSON 的指纹，验证通过后原位升级。
+        draft.schema_fingerprint = current_fingerprint
 
     requested = {str(item) for item in (candidate_ids or []) if str(item)}
     selected = candidates if execute_all else [item for item in candidates if item.id in requested]
@@ -978,12 +1170,32 @@ async def execute_sql_query_draft(
 
     selected_ids = [item.id for item in selected]
     if draft.status == "executing":
-        raise ValidationException("SQL 查询草案正在执行，请稍后查看结果")
-    to_execute = [item for item in selected if item.execution_status == "pending"]
+        started_at = draft.execution_started_at
+        if started_at is not None and started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=UTC)
+        if started_at is not None and datetime.now(UTC) - started_at <= EXECUTION_STALE_AFTER:
+            raise ValidationException("SQL 查询草案正在执行，请稍后查看结果")
+        for candidate in candidates:
+            if candidate.execution_status == "executing":
+                candidate.execution_status = "pending"
+                candidate.error_message = "上次执行进程中断，已恢复为可重试状态"
+        previous_summary = dict(draft.execution_summary or {})
+        draft.execution_summary = {
+            **previous_summary,
+            "recovery_count": int(previous_summary.get("recovery_count") or 0) + 1,
+            "last_recovered_at": datetime.now(UTC).isoformat(),
+        }
+        draft.status = "awaiting_confirmation"
+        draft.execution_started_at = None
+        await db.commit()
+
+    executable_statuses = {"pending"}
+    if retry_failed:
+        executable_statuses.add("failed")
+    to_execute = [item for item in selected if item.execution_status in executable_statuses]
     if not to_execute:
         return serialize_draft(draft, candidates)
 
-    sensitive = await _sensitive_columns(db, draft.data_source_id)
     for candidate in to_execute:
         if _hash_text(candidate.sql) != candidate.sql_hash:
             raise ValidationException(
@@ -1011,12 +1223,14 @@ async def execute_sql_query_draft(
         )
     )
     draft.status = "executing"
+    draft.execution_started_at = datetime.now(UTC)
     draft.selected_candidate_ids = sorted(
         set(draft.selected_candidate_ids or []).union(selected_ids)
     )
     for candidate in to_execute:
         candidate.selected = True
         candidate.execution_status = "executing"
+        candidate.error_message = None
     await db.commit()
 
     for candidate in to_execute:
@@ -1024,7 +1238,8 @@ async def execute_sql_query_draft(
             rows = await SQLExecutor().run_on_dsn(
                 dsn, candidate.sql, source_type=source.source_type
             )
-            candidate.result_rows = rows
+            bounded_rows, _ = _bounded_result_rows(rows)
+            candidate.result_rows = bounded_rows
             candidate.row_count = len(rows)
             candidate.execution_status = "completed"
             candidate.error_message = None
@@ -1034,6 +1249,7 @@ async def execute_sql_query_draft(
             candidate.execution_status = "failed"
             candidate.error_message = str(exc)[:2000]
         candidate.executed_at = datetime.now(UTC)
+        draft.execution_started_at = datetime.now(UTC)
         await db.commit()
 
     selected_history = [
@@ -1042,11 +1258,16 @@ async def execute_sql_query_draft(
     succeeded = sum(1 for item in selected_history if item.execution_status == "completed")
     failed = sum(1 for item in selected_history if item.execution_status == "failed")
     draft.status = "completed" if failed == 0 else "partially_failed" if succeeded else "failed"
+    previous_summary = dict(draft.execution_summary or {})
     draft.execution_summary = {
         "requested": len(selected_history),
         "succeeded": succeeded,
         "failed": failed,
         "completed_at": datetime.now(UTC).isoformat(),
+        "recovery_count": int(previous_summary.get("recovery_count") or 0),
     }
+    if previous_summary.get("last_recovered_at"):
+        draft.execution_summary["last_recovered_at"] = previous_summary["last_recovered_at"]
+    draft.execution_started_at = None
     await db.commit()
     return serialize_draft(draft, candidates)

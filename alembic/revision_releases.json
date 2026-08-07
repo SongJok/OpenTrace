@@ -48,6 +48,9 @@
     },
     "r0016_sql_assets": {
       "release": "unreleased"
+    },
+    "r0017_sql_asset_governance": {
+      "release": "unreleased"
     }
   }
 }
