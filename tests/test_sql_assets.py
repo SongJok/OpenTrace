@@ -72,6 +72,136 @@ def test_sql_asset_parser_rejects_unknown_and_sensitive_columns() -> None:
     assert "SELECT *" in star.validation_report["errors"][0]
 
 
+def test_sql_asset_parser_checks_unqualified_join_columns() -> None:
+    sensitive = sql_assets.parse_sql_assets(
+        "SELECT phone FROM customers JOIN orders ON customers.id = orders.customer_id",
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+        sensitive_columns={("customers", "phone")},
+    )[0]
+    unknown = sql_assets.parse_sql_assets(
+        "SELECT missing FROM customers JOIN orders ON customers.id = orders.customer_id",
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+    )[0]
+    ambiguous = sql_assets.parse_sql_assets(
+        "SELECT id FROM customers JOIN orders ON customers.id = orders.customer_id",
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+    )[0]
+
+    assert sensitive.executable is False
+    assert "敏感字段" in "；".join(sensitive.validation_report["errors"])
+    assert unknown.executable is False
+    assert "不存在列" in "；".join(unknown.validation_report["errors"])
+    assert ambiguous.executable is False
+    assert "歧义" in "；".join(ambiguous.validation_report["errors"])
+
+
+def test_sql_asset_parser_checks_cte_and_derived_table_columns() -> None:
+    cte_unknown = sql_assets.parse_sql_assets(
+        "WITH customer_ids AS (SELECT id FROM customers) SELECT phone FROM customer_ids",
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+    )[0]
+    derived_unknown = sql_assets.parse_sql_assets(
+        "SELECT scoped.phone FROM (SELECT id FROM customers) AS scoped",
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+    )[0]
+    cte_sensitive = sql_assets.parse_sql_assets(
+        "WITH customer_phones AS (SELECT phone FROM customers) SELECT phone FROM customer_phones",
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+        sensitive_columns={("customers", "phone")},
+    )[0]
+
+    assert cte_unknown.executable is False
+    assert "不存在列" in "；".join(cte_unknown.validation_report["errors"])
+    assert derived_unknown.executable is False
+    assert "不存在列" in "；".join(derived_unknown.validation_report["errors"])
+    assert cte_sensitive.executable is False
+    assert "customers.phone" in "；".join(cte_sensitive.validation_report["errors"])
+
+
+def test_sql_asset_parser_accepts_select_aliases_and_valid_derived_columns() -> None:
+    select_alias = sql_assets.parse_sql_assets(
+        "SELECT amount AS total FROM orders ORDER BY total",
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+    )[0]
+    derived = sql_assets.parse_sql_assets(
+        "SELECT scoped.id FROM (SELECT id FROM customers) AS scoped",
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+    )[0]
+    cte_star = sql_assets.parse_sql_assets(
+        "WITH customer_ids AS (SELECT id FROM customers) SELECT * FROM customer_ids",
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+        sensitive_columns={("customers", "phone")},
+    )[0]
+    shadowed_alias = sql_assets.parse_sql_assets(
+        """
+        SELECT scoped.amount
+        FROM orders AS scoped
+        WHERE EXISTS (SELECT 1 FROM customers AS scoped WHERE scoped.id > 0)
+        """,
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+        sensitive_columns={("orders", "id")},
+    )[0]
+
+    assert select_alias.executable is True
+    assert derived.executable is True
+    assert cte_star.executable is True
+    assert shadowed_alias.executable is True
+
+
+def test_sql_asset_parser_warns_when_known_table_has_no_column_metadata() -> None:
+    parsed = sql_assets.parse_sql_assets(
+        "SELECT id FROM orders",
+        dialect="postgres",
+        table_columns={"orders": []},
+    )[0]
+
+    assert parsed.executable is True
+    assert "跳过字段级静态校验" in "；".join(parsed.validation_report["warnings"])
+
+    sensitive = sql_assets.parse_sql_assets(
+        "SELECT phone FROM customers",
+        dialect="postgres",
+        table_columns={"customers": []},
+        sensitive_columns={("customers", "phone")},
+    )[0]
+    sensitive_star = sql_assets.parse_sql_assets(
+        "SELECT * FROM customers",
+        dialect="postgres",
+        table_columns={"customers": []},
+        sensitive_columns={("customers", "phone")},
+    )[0]
+
+    assert sensitive.executable is False
+    assert "敏感字段" in "；".join(sensitive.validation_report["errors"])
+    assert sensitive_star.executable is False
+    assert "SELECT *" in "；".join(sensitive_star.validation_report["errors"])
+
+
+def test_sql_candidate_never_silently_discards_multiple_statements() -> None:
+    statements = sql_assets._split_sql_statements(
+        "SELECT id FROM orders; SELECT name FROM customers;",
+        dialect="postgres",
+    )
+    assert len(statements) == 2
+    with pytest.raises(sql_assets.SQLValidationError, match="exactly one statement"):
+        sql_assets._validated_candidate(
+            "SELECT id FROM orders; SELECT name FROM customers;",
+            dialect="postgres",
+            table_columns=SCHEMA_COLUMNS,
+            sensitive_columns=set(),
+        )
+
+
 def test_sql_asset_normalization_provides_stable_dedup_hash() -> None:
     first = sql_assets.parse_sql_assets(
         "SELECT id FROM orders",

@@ -13,7 +13,9 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlglot import exp, parse, parse_one
-from sqlglot.errors import ParseError
+from sqlglot.errors import OptimizeError, ParseError, SchemaError
+from sqlglot.optimizer.qualify import qualify
+from sqlglot.optimizer.scope import traverse_scope
 
 from execution.data.db_router import DBConnectionInfo, DBRouter
 from execution.data.sql_executor import SQLExecutor
@@ -158,14 +160,12 @@ def _validate_schema_references(
         for cte in expression.find_all(exp.CTE)
         if str(cte.alias_or_name).strip()
     }
-    alias_lookup: dict[str, str] = {}
     referenced_tables: list[str] = []
     for table in expression.find_all(exp.Table):
         table_name = str(table.name or "").strip()
         if not table_name:
             continue
         if table_name.lower() in cte_names:
-            alias_lookup[table_name.lower()] = table_name
             continue
         schema_name = str(table.db or "").strip().lower()
         if schema_name in {"information_schema", "pg_catalog", "system"}:
@@ -175,10 +175,6 @@ def _validate_schema_references(
             errors.append(f"Schema 中不存在表：{table_name}")
             continue
         referenced_tables.append(actual)
-        alias = str(table.alias or "").strip()
-        if alias:
-            alias_lookup[alias.lower()] = actual
-        alias_lookup[table_name.lower()] = actual
 
     sensitive = {(table.lower(), column.lower()) for table, column in (sensitive_columns or set())}
     has_star = any(
@@ -186,31 +182,122 @@ def _validate_schema_references(
         or (isinstance(selection, exp.Column) and isinstance(selection.this, exp.Star))
         for selection in getattr(expression, "selects", [])
     )
-    if has_star and any(
-        table.lower() in {item[0] for item in sensitive} for table in referenced_tables
-    ):
-        errors.append("查询包含 SELECT *，且涉及配置了敏感字段的表")
 
-    for column in expression.find_all(exp.Column):
-        column_name = str(column.name or "").strip()
-        qualifier = str(column.table or "").strip().lower()
-        if not column_name or column_name == "*":
-            continue
-        target_tables: list[str] = []
-        if qualifier:
-            actual = alias_lookup.get(qualifier)
-            if actual and actual.lower() not in cte_names:
-                target_tables = [actual]
-        elif len(set(referenced_tables)) == 1:
-            target_tables = [referenced_tables[0]]
-        if not target_tables:
-            continue
-        for table_name in target_tables:
-            known_columns = {item.lower() for item in table_columns.get(table_name, [])}
-            if known_columns and column_name.lower() not in known_columns:
-                errors.append(f"表 {table_name} 中不存在列：{column_name}")
-            if (table_name.lower(), column_name.lower()) in sensitive:
-                errors.append(f"查询直接引用敏感字段：{table_name}.{column_name}")
+    # 按每个 SELECT 的可见来源解析字段，避免 CTE 或派生表绕过校验。
+    schema: dict[str, object] = {
+        table_name: {column_name: "UNKNOWN" for column_name in columns}
+        for table_name, columns in table_columns.items()
+        if columns
+    }
+    missing_metadata = [
+        table_name
+        for table_name in dict.fromkeys(referenced_tables)
+        if not table_columns.get(table_name)
+    ]
+    warnings.extend(
+        f"表 {table_name} 缺少列元数据，已跳过字段级静态校验" for table_name in missing_metadata
+    )
+    qualified = None
+    if not errors and not missing_metadata:
+        try:
+            qualified = qualify(
+                expression.copy(),
+                schema=schema,
+                allow_partial_qualification=False,
+                validate_qualify_columns=True,
+                expand_stars=True,
+                quote_identifiers=False,
+                identify=False,
+            )
+        except (OptimizeError, SchemaError) as exc:
+            message = str(exc)
+            match = re.search(r"(?:Column|column) ['\"]([^'\"]+)['\"]", message)
+            if match is None:
+                match = re.search(r"Unknown column:\s*([^\s]+)", message, flags=re.I)
+            column_name = match.group(1) if match else ""
+            if column_name:
+                matching_tables = [
+                    table_name
+                    for table_name in dict.fromkeys(referenced_tables)
+                    if column_name.lower()
+                    in {item.lower() for item in table_columns.get(table_name, [])}
+                ]
+                if len(matching_tables) > 1:
+                    errors.append(f"未限定列存在歧义：{column_name}")
+                else:
+                    errors.append(f"Schema 中不存在列：{column_name}")
+            else:
+                errors.append(f"Schema 静态校验失败：{message}")
+
+    if qualified is None and missing_metadata and not errors and sensitive:
+        # 字段清单不完整时仍按可解析的物理表别名执行敏感字段兜底校验。
+        for scope in traverse_scope(expression):
+            fallback_aliases: dict[str, str] = {}
+            local_tables: set[str] = set()
+            fallback_scope: Any = scope
+            while fallback_scope is not None:
+                for alias, (_, source) in fallback_scope.selected_sources.items():
+                    if isinstance(source, exp.Table):
+                        actual = table_lookup.get(str(source.name or "").lower())
+                        if actual:
+                            fallback_aliases.setdefault(str(alias).lower(), actual)
+                            if fallback_scope is scope:
+                                local_tables.add(actual)
+                fallback_scope = fallback_scope.parent
+            for column in scope.columns:
+                column_name = str(column.name or "").strip().lower()
+                qualifier = str(column.table or "").strip().lower()
+                fallback_table_name = fallback_aliases.get(qualifier)
+                if not qualifier and len(local_tables) == 1:
+                    fallback_table_name = next(iter(local_tables))
+                if (
+                    fallback_table_name
+                    and (
+                        fallback_table_name.lower(),
+                        column_name,
+                    )
+                    in sensitive
+                ):
+                    errors.append(f"查询直接引用敏感字段：{fallback_table_name}.{column.name}")
+            scope_has_star = any(
+                isinstance(selection, exp.Star)
+                or (isinstance(selection, exp.Column) and isinstance(selection.this, exp.Star))
+                for selection in getattr(scope.expression, "selects", [])
+            )
+            if scope_has_star and any(
+                table_name.lower() in {item[0] for item in sensitive} for table_name in local_tables
+            ):
+                errors.append("查询包含 SELECT *，且涉及配置了敏感字段的表")
+
+    if qualified is not None:
+        # 逐级合并父作用域，覆盖相关子查询对外层表的字段引用。
+        sensitive_reference_found = False
+        for scope in traverse_scope(qualified):
+            qualified_aliases: dict[str, str] = {}
+            qualified_scope: Any = scope
+            while qualified_scope is not None:
+                for alias, (_, source) in qualified_scope.selected_sources.items():
+                    if isinstance(source, exp.Table):
+                        actual = table_lookup.get(str(source.name or "").lower())
+                        if actual:
+                            qualified_aliases.setdefault(str(alias).lower(), actual)
+                qualified_scope = qualified_scope.parent
+            for column in scope.columns:
+                column_name = str(column.name or "").strip().lower()
+                qualifier = str(column.table or "").strip().lower()
+                qualified_table_name = qualified_aliases.get(qualifier)
+                if (
+                    qualified_table_name
+                    and (
+                        qualified_table_name.lower(),
+                        column_name,
+                    )
+                    in sensitive
+                ):
+                    sensitive_reference_found = True
+                    errors.append(f"查询直接引用敏感字段：{qualified_table_name}.{column.name}")
+        if has_star and sensitive_reference_found:
+            errors.append("查询包含 SELECT *，且涉及配置了敏感字段的表")
     return sorted(set(errors)), sorted(set(warnings))
 
 
@@ -572,6 +659,23 @@ def _strip_model_sql(value: str) -> str:
     return text
 
 
+def _split_sql_statements(value: str, *, dialect: str) -> list[str]:
+    """将模型或用户输入拆成候选语句，避免多语句输入被静默截断。"""
+
+    raw = _strip_model_sql(value)
+    if not raw:
+        return []
+    try:
+        expressions = [
+            item for item in parse(raw, read=_sqlglot_dialect(dialect)) if item is not None
+        ]
+    except ParseError:
+        return [raw]
+    if not expressions:
+        return [raw]
+    return [item.sql(dialect=_sqlglot_dialect(dialect), comments=False) for item in expressions]
+
+
 def _validated_candidate(
     sql: str,
     *,
@@ -582,7 +686,10 @@ def _validated_candidate(
     raw = _strip_model_sql(sql)
     if not raw:
         raise SQLValidationError("empty sql")
-    expression = parse_one(raw, read=_sqlglot_dialect(dialect))
+    expressions = [item for item in parse(raw, read=_sqlglot_dialect(dialect)) if item is not None]
+    if len(expressions) != 1:
+        raise SQLValidationError("one SQL candidate must contain exactly one statement")
+    expression = expressions[0]
     normalized = expression.sql(dialect=_sqlglot_dialect(dialect), comments=False)
     safe_sql = SQLValidator(default_limit=100, max_limit=500).validate(normalized)
     safe_expression = parse_one(safe_sql, read=_sqlglot_dialect(dialect))
@@ -660,7 +767,10 @@ async def generate_sql_query_draft(
     validated: list[tuple[str, dict[str, Any], list[str], list[str]]] = []
     errors: list[str] = []
     seen: set[str] = set()
-    for raw_sql in raw_candidates[:MAX_DRAFT_CANDIDATES]:
+    expanded_candidates: list[str] = []
+    for raw_sql in raw_candidates:
+        expanded_candidates.extend(_split_sql_statements(raw_sql, dialect=dialect))
+    for raw_sql in expanded_candidates[:MAX_DRAFT_CANDIDATES]:
         try:
             item = _validated_candidate(
                 raw_sql,
