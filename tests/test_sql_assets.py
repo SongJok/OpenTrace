@@ -72,6 +72,23 @@ def test_sql_asset_parser_rejects_unknown_and_sensitive_columns() -> None:
     assert "SELECT *" in star.validation_report["errors"][0]
 
 
+def test_sql_asset_parser_supports_clickhouse_cross_database_tables() -> None:
+    qualified = sql_assets.parse_sql_assets(
+        "SELECT id FROM ods.orders",
+        dialect="clickhouse",
+        table_columns={"ods.orders": ["id", "created_at"]},
+    )[0]
+    ambiguous = sql_assets.parse_sql_assets(
+        "SELECT id FROM orders",
+        dialect="clickhouse",
+        table_columns={"ods.orders": ["id"], "dwd.orders": ["id"]},
+    )[0]
+
+    assert qualified.executable is True
+    assert ambiguous.executable is False
+    assert "使用 database.table" in ambiguous.validation_report["errors"][0]
+
+
 def test_sql_asset_parser_checks_unqualified_join_columns() -> None:
     sensitive = sql_assets.parse_sql_assets(
         "SELECT phone FROM customers JOIN orders ON customers.id = orders.customer_id",

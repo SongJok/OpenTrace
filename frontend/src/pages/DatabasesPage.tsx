@@ -339,8 +339,8 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     const nextSourceType = parsedJdbc?.source_type || form.source_type
     const nextPort = parsedJdbc?.port || form.port || DB_PORTS[nextSourceType]
     const nextDatabase = parsedJdbc?.database?.trim() || form.database.trim()
-    if (!form.name.trim() || !normalizedHost || !nextDatabase || !form.username.trim() || !form.password.trim()) {
-      alert('请填写完整的本机 / 宿主机 / 外部数据库连接信息')
+    if (!form.name.trim() || !normalizedHost || !form.username.trim() || !form.password.trim() || (nextSourceType !== 'clickhouse' && !nextDatabase)) {
+      alert(nextSourceType === 'clickhouse' ? '请填写连接别名、主机、端口、账号和密码；ClickHouse 可不指定数据库' : '请填写完整的本机 / 宿主机 / 外部数据库连接信息')
       return
     }
     if (!isAllowedDatabaseHost(normalizedHost)) {
@@ -367,8 +367,8 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
       try {
         const test = await apiTestDatabaseConnection(token, id)
         if (test.ok) {
-          await apiSyncDatabaseSchema(token, id)
-          alert('保存成功，连接测试通过并已同步 Schema，可直接绑定 Project 使用')
+          const sync = await apiSyncDatabaseSchema(token, id)
+          alert(sync.metadata_warning || '保存成功，连接测试通过并已同步 Schema，可直接绑定 Project 使用')
         } else {
           alert(`保存成功，但连接失败：${test.error || 'unknown'}`)
         }
@@ -474,12 +474,12 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
 
   const syncSchema = async () => {
     if (!selected) return
-    await apiSyncDatabaseSchema(token, selected.id)
+    const sync = await apiSyncDatabaseSchema(token, selected.id)
     const out = await apiGetDatabaseSchema(token, selected.id)
     setSchema(out.schema)
     setActiveTab('tables')
     await load()
-    alert(`Schema 已同步，表数: ${out.schema.tables?.length || 0}`)
+    alert(sync.metadata_warning || `Schema 已同步，库数: ${sync.database_count || 0}，表数: ${out.schema.tables?.length || 0}`)
   }
 
   const runAnalysis = async () => {
@@ -650,7 +650,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                 })}
               />
               <input className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent" placeholder="port" type="number" value={form.port} onChange={(e) => setForm((f) => ({ ...f, port: Number(e.target.value), jdbc: buildJdbc(f.source_type, f.host || getDefaultHostForMode(f.host_mode), Number(e.target.value), f.database, getDefaultJdbcParams(f.source_type)) }))} />
-              <input className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent" placeholder="数据库名" value={form.database} onChange={(e) => setForm((f) => ({ ...f, database: e.target.value, jdbc: buildJdbc(f.source_type, f.host || getDefaultHostForMode(f.host_mode), f.port, e.target.value, getDefaultJdbcParams(f.source_type)) }))} />
+              <input className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent" placeholder={form.source_type === 'clickhouse' ? '数据库名（可留空，连接后覆盖 ods / dwd）' : '数据库名'} value={form.database} onChange={(e) => setForm((f) => ({ ...f, database: e.target.value, jdbc: buildJdbc(f.source_type, f.host || getDefaultHostForMode(f.host_mode), f.port, e.target.value, getDefaultJdbcParams(f.source_type)) }))} />
               <input className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent" placeholder="username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
               <input className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent" placeholder="password" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
               <label className="block text-[11px] text-[var(--text-secondary)]">JDBC 地址</label>
@@ -697,14 +697,15 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                     <button type="button" onClick={(e) => { e.stopPropagation(); void removeDb(x.id) }} className="text-red-500"><Trash2 size={12} /></button>
                   </div>
                 </div>
-                <div className="text-[var(--text-secondary)]">{x.type} · {x.host}:{x.port}/{x.database}</div>
+                <div className="text-[var(--text-secondary)]">{x.type} · {x.host}:{x.port}/{x.database || (x.type === 'clickhouse' ? '全部可访问库' : '未指定')}</div>
                 <div className="flex items-center gap-1 text-[var(--text-secondary)]">
                   <Circle size={10} className={x.status === 'active' ? 'fill-emerald-500 text-emerald-500' : x.status === 'error' ? 'fill-rose-500 text-rose-500' : 'fill-slate-400 text-slate-400'} />
                   <span>状态：{x.status}</span>
                 </div>
                 <div className="text-[var(--text-secondary)]">
-                  表数：{x.table_count ?? 0} · 更新：{x.updated_at || '—'} · 上次同步：{x.last_schema_sync_at || x.synced_at || '—'}
+                  库数：{x.database_count ?? (x.database ? 1 : 0)} · 表数：{x.table_count ?? 0} · 更新：{x.updated_at || '—'} · 上次同步：{x.last_schema_sync_at || x.synced_at || '—'}
                 </div>
+                {x.metadata_warning ? <div className="mt-1 text-amber-500">{x.metadata_warning}</div> : null}
               </div>
             ))}
           </div>
@@ -1354,7 +1355,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                     <div>类型：{selected.type}</div>
                     <div>主机：{selected.host}</div>
                     <div>端口：{selected.port}</div>
-                    <div>数据库：{selected.database}</div>
+                    <div>数据库：{selected.database || (selected.type === 'clickhouse' ? '全部可访问库' : '未指定')}</div>
                     <div>用户名：{selected.username}</div>
                   </div>
 

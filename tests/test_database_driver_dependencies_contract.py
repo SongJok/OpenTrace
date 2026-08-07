@@ -15,6 +15,23 @@ def test_clickhouse_async_dsn_has_dialect_and_driver_dependencies():
         assert dependency in pyproject
 
 
+def test_clickhouse_http_ports_use_http_dsn_and_default_database():
+    from execution.data.db_router import DBConnectionInfo, DBRouter
+
+    dsn = DBRouter().build_dsn(
+        DBConnectionInfo(
+            source_type="clickhouse",
+            host="clickhouse.example.com",
+            port=80,
+            database="",
+            username="readonly_user",
+            password="secret",
+        )
+    )
+
+    assert dsn == "clickhouse+http://readonly_user:secret@clickhouse.example.com:80/default"
+
+
 def test_doris_reuses_the_installed_async_mysql_driver():
     router = (ROOT / "execution/data/db_router.py").read_text(encoding="utf-8")
     assert 'if t in {"doris"}' in router

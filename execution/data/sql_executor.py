@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
+from urllib.parse import unquote, unquote_plus, urlsplit
 
+import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
@@ -59,6 +62,8 @@ class SQLExecutor:
         source_type: str | None = None,
     ) -> list[dict[str, Any]]:
         safe_sql = self._validated_sql(sql)
+        if dsn.startswith(("clickhouse+http://", "clickhouse+https://")):
+            return await self._run_clickhouse_http_on_dsn(dsn, safe_sql)
         runtime_dsn = self._runtime_dsn(dsn)
         engine = create_async_engine(runtime_dsn, pool_pre_ping=True, future=True)
         try:
@@ -73,6 +78,43 @@ class SQLExecutor:
             return await asyncio.wait_for(_execute(), timeout=self.timeout_ms / 1000)
         finally:
             await engine.dispose()
+
+    async def _run_clickhouse_http_on_dsn(self, dsn: str, safe_sql: str) -> list[dict[str, Any]]:
+        """通过 ClickHouse HTTP 接口执行只读 SQL，兼容 80/8123 等 HTTP 端口。"""
+
+        parsed = urlsplit(
+            dsn.replace("clickhouse+http://", "http://", 1).replace(
+                "clickhouse+https://", "https://", 1
+            )
+        )
+        if not parsed.hostname:
+            raise ValueError("ClickHouse HTTP 地址缺少主机名")
+        endpoint = f"{parsed.scheme}://{parsed.hostname}:{parsed.port or (443 if parsed.scheme == 'https' else 80)}/"
+        database = unquote(parsed.path.lstrip("/")).strip() or "default"
+        username = unquote_plus(parsed.username or "")
+        password = unquote_plus(parsed.password or "")
+        query = safe_sql.rstrip().rstrip(";") + "\nFORMAT JSONEachRow"
+        timeout = httpx.Timeout(self.timeout_ms / 1000)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+            response = await client.post(
+                endpoint,
+                params={"database": database},
+                content=query.encode("utf-8"),
+                auth=(username, password),
+            )
+        if response.status_code >= 400:
+            detail = response.text.strip().replace("\n", " ")[:500]
+            raise RuntimeError(f"ClickHouse HTTP 查询失败（{response.status_code}）：{detail}")
+        rows: list[dict[str, Any]] = []
+        for line in response.text.splitlines():
+            if not line.strip():
+                continue
+            value = json.loads(line)
+            if isinstance(value, dict):
+                rows.append({key: _make_json_safe(item) for key, item in value.items()})
+            if len(rows) >= self.max_rows:
+                break
+        return rows
 
     def _read_only_setup_statements(
         self, dsn: str, *, source_type: str | None = None

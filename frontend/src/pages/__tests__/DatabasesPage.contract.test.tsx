@@ -32,6 +32,7 @@ describe('DatabasesPage contract', () => {
     expect(source).toContain('搜索标题、描述或 SQL')
     expect(source).toContain('saveSQLAssetMetadata')
     expect(source).toContain('SQL_ASSET_PAGE_SIZE')
+    expect(source).toContain('ClickHouse 可不指定数据库')
   })
 
   it('uses dedicated draft and asset APIs', async () => {

@@ -293,6 +293,9 @@ def _validate_schema_references(
     errors: list[str] = []
     warnings: list[str] = []
     table_lookup = {name.lower(): name for name in table_columns}
+    unqualified_matches: dict[str, list[str]] = {}
+    for name in table_columns:
+        unqualified_matches.setdefault(name.rsplit(".", 1)[-1].lower(), []).append(name)
     cte_names = {
         str(cte.alias_or_name).strip().lower()
         for cte in expression.find_all(exp.CTE)
@@ -308,7 +311,15 @@ def _validate_schema_references(
         schema_name = str(table.db or "").strip().lower()
         if schema_name in {"information_schema", "pg_catalog", "system"}:
             continue
-        actual = table_lookup.get(table_name.lower())
+        qualified_name = f"{schema_name}.{table_name}" if schema_name else table_name
+        actual = table_lookup.get(qualified_name.lower()) or table_lookup.get(table_name.lower())
+        if actual is None and not schema_name:
+            matches = unqualified_matches.get(table_name.lower(), [])
+            if len(matches) == 1:
+                actual = matches[0]
+            elif len(matches) > 1:
+                errors.append(f"存在同名跨库表，请使用 database.table：{table_name}")
+                continue
         if actual is None:
             errors.append(f"Schema 中不存在表：{table_name}")
             continue
@@ -322,11 +333,6 @@ def _validate_schema_references(
     )
 
     # 按每个 SELECT 的可见来源解析字段，避免 CTE 或派生表绕过校验。
-    schema: dict[str, object] = {
-        table_name: {column_name: "UNKNOWN" for column_name in columns}
-        for table_name, columns in table_columns.items()
-        if columns
-    }
     missing_metadata = [
         table_name
         for table_name in dict.fromkeys(referenced_tables)
@@ -338,9 +344,16 @@ def _validate_schema_references(
     qualified = None
     if not errors and not missing_metadata:
         try:
+            # sqlglot 的列展开按裸表名工作；跨库物理键在上面的引用校验中已完成，
+            # 这里将唯一的 database.table 映射到裸表名供字段级校验使用。
+            qualify_schema: dict[str, dict[str, str]] = {}
+            for physical_name, columns in table_columns.items():
+                bare_name = physical_name.rsplit(".", 1)[-1]
+                target = qualify_schema.setdefault(bare_name, {})
+                target.update({column_name: "UNKNOWN" for column_name in columns})
             qualified = qualify(
                 expression.copy(),
-                schema=schema,
+                schema=qualify_schema,
                 allow_partial_qualification=False,
                 validate_qualify_columns=True,
                 expand_stars=True,

@@ -1,7 +1,6 @@
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -18,6 +17,8 @@ class DatabasesApiContractTests(unittest.TestCase):
         self.assertIn('@router.post("/databases/{database_id}/test-connection")', txt)
         self.assertIn('@router.post("/databases/{database_id}/sync-schema")', txt)
         self.assertIn('@router.post("/databases/{database_id}/query")', txt)
+        self.assertIn('return database or "*"', txt)
+        self.assertIn("database_scope", txt)
 
     def test_databases_router_included_in_main(self):
         txt = self._read("gateway/api_gateway/main.py")

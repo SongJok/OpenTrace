@@ -19,10 +19,14 @@ class SchemaInspectionResult:
 
 
 async def load_schema_inspection(db: AsyncSession, data_source_id: str) -> SchemaInspectionResult:
-    rs = await db.execute(select(DataSourceSchema).where(DataSourceSchema.data_source_id == data_source_id))
+    rs = await db.execute(
+        select(DataSourceSchema).where(DataSourceSchema.data_source_id == data_source_id)
+    )
     schema_row = rs.scalar_one_or_none()
     try:
-        schema_payload = json.loads(schema_row.schema_json or "{}") if schema_row else {"tables": []}
+        schema_payload = (
+            json.loads(schema_row.schema_json or "{}") if schema_row else {"tables": []}
+        )
     except Exception:
         schema_payload = {"tables": []}
 
@@ -54,8 +58,13 @@ async def load_schema_inspection(db: AsyncSession, data_source_id: str) -> Schem
                             if name:
                                 table_names.append(name)
 
-    # Build column_map: table_name → [column_names]
+    # Build column_map: table_name → [column_names]. 仅 ClickHouse 全库同步使用
+    # database.table 作为唯一键，避免不同库的同名表相互覆盖；其他数据源保持历史键名。
     column_map: dict[str, list[str]] = {}
+    cross_database_scope = (
+        isinstance(schema_payload, dict)
+        and str(schema_payload.get("database_scope") or "").strip() == "*"
+    )
     if isinstance(tables, list):
         for t in tables:
             if not isinstance(t, dict):
@@ -63,10 +72,14 @@ async def load_schema_inspection(db: AsyncSession, data_source_id: str) -> Schem
             tname = str(t.get("name") or "").strip()
             if not tname:
                 continue
+            database = str(t.get("database") or "").strip()
+            qualified_name = tname
+            if cross_database_scope and database and database != "*" and "." not in tname:
+                qualified_name = f"{database}.{tname}"
             columns = t.get("columns")
             if isinstance(columns, list):
                 col_names = [str(c.get("name", "")).strip() for c in columns if isinstance(c, dict)]
-                column_map[tname] = [cn for cn in col_names if cn]
+                column_map[qualified_name] = [cn for cn in col_names if cn]
 
     return SchemaInspectionResult(
         schema_payload=schema_payload,
@@ -80,4 +93,4 @@ def build_schema_hint(schema_payload: dict[str, Any], max_chars: int = 4000) -> 
     try:
         return json.dumps(schema_payload or {"tables": []}, ensure_ascii=False)[:max_chars]
     except Exception:
-        return "{\"tables\": []}"
+        return '{"tables": []}'

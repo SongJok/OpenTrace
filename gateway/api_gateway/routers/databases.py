@@ -66,7 +66,7 @@ class DataSourceCreateRequest(BaseModel):
     source_type: str = Field(..., pattern="^(mysql|clickhouse|doris|postgres)$")
     host: str = Field(..., min_length=1, max_length=255)
     port: int = Field(..., ge=1, le=65535)
-    database: str = Field(..., min_length=1, max_length=255)
+    database: str = Field(default="", max_length=255)
     username: str = Field(..., min_length=1, max_length=255)
     password: str = Field(..., min_length=1, max_length=4096)
 
@@ -76,7 +76,7 @@ class DataSourceUpdateRequest(BaseModel):
     source_type: str = Field(..., pattern="^(mysql|clickhouse|doris|postgres)$")
     host: str = Field(..., min_length=1, max_length=255)
     port: int = Field(..., ge=1, le=65535)
-    database: str = Field(..., min_length=1, max_length=255)
+    database: str = Field(default="", max_length=255)
     username: str = Field(..., min_length=1, max_length=255)
     password: str = Field(..., min_length=1, max_length=4096)
 
@@ -86,21 +86,41 @@ def _schema_name(source_type: str, database: str) -> str:
     if t == "postgres":
         return "public"
     if t == "clickhouse":
-        return database or "default"
+        # 空数据库表示服务器级数据源，Schema 同步会覆盖可访问的业务库。
+        return database or "*"
     return database or "information_schema"
 
 
 def _schema_sql(source_type: str, schema_name: str) -> tuple[str, str]:
     t = (source_type or "").lower()
     if t == "clickhouse":
+        if schema_name == "*":
+            tables_sql = (
+                "SELECT database AS database_name, name AS table_name, "
+                "concat(database, '.', name) AS qualified_table_name "
+                "FROM system.tables "
+                "WHERE database NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') "
+                "ORDER BY database, name"
+            )
+            cols_sql = (
+                "SELECT database AS database_name, table AS physical_table_name, "
+                "concat(database, '.', table) AS table_name, name AS column_name, type AS data_type "
+                "FROM system.columns "
+                "WHERE database NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') "
+                "ORDER BY database, table, position"
+            )
+            return tables_sql, cols_sql
+        safe_schema = schema_name.replace("'", "''")
         tables_sql = (
-            "SELECT name AS table_name FROM system.tables "
-            f"WHERE database = '{schema_name}' "
+            "SELECT database AS database_name, name AS table_name "
+            "FROM system.tables "
+            f"WHERE database = '{safe_schema}' "
             "ORDER BY name"
         )
         cols_sql = (
-            "SELECT table AS table_name, name AS column_name, type AS data_type FROM system.columns "
-            f"WHERE database = '{schema_name}' "
+            "SELECT database AS database_name, table AS table_name, name AS column_name, type AS data_type "
+            "FROM system.columns "
+            f"WHERE database = '{safe_schema}' "
             "ORDER BY table, position"
         )
         return tables_sql, cols_sql
@@ -172,6 +192,16 @@ def _validate_database_host(host: str) -> str:
     )
 
 
+def _validate_database_name(source_type: str, database: str) -> str:
+    normalized = str(database or "").strip()
+    if not normalized and str(source_type or "").lower() != "clickhouse":
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message="除 ClickHouse 服务器级连接外，其他数据源必须填写数据库名",
+        )
+    return normalized
+
+
 async def _check_connection(source: DataSource) -> tuple[bool, str | None]:
     try:
         dsn = DBRouter().build_dsn(
@@ -204,6 +234,7 @@ async def create_database(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     host = _validate_database_host(req.host)
+    database = _validate_database_name(req.source_type, req.database)
     tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
     tenant_id, workspace_id = normalized_tenant_scope(tenant_md)
     row = DataSource(
@@ -215,7 +246,7 @@ async def create_database(
         source_type=req.source_type,
         host=host,
         port=req.port,
-        database=req.database,
+        database=database,
         username=req.username,
         password_encrypted=encrypt_data_source_secret(req.password),
         status="active",
@@ -234,6 +265,7 @@ async def update_database(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     host = _validate_database_host(req.host)
+    database = _validate_database_name(req.source_type, req.database)
     x = await _owned_data_source(db, http_request, current_user, database_id, "edit")
     if x is None:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="database not found")
@@ -241,7 +273,7 @@ async def update_database(
     x.source_type = req.source_type
     x.host = host
     x.port = req.port
-    x.database = req.database
+    x.database = database
     x.username = req.username
     x.password_encrypted = encrypt_data_source_secret(req.password)
     x.status = "active"
@@ -292,6 +324,8 @@ async def list_databases(
                 "created_at": x.created_at.isoformat() if x.created_at else None,
                 "synced_at": schema_payload.get("synced_at"),
                 "table_count": schema_payload.get("table_count", 0),
+                "database_count": schema_payload.get("database_count", 0),
+                "metadata_warning": schema_payload.get("metadata_warning"),
                 "owned": x.user_id == current_user.id,
                 "last_schema_sync_at": (
                     schema_row.updated_at.isoformat()
@@ -444,7 +478,9 @@ async def database_workbench(
         "checks": checks,
         "schema": {
             "table_count": int(schema.get("table_count") or len(schema.get("tables") or [])),
+            "database_count": int(schema.get("database_count") or 0),
             "synced_at": schema.get("synced_at"),
+            "metadata_warning": schema.get("metadata_warning"),
         },
         "relationships": {"total": relationships, "verified": verified_relationships},
         "metrics": {"total": metrics, "published": published_metrics},
@@ -516,13 +552,42 @@ async def sync_schema(
             }
         )
 
+    databases = sorted(
+        {
+            str(row.get("database_name") or "").strip()
+            for row in tables_rows
+            if str(row.get("database_name") or "").strip()
+        }
+    )
+    metadata_warning = None
+    if x.source_type == "clickhouse" and not x.database and not databases:
+        metadata_warning = (
+            "连接成功，但当前账号无法发现任何业务库；请检查 ClickHouse SHOW/SELECT 授权，"
+            "或为账号授予目标库的只读权限"
+        )
+
     payload = {
         "schema": schema_name,
+        "database_scope": x.database or "*",
+        "databases": databases,
+        "database_count": len(databases),
+        "metadata_warning": metadata_warning,
         "tables": [
             {
-                "name": t.get("table_name"),
+                "name": t.get("qualified_table_name") or t.get("table_name"),
+                "database": t.get("database_name") or schema_name,
+                "qualified_name": (
+                    t.get("qualified_table_name")
+                    or (
+                        f"{t.get('database_name')}.{t.get('table_name')}"
+                        if t.get("database_name") and schema_name != "*"
+                        else t.get("table_name")
+                    )
+                ),
                 "comment": str(t.get("table_comment") or t.get("comment") or ""),
-                "columns": table_columns.get(str(t.get("table_name", "")), []),
+                "columns": table_columns.get(
+                    str(t.get("qualified_table_name") or t.get("table_name", "")), []
+                ),
             }
             for t in tables_rows
         ],
@@ -560,7 +625,9 @@ async def sync_schema(
     return {
         "synced": True,
         "data_source_id": database_id,
+        "database_count": len(databases),
         "table_count": len(tables_rows),
+        "metadata_warning": metadata_warning,
         "auto_extracted_dimensions": len(extracted["dimensions"]),
         "auto_extracted_metrics": len(extracted["metrics"]),
     }

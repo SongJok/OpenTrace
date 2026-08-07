@@ -29,6 +29,12 @@ class DBRouter:
         if t in {"mysql"}:
             return f"mysql+aiomysql://{user}:{passwd}@{host}:{conn.port}/{conn.database}"
         if t in {"clickhouse"}:
+            # ClickHouse 的 80/8123/443/8443 通常是 HTTP 接口，9000/9440 才是原生 TCP。
+            # 连接协议由端口推断，避免把 DBeaver 的 HTTP JDBC 地址错误地交给 asynch。
+            if conn.port in {80, 443, 8123, 8443}:
+                protocol = "https" if conn.port in {443, 8443} else "http"
+                database = conn.database.strip() or "default"
+                return f"clickhouse+{protocol}://{user}:{passwd}@{host}:{conn.port}/{database}"
             return f"clickhouse+asynch://{user}:{passwd}@{host}:{conn.port}/{conn.database}"
         if t in {"doris"}:
             return f"mysql+aiomysql://{user}:{passwd}@{host}:{conn.port}/{conn.database}"
