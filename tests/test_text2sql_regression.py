@@ -55,18 +55,28 @@ class Text2SqlRegressionTests(unittest.TestCase):
             db = _make_db_mock()
 
             with (
-                patch("gateway.api_gateway.routers.data.get_settings") as settings_mock,
+                patch(
+                    "gateway.api_gateway.routers.data.get_settings", create=True
+                ) as settings_mock,
                 patch(
                     "gateway.api_gateway.routers.data.decrypt_data_source_secret",
                     return_value="secret",
+                    create=True,
                 ),
-                patch("gateway.api_gateway.routers.data.SQLPlanner") as planner_cls,
-                patch("gateway.api_gateway.routers.data.SQLValidator") as validator_cls,
+                patch("gateway.api_gateway.routers.data.SQLPlanner", create=True) as planner_cls,
                 patch(
-                    "gateway.api_gateway.routers.data.normalize_sql_for_dialect"
+                    "gateway.api_gateway.routers.data.SQLValidator", create=True
+                ) as validator_cls,
+                patch(
+                    "gateway.api_gateway.routers.data.normalize_sql_for_dialect", create=True
                 ) as normalize_mock,
-                patch("gateway.api_gateway.routers.data.DBRouter") as router_cls,
-                patch("gateway.api_gateway.routers.data.SQLExecutor") as exec_cls,
+                patch("gateway.api_gateway.routers.data.DBRouter", create=True) as router_cls,
+                patch("gateway.api_gateway.routers.data.SQLExecutor", create=True) as exec_cls,
+                patch(
+                    "gateway.api_gateway.routers.data.generate_sql_query_draft",
+                    new_callable=AsyncMock,
+                ) as generate_draft,
+                patch("gateway.api_gateway.routers.data.serialize_draft") as serialize_draft,
             ):
                 settings_mock.return_value = Mock(
                     text2sql_default_limit=100,
@@ -90,6 +100,16 @@ class Text2SqlRegressionTests(unittest.TestCase):
                 executor = AsyncMock()
                 executor.run_on_dsn.return_value = [{"table_count": 2}]
                 exec_cls.return_value = executor
+                draft = Mock(id="draft-1")
+                candidate = Mock(
+                    id="candidate-1",
+                    sql="SELECT count(*) AS table_count FROM information_schema.tables LIMIT 100",
+                )
+                generate_draft.return_value = (draft, [candidate])
+                serialize_draft.return_value = {
+                    "status": "awaiting_confirmation",
+                    "candidates": [{"id": candidate.id, "sql": candidate.sql}],
+                }
 
                 resp = await data_query(
                     DataQueryRequest(
@@ -101,13 +121,15 @@ class Text2SqlRegressionTests(unittest.TestCase):
                     current_user=current_user,
                     db=db,
                 )
-                return resp, planner
+                return resp, planner, exec_cls
 
-        resp, planner = asyncio.run(_run())
+        resp, planner, executor_cls = asyncio.run(_run())
         self.assertEqual(resp["data_source_id"], "ds1")
-        self.assertIn("table_count", resp["rows"][0])
-        self.assertIn("结果为 2", resp["summary"])
+        self.assertEqual(resp["rows"], [])
+        self.assertFalse(resp["executed"])
+        self.assertIn("等待确认执行", resp["summary"])
         planner.plan.assert_not_called()
+        executor_cls.assert_not_called()
 
     def test_data_query_lists_tables_without_planner(self):
         from gateway.api_gateway.routers.data import DataQueryRequest, data_query
@@ -119,18 +141,28 @@ class Text2SqlRegressionTests(unittest.TestCase):
             db = _make_db_mock()
 
             with (
-                patch("gateway.api_gateway.routers.data.get_settings") as settings_mock,
+                patch(
+                    "gateway.api_gateway.routers.data.get_settings", create=True
+                ) as settings_mock,
                 patch(
                     "gateway.api_gateway.routers.data.decrypt_data_source_secret",
                     return_value="secret",
+                    create=True,
                 ),
-                patch("gateway.api_gateway.routers.data.SQLPlanner") as planner_cls,
-                patch("gateway.api_gateway.routers.data.SQLValidator") as validator_cls,
+                patch("gateway.api_gateway.routers.data.SQLPlanner", create=True) as planner_cls,
                 patch(
-                    "gateway.api_gateway.routers.data.normalize_sql_for_dialect"
+                    "gateway.api_gateway.routers.data.SQLValidator", create=True
+                ) as validator_cls,
+                patch(
+                    "gateway.api_gateway.routers.data.normalize_sql_for_dialect", create=True
                 ) as normalize_mock,
-                patch("gateway.api_gateway.routers.data.DBRouter") as router_cls,
-                patch("gateway.api_gateway.routers.data.SQLExecutor") as exec_cls,
+                patch("gateway.api_gateway.routers.data.DBRouter", create=True) as router_cls,
+                patch("gateway.api_gateway.routers.data.SQLExecutor", create=True) as exec_cls,
+                patch(
+                    "gateway.api_gateway.routers.data.generate_sql_query_draft",
+                    new_callable=AsyncMock,
+                ) as generate_draft,
+                patch("gateway.api_gateway.routers.data.serialize_draft") as serialize_draft,
             ):
                 settings_mock.return_value = Mock(
                     text2sql_default_limit=100,
@@ -153,6 +185,16 @@ class Text2SqlRegressionTests(unittest.TestCase):
                     {"table_name": "users"},
                 ]
                 exec_cls.return_value = executor
+                draft = Mock(id="draft-1")
+                candidate = Mock(
+                    id="candidate-1",
+                    sql="SELECT table_name FROM information_schema.tables LIMIT 100",
+                )
+                generate_draft.return_value = (draft, [candidate])
+                serialize_draft.return_value = {
+                    "status": "awaiting_confirmation",
+                    "candidates": [{"id": candidate.id, "sql": candidate.sql}],
+                }
 
                 resp = await data_query(
                     DataQueryRequest(
@@ -164,12 +206,14 @@ class Text2SqlRegressionTests(unittest.TestCase):
                     current_user=current_user,
                     db=db,
                 )
-                return resp, planner
+                return resp, planner, exec_cls
 
-        resp, planner = asyncio.run(_run())
-        self.assertEqual(resp["summary"], "查询成功，共 2 张表：orders、users")
-        self.assertEqual(resp["rows"][0]["table_name"], "orders")
+        resp, planner, executor_cls = asyncio.run(_run())
+        self.assertEqual(resp["rows"], [])
+        self.assertFalse(resp["executed"])
+        self.assertIn("等待确认执行", resp["summary"])
         planner.plan.assert_not_called()
+        executor_cls.assert_not_called()
 
     def test_data_agent_uses_structured_query_when_sql_missing(self):
         """When a natural-language query (no SQL) is submitted, the pipeline

@@ -2,7 +2,7 @@
 
 ## 1. 模块概述
 
-**一句话描述**：DataAgent 是 OpenTrace 系统中负责将自然语言查询转换为 SQL 并执行的核心智能体，支持 V1 单一路由和 V2 认知管线两种架构模式。
+**一句话描述**：DataAgent 是 OpenTrace 负责将自然语言查询转换为受治理 SQL 草案的核心智能体；交互式问数先生成并持久化候选，只有用户明确选择后才进入只读执行。
 
 **业务价值**：通过自然语言接口让非技术用户能够查询数据库，降低数据分析门槛，实现"用自然语言问数据"的核心价值主张。该模块是企业级数据智能平台的关键组件，支持多数据库类型、多租户隔离、查询优化和安全防护。
 
@@ -14,9 +14,33 @@
 - **多数据库支持**：支持 PostgreSQL、MySQL、ClickHouse、Doris 等多种数据库类型
 - **Schema 感知**：自动加载和利用数据库元数据进行智能查询生成
 - **查询验证与优化**：对生成的 SQL 进行安全性检查、语法验证和性能优化
-- **执行与结果返回**：执行 SQL 并将结果格式化为用户友好的响应
+- **确认后执行与结果返回**：按持久化候选 ID 执行用户明确选择的 SQL，并格式化返回结果
 - **知识增强**：整合业务指标定义、维度映射和查询模式库
 - **反思与修复**：V2 版本支持执行结果反思和自动修复
+
+### 2.1 SQL 资产与确认执行主链
+
+```text
+.sql/.txt 上传
+  → sqlglot 按数据源方言拆分和规范化
+  → 分类 query / ETL / DDL，提取表列与读写血缘
+  → Schema、敏感字段和只读 AST 静态校验
+  → 人工审核发布
+  → 按 tenant/workspace/data_source/project 检索已发布资产
+  → 生成 SQLQueryDraft + 1-N 个稳定 SQLQueryCandidate
+  → 向用户展示 SQL，状态为 awaiting_confirmation
+  → 用户选择候选或全部
+  → 重新校验 ACL、Schema 指纹、SQL 哈希和只读 AST
+  → 限行、超时、只读事务执行并逐条记录结果
+```
+
+在线入口 `/api/v1/data/query`、`/api/v1/databases/{id}/query` 和 Responses DataAgent
+都只生成草案，不接受客户端通过 `dry_run=false` 绕过确认。数据库工作台通过草案执行 API
+完成显式确认；Responses 通过 `execute_sql_draft` typed tool 进入持久化 `ResponseApproval`
+暂停点。后台报告和预警仍可使用各自已有的受信执行路径，不继承交互式参数。
+
+SQL 资产是独立治理域，不写入无租户边界的历史 `QueryPattern`。ETL、DDL 和 DML 仅保存为
+血缘参考，只有审核发布且通过校验的 `SELECT/WITH` 可以参与在线生成和执行。
 
 ---
 

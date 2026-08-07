@@ -3007,6 +3007,16 @@ class AgentLoop:
                         or DEFAULT_TIMEZONE
                     )
                 tool_arguments.update(scoped_arguments)
+            if spec.name == "execute_sql_draft":
+                tool_arguments.update(
+                    {
+                        "user_id": response.user_id,
+                        "tenant_id": response.tenant_id,
+                        "workspace_id": response.workspace_id,
+                        "conversation_id": response.conversation_id,
+                        "response_id": response.id,
+                    }
+                )
             executor = get_tool_executor()
             if executor.get_schema(spec.name) is None:
                 executor.register_tool(
@@ -3261,6 +3271,11 @@ class AgentLoop:
                 }
             hydrated["data_source_id"] = selected.id
             hydrated["data_source_name"] = selected.name
+            # 交互式 Responses 问数只能生成草案；后台报告和预警走各自显式受信执行入口。
+            hydrated["generation_only"] = True
+            hydrated["conversation_id"] = response.conversation_id
+            hydrated["response_id"] = response.id
+            hydrated.pop("dry_run", None)
             return hydrated, None
 
     @staticmethod

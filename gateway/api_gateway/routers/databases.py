@@ -570,6 +570,8 @@ class DatabaseQueryRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=8192)
     sql: str | None = None
     stream: bool = False
+    group_type: str = Field(default="alternative", pattern="^(alternative|batch)$")
+    project_id: str | None = None
 
 
 class DatabaseAnalysisRequest(BaseModel):
@@ -594,7 +596,7 @@ async def query_database(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    from gateway.api_gateway.routers.data import DataQueryRequest, data_query
+    from services.sql_assets import generate_sql_query_draft, serialize_draft
 
     x = await _owned_data_source(db, http_request, current_user, database_id, "query")
     if x is None:
@@ -605,14 +607,33 @@ async def query_database(
     err = None
     out = None
     try:
-        out = await data_query(
-            DataQueryRequest(
-                question=req.question, data_source_id=database_id, dry_run=False, sql=req.sql
-            ),
-            current_user=current_user,
-            db=db,
-            http_request=http_request,
+        tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)
+        draft, candidates = await generate_sql_query_draft(
+            db,
+            user_id=current_user.id,
+            tenant_id=str(tenant_md.get("tenant_id") or "default"),
+            workspace_id=str(tenant_md.get("workspace_id") or "default"),
+            data_source=x,
+            question=req.question,
+            supplied_sql=req.sql,
+            project_id=req.project_id,
+            group_type=req.group_type,
         )
+        draft_payload = serialize_draft(draft, candidates)
+        first_sql = candidates[0].sql if candidates else ""
+        out = {
+            "data_source_id": database_id,
+            "answer": "SQL 草案已生成，尚未执行。请选择具体方案或执行全部方案。",
+            "summary": f"已生成 {len(candidates)} 条只读 SQL 候选，等待确认执行",
+            "sql": first_sql,
+            "rows": [],
+            "confidence": 0.9,
+            "mode": "sql_draft",
+            "draft": draft_payload,
+            "draft_id": draft.id,
+            "candidates": draft_payload["candidates"],
+            "executed": False,
+        }
         return out
     except Exception as exc:  # noqa: BLE001
         ok = False

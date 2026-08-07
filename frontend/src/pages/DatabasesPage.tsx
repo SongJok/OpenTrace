@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronLeft, Database, Plus, Trash2, RefreshCw, PlayCircle, BarChart3, Table2, Settings2, Search, Pencil, Circle, Zap, Gauge, ShieldCheck, Users } from 'lucide-react'
+import { Archive, BarChart3, CheckCircle2, ChevronLeft, Circle, Database, FileCode2, Gauge, Pencil, PlayCircle, Plus, RefreshCw, Search, Settings2, ShieldCheck, Table2, Trash2, Upload, Users, Zap } from 'lucide-react'
 import DatabaseTypeSelect, { DATABASE_HOST_MODE_OPTIONS, type DatabaseHostMode, type DatabaseType } from '../components/DatabaseTypeSelect'
 import MarkdownMessage from '../components/MarkdownMessage'
 import { useAuthStore } from '../store/auth'
@@ -27,16 +27,24 @@ import {
   apiUpdateSemanticConfig,
   apiAutoExtractSemantic,
   apiGetDatabaseWorkbench,
+  apiDeleteSQLAssetSource,
+  apiExecuteSQLDraft,
   apiValidateDatabase,
+  apiListSQLAssets,
   apiListPermissionSubjects,
   apiListResourcePermissions,
   apiGrantResourcePermission,
   apiRevokeResourcePermission,
+  apiUpdateSQLAsset,
+  apiUploadSQLAsset,
   type DataSourceItem,
   type ResourcePermissionItem,
+  type SQLAssetItem,
+  type SQLAssetSourceItem,
+  type SQLQueryCandidateItem,
 } from '../api/client'
 
-type TabKey = 'overview' | 'tables' | 'query' | 'analysis' | 'settings' | 'metrics' | 'relationships' | 'skills'
+type TabKey = 'overview' | 'tables' | 'query' | 'sql_assets' | 'analysis' | 'settings' | 'metrics' | 'relationships' | 'skills'
 
 export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((s) => s.token)!
@@ -63,6 +71,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
       missing_entities: string[]
       suggested_options: string[]
     }
+    draft_id?: string
+    draft_status?: string
+    candidates?: SQLQueryCandidateItem[]
   } | null>(null)
   const [querySessionId, setQuerySessionId] = useState<string | null>(null)
   const [sessionContext, setSessionContext] = useState<Record<string, any> | null>(null)
@@ -97,6 +108,10 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const [subjects, setSubjects] = useState<Array<{ id: string; email: string; display_name?: string }>>([])
   const [grantUserId, setGrantUserId] = useState('')
   const [grantLevel, setGrantLevel] = useState<'view' | 'query' | 'edit' | 'admin'>('query')
+  const [sqlAssets, setSqlAssets] = useState<SQLAssetItem[]>([])
+  const [sqlAssetSources, setSqlAssetSources] = useState<SQLAssetSourceItem[]>([])
+  const [uploadingSQL, setUploadingSQL] = useState(false)
+  const [executingCandidate, setExecutingCandidate] = useState<string | null>(null)
 
   const [form, setForm] = useState({
     name: '',
@@ -156,7 +171,53 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     apiGetDatabaseWorkbench(token, selected.id).then(setWorkbench).catch(() => setWorkbench(null))
     apiListResourcePermissions(token, 'data_source', selected.id).then(setPermissions).catch(() => setPermissions([]))
     apiListPermissionSubjects(token).then(setSubjects).catch(() => setSubjects([]))
+    apiListSQLAssets(token, selected.id)
+      .then((result) => {
+        setSqlAssets(result.assets || [])
+        setSqlAssetSources(result.sources || [])
+      })
+      .catch(() => {
+        setSqlAssets([])
+        setSqlAssetSources([])
+      })
   }, [selected?.id, token])
+
+  const reloadSQLAssets = async () => {
+    if (!selected) return
+    const result = await apiListSQLAssets(token, selected.id)
+    setSqlAssets(result.assets || [])
+    setSqlAssetSources(result.sources || [])
+  }
+
+  const uploadSQLAsset = async (file?: File) => {
+    if (!selected || !file) return
+    setUploadingSQL(true)
+    try {
+      await apiUploadSQLAsset(token, selected.id, file)
+      await reloadSQLAssets()
+    } catch (error: any) {
+      alert(error?.message || '上传 SQL 资产失败')
+    } finally {
+      setUploadingSQL(false)
+    }
+  }
+
+  const changeSQLAssetStatus = async (asset: SQLAssetItem, status: SQLAssetItem['status']) => {
+    if (!selected) return
+    try {
+      await apiUpdateSQLAsset(token, selected.id, asset.id, { status })
+      await reloadSQLAssets()
+    } catch (error: any) {
+      alert(error?.message || '更新 SQL 资产失败')
+    }
+  }
+
+  const removeSQLAssetSource = async (sourceId: string) => {
+    if (!selected) return
+    if (!window.confirm('删除该源文件及其全部 SQL 资产？')) return
+    await apiDeleteSQLAssetSource(token, selected.id, sourceId)
+    await reloadSQLAssets()
+  }
 
   const validateWorkbench = async () => {
     if (!selected) return
@@ -292,7 +353,37 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
       session_id: out.session_id,
       needs_clarification: out.needs_clarification,
       clarification: out.clarification,
+      draft_id: out.draft_id,
+      draft_status: out.draft?.status,
+      candidates: out.candidates || out.draft?.candidates || [],
     })
+  }
+
+  const executeDraft = async (candidateIds: string[] = [], executeAll = false) => {
+    if (!selected || !queryOutput?.draft_id) return
+    const executionKey = executeAll ? 'all' : candidateIds[0]
+    setExecutingCandidate(executionKey)
+    try {
+      const draft = await apiExecuteSQLDraft(token, selected.id, queryOutput.draft_id, {
+        candidate_ids: candidateIds,
+        execute_all: executeAll,
+      })
+      const candidates = draft.candidates || []
+      const completed = candidates.find((item) => item.execution_status === 'completed')
+      setQueryOutput((previous) => previous ? {
+        ...previous,
+        answer: draft.status === 'completed' ? 'SQL 执行完成。' : 'SQL 执行结束，部分候选执行失败。',
+        summary: `${candidates.filter((item) => item.execution_status === 'completed').length} 条 SQL 执行成功`,
+        sql: completed?.sql || previous.sql,
+        rows: completed?.rows || [],
+        draft_status: draft.status,
+        candidates,
+      } : previous)
+    } catch (error: any) {
+      alert(error?.message || '执行 SQL 草案失败')
+    } finally {
+      setExecutingCandidate(null)
+    }
   }
 
   const testConn = async () => {
@@ -551,10 +642,11 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                 </div>
               </div>
 
-              <div className="flex gap-2 border-b border-[var(--border)] pb-2">
+              <div className="flex flex-wrap gap-2 border-b border-[var(--border)] pb-2">
                 <TabButton active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} icon={<Gauge size={14} />} label="总览" />
                 <TabButton active={activeTab === 'tables'} onClick={() => setActiveTab('tables')} icon={<Table2 size={14} />} label="Tables" />
                 <TabButton active={activeTab === 'query'} onClick={() => setActiveTab('query')} icon={<Search size={14} />} label="Query" />
+                <TabButton active={activeTab === 'sql_assets'} onClick={() => setActiveTab('sql_assets')} icon={<FileCode2 size={14} />} label="SQL 资产" />
                 <TabButton active={activeTab === 'analysis'} onClick={() => setActiveTab('analysis')} icon={<BarChart3 size={14} />} label="Analysis" />
                 <TabButton active={activeTab === 'metrics'} onClick={() => setActiveTab('metrics')} icon={<BarChart3 size={14} />} label="指标定义" />
                 <TabButton active={activeTab === 'relationships'} onClick={() => setActiveTab('relationships')} icon={<Table2 size={14} />} label="表关系" />
@@ -595,6 +687,110 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                 </div>
               ) : null}
 
+              {activeTab === 'sql_assets' ? (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold">SQL 资产</h3>
+                      <div className="mt-1 text-xs text-[var(--text-secondary)]">
+                        {sqlAssetSources.length} 个源文件 · {sqlAssets.filter((item) => item.status === 'published').length} 条已发布
+                      </div>
+                    </div>
+                    <label className="inline-flex cursor-pointer items-center gap-1 rounded border border-[var(--border)] px-3 py-1.5 text-xs hover:bg-[var(--surface-raised)]">
+                      <Upload size={13} />
+                      {uploadingSQL ? '解析中' : '上传 SQL'}
+                      <input
+                        className="hidden"
+                        type="file"
+                        accept=".sql,.txt,text/plain,application/sql"
+                        disabled={uploadingSQL}
+                        onChange={(event) => {
+                          const file = event.target.files?.[0]
+                          void uploadSQLAsset(file)
+                          event.currentTarget.value = ''
+                        }}
+                      />
+                    </label>
+                  </div>
+
+                  {sqlAssetSources.length > 0 ? (
+                    <div className="space-y-2">
+                      <div className="text-xs font-medium">源文件</div>
+                      {sqlAssetSources.map((source) => (
+                        <div key={source.id} className="flex items-center justify-between rounded border border-[var(--border)] px-3 py-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-xs font-medium">{source.filename}</div>
+                            <div className="mt-0.5 text-[11px] text-[var(--text-secondary)]">
+                              v{source.version} · {source.dialect} · {source.statement_count} 条语句
+                            </div>
+                          </div>
+                          <button
+                            className="flex h-7 w-7 items-center justify-center rounded hover:bg-red-500/10 hover:text-red-500"
+                            title="删除源文件"
+                            onClick={() => void removeSQLAssetSource(source.id)}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium">解析资产</div>
+                    {sqlAssets.length === 0 ? (
+                      <div className="border-y border-[var(--border)] py-8 text-center text-xs text-[var(--text-secondary)]">暂无 SQL 资产</div>
+                    ) : sqlAssets.map((asset) => {
+                      const validationPassed = asset.validation_report?.status === 'pass'
+                      return (
+                        <details key={asset.id} className="rounded border border-[var(--border)] p-3">
+                          <summary className="cursor-pointer list-none">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate text-xs font-medium">{asset.title}</div>
+                                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-secondary)]">
+                                  <span>{asset.asset_type}</span>
+                                  <span>{asset.statement_type}</span>
+                                  <span>{asset.tables.join(', ') || '无表引用'}</span>
+                                </div>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-2">
+                                <span className={`inline-flex items-center gap-1 text-[11px] ${validationPassed ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                  {validationPassed ? <CheckCircle2 size={12} /> : <Circle size={12} />}
+                                  {validationPassed ? '校验通过' : '仅供参考'}
+                                </span>
+                                <span className="rounded bg-[var(--surface-raised)] px-2 py-0.5 text-[11px]">{asset.status}</span>
+                              </div>
+                            </div>
+                          </summary>
+                          <div className="mt-3 space-y-3 border-t border-[var(--border)] pt-3">
+                            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded border border-[var(--border)] bg-black/20 p-3 text-xs">{asset.sql}</pre>
+                            {(asset.validation_report?.errors || []).map((error, index) => (
+                              <div key={`${asset.id}_error_${index}`} className="text-xs text-red-400">{error}</div>
+                            ))}
+                            {(asset.validation_report?.warnings || []).map((warning, index) => (
+                              <div key={`${asset.id}_warning_${index}`} className="text-xs text-amber-400">{warning}</div>
+                            ))}
+                            <div className="flex justify-end gap-2">
+                              {asset.status !== 'published' && asset.executable && validationPassed ? (
+                                <button className="inline-flex items-center gap-1 rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]" onClick={() => void changeSQLAssetStatus(asset, 'published')}>
+                                  <CheckCircle2 size={13} /> 发布
+                                </button>
+                              ) : null}
+                              {asset.status === 'published' ? (
+                                <button className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-3 py-1.5 text-xs" onClick={() => void changeSQLAssetStatus(asset, 'deprecated')}>
+                                  <Archive size={13} /> 废弃
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
+                        </details>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
               {activeTab === 'query' ? (
                 <div className="rounded border border-[var(--border)] p-3 space-y-2">
                   {/* Conversation history */}
@@ -613,7 +809,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                   ) : null}
 
                   <input value={question} onChange={(e) => setQuestion(e.target.value)} className="w-full rounded border border-[var(--border)] bg-transparent px-2 py-1 text-sm" />
-                  <button className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs" onClick={() => void runQuery()}>运行 Text2SQL</button>
+                  <button className="inline-flex items-center gap-1 rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]" onClick={() => void runQuery()}>
+                    <FileCode2 size={13} /> 生成 SQL 草案
+                  </button>
                   {queryOutput ? (
                     <>
                       {/* Clarification card — shown when query is too vague */}
@@ -654,26 +852,65 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                         </div>
                       ) : null}
 
-                      {/* 1. Answer - 自然语言分析回答 */}
+                      {/* 1. 草案或执行状态 */}
                       {queryOutput.answer ? (
                         <div className="rounded border border-[var(--border)] p-3 bg-[var(--surface-raised)]">
-                          <div className="text-xs font-medium mb-2" style={{ color: 'var(--accent)' }}>分析结果</div>
+                          <div className="text-xs font-medium mb-2" style={{ color: 'var(--accent)' }}>状态</div>
                           <MarkdownMessage content={queryOutput.answer} />
                         </div>
                       ) : (
                         <div className="text-xs text-[var(--text-secondary)]">{queryOutput.summary}</div>
                       )}
 
-                      {/* 2. SQL - 默认展开 */}
-                      {queryOutput.sql ? (
+                      {/* 2. 持久化 SQL 候选 */}
+                      {queryOutput.candidates?.length ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-xs font-medium">SQL 候选</div>
+                            {queryOutput.candidates.length > 1 ? (
+                              <button
+                                className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-50"
+                                disabled={executingCandidate !== null}
+                                onClick={() => void executeDraft([], true)}
+                              >
+                                <PlayCircle size={12} /> {executingCandidate === 'all' ? '执行中' : '执行全部'}
+                              </button>
+                            ) : null}
+                          </div>
+                          {queryOutput.candidates.map((candidate) => (
+                            <div key={candidate.id} className="rounded border border-[var(--border)] p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <div>
+                                  <div className="text-xs font-medium">{candidate.title}</div>
+                                  <div className="mt-0.5 text-[11px] text-[var(--text-secondary)]">{candidate.description}</div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[11px] text-[var(--text-secondary)]">{candidate.execution_status}</span>
+                                  <button
+                                    className="flex h-7 w-7 items-center justify-center rounded bg-[var(--accent)] text-[var(--accent-foreground)] disabled:opacity-50"
+                                    title={`执行候选 ${candidate.position}`}
+                                    disabled={executingCandidate !== null || candidate.execution_status === 'completed'}
+                                    onClick={() => void executeDraft([candidate.id])}
+                                  >
+                                    <PlayCircle size={13} />
+                                  </button>
+                                </div>
+                              </div>
+                              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded border border-[var(--border)] bg-black/20 p-2 text-xs">{candidate.sql}</pre>
+                              {candidate.error_message ? <div className="mt-2 text-xs text-red-400">{candidate.error_message}</div> : null}
+                              {candidate.execution_status === 'completed' ? <div className="mt-2 text-xs text-emerald-500">返回 {candidate.row_count} 行</div> : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : queryOutput.sql ? (
                         <details open>
-                          <summary className="cursor-pointer text-xs font-medium" style={{ color: 'var(--accent)' }}>已执行 SQL</summary>
+                          <summary className="cursor-pointer text-xs font-medium" style={{ color: 'var(--accent)' }}>SQL</summary>
                           <pre className="text-xs whitespace-pre-wrap rounded border border-[var(--border)] p-2 bg-black/20 mt-1">{queryOutput.sql}</pre>
                         </details>
                       ) : null}
 
                       {/* 3. 结果表格 */}
-                      <div className="overflow-x-auto rounded border border-[var(--border)]">
+                      {queryOutput.rows.length > 0 ? <div className="overflow-x-auto rounded border border-[var(--border)]">
                         <table className="min-w-full text-xs">
                           <thead className="bg-[var(--surface-raised)]">
                             <tr>{columns.map((c) => <th key={c} className="px-2 py-1 text-left">{c}</th>)}</tr>
@@ -686,7 +923,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                             ))}
                           </tbody>
                         </table>
-                      </div>
+                      </div> : null}
                       {queryOutput.rows.length > 20 ? (
                         <div className="text-xs text-[var(--text-secondary)]">仅显示前 20 行，共 {queryOutput.rows.length} 行</div>
                       ) : null}

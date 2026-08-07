@@ -196,7 +196,20 @@ class BusinessFlowVerifier:
                 "sql": "SELECT COUNT(*) AS total FROM users",
             },
         )
-        assert query.get("rows") and "total" in query["rows"][0], query
+        assert query.get("executed") is False, query
+        draft_id = str(query.get("draft_id") or "")
+        candidates = query.get("candidates") or []
+        assert draft_id and candidates, query
+        candidate_id = str(candidates[0].get("id") or "")
+        assert candidate_id, query
+        executed = self.request(
+            "POST",
+            f"/api/v1/databases/{self.database_id}/sql-drafts/{draft_id}/execute",
+            body={"candidate_ids": [candidate_id], "execute_all": False},
+        )
+        executed_candidates = executed.get("candidates") or []
+        rows = executed_candidates[0].get("rows") if executed_candidates else []
+        assert executed.get("status") == "completed" and rows and "total" in rows[0], executed
 
         project = self.request(
             "POST",

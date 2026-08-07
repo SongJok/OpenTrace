@@ -10,4 +10,32 @@ describe('DatabasesPage contract', () => {
     expect(source).toContain('localhost')
     expect(source).toContain('保存并测试连接')
   })
+
+  it('keeps Text2SQL generation separate from candidate execution', async () => {
+    const page = await import('../DatabasesPage')
+    const source = page.default.toString()
+
+    expect(source).toContain('生成 SQL 草案')
+    expect(source).toContain('SQL 候选')
+    expect(source).toContain('executeDraft')
+    expect(source).toContain('执行全部')
+  })
+
+  it('exposes SQL asset upload and review controls', async () => {
+    const page = await import('../DatabasesPage')
+    const source = page.default.toString()
+
+    expect(source).toContain('SQL 资产')
+    expect(source).toContain('上传 SQL')
+    expect(source).toContain('校验通过')
+    expect(source).toContain('changeSQLAssetStatus')
+  })
+
+  it('uses dedicated draft and asset APIs', async () => {
+    const client = await import('../../api/client')
+
+    expect(client.apiUploadSQLAsset.toString()).toContain('/sql-assets/upload')
+    expect(client.apiUpdateSQLAsset.toString()).toContain('/sql-assets/${assetId}')
+    expect(client.apiExecuteSQLDraft.toString()).toContain('/sql-drafts/${draftId}/execute')
+  })
 })

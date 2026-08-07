@@ -215,6 +215,41 @@ async def _verify_runtime_schema(conn) -> None:
         },
         "attachments": {"media_base64", "media_mime", "media_kind"},
         "calendar_events": {"revision", "cancelled_at"},
+        "sql_asset_sources": {
+            "user_id",
+            "tenant_id",
+            "workspace_id",
+            "data_source_id",
+            "content_sha256",
+            "source_text",
+            "parse_report",
+        },
+        "sql_assets": {
+            "source_id",
+            "tenant_id",
+            "workspace_id",
+            "data_source_id",
+            "normalized_sql",
+            "sql_hash",
+            "validation_report",
+            "schema_fingerprint",
+        },
+        "sql_query_drafts": {
+            "user_id",
+            "tenant_id",
+            "workspace_id",
+            "data_source_id",
+            "status",
+            "schema_fingerprint",
+            "selected_candidate_ids",
+        },
+        "sql_query_candidates": {
+            "draft_id",
+            "sql",
+            "sql_hash",
+            "execution_status",
+            "result_rows",
+        },
     }
     missing: list[str] = []
     for table, columns in required_columns.items():
@@ -286,6 +321,10 @@ async def _verify_runtime_schema(conn) -> None:
         "calendar_events",
         "calendar_event_revisions",
         "calendar_reminder_deliveries",
+        "sql_asset_sources",
+        "sql_assets",
+        "sql_query_drafts",
+        "sql_query_candidates",
     }
     table_rows = await conn.execute(
         text(

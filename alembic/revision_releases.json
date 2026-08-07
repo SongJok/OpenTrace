@@ -45,6 +45,9 @@
     },
     "r0015_enterprise_workbench_templates": {
       "release": "unreleased"
+    },
+    "r0016_sql_assets": {
+      "release": "unreleased"
     }
   }
 }

@@ -1,7 +1,6 @@
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -11,12 +10,12 @@ class DataQueryApiContractTests(unittest.TestCase):
         self.assertIn('@router.post("/data/query")', txt)
         self.assertIn('@router.post("/data/schema/sync")', txt)
         self.assertIn('@router.get("/data/schema")', txt)
-        self.assertIn('data_source_id: str', txt)
-        self.assertIn('from agents.data_agent import DataAgent', txt)
-        self.assertIn('data_agent_v2_enabled', txt)
-        self.assertIn('DataAgent().execute', txt)
-        self.assertIn('SQLPlanner().plan', txt)
-        self.assertIn('SQLRewriter().rewrite', txt)
+        self.assertIn("data_source_id: str", txt)
+        self.assertIn("generate_sql_query_draft", txt)
+        self.assertIn("serialize_draft", txt)
+        self.assertIn('"executed": False', txt)
+        self.assertNotIn("SQLExecutor", txt)
+        self.assertNotIn("run_on_dsn", txt)
 
     def test_data_router_registered_in_main(self):
         txt = (ROOT / "gateway/api_gateway/main.py").read_text(encoding="utf-8")

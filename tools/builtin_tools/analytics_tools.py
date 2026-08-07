@@ -1,6 +1,7 @@
 """
 Analytics / code-interpreter style tools (ChatGPT Code Interpreter parity, best-effort).
 """
+
 from __future__ import annotations
 
 from plugins.chart.generator import run_chart_generator
@@ -8,6 +9,62 @@ from plugins.code.interpreter import run_code_interpreter
 from plugins.data.analysis import run_data_analysis
 from plugins.file.sandbox import run_file_sandbox
 from tools.registry.registry import registry
+
+
+@registry.tool(
+    name="execute_sql_draft",
+    description=(
+        "执行已经向用户展示并由用户明确选择的持久化 SQL 草案候选。"
+        "首次问数不得调用；只有用户明确指定候选 ID 或要求执行全部候选时才调用。"
+        "执行前会重新校验权限、Schema 指纹、SQL 哈希和只读 AST，并进入持久审批。"
+    ),
+    tags=["执行草案", "确认执行", "候选ID"],
+    parameters={
+        "type": "object",
+        "properties": {
+            "draft_id": {"type": "string", "description": "已展示给用户的 SQL 草案 ID"},
+            "candidate_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "用户明确选择的候选 ID；执行全部时可为空",
+            },
+            "execute_all": {
+                "type": "boolean",
+                "description": "仅当用户明确要求执行全部候选时设为 true",
+            },
+        },
+        "required": ["draft_id", "candidate_ids", "execute_all"],
+        "additionalProperties": False,
+    },
+    side_effect="write",
+    max_retries=0,
+    supports_parallel=False,
+    timeout_seconds=60.0,
+)
+async def tool_execute_sql_draft(
+    draft_id: str,
+    candidate_ids: list[str] | None = None,
+    execute_all: bool = False,
+    user_id: str = "",
+    tenant_id: str = "",
+    workspace_id: str = "",
+    **_: object,
+) -> dict:
+    from infra.storage.database import AsyncSessionLocal
+    from services.sql_assets import execute_sql_query_draft
+
+    if not all((user_id, tenant_id, workspace_id)):
+        raise PermissionError("trusted SQL draft execution scope is required")
+    async with AsyncSessionLocal() as db:
+        return await execute_sql_query_draft(
+            db,
+            draft_id=draft_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            candidate_ids=candidate_ids,
+            execute_all=execute_all,
+        )
 
 
 @registry.tool(

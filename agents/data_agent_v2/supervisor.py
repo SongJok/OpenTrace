@@ -161,7 +161,8 @@ class DataAgentV2Supervisor:
 
         # 6. 若校验通过则执行 SQL
         t_sql = time.monotonic()
-        if bool(task.params.get("dry_run", False)):
+        dry_run = bool(task.params.get("dry_run", False))
+        if dry_run:
             result_ctx = ctx
             result_ctx.execution_rows = []
             result_ctx.execution_row_count = 0
@@ -183,7 +184,7 @@ class DataAgentV2Supervisor:
 
         # 7. 反思：观察结果、诊断、修复（Phase 2.1）
         reflection_enabled = bool(getattr(settings, "data_agent_v2_reflection_enabled", True))
-        if reflection_enabled:
+        if reflection_enabled and not dry_run:
             before_reflection_sql = result_ctx.compiled_sql
             result_ctx = await self._run_reflection(task, result_ctx)
             if result_ctx.compiled_sql and result_ctx.compiled_sql != before_reflection_sql:

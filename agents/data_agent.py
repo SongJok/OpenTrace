@@ -43,6 +43,17 @@ class DataAgent(BaseAgent):
         self._v2_fallback = bool(getattr(settings, "data_agent_v2_fallback_to_v1", False))
 
     async def execute(self, task: TaskMessage) -> AgentResult:
+        if bool(task.params.get("generation_only", False)):
+            try:
+                return await self._generate_sql_draft(task)
+            except Exception as exc:  # noqa: BLE001 - 统一转为 AgentResult 错误契约
+                return AgentResult(
+                    task_id=task.task_id,
+                    agent_type=self.agent_type,
+                    status="error",
+                    content="",
+                    error=f"SQL 草案生成失败：{exc}",
+                )
         if not self._v2_enabled:
             return await self._get_v1().execute(task)
 
@@ -84,6 +95,74 @@ class DataAgent(BaseAgent):
                 content="",
                 error=f"DataAgent V2 failed: {exc}",
             )
+
+    async def _generate_sql_draft(self, task: TaskMessage) -> AgentResult:
+        """交互式问数只生成持久化草案，完全绕开 V1/V2 执行与反思路径。"""
+
+        from infra.security.resource_scope import get_accessible_data_source
+        from infra.storage.database import AsyncSessionLocal
+        from services.sql_assets import generate_sql_query_draft, serialize_draft
+
+        data_source_id = str(task.params.get("data_source_id") or "").strip()
+        tenant_id = str(task.params.get("tenant_id") or "").strip()
+        workspace_id = str(task.params.get("workspace_id") or "").strip()
+        user_id = str(task.user_id or "").strip()
+        if not all((data_source_id, tenant_id, workspace_id, user_id)):
+            raise ValueError("trusted data source scope is required")
+        async with AsyncSessionLocal() as db:
+            source = await get_accessible_data_source(
+                db,
+                user_id=user_id,
+                tenant_metadata={"tenant_id": tenant_id, "workspace_id": workspace_id},
+                data_source_id=data_source_id,
+                required_permission="query",
+                active_only=True,
+            )
+            if source is None:
+                raise PermissionError("data source not found or not authorized")
+            draft, candidates = await generate_sql_query_draft(
+                db,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                data_source=source,
+                question=task.query,
+                supplied_sql=str(task.params.get("sql") or "") or None,
+                project_id=str(task.params.get("project_id") or "") or None,
+                conversation_id=str(task.params.get("conversation_id") or task.session_id or "")
+                or None,
+                response_id=str(task.params.get("response_id") or "") or None,
+                group_type=str(task.params.get("group_type") or "alternative"),
+            )
+            payload = serialize_draft(draft, candidates)
+        rendered = [
+            "SQL 草案已生成，尚未执行。",
+            f"草案 ID：{draft.id}",
+        ]
+        for candidate in candidates:
+            rendered.extend(
+                [
+                    f"\n候选 {candidate.position}（ID：{candidate.id}）",
+                    f"```sql\n{candidate.sql}\n```",
+                ]
+            )
+        rendered.append("\n请用户选择具体候选，或明确要求执行全部候选。")
+        return AgentResult(
+            task_id=task.task_id,
+            agent_type=self.agent_type,
+            status="success",
+            content="\n".join(rendered),
+            confidence=0.9,
+            metadata={
+                "mode": "sql_draft_generation",
+                "sql": candidates[0].sql if candidates else "",
+                "rows": [],
+                "executed": False,
+                "draft_id": draft.id,
+                "candidates": payload["candidates"],
+                "draft": payload,
+            },
+        )
 
     def _get_v1(self) -> DataAgentV1:
         if self._v1 is None:

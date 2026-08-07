@@ -30,9 +30,9 @@ durable capabilities into one actionable employee home.
 - **Governed company understanding:** versioned company and department cognitive profiles bind
   the enterprise directory to governed knowledge spaces, so Responses understand authorized
   organizational context without turning employee chat into company facts.
-- **From data questions to proactive alerts:** DataAgent and Text2SQL generate read-only SQL.
-  Alerts reuse the same authorization scope and retain thresholds, SQL, result previews,
-  confidence, and other governance evidence.
+- **From data questions to proactive alerts:** DataAgent and Text2SQL generate governed read-only
+  SQL drafts grounded by reviewed SQL assets. Interactive queries execute only after the user
+  selects a persisted candidate; alerts retain their trusted background execution contract.
 - **Observable, testable, and replaceable:** all model calls pass through the Model Gateway,
   while architecture boundaries, Responses, RAG, DataAgent, approvals, and scheduling are
   protected by contract tests.
@@ -91,8 +91,8 @@ return `410 Gone`.
 | --- | --- |
 | Responses | Durable responses, streaming events, retry, cancellation, approval, reconnect, and conversation branches |
 | Agent Loop | IntentPlan, minimum-capability selection, tool loop, expert agents, evidence synthesis, and step limits |
-| Enterprise databases | MySQL, Doris, ClickHouse, and PostgreSQL; connection tests, schemas, semantic mappings, and read-only SQL |
-| DataAgent | Text2SQL, metric/entity/time/join reasoning, validation, reflection, result interpretation, and visualization specs |
+| Enterprise databases | MySQL, Doris, ClickHouse, and PostgreSQL; connection tests, schemas, semantic mappings, governed SQL assets, and confirmed read-only execution |
+| DataAgent | Text2SQL drafts, asset grounding, stable candidates, metric/entity/time/join reasoning, validation, confirmation, and result interpretation |
 | Enterprise Knowledge | Company/department/role/project/personal spaces, source ACL sync, review publishing, validity, classification, governed retrieval, graphs, and citations |
 | Governance | Multi-tenant/workspace boundaries, enterprise directory sync, resource permissions, durable approvals, audit, quotas, and policy interfaces |
 | Automation | Goals, scheduled tasks, proactive data alerts, notifications, retries, and recovery events |
@@ -208,8 +208,9 @@ cause staging and production startup to fail fast.
 | PostgreSQL | `asyncpg` | `5432` | PostgreSQL dialect and read-only transactions |
 
 Create a least-privilege, read-only account for every production data source. OpenTrace also uses
-SQL AST allowlists, result row limits, execution timeouts, and Project/ACL validation, but these
-application-level controls do not replace database permissions.
+SQL AST allowlists, SQL hashes, Schema fingerprints, result row limits, execution timeouts, and
+Project/ACL validation. Uploaded ETL/DDL/DML is retained only for lineage; it is never eligible for
+interactive execution. These application-level controls do not replace database permissions.
 
 ## Configuration and Security
 
