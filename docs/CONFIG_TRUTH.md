@@ -133,6 +133,10 @@ Agent Loop 会把重复工具参数、重复有效结果、连续失败和无结
 bash restart.sh --build
 ```
 
+镜像构建依赖源由 `PIP_INDEX_URL`、`PIP_EXTRA_INDEX_URL` 和 `NPM_REGISTRY` 控制。
+前端镜像会跨构建复用 npm 下载缓存，并对瞬时网络中断自动重试；受限网络可通过
+`.env` 覆盖 `NPM_REGISTRY`，不要修改依赖锁文件中的完整性校验。
+
 ## P0 配置收敛
 
 - 产品只支持 `development`、`staging`、`production` 三种环境 Profile。

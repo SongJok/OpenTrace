@@ -12,6 +12,7 @@ x-opentrace-frontend-build: &opentrace-frontend-build
   dockerfile: Dockerfile
   args:
     OPENTRACE_FRONTEND_BUILD_FINGERPRINT: ${OPENTRACE_FRONTEND_BUILD_FINGERPRINT:-unknown}
+    NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
 
 services:
   # -------------------------------------------------------------------------
