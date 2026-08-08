@@ -19,6 +19,9 @@ from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import Project, SQLAsset, SQLAssetSource, SQLQueryDraft, User
 from kernel.data_cognition.sql_dialect import detect_sql_dialect
 from services.sql_assets import (
+    CORPUS_ROLES,
+    MAX_BATCH_UPLOAD_BYTES,
+    MAX_BATCH_UPLOAD_FILES,
     MAX_UPLOAD_BYTES,
     create_sql_asset_source,
     evaluate_data_source_schema_fingerprint,
@@ -38,6 +41,9 @@ class SQLAssetUpdateRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=4000)
     tags: list[str] | None = Field(default=None, max_length=30)
+    corpus_role: str | None = Field(default=None, pattern="^(retrieval|evaluation|quarantine)$")
+    domain: str | None = Field(default=None, max_length=100)
+    owner: str | None = Field(default=None, max_length=255)
     status: str | None = Field(default=None, pattern="^(draft|published|deprecated|rejected)$")
     reason: str | None = Field(default=None, max_length=1000)
     expected_updated_at: datetime | None = None
@@ -108,6 +114,9 @@ async def upload_sql_asset(
     file: UploadFile = File(...),
     dialect: str | None = Form(default=None),
     project_id: str | None = Form(default=None),
+    corpus_role: str = Form(default="retrieval"),
+    domain: str | None = Form(default=None),
+    owner: str | None = Form(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -152,6 +161,9 @@ async def upload_sql_asset(
         source_text=source_text,
         dialect=expected_dialect,
         project_id=project_id,
+        corpus_role=corpus_role,
+        domain=domain,
+        owner=owner,
     )
     await write_audit_log(
         user_id=current_user.id,
@@ -173,6 +185,118 @@ async def upload_sql_asset(
     }
 
 
+@router.post("/databases/{database_id}/sql-assets/batch-upload")
+async def batch_upload_sql_assets(
+    request: Request,
+    database_id: str,
+    files: list[UploadFile] = File(...),
+    dialect: str | None = Form(default=None),
+    project_id: str | None = Form(default=None),
+    corpus_role: str = Form(default="retrieval"),
+    domain: str | None = Form(default=None),
+    owner: str | None = Form(default=None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """批量导入历史 SQL；逐文件返回结果，单个坏文件不会吞掉其余成果。"""
+
+    source = await _source_or_404(
+        db,
+        request=request,
+        current_user=current_user,
+        database_id=database_id,
+        permission="edit",
+    )
+    _, tenant_id, workspace_id = _scope(request, current_user)
+    await _validate_project(
+        db,
+        project_id=project_id,
+        user_id=current_user.id,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        data_source_id=database_id,
+    )
+    if not files or len(files) > MAX_BATCH_UPLOAD_FILES:
+        raise ValidationException(f"每批最多上传 {MAX_BATCH_UPLOAD_FILES} 个 SQL 文件")
+    if corpus_role not in CORPUS_ROLES:
+        raise ValidationException("非法 SQL 语料分区")
+    expected_dialect = detect_sql_dialect(source.source_type).name
+    if dialect and detect_sql_dialect(dialect).name != expected_dialect:
+        raise ValidationException("SQL 方言必须与数据源类型一致")
+
+    total_bytes = 0
+    results: list[dict] = []
+    for file in files:
+        filename = str(file.filename or "").strip()
+        try:
+            if not filename.lower().endswith((".sql", ".txt")):
+                raise ValidationException("仅支持 .sql 或 .txt 文件")
+            raw = await file.read(MAX_UPLOAD_BYTES + 1)
+            total_bytes += len(raw)
+            if len(raw) > MAX_UPLOAD_BYTES:
+                raise ValidationException("单个 SQL 文件不能超过 2 MB")
+            if total_bytes > MAX_BATCH_UPLOAD_BYTES:
+                raise ValidationException("单批 SQL 文件总大小不能超过 25 MB")
+            try:
+                source_text = raw.decode("utf-8-sig")
+            except UnicodeDecodeError as exc:
+                raise ValidationException("SQL 文件必须使用 UTF-8 编码") from exc
+            asset_source, assets, deduplicated = await create_sql_asset_source(
+                db,
+                user_id=current_user.id,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                data_source_id=database_id,
+                filename=filename,
+                content_type=file.content_type or "text/plain",
+                source_text=source_text,
+                dialect=expected_dialect,
+                project_id=project_id,
+                corpus_role=corpus_role,
+                domain=domain,
+                owner=owner,
+            )
+            results.append(
+                {
+                    "filename": filename,
+                    "status": "deduplicated" if deduplicated else "imported",
+                    "source": serialize_source(asset_source),
+                    "asset_count": len(assets),
+                }
+            )
+        except (ValidationException, AppException) as exc:
+            results.append({"filename": filename, "status": "failed", "error": str(exc)})
+        finally:
+            await file.close()
+    imported = sum(item["status"] == "imported" for item in results)
+    deduplicated = sum(item["status"] == "deduplicated" for item in results)
+    failed = sum(item["status"] == "failed" for item in results)
+    await write_audit_log(
+        user_id=current_user.id,
+        action="sql_asset.batch_upload",
+        resource_type="data_source",
+        resource_id=database_id,
+        payload={
+            "project_id": project_id,
+            "corpus_role": corpus_role,
+            "file_count": len(files),
+            "imported": imported,
+            "deduplicated": deduplicated,
+            "failed": failed,
+        },
+    )
+    return {
+        "results": results,
+        "summary": {
+            "total": len(results),
+            "imported": imported,
+            "deduplicated": deduplicated,
+            "failed": failed,
+        },
+        "executed": False,
+    }
+
+
 @router.get("/databases/{database_id}/sql-assets")
 async def list_sql_assets(
     request: Request,
@@ -182,6 +306,11 @@ async def list_sql_assets(
         pattern="^(draft|published|deprecated|rejected)$",
     ),
     project_id: str | None = Query(default=None),
+    corpus_role: str | None = Query(default=None, pattern="^(retrieval|evaluation|quarantine)$"),
+    quality_status: str | None = Query(
+        default=None, pattern="^(unverified|verified|failed|deprecated)$"
+    ),
+    domain: str | None = Query(default=None, max_length=100),
     search: str | None = Query(default=None, max_length=100),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=100),
@@ -226,6 +355,12 @@ async def list_sql_assets(
         asset_conditions.append(SQLAsset.project_id.is_(None))
     if status:
         asset_conditions.append(SQLAsset.status == status)
+    if corpus_role:
+        asset_conditions.append(SQLAsset.corpus_role == corpus_role)
+    if quality_status:
+        asset_conditions.append(SQLAsset.quality_status == quality_status)
+    if domain:
+        asset_conditions.append(SQLAsset.domain == domain.strip())
     normalized_search = str(search or "").strip()
     if normalized_search:
         pattern = f"%{normalized_search}%"
@@ -252,6 +387,24 @@ async def list_sql_assets(
     total = int(await db.scalar(select(func.count(SQLAsset.id)).where(*asset_conditions)) or 0)
     sources = list((await db.execute(source_stmt)).scalars().all())
     assets = list((await db.execute(asset_stmt)).scalars().all())
+    corpus_counts = dict(
+        (
+            await db.execute(
+                select(SQLAsset.corpus_role, func.count(SQLAsset.id))
+                .where(*asset_conditions)
+                .group_by(SQLAsset.corpus_role)
+            )
+        ).all()
+    )
+    quality_counts = dict(
+        (
+            await db.execute(
+                select(SQLAsset.quality_status, func.count(SQLAsset.id))
+                .where(*asset_conditions)
+                .group_by(SQLAsset.quality_status)
+            )
+        ).all()
+    )
     return {
         "sources": [serialize_source(item) for item in sources],
         "assets": [serialize_asset(item) for item in assets],
@@ -261,6 +414,7 @@ async def list_sql_assets(
             "total": total,
             "has_more": offset + len(assets) < total,
         },
+        "facets": {"corpus_roles": corpus_counts, "quality_statuses": quality_counts},
     }
 
 
@@ -308,6 +462,16 @@ async def update_sql_asset(
         validate_asset_status_transition(asset.status, payload.status)
     newly_published = payload.status == "published" and asset.status != "published"
     if payload.status == "published":
+        target_corpus_role = payload.corpus_role or asset.corpus_role
+        if target_corpus_role == "quarantine":
+            raise ValidationException("隔离区 SQL 不允许发布；请先调整语料分区并重新审核")
+        critical_risks = {"hardcoded_date", "hardcoded_id", "test_condition"}.intersection(
+            asset.risk_flags or []
+        )
+        if target_corpus_role == "retrieval" and critical_risks:
+            raise ValidationException(
+                "检索库 SQL 含硬编码日期、ID 或测试条件，请参数化后重新上传，或移入评测集/隔离区"
+            )
         if not asset.executable or (asset.validation_report or {}).get("status") != "pass":
             raise ValidationException("只有通过安全校验的只读 SQL 才能发布")
         inspection = await load_schema_inspection(db, database_id)
@@ -323,6 +487,14 @@ async def update_sql_asset(
         if asset.status != "published":
             asset.approved_by = current_user.id
             asset.approved_at = datetime.now(UTC)
+        asset.quality_status = "verified"
+        asset.last_verified_at = datetime.now(UTC)
+        asset.verification_metadata = {
+            **(asset.verification_metadata or {}),
+            "verified_by": current_user.id,
+            "reason": payload.reason or "",
+            "schema_fingerprint": current_fingerprint,
+        }
     if payload.title is not None:
         title = payload.title.strip()
         if not title:
@@ -332,10 +504,28 @@ async def update_sql_asset(
         asset.description = payload.description.strip()
     if payload.tags is not None:
         asset.tags = sorted({item.strip() for item in payload.tags if item.strip()})[:30]
+    if payload.corpus_role is not None:
+        if (
+            payload.corpus_role == "quarantine"
+            and asset.status == "published"
+            and payload.status != "deprecated"
+        ):
+            raise ValidationException("已发布 SQL 进入隔离区前必须先废弃")
+        asset.corpus_role = payload.corpus_role
+    if payload.domain is not None:
+        asset.domain = payload.domain.strip() or None
+    if payload.owner is not None:
+        asset.owner = payload.owner.strip() or None
     if payload.status is not None:
         asset.status = payload.status
+        if payload.status == "deprecated":
+            asset.quality_status = "deprecated"
+        elif payload.status == "rejected":
+            asset.quality_status = "failed"
+        elif payload.status == "draft":
+            asset.quality_status = "unverified"
     knowledge_promotion = None
-    if newly_published:
+    if newly_published and asset.corpus_role == "retrieval":
         knowledge_promotion = await promote_sql_asset_knowledge(
             db, asset=asset, user_id=current_user.id
         )

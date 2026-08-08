@@ -33,6 +33,7 @@ class DataQueryRequest(BaseModel):
     clarify_context: str | None = None
     session_context: dict[str, object] | None = None
     group_type: str = Field(default="alternative", pattern="^(alternative|batch)$")
+    output_mode: str = Field(default="sql_only", pattern="^(sql_only|execute_and_answer)$")
     project_id: str | None = None
 
 
@@ -71,8 +72,27 @@ async def data_query(
         project_id=req.project_id,
         conversation_id=req.session_id,
         group_type=req.group_type,
+        output_mode=req.output_mode,
+        clarification_context=req.clarify_context,
     )
     payload = serialize_draft(draft, candidates)
+    if draft.status == "needs_clarification":
+        question_text = str(payload["clarification"].get("question_text") or "请补充查询口径")
+        return {
+            "data_source_id": req.data_source_id,
+            "answer": question_text,
+            "summary": "需要补充业务口径后再生成 SQL",
+            "sql": "",
+            "rows": [],
+            "confidence": 0.9,
+            "mode": "clarification",
+            "draft": payload,
+            "draft_id": draft.id,
+            "candidates": [],
+            "needs_clarification": True,
+            "clarification": payload["clarification"],
+            "executed": False,
+        }
     return {
         "data_source_id": req.data_source_id,
         "answer": "SQL 草案已生成，尚未执行。请选择具体方案或执行全部方案。",
@@ -85,6 +105,7 @@ async def data_query(
         "draft_id": draft.id,
         "candidates": payload["candidates"],
         "executed": False,
+        "query_plan": payload.get("query_plan", {}),
     }
 
 

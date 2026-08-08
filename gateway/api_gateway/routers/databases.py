@@ -771,6 +771,8 @@ class DatabaseQueryRequest(BaseModel):
     stream: bool = False
     group_type: str = Field(default="alternative", pattern="^(alternative|batch)$")
     project_id: str | None = None
+    output_mode: str = Field(default="sql_only", pattern="^(sql_only|execute_and_answer)$")
+    clarify_context: str | None = Field(default=None, max_length=4000)
 
 
 class DatabaseAnalysisRequest(BaseModel):
@@ -817,9 +819,31 @@ async def query_database(
             supplied_sql=req.sql,
             project_id=req.project_id,
             group_type=req.group_type,
+            output_mode=req.output_mode,
+            clarification_context=req.clarify_context,
         )
         draft_payload = serialize_draft(draft, candidates)
         first_sql = candidates[0].sql if candidates else ""
+        if draft.status == "needs_clarification":
+            question_text = str(
+                draft_payload["clarification"].get("question_text") or "请补充查询口径"
+            )
+            out = {
+                "data_source_id": database_id,
+                "answer": question_text,
+                "summary": "需要补充业务口径后再生成 SQL",
+                "sql": "",
+                "rows": [],
+                "confidence": 0.9,
+                "mode": "clarification",
+                "draft": draft_payload,
+                "draft_id": draft.id,
+                "candidates": [],
+                "needs_clarification": True,
+                "clarification": draft_payload["clarification"],
+                "executed": False,
+            }
+            return out
         out = {
             "data_source_id": database_id,
             "answer": "SQL 草案已生成，尚未执行。请选择具体方案或执行全部方案。",
@@ -832,6 +856,7 @@ async def query_database(
             "draft_id": draft.id,
             "candidates": draft_payload["candidates"],
             "executed": False,
+            "query_plan": draft_payload.get("query_plan", {}),
         }
         return out
     except Exception as exc:  # noqa: BLE001

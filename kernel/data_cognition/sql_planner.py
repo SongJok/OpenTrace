@@ -22,7 +22,11 @@ class SQLPlanner:
         self.table_graph = TableRelationshipGraph()
 
     async def plan(
-        self, question: str, schema_hint: str = "", dialect: SQLDialectSpec | None = None
+        self,
+        question: str,
+        schema_hint: str = "",
+        dialect: SQLDialectSpec | None = None,
+        max_tokens: int = 1600,
     ) -> PlannedSQL:
         dialect_name = dialect.name if dialect else "generic"
         prompt = (
@@ -40,7 +44,7 @@ class SQLPlanner:
             ],
             role=LLMRole.PLANNING,
             temperature=0.0,
-            max_tokens=300,
+            max_tokens=max_tokens,
         )
         sql = (resp.content or "").strip().strip("`")
         tables = self.table_graph.infer_tables_from_schema_hint(schema_hint)
@@ -62,6 +66,7 @@ class SQLPlanner:
         dialect: SQLDialectSpec | None = None,
         n: int = 4,
         semantic_fragments: list[str] | None = None,
+        max_tokens: int = 1600,
     ) -> list[CandidateSQL]:
         """Generate multiple candidate SQL statements via varied sampling."""
         dialect_name = dialect.name if dialect else "generic"
@@ -105,7 +110,7 @@ class SQLPlanner:
                 ],
                 role=LLMRole.PLANNING,
                 temperature=temp,
-                max_tokens=400,
+                max_tokens=max_tokens,
             )
             sql = (resp.content or "").strip().strip("`").strip()
             if not sql or sql.lower() in seen:
@@ -114,10 +119,6 @@ class SQLPlanner:
 
             tables = self.table_graph.infer_tables_from_schema_hint(schema_hint)
             join_steps = self.table_graph.find_path_for_tables(tables)
-            join_path = [
-                f"{step.left_table}.{step.left_key}={step.right_table}.{step.right_key}"
-                for step in join_steps
-            ]
 
             candidates.append(
                 CandidateSQL(
@@ -134,7 +135,7 @@ class SQLPlanner:
 
         if not candidates:
             # Fallback: single deterministic generation
-            planned = await self.plan(question, schema_hint, dialect)
+            planned = await self.plan(question, schema_hint, dialect, max_tokens=max_tokens)
             if planned.sql:
                 candidates.append(CandidateSQL(sql=planned.sql, source_template="fallback_plan"))
 

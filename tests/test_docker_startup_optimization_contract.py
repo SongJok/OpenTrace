@@ -54,12 +54,15 @@ def test_dockerfile_uses_buildkit_dependency_caches_without_remote_frontend():
 
     assert 'LABEL org.opentrace.build-fingerprint="${OPENTRACE_BUILD_FINGERPRINT}"' in dockerfile
     assert "--mount=type=cache,target=/root/.cache/pip" in dockerfile
+    assert "--mount=type=cache,target=/root/.cache/uv" in dockerfile
     assert "apt-get" not in dockerfile
     assert "build-essential" not in dockerfile
     assert "libpq-dev" not in dockerfile
     assert "urllib.request.urlopen" in dockerfile
     assert "PIP_INDEX_URL" in dockerfile
     assert "pip install --prefer-binary" in dockerfile
+    assert "uv pip install --system --require-hashes" in dockerfile
+    assert "UV_HTTP_RETRIES" in dockerfile
     assert "# syntax=" not in dockerfile
 
 

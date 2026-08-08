@@ -163,6 +163,10 @@ bash start.sh --with-observability  # Enable Prometheus and Jaeger
 bash start.sh --verify              # Run Docker smoke checks after startup
 ```
 
+Python dependencies are installed with `uv`, BuildKit download caching, retries, and locked hashes.
+For mainland China servers the template uses the Aliyun mirror first and official PyPI as fallback;
+`start.sh` prints the effective sources so an older `.env` override is immediately visible.
+
 Verify the services:
 
 ```bash

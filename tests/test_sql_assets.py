@@ -302,6 +302,66 @@ def test_sql_asset_normalization_provides_stable_dedup_hash() -> None:
     assert first.sql_hash == second.sql_hash
 
 
+def test_sql_asset_ast_structure_hash_deduplicates_literals_and_marks_risks() -> None:
+    first = sql_assets.parse_sql_assets(
+        "SELECT id FROM orders WHERE customer_id = 100 AND created_at >= '2026-01-01'",
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+    )[0]
+    second = sql_assets.parse_sql_assets(
+        "SELECT id FROM orders WHERE customer_id = 200 AND created_at >= '2026-08-01'",
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+    )[0]
+
+    assert first.sql_hash != second.sql_hash
+    assert first.structure_hash == second.structure_hash
+    assert {"hardcoded_id", "hardcoded_date", "missing_limit"}.issubset(first.risk_flags)
+    aggregate = sql_assets.parse_sql_assets(
+        "SELECT COUNT(*) AS total FROM orders",
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+    )[0]
+    assert "select_star" not in aggregate.risk_flags
+    create_source = inspect.getsource(sql_assets.create_sql_asset_source)
+    assert "SQLAsset.structure_hash.in_" in create_source
+    assert '"structure_duplicate_count"' in create_source
+
+
+def test_query_plan_uses_governed_asset_knowledge_and_can_request_clarification() -> None:
+    asset = SimpleNamespace(
+        id="asset-1",
+        domain="订单",
+        tables=["orders", "channels"],
+        columns=["orders.amount", "channels.name"],
+        knowledge_metadata={
+            "metrics": [{"name": "净收入", "formula": "SUM(orders.amount)"}],
+            "dimensions": [{"name": "渠道", "table": "channels", "column": "name"}],
+            "filters": ["orders.status='paid'"],
+            "assumptions": ["按支付时间统计"],
+            "joins": [
+                {
+                    "left_table": "orders",
+                    "left_column": "channel_id",
+                    "right_table": "channels",
+                    "right_column": "id",
+                }
+            ],
+        },
+    )
+
+    plan = sql_assets.build_query_plan("最近30天各渠道净收入", [asset])
+    ambiguous = sql_assets.build_query_plan("查询收入", [])
+
+    assert plan["needs_clarification"] is False
+    assert plan["metrics"] == ["净收入"]
+    assert plan["dimensions"] == ["渠道"]
+    assert plan["time_range"] == {"type": "last_n", "value": 30, "unit": "天"}
+    assert plan["joins"] == ["orders.channel_id=channels.id"]
+    assert ambiguous["needs_clarification"] is True
+    assert "收入" in ambiguous["clarification_question"]
+
+
 def test_schema_fingerprint_only_tracks_query_relevant_structure() -> None:
     original = {
         "schema": "public",
@@ -880,6 +940,14 @@ def test_sql_asset_migration_and_responses_approval_contract() -> None:
     assert "schema_table_metadata" in knowledge_migration
     assert "knowledge_metadata" in knowledge_migration
 
+    corpus_migration = (
+        root / "alembic/versions/r0019_sql_asset_corpus_and_query_plans.py"
+    ).read_text(encoding="utf-8")
+    assert 'down_revision = "r0018_data_knowledge"' in corpus_migration
+    assert "structure_hash" in corpus_migration
+    assert "corpus_role" in corpus_migration
+    assert "query_plan" in corpus_migration
+
     import tools.builtin_tools.analytics_tools  # noqa: F401
     from tools.registry.registry import registry
 
@@ -965,6 +1033,8 @@ async def test_asset_retrieval_only_uses_published_scoped_assets() -> None:
         "sql_assets.workspace_id",
         "sql_assets.data_source_id",
         "sql_assets.status",
+        "sql_assets.corpus_role",
+        "sql_assets.quality_status",
         "sql_assets.executable",
         "sql_assets.dialect",
     ):

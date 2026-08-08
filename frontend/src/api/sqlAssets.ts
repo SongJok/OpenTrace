@@ -1,0 +1,222 @@
+import { apiFetch, authHeaders, readApiError } from './transport'
+
+export interface SQLAssetItem {
+  id: string
+  source_id: string
+  title: string
+  description: string
+  sql: string
+  asset_type: string
+  statement_type: string
+  executable: boolean
+  status: 'draft' | 'published' | 'deprecated' | 'rejected'
+  corpus_role: 'retrieval' | 'evaluation' | 'quarantine'
+  quality_status: 'unverified' | 'verified' | 'failed' | 'deprecated'
+  domain?: string | null
+  owner?: string | null
+  structure_hash: string
+  dialect: string
+  tables: string[]
+  columns: string[]
+  tags: string[]
+  knowledge_metadata?: {
+    questions?: string[]
+    metrics?: Array<{ name: string; formula: string }>
+    dimensions?: Array<{ name: string; table: string; column: string }>
+    joins?: Array<Record<string, string>>
+    time_columns?: string[]
+    grain?: string
+    filters?: string[]
+    assumptions?: string[]
+  }
+  risk_flags: string[]
+  retrieval_count: number
+  lineage: Record<string, unknown>
+  validation_report: { status?: string; errors?: string[]; warnings?: string[] }
+  project_id?: string | null
+  approved_by?: string | null
+  approved_at?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface SQLAssetSourceItem {
+  id: string
+  filename: string
+  dialect: string
+  status: string
+  statement_count: number
+  version: number
+  parse_report: Record<string, unknown>
+  created_at?: string
+}
+
+export interface SQLQueryCandidateItem {
+  id: string
+  position: number
+  title: string
+  description: string
+  sql: string
+  sql_hash: string
+  asset_ids: string[]
+  tables: string[]
+  columns: string[]
+  execution_status: 'pending' | 'executing' | 'completed' | 'failed'
+  rows: Array<Record<string, unknown>>
+  row_count: number
+  returned_row_count: number
+  result_truncated: boolean
+  error_message?: string | null
+}
+
+export interface SQLQueryDraftItem {
+  id: string
+  status: string
+  group_type: 'alternative' | 'batch'
+  candidates: SQLQueryCandidateItem[]
+  execution_summary?: Record<string, unknown>
+  output_mode: 'sql_only' | 'execute_and_answer'
+  query_plan: Record<string, unknown>
+  needs_clarification: boolean
+  clarification: Record<string, unknown>
+}
+
+export interface SQLAssetListParams {
+  status?: SQLAssetItem['status'] | ''
+  corpus_role?: SQLAssetItem['corpus_role'] | ''
+  quality_status?: SQLAssetItem['quality_status'] | ''
+  domain?: string
+  project_id?: string
+  search?: string
+  offset?: number
+  limit?: number
+}
+
+export interface SQLAssetListResponse {
+  sources: SQLAssetSourceItem[]
+  assets: SQLAssetItem[]
+  pagination: { offset: number; limit: number; total: number; has_more: boolean }
+  facets?: {
+    corpus_roles: Record<string, number>
+    quality_statuses: Record<string, number>
+  }
+}
+
+export async function apiListSQLAssets(
+  token: string,
+  databaseId: string,
+  params: SQLAssetListParams = {},
+): Promise<SQLAssetListResponse> {
+  const query = new URLSearchParams()
+  if (params.status) query.set('status', params.status)
+  if (params.corpus_role) query.set('corpus_role', params.corpus_role)
+  if (params.quality_status) query.set('quality_status', params.quality_status)
+  if (params.domain?.trim()) query.set('domain', params.domain.trim())
+  if (params.project_id) query.set('project_id', params.project_id)
+  if (params.search?.trim()) query.set('search', params.search.trim())
+  if (params.offset !== undefined) query.set('offset', String(params.offset))
+  if (params.limit !== undefined) query.set('limit', String(params.limit))
+  const suffix = query.size ? `?${query.toString()}` : ''
+  const res = await apiFetch(`/databases/${databaseId}/sql-assets${suffix}`, {
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '读取 SQL 资产失败'))
+  return res.json()
+}
+
+export async function apiUploadSQLAsset(
+  token: string,
+  databaseId: string,
+  file: File,
+): Promise<unknown> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await apiFetch(`/databases/${databaseId}/sql-assets/upload`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '上传 SQL 资产失败'))
+  return res.json()
+}
+
+export async function apiBatchUploadSQLAssets(
+  token: string,
+  databaseId: string,
+  files: File[],
+  metadata: { corpus_role: SQLAssetItem['corpus_role']; domain?: string; owner?: string },
+): Promise<{
+  summary: { total: number; imported: number; deduplicated: number; failed: number }
+  results: Array<{ filename: string; status: string; error?: string }>
+}> {
+  const form = new FormData()
+  files.forEach((file) => form.append('files', file))
+  form.append('corpus_role', metadata.corpus_role)
+  if (metadata.domain?.trim()) form.append('domain', metadata.domain.trim())
+  if (metadata.owner?.trim()) form.append('owner', metadata.owner.trim())
+  const res = await apiFetch(`/databases/${databaseId}/sql-assets/batch-upload`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '批量上传 SQL 资产失败'))
+  return res.json()
+}
+
+export async function apiUpdateSQLAsset(
+  token: string,
+  databaseId: string,
+  assetId: string,
+  payload: Record<string, unknown>,
+): Promise<SQLAssetItem> {
+  const res = await apiFetch(`/databases/${databaseId}/sql-assets/${assetId}`, {
+    method: 'PATCH',
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '更新 SQL 资产失败'))
+  return res.json()
+}
+
+export async function apiDeleteSQLAssetSource(
+  token: string,
+  databaseId: string,
+  sourceId: string,
+): Promise<void> {
+  const res = await apiFetch(`/databases/${databaseId}/sql-assets/sources/${sourceId}`, {
+    method: 'DELETE',
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '删除 SQL 资产源失败'))
+}
+
+export async function apiGetSQLDraft(
+  token: string,
+  databaseId: string,
+  draftId: string,
+): Promise<SQLQueryDraftItem> {
+  const res = await apiFetch(`/databases/${databaseId}/sql-drafts/${draftId}`, {
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '读取 SQL 草案失败'))
+  return res.json()
+}
+
+export async function apiExecuteSQLDraft(
+  token: string,
+  databaseId: string,
+  draftId: string,
+  payload: { candidate_ids?: string[]; execute_all?: boolean; retry_failed?: boolean },
+): Promise<SQLQueryDraftItem> {
+  const res = await apiFetch(`/databases/${databaseId}/sql-drafts/${draftId}/execute`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({
+      candidate_ids: payload.candidate_ids || [],
+      execute_all: !!payload.execute_all,
+      retry_failed: !!payload.retry_failed,
+    }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '执行 SQL 草案失败'))
+  return res.json()
+}

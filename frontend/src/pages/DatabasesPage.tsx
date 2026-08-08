@@ -42,7 +42,7 @@ import {
   apiReviewSchemaAnnotation,
   apiUpdateSQLAsset,
   apiUpsertSchemaAnnotation,
-  apiUploadSQLAsset,
+  apiBatchUploadSQLAssets,
   type DataSourceItem,
   type DatabaseSchemaPagination,
   type DatabaseSchemaPayload,
@@ -63,6 +63,11 @@ const SQL_ASSET_STATUS_LABELS: Record<SQLAssetItem['status'], string> = {
   deprecated: '已废弃',
   rejected: '已驳回',
 }
+const SQL_CORPUS_ROLE_LABELS: Record<SQLAssetItem['corpus_role'], string> = {
+  retrieval: '检索库',
+  evaluation: '评测集',
+  quarantine: '隔离区',
+}
 const SQL_EXECUTION_STATUS_LABELS: Record<SQLQueryCandidateItem['execution_status'], string> = {
   pending: '待确认',
   executing: '执行中',
@@ -77,6 +82,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const [selected, setSelected] = useState<DataSourceItem | null>(null)
   const [activeTab, setActiveTab] = useState<TabKey>('overview')
   const [question, setQuestion] = useState('过去30天订单趋势')
+  const [queryOutputMode, setQueryOutputMode] = useState<'sql_only' | 'execute_and_answer'>('sql_only')
   const [queryOutput, setQueryOutput] = useState<{
     answer?: string
     summary: string
@@ -98,6 +104,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     draft_id?: string
     draft_status?: string
     candidates?: SQLQueryCandidateItem[]
+    query_plan?: Record<string, unknown>
   } | null>(null)
   const [querySessionId, setQuerySessionId] = useState<string | null>(null)
   const [sessionContext, setSessionContext] = useState<Record<string, any> | null>(null)
@@ -146,6 +153,10 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const [executingCandidate, setExecutingCandidate] = useState<string | null>(null)
   const [sqlAssetSearch, setSqlAssetSearch] = useState('')
   const [sqlAssetStatus, setSqlAssetStatus] = useState<SQLAssetItem['status'] | ''>('')
+  const [sqlAssetCorpusRole, setSqlAssetCorpusRole] = useState<SQLAssetItem['corpus_role'] | ''>('')
+  const [sqlImportRole, setSqlImportRole] = useState<SQLAssetItem['corpus_role']>('retrieval')
+  const [sqlImportDomain, setSqlImportDomain] = useState('')
+  const [sqlImportOwner, setSqlImportOwner] = useState('')
   const [sqlAssetOffset, setSqlAssetOffset] = useState(0)
   const [sqlAssetTotal, setSqlAssetTotal] = useState(0)
   const [editingSQLAsset, setEditingSQLAsset] = useState<{
@@ -153,6 +164,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     title: string
     description: string
     tags: string
+    corpus_role: SQLAssetItem['corpus_role']
+    domain: string
+    owner: string
   } | null>(null)
   const [schemaAnnotations, setSchemaAnnotations] = useState<SchemaAnnotationItem[]>([])
   const [schemaAnnotationLoading, setSchemaAnnotationLoading] = useState(false)
@@ -311,14 +325,16 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     }
   }
 
-  const reloadSQLAssets = async (overrides: { search?: string; status?: SQLAssetItem['status'] | ''; offset?: number } = {}) => {
+  const reloadSQLAssets = async (overrides: { search?: string; status?: SQLAssetItem['status'] | ''; corpusRole?: SQLAssetItem['corpus_role'] | ''; offset?: number } = {}) => {
     if (!selected) return
     const nextSearch = overrides.search ?? sqlAssetSearch
     const nextStatus = overrides.status ?? sqlAssetStatus
+    const nextCorpusRole = overrides.corpusRole ?? sqlAssetCorpusRole
     const nextOffset = overrides.offset ?? sqlAssetOffset
     const result = await apiListSQLAssets(token, selected.id, {
       search: nextSearch,
       status: nextStatus,
+      corpus_role: nextCorpusRole,
       offset: nextOffset,
       limit: SQL_ASSET_PAGE_SIZE,
     })
@@ -328,11 +344,19 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     setSqlAssetTotal(result.pagination?.total || 0)
   }
 
-  const uploadSQLAsset = async (file?: File) => {
-    if (!selected || !file) return
+  const uploadSQLAssets = async (files: File[]) => {
+    if (!selected || files.length === 0) return
     setUploadingSQL(true)
     try {
-      await apiUploadSQLAsset(token, selected.id, file)
+      const result = await apiBatchUploadSQLAssets(token, selected.id, files, {
+        corpus_role: sqlImportRole,
+        domain: sqlImportDomain,
+        owner: sqlImportOwner,
+      })
+      if (result.summary.failed > 0) {
+        const failed = result.results.filter((item) => item.status === 'failed')
+        alert(`已导入 ${result.summary.imported} 个文件，${result.summary.failed} 个失败：\n${failed.map((item) => `${item.filename}: ${item.error}`).join('\n')}`)
+      }
       await reloadSQLAssets({ offset: 0 })
     } catch (error: any) {
       alert(error?.message || '上传 SQL 资产失败')
@@ -361,6 +385,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
         title: editingSQLAsset.title,
         description: editingSQLAsset.description,
         tags: editingSQLAsset.tags.split(',').map((item) => item.trim()).filter(Boolean),
+        corpus_role: editingSQLAsset.corpus_role,
+        domain: editingSQLAsset.domain,
+        owner: editingSQLAsset.owner,
         expected_updated_at: asset.updated_at,
       })
       setEditingSQLAsset(null)
@@ -562,7 +589,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
 
   const runQuery = async (clarifyContext?: string) => {
     if (!selected) return
-    const payload: any = { question }
+    const payload: any = { question, output_mode: queryOutputMode }
     if (querySessionId) payload.session_id = querySessionId
     if (clarifyContext) payload.clarify_context = clarifyContext
     if (sessionContext) payload.session_context = sessionContext
@@ -594,6 +621,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
       draft_id: out.draft_id,
       draft_status: out.draft?.status,
       candidates: out.candidates || out.draft?.candidates || [],
+      query_plan: out.query_plan || out.draft?.query_plan,
     })
   }
 
@@ -1058,28 +1086,40 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
 
               {activeTab === 'sql_assets' ? (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between gap-3">
+                  <div className="flex flex-wrap items-end justify-between gap-3">
                     <div>
                       <h3 className="text-sm font-semibold">SQL 资产</h3>
                       <div className="mt-1 text-xs text-[var(--text-secondary)]">
                         {sqlAssetSources.length} 个源文件 · {sqlAssetTotal} 条资产
                       </div>
                     </div>
-                    <label className="inline-flex cursor-pointer items-center gap-1 rounded border border-[var(--border)] px-3 py-1.5 text-xs hover:bg-[var(--surface-raised)]">
-                      <Upload size={13} />
-                      {uploadingSQL ? '解析中' : '上传 SQL'}
-                      <input
-                        className="hidden"
-                        type="file"
-                        accept=".sql,.txt,text/plain,application/sql"
-                        disabled={uploadingSQL}
-                        onChange={(event) => {
-                          const file = event.target.files?.[0]
-                          void uploadSQLAsset(file)
-                          event.currentTarget.value = ''
-                        }}
-                      />
-                    </label>
+                    <div className="flex flex-wrap items-end gap-2">
+                      <label className="grid gap-1 text-[11px] text-[var(--text-secondary)]">
+                        语料分区
+                        <select value={sqlImportRole} onChange={(event) => setSqlImportRole(event.target.value as SQLAssetItem['corpus_role'])} className="h-8 rounded border border-[var(--border)] bg-[var(--surface)] px-2 text-xs text-[var(--text-primary)]">
+                          <option value="retrieval">检索库</option>
+                          <option value="evaluation">评测集（不参与检索）</option>
+                          <option value="quarantine">隔离区</option>
+                        </select>
+                      </label>
+                      <input value={sqlImportDomain} onChange={(event) => setSqlImportDomain(event.target.value)} className="h-8 w-28 rounded border border-[var(--border)] bg-transparent px-2 text-xs" maxLength={100} placeholder="业务域" />
+                      <input value={sqlImportOwner} onChange={(event) => setSqlImportOwner(event.target.value)} className="h-8 w-28 rounded border border-[var(--border)] bg-transparent px-2 text-xs" maxLength={255} placeholder="负责人" />
+                      <label className="inline-flex h-8 cursor-pointer items-center gap-1 rounded border border-[var(--border)] px-3 text-xs hover:bg-[var(--surface-raised)]">
+                        <Upload size={13} />
+                        {uploadingSQL ? '解析中' : '批量上传 SQL'}
+                        <input
+                          className="hidden"
+                          type="file"
+                          multiple
+                          accept=".sql,.txt,text/plain,application/sql"
+                          disabled={uploadingSQL}
+                          onChange={(event) => {
+                            void uploadSQLAssets(Array.from(event.target.files || []))
+                            event.currentTarget.value = ''
+                          }}
+                        />
+                      </label>
+                    </div>
                   </div>
 
                   <form
@@ -1113,6 +1153,20 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                       <option value="deprecated">已废弃</option>
                       <option value="rejected">已驳回</option>
                     </select>
+                    <select
+                      value={sqlAssetCorpusRole}
+                      onChange={(event) => {
+                        const corpusRole = event.target.value as SQLAssetItem['corpus_role'] | ''
+                        setSqlAssetCorpusRole(corpusRole)
+                        void reloadSQLAssets({ corpusRole, offset: 0 })
+                      }}
+                      className="h-8 rounded border border-[var(--border)] bg-[var(--surface)] px-2 text-xs"
+                    >
+                      <option value="">全部语料分区</option>
+                      <option value="retrieval">检索库</option>
+                      <option value="evaluation">评测集</option>
+                      <option value="quarantine">隔离区</option>
+                    </select>
                     <button
                       className="flex h-8 w-8 items-center justify-center rounded border border-[var(--border)] hover:bg-[var(--surface-raised)]"
                       title="搜索 SQL 资产"
@@ -1131,6 +1185,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                             <div className="truncate text-xs font-medium">{source.filename}</div>
                             <div className="mt-0.5 text-[11px] text-[var(--text-secondary)]">
                               v{source.version} · {source.dialect} · {source.statement_count} 条语句
+                              {Number(source.parse_report?.duplicate_count || 0) > 0 ? ` · AST 去重 ${source.parse_report.duplicate_count} 条` : ''}
                             </div>
                           </div>
                           <button
@@ -1160,6 +1215,8 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                                 <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-secondary)]">
                                   <span>{asset.asset_type}</span>
                                   <span>{asset.statement_type}</span>
+                                  <span>{SQL_CORPUS_ROLE_LABELS[asset.corpus_role]} · {asset.quality_status}</span>
+                                  {asset.domain ? <span>{asset.domain}</span> : null}
                                   <span>{asset.tables.join(', ') || '无表引用'}</span>
                                 </div>
                               </div>
@@ -1195,6 +1252,15 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                                   className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
                                   placeholder="标签，使用逗号分隔"
                                 />
+                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                  <select value={editingSQLAsset.corpus_role} onChange={(event) => setEditingSQLAsset({ ...editingSQLAsset, corpus_role: event.target.value as SQLAssetItem['corpus_role'] })} className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-xs">
+                                    <option value="retrieval">检索库</option>
+                                    <option value="evaluation">评测集</option>
+                                    <option value="quarantine">隔离区</option>
+                                  </select>
+                                  <input value={editingSQLAsset.domain} onChange={(event) => setEditingSQLAsset({ ...editingSQLAsset, domain: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="业务域" />
+                                  <input value={editingSQLAsset.owner} onChange={(event) => setEditingSQLAsset({ ...editingSQLAsset, owner: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="负责人" />
+                                </div>
                               </div>
                             ) : asset.description || asset.tags.length ? (
                               <div className="space-y-1 text-xs text-[var(--text-secondary)]">
@@ -1215,6 +1281,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                             {(asset.validation_report?.warnings || []).map((warning, index) => (
                               <div key={`${asset.id}_warning_${index}`} className="text-xs text-amber-400">{warning}</div>
                             ))}
+                            {asset.risk_flags.length ? <div className="text-xs text-amber-400">风险标记：{asset.risk_flags.join(' · ')}</div> : null}
                             <div className="flex justify-end gap-2">
                               {editingSQLAsset?.id === asset.id ? (
                                 <>
@@ -1225,12 +1292,12 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                                 <button
                                   className="flex h-7 w-7 items-center justify-center rounded border border-[var(--border)]"
                                   title="编辑资产元数据"
-                                  onClick={() => setEditingSQLAsset({ id: asset.id, title: asset.title, description: asset.description, tags: asset.tags.join(', ') })}
+                                  onClick={() => setEditingSQLAsset({ id: asset.id, title: asset.title, description: asset.description, tags: asset.tags.join(', '), corpus_role: asset.corpus_role, domain: asset.domain || '', owner: asset.owner || '' })}
                                 >
                                   <Pencil size={13} />
                                 </button>
                               )}
-                              {asset.status !== 'published' && asset.executable && validationPassed ? (
+                              {asset.status !== 'published' && asset.executable && validationPassed && asset.corpus_role !== 'quarantine' ? (
                                 <button className="inline-flex items-center gap-1 rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]" onClick={() => void changeSQLAssetStatus(asset, 'published')}>
                                   <CheckCircle2 size={13} /> 发布
                                 </button>
@@ -1288,9 +1355,15 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                   ) : null}
 
                   <input value={question} onChange={(e) => setQuestion(e.target.value)} className="w-full rounded border border-[var(--border)] bg-transparent px-2 py-1 text-sm" />
-                  <button className="inline-flex items-center gap-1 rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]" onClick={() => void runQuery()}>
-                    <FileCode2 size={13} /> 生成 SQL 草案
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select value={queryOutputMode} onChange={(event) => setQueryOutputMode(event.target.value as 'sql_only' | 'execute_and_answer')} className="h-8 rounded border border-[var(--border)] bg-[var(--surface)] px-2 text-xs">
+                      <option value="sql_only">仅生成完整 SQL</option>
+                      <option value="execute_and_answer">确认后执行并回答</option>
+                    </select>
+                    <button className="inline-flex items-center gap-1 rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]" onClick={() => void runQuery()}>
+                      <FileCode2 size={13} /> 生成 SQL 草案
+                    </button>
+                  </div>
                   {queryOutput ? (
                     <>
                       {/* Clarification card — shown when query is too vague */}
@@ -1329,6 +1402,13 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                             你也可以在输入框中修改问题后重新提交
                           </div>
                         </div>
+                      ) : null}
+
+                      {queryOutput.query_plan && Object.keys(queryOutput.query_plan).length ? (
+                        <details className="rounded border border-[var(--border)] p-3">
+                          <summary className="cursor-pointer text-xs font-medium">结构化查询计划</summary>
+                          <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-[11px] text-[var(--text-secondary)]">{JSON.stringify(queryOutput.query_plan, null, 2)}</pre>
+                        </details>
                       ) : null}
 
                       {/* 1. 草案或执行状态 */}

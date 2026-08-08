@@ -40,6 +40,8 @@ from kernel.data_cognition.sql_planner import SQLPlanner
 from kernel.data_cognition.sql_validator import SQLValidationError, SQLValidator
 
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
+MAX_BATCH_UPLOAD_FILES = 100
+MAX_BATCH_UPLOAD_BYTES = 25 * 1024 * 1024
 MAX_ASSET_STATEMENTS = 200
 MAX_DRAFT_CANDIDATES = 5
 MAX_RESULT_BYTES = 512 * 1024
@@ -52,6 +54,8 @@ _ASSET_STATUS_TRANSITIONS = {
     "deprecated": {"deprecated", "published"},
     "rejected": {"rejected", "draft"},
 }
+CORPUS_ROLES = {"retrieval", "evaluation", "quarantine"}
+QUALITY_STATUSES = {"unverified", "verified", "failed", "deprecated"}
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,7 @@ class ParsedSQLAsset:
     statement_index: int
     normalized_sql: str
     sql_hash: str
+    structure_hash: str
     statement_type: str
     asset_type: str
     executable: bool
@@ -70,6 +75,9 @@ class ParsedSQLAsset:
     description: str
     tags: list[str]
     knowledge_metadata: dict[str, Any]
+    domain: str
+    owner: str
+    risk_flags: list[str]
     validation_report: dict[str, Any]
 
 
@@ -290,6 +298,16 @@ _DOCUMENTATION_KEY_ALIASES = {
     "parameters": "documented_parameters",
     "params": "documented_parameters",
     "参数": "documented_parameters",
+    "filters": "filters",
+    "filter": "filters",
+    "过滤": "filters",
+    "assumptions": "assumptions",
+    "assumption": "assumptions",
+    "假设": "assumptions",
+    "domain": "domain",
+    "业务域": "domain",
+    "owner": "owner",
+    "负责人": "owner",
 }
 
 
@@ -489,6 +507,8 @@ def _extract_asset_documentation(expression: Any) -> dict[str, Any]:
     documented_parameters = _split_documentation_values(
         ",".join(raw_values.get("documented_parameters", []))
     )
+    filters = _split_documentation_values("；".join(raw_values.get("filters", [])))
+    assumptions = _split_documentation_values("；".join(raw_values.get("assumptions", [])))
     inferred = _extract_ast_knowledge(expression)
     metrics = _merge_named_metadata(metrics, inferred["metrics"], key="name")
     dimensions = _merge_named_metadata(dimensions, inferred["dimensions"], key="name")
@@ -525,10 +545,66 @@ def _extract_asset_documentation(expression: Any) -> dict[str, Any]:
             "time_columns": time_columns,
             "grain": " ".join(raw_values.get("grain", [])).strip(),
             "documented_parameters": documented_parameters,
+            "filters": filters,
+            "assumptions": assumptions,
             "source": "sql_comments",
             "ast_inferred": True,
         },
+        "domain": " ".join(raw_values.get("domain", [])).strip()[:100],
+        "owner": " ".join(raw_values.get("owner", [])).strip()[:255],
     }
+
+
+def _sql_structure_hash(expression: Any, *, dialect: str) -> str:
+    """用 AST 字面量归一化识别同一模板，避免仅靠 SQL 字符串去重。"""
+
+    literal_types = tuple(
+        item
+        for item in (
+            getattr(exp, "Literal", None),
+            getattr(exp, "Boolean", None),
+        )
+        if item
+    )
+    normalized = expression.copy().transform(
+        lambda node: (
+            exp.Placeholder() if literal_types and isinstance(node, literal_types) else node
+        )
+    )
+    canonical = normalized.sql(
+        dialect=_sqlglot_dialect(dialect), pretty=False, comments=False, normalize=True
+    )
+    return _hash_text(canonical)
+
+
+def _risk_flags(expression: Any, *, description: str = "") -> list[str]:
+    flags: set[str] = set()
+    if not isinstance(expression, exp.Query):
+        flags.add("write_or_ddl")
+    if isinstance(expression, exp.Query) and expression.args.get("limit") is None:
+        flags.add("missing_limit")
+    if any(
+        isinstance(selection, exp.Star)
+        or (isinstance(selection, exp.Column) and isinstance(selection.this, exp.Star))
+        for query in expression.find_all(exp.Select)
+        for selection in query.selects
+    ):
+        flags.add("select_star")
+    for literal in expression.find_all(exp.Literal):
+        value = str(literal.this or "")
+        if literal.is_string and re.search(r"\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\b", value):
+            flags.add("hardcoded_date")
+    for equality in expression.find_all(exp.EQ):
+        sides = (equality.this, equality.expression)
+        if any(
+            isinstance(side, exp.Column) and str(side.name).lower().endswith("_id")
+            for side in sides
+        ) and any(isinstance(side, exp.Literal) for side in sides):
+            flags.add("hardcoded_id")
+    searchable = f"{description}\n{expression.sql(comments=False)}".lower()
+    if re.search(r"(^|[^a-z])(test|demo|dummy)([^a-z]|$)|测试|演示", searchable):
+        flags.add("test_condition")
+    return sorted(flags)
 
 
 def _extract_tables_columns(expression: Any) -> tuple[list[str], list[str]]:
@@ -792,6 +868,7 @@ def parse_sql_assets(
                 statement_index=index,
                 normalized_sql=safe_sql,
                 sql_hash=_hash_text(safe_sql),
+                structure_hash=_sql_structure_hash(statement, dialect=dialect),
                 statement_type=_statement_type(statement),
                 asset_type=_asset_type(statement),
                 executable=executable and not errors,
@@ -803,6 +880,9 @@ def parse_sql_assets(
                 description=documentation["description"],
                 tags=documentation["tags"],
                 knowledge_metadata=documentation["knowledge_metadata"],
+                domain=documentation["domain"],
+                owner=documentation["owner"],
+                risk_flags=_risk_flags(statement, description=documentation["description"]),
                 validation_report={
                     "status": "pass" if not errors else "fail",
                     "errors": errors,
@@ -1047,7 +1127,12 @@ async def create_sql_asset_source(
     source_text: str,
     dialect: str,
     project_id: str | None = None,
+    corpus_role: str = "retrieval",
+    domain: str | None = None,
+    owner: str | None = None,
 ) -> tuple[SQLAssetSource, list[SQLAsset], bool]:
+    if corpus_role not in CORPUS_ROLES:
+        raise ValidationException("corpus_role 仅支持 retrieval、evaluation 或 quarantine")
     encoded = source_text.encode("utf-8")
     if len(encoded) > MAX_UPLOAD_BYTES:
         raise ValidationException(f"SQL 文件不能超过 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
@@ -1141,37 +1226,49 @@ async def create_sql_asset_source(
     db.add(source)
     await db.flush()
     parsed_hashes = {item.sql_hash for item in parsed}
-    existing_hashes = set(
-        (
-            await db.execute(
-                select(SQLAsset.sql_hash).where(
-                    SQLAsset.tenant_id == tenant_id,
-                    SQLAsset.workspace_id == workspace_id,
-                    SQLAsset.data_source_id == data_source_id,
-                    (
-                        SQLAsset.project_id == project_id
-                        if project_id
-                        else SQLAsset.project_id.is_(None)
-                    ),
+    parsed_structure_hashes = {item.structure_hash for item in parsed}
+    existing_rows = (
+        await db.execute(
+            select(SQLAsset.sql_hash, SQLAsset.structure_hash).where(
+                SQLAsset.tenant_id == tenant_id,
+                SQLAsset.workspace_id == workspace_id,
+                SQLAsset.data_source_id == data_source_id,
+                (
+                    SQLAsset.project_id == project_id
+                    if project_id
+                    else SQLAsset.project_id.is_(None)
+                ),
+                or_(
                     SQLAsset.sql_hash.in_(parsed_hashes),
-                )
+                    SQLAsset.structure_hash.in_(parsed_structure_hashes),
+                ),
             )
         )
-        .scalars()
-        .all()
-    )
+    ).all()
+    existing_hashes = {str(row[0]) for row in existing_rows}
+    existing_structure_hashes = {str(row[1]) for row in existing_rows}
     unique_parsed: list[ParsedSQLAsset] = []
     seen_hashes = set(existing_hashes)
+    seen_structure_hashes = set(existing_structure_hashes)
+    exact_duplicate_count = 0
+    structure_duplicate_count = 0
     for item in parsed:
         if item.sql_hash in seen_hashes:
+            exact_duplicate_count += 1
+            continue
+        if item.structure_hash in seen_structure_hashes:
+            structure_duplicate_count += 1
             continue
         seen_hashes.add(item.sql_hash)
+        seen_structure_hashes.add(item.structure_hash)
         unique_parsed.append(item)
     source.parse_report = {
         "status": "parsed",
         "statement_count": len(parsed),
         "asset_count": len(unique_parsed),
         "duplicate_count": len(parsed) - len(unique_parsed),
+        "exact_duplicate_count": exact_duplicate_count,
+        "structure_duplicate_count": structure_duplicate_count,
         "executable_count": sum(1 for item in unique_parsed if item.executable),
         "invalid_count": sum(
             1 for item in unique_parsed if item.validation_report.get("status") == "fail"
@@ -1191,10 +1288,17 @@ async def create_sql_asset_source(
             description=item.description,
             normalized_sql=item.normalized_sql,
             sql_hash=item.sql_hash,
+            structure_hash=item.structure_hash,
             asset_type=item.asset_type,
             statement_type=item.statement_type,
             executable=item.executable,
             status="draft",
+            corpus_role=(
+                corpus_role if item.asset_type == "query" and item.executable else "quarantine"
+            ),
+            quality_status="unverified",
+            domain=(item.domain or str(domain or "").strip() or None),
+            owner=(item.owner or str(owner or "").strip() or None),
             dialect=dialect,
             tables=item.tables,
             columns=item.columns,
@@ -1202,6 +1306,9 @@ async def create_sql_asset_source(
             parameters=item.parameters,
             tags=item.tags,
             knowledge_metadata=item.knowledge_metadata,
+            risk_flags=item.risk_flags,
+            verification_metadata={},
+            retrieval_count=0,
             validation_report=item.validation_report,
             schema_fingerprint=fingerprint,
         )
@@ -1222,11 +1329,20 @@ def serialize_asset(asset: SQLAsset, *, include_sql: bool = True) -> dict[str, A
         "statement_type": asset.statement_type,
         "executable": asset.executable,
         "status": asset.status,
+        "corpus_role": asset.corpus_role,
+        "quality_status": asset.quality_status,
+        "domain": asset.domain,
+        "owner": asset.owner,
+        "structure_hash": asset.structure_hash,
         "dialect": asset.dialect,
         "tables": asset.tables or [],
         "columns": asset.columns or [],
         "tags": asset.tags or [],
         "knowledge_metadata": asset.knowledge_metadata or {},
+        "risk_flags": asset.risk_flags or [],
+        "verification_metadata": asset.verification_metadata or {},
+        "last_verified_at": asset.last_verified_at,
+        "retrieval_count": asset.retrieval_count,
         "lineage": asset.lineage or {},
         "validation_report": asset.validation_report or {},
         "schema_fingerprint": asset.schema_fingerprint,
@@ -1273,6 +1389,8 @@ async def retrieve_sql_assets(
         SQLAsset.workspace_id == workspace_id,
         SQLAsset.data_source_id == data_source_id,
         SQLAsset.status == "published",
+        SQLAsset.corpus_role == "retrieval",
+        SQLAsset.quality_status == "verified",
         SQLAsset.executable.is_(True),
         SQLAsset.dialect == dialect,
     )
@@ -1280,30 +1398,42 @@ async def retrieve_sql_assets(
         stmt = stmt.where(or_(SQLAsset.project_id.is_(None), SQLAsset.project_id == project_id))
     else:
         stmt = stmt.where(SQLAsset.project_id.is_(None))
-    rows = list((await db.execute(stmt.limit(100))).scalars().all())
+    rows = list((await db.execute(stmt.limit(300))).scalars().all())
     query_tokens = set(re.findall(r"[a-zA-Z0-9_]+", question.lower()))
     for segment in re.findall(r"[\u4e00-\u9fff]{2,}", question):
         query_tokens.add(segment)
         query_tokens.update(segment[index : index + 2] for index in range(len(segment) - 1))
 
-    def relevance(asset: SQLAsset) -> int:
-        searchable = " ".join(
+    def relevance(asset: SQLAsset) -> float:
+        knowledge = asset.knowledge_metadata or {}
+        semantic = " ".join(
             [
                 asset.title,
                 asset.description,
+                str(asset.domain or ""),
                 " ".join(asset.tags or []),
-                " ".join(asset.tables or []),
-                json.dumps(asset.knowledge_metadata or {}, ensure_ascii=False),
-                asset.normalized_sql,
+                json.dumps(knowledge, ensure_ascii=False),
             ]
         ).lower()
-        return sum(1 for token in query_tokens if token in searchable)
+        schema = " ".join([*(asset.tables or []), *(asset.columns or [])]).lower()
+        sql = asset.normalized_sql.lower()
+        semantic_hits = sum(1 for token in query_tokens if token in semantic)
+        schema_hits = sum(1 for token in query_tokens if token in schema)
+        sql_hits = sum(1 for token in query_tokens if token in sql)
+        question_examples = " ".join(knowledge.get("questions") or []).lower()
+        example_hits = sum(1 for token in query_tokens if token in question_examples)
+        # 关键词、业务语义、Schema 三路加权；评测集在 SQL 条件层已经物理隔离。
+        return semantic_hits * 3.0 + example_hits * 2.0 + schema_hits * 1.5 + sql_hits * 0.25
 
-    relevant_rows = [asset for asset in rows if relevance(asset) > 0]
+    scored_rows = [(asset, relevance(asset)) for asset in rows]
+    relevant_rows = [asset for asset, score in scored_rows if score > 0]
     relevant_rows.sort(
         key=lambda asset: (relevance(asset), str(asset.created_at or "")), reverse=True
     )
-    return relevant_rows[: max(1, min(limit, 10))]
+    selected = relevant_rows[: max(1, min(limit, 10))]
+    for asset in selected:
+        asset.retrieval_count = int(asset.retrieval_count or 0) + 1
+    return selected
 
 
 def _strip_model_sql(value: str) -> str:
@@ -1329,6 +1459,157 @@ def _split_sql_statements(value: str, *, dialect: str) -> list[str]:
     if not expressions:
         return [raw]
     return [item.sql(dialect=_sqlglot_dialect(dialect), comments=False) for item in expressions]
+
+
+def build_query_plan(
+    question: str,
+    assets: list[SQLAsset],
+    *,
+    clarification_context: str | None = None,
+) -> dict[str, Any]:
+    """先把问题映射成可审计计划，再让模型编译 SQL。"""
+
+    effective_question = " ".join(
+        item
+        for item in (str(question or "").strip(), str(clarification_context or "").strip())
+        if item
+    )
+    metadata = [asset.knowledge_metadata or {} for asset in assets[:5]]
+
+    def unique(values: list[str], limit: int = 20) -> list[str]:
+        return list(dict.fromkeys(value for value in values if value))[:limit]
+
+    metric_names = unique(
+        [
+            str(metric.get("name") or "").strip()
+            for item in metadata
+            for metric in item.get("metrics") or []
+            if isinstance(metric, dict)
+        ]
+    )
+    dimension_names = unique(
+        [
+            str(dimension.get("name") or "").strip()
+            for item in metadata
+            for dimension in item.get("dimensions") or []
+            if isinstance(dimension, dict)
+        ]
+    )
+    selected_metrics = [name for name in metric_names if name.lower() in effective_question.lower()]
+    selected_dimensions = [
+        name for name in dimension_names if name.lower() in effective_question.lower()
+    ]
+    required_tables = unique([table for asset in assets[:5] for table in (asset.tables or [])])
+    required_columns = unique(
+        [column for asset in assets[:5] for column in (asset.columns or [])], 50
+    )
+    joins = unique(
+        [
+            (
+                f"{join.get('left_table')}.{join.get('left_column')}="
+                f"{join.get('right_table')}.{join.get('right_column')}"
+            )
+            for item in metadata
+            for join in item.get("joins") or []
+            if isinstance(join, dict)
+            and all(
+                join.get(key)
+                for key in ("left_table", "left_column", "right_table", "right_column")
+            )
+        ]
+    )
+    filters = unique(
+        [str(value).strip() for item in metadata for value in item.get("filters") or []]
+    )
+    assumptions = unique(
+        [str(value).strip() for item in metadata for value in item.get("assumptions") or []]
+    )
+    domains = [str(asset.domain or "").strip() for asset in assets if asset.domain]
+    intent = "detail_query"
+    if re.search(
+        r"多少|数量|合计|总计|平均|趋势|同比|环比|排名|top\s*\d*", effective_question, re.I
+    ):
+        intent = "aggregate_query"
+
+    time_range: dict[str, Any] = {}
+    relative = re.search(r"最近\s*(\d+)\s*(天|日|周|月|年)", effective_question)
+    if relative:
+        time_range = {
+            "type": "last_n",
+            "value": int(relative.group(1)),
+            "unit": relative.group(2),
+        }
+    elif re.search(r"本月|当月", effective_question):
+        time_range = {"type": "current_month", "timezone": "Asia/Shanghai"}
+    elif re.search(r"今天|今日", effective_question):
+        time_range = {"type": "today", "timezone": "Asia/Shanghai"}
+
+    clarification_question = ""
+    missing_entities: list[str] = []
+    if len(effective_question) < 4:
+        clarification_question = "请补充需要查询的指标、时间范围和分组维度。"
+        missing_entities = ["metric", "time_range", "dimensions"]
+    elif (
+        re.search(r"收入", effective_question)
+        and not re.search(r"净收入|毛收入|实收|应收|退款|gmv|销售收入", effective_question, re.I)
+        and not selected_metrics
+    ):
+        clarification_question = "“收入”采用什么口径：实收、应收、GMV，还是扣除退款后的净收入？"
+        missing_entities = ["metric_definition"]
+    elif re.search(r"最近(?!\s*\d|一天|一周|一月|一年)", effective_question):
+        clarification_question = "“最近”具体指多少天、周或月？"
+        missing_entities = ["time_range"]
+
+    return {
+        "intent": intent,
+        "domain": domains[0] if domains else "",
+        "metrics": selected_metrics or metric_names[:5],
+        "dimensions": selected_dimensions or dimension_names[:8],
+        "filters": filters,
+        "time_range": time_range,
+        "required_tables": required_tables,
+        "required_columns": required_columns,
+        "joins": joins,
+        "assumptions": assumptions,
+        "retrieved_asset_ids": [asset.id for asset in assets[:5]],
+        "needs_clarification": bool(clarification_question),
+        "clarification_question": clarification_question,
+        "missing_entities": missing_entities,
+    }
+
+
+def build_relevant_schema_hint(
+    schema_payload: dict[str, Any],
+    *,
+    preferred_tables: list[str],
+    question: str,
+    max_chars: int,
+) -> str:
+    """优先放入计划命中的表，同时保留其余 Schema 作为受预算回退。"""
+
+    payload = dict(schema_payload or {})
+    tables = payload.get("tables")
+    if not isinstance(tables, list):
+        nested = payload.get("schema")
+        tables = nested.get("tables") if isinstance(nested, dict) else None
+    if not isinstance(tables, list):
+        return build_schema_hint(schema_payload, max_chars=max_chars)
+    preferred = {name.lower() for name in preferred_tables}
+    tokens = set(re.findall(r"[a-zA-Z0-9_]+", question.lower()))
+
+    def priority(table: Any) -> tuple[int, str]:
+        if not isinstance(table, dict):
+            return (3, "")
+        name = str(table.get("name") or "").lower()
+        searchable = json.dumps(table, ensure_ascii=False).lower()
+        if name in preferred or name.rsplit(".", 1)[-1] in preferred:
+            return (0, name)
+        if any(token in searchable for token in tokens):
+            return (1, name)
+        return (2, name)
+
+    payload["tables"] = sorted(tables, key=priority)
+    return build_schema_hint(payload, max_chars=max_chars)
 
 
 def _validated_candidate(
@@ -1373,9 +1654,13 @@ async def generate_sql_query_draft(
     conversation_id: str | None = None,
     response_id: str | None = None,
     group_type: str = "alternative",
+    output_mode: str = "sql_only",
+    clarification_context: str | None = None,
 ) -> tuple[SQLQueryDraft, list[SQLQueryCandidate]]:
     if group_type not in {"alternative", "batch"}:
         raise ValidationException("group_type 仅支持 alternative 或 batch")
+    if output_mode not in {"sql_only", "execute_and_answer"}:
+        raise ValidationException("output_mode 仅支持 sql_only 或 execute_and_answer")
     await _validate_project_scope(
         db,
         project_id=project_id,
@@ -1396,6 +1681,11 @@ async def generate_sql_query_draft(
         question=question,
         dialect=dialect,
         project_id=project_id,
+    )
+    query_plan = build_query_plan(
+        question,
+        assets,
+        clarification_context=clarification_context,
     )
     from services.data_knowledge_context import build_data_knowledge_context
 
@@ -1424,6 +1714,9 @@ async def generate_sql_query_draft(
         for index, asset in enumerate(assets[:3])
     )
     grounded_question = question
+    if clarification_context:
+        grounded_question += f"\n用户补充口径：{clarification_context}"
+    grounded_question += "\n\n结构化查询计划：" + json.dumps(query_plan, ensure_ascii=False)
     if knowledge_context.prompt:
         grounded_question += "\n\n" + knowledge_context.prompt
     if asset_context:
@@ -1431,15 +1724,50 @@ async def generate_sql_query_draft(
             "\n以下是同一数据源内已审核发布的 SQL 资产。仅复用与问题相关的表、JOIN 和指标口径，"
             "不要照搬不匹配的过滤值：\n" + asset_context
         )
+    if query_plan["needs_clarification"] and not (supplied_sql and supplied_sql.strip()):
+        clarification = {
+            "question_text": query_plan["clarification_question"],
+            "missing_entities": query_plan["missing_entities"],
+            "suggested_options": [],
+        }
+        draft = SQLQueryDraft(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            conversation_id=conversation_id,
+            response_id=response_id,
+            data_source_id=data_source.id,
+            question=question,
+            group_type=group_type,
+            status="needs_clarification",
+            output_mode=output_mode,
+            query_plan=query_plan,
+            clarification=clarification,
+            dialect=dialect,
+            schema_fingerprint=fingerprint,
+            expires_at=datetime.now(UTC) + timedelta(hours=24),
+        )
+        db.add(draft)
+        await db.commit()
+        return draft, []
+
     raw_candidates: list[str]
     if supplied_sql and supplied_sql.strip():
         raw_candidates = [supplied_sql]
     else:
         planned = await SQLPlanner().generate_candidates(
             grounded_question,
-            schema_hint=build_schema_hint(inspection.schema_payload, max_chars=8000),
+            schema_hint=build_relevant_schema_hint(
+                inspection.schema_payload,
+                preferred_tables=query_plan["required_tables"],
+                question=grounded_question,
+                max_chars=settings.text2sql_schema_hint_max_chars,
+            ),
             dialect=detect_sql_dialect(data_source.source_type),
             n=3,
+            max_tokens=settings.text2sql_generation_max_tokens,
         )
         raw_candidates = [candidate.sql for candidate in planned]
 
@@ -1483,6 +1811,9 @@ async def generate_sql_query_draft(
         question=question,
         group_type=group_type,
         status="awaiting_confirmation",
+        output_mode=output_mode,
+        query_plan=query_plan,
+        clarification={},
         dialect=dialect,
         schema_fingerprint=fingerprint,
         expires_at=datetime.now(UTC) + timedelta(hours=24),
@@ -1507,7 +1838,7 @@ async def generate_sql_query_draft(
             asset_ids=asset_ids,
             tables=tables,
             columns=columns,
-            assumptions=[],
+            assumptions=query_plan["assumptions"],
             validation_report={
                 **report,
                 "knowledge_context_counts": knowledge_context.counts,
@@ -1554,6 +1885,10 @@ def serialize_draft(draft: SQLQueryDraft, candidates: list[SQLQueryCandidate]) -
         "question": draft.question,
         "group_type": draft.group_type,
         "status": draft.status,
+        "output_mode": getattr(draft, "output_mode", "sql_only"),
+        "query_plan": getattr(draft, "query_plan", {}) or {},
+        "needs_clarification": draft.status == "needs_clarification",
+        "clarification": getattr(draft, "clarification", {}) or {},
         "dialect": draft.dialect,
         "schema_fingerprint": draft.schema_fingerprint,
         "selected_candidate_ids": draft.selected_candidate_ids or [],

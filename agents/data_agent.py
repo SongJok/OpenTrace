@@ -133,8 +133,27 @@ class DataAgent(BaseAgent):
                 or None,
                 response_id=str(task.params.get("response_id") or "") or None,
                 group_type=str(task.params.get("group_type") or "alternative"),
+                output_mode=str(task.params.get("output_mode") or "sql_only"),
+                clarification_context=str(task.params.get("clarify_context") or "") or None,
             )
             payload = serialize_draft(draft, candidates)
+        if draft.status == "needs_clarification":
+            question_text = str(payload["clarification"].get("question_text") or "请补充查询口径。")
+            return AgentResult(
+                task_id=task.task_id,
+                agent_type=self.agent_type,
+                status="success",
+                content=question_text,
+                confidence=0.9,
+                metadata={
+                    "mode": "clarification",
+                    "needs_clarification": True,
+                    "clarification": payload["clarification"],
+                    "draft_id": draft.id,
+                    "draft": payload,
+                    "executed": False,
+                },
+            )
         rendered = [
             "SQL 草案已生成，尚未执行。",
             f"草案 ID：{draft.id}",
@@ -161,6 +180,7 @@ class DataAgent(BaseAgent):
                 "draft_id": draft.id,
                 "candidates": payload["candidates"],
                 "draft": payload,
+                "query_plan": payload["query_plan"],
             },
         )
 

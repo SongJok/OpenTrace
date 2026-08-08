@@ -54,6 +54,9 @@
     },
     "r0018_data_knowledge": {
       "release": "unreleased"
+    },
+    "r0019_sql_asset_corpus_and_query_plans": {
+      "release": "unreleased"
     }
   }
 }

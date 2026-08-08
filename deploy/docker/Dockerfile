@@ -4,13 +4,23 @@ FROM ${PYTHON_BASE_IMAGE}
 WORKDIR /app
 
 ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
-ARG PIP_EXTRA_INDEX_URL=
+ARG PIP_EXTRA_INDEX_URL=https://pypi.org/simple
+ARG UV_VERSION=0.8.24
+ARG UV_HTTP_TIMEOUT=120
+ARG UV_HTTP_RETRIES=5
 
 COPY requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/uv \
     PIP_INDEX_URL="${PIP_INDEX_URL}" \
     PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}" \
-    pip install --prefer-binary --disable-pip-version-check --require-hashes -r requirements.lock
+    pip install --prefer-binary --disable-pip-version-check "uv==${UV_VERSION}" \
+    && UV_INDEX_URL="${PIP_INDEX_URL}" \
+    UV_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}" \
+    UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT}" \
+    UV_HTTP_RETRIES="${UV_HTTP_RETRIES}" \
+    UV_LINK_MODE=copy \
+    uv pip install --system --require-hashes -r requirements.lock
 
 COPY . .
 RUN groupadd --gid 10001 opentrace \

@@ -2592,118 +2592,7 @@ export async function apiUpdateDatabase(token: string, id: string, payload: any)
 }
 export async function apiAnalyzeDatabase(token: string, id: string): Promise<any> { const res = await apiFetch(`/databases/${id}/analysis`, { method: 'POST', headers: authHeaders(token), body: '{}' }); if (!res.ok) throw new Error(await readApiError(res, '数据分析失败')); return res.json() }
 export async function apiDatabaseQuery(token: string, id: string, query: any): Promise<any> { const res = await apiFetch(`/databases/${id}/query`, { method: 'POST', headers: authHeaders(token), body: JSON.stringify(query) }); if (!res.ok) throw new Error('Failed to query database'); return res.json() }
-export interface SQLAssetItem {
-  id: string
-  source_id: string
-  title: string
-  description: string
-  sql: string
-  asset_type: string
-  statement_type: string
-  executable: boolean
-  status: 'draft' | 'published' | 'deprecated' | 'rejected'
-  dialect: string
-  tables: string[]
-  columns: string[]
-  tags: string[]
-  knowledge_metadata?: {
-    questions?: string[]
-    metrics?: Array<{ name: string; formula: string }>
-    dimensions?: Array<{ name: string; table: string; column: string }>
-    joins?: Array<Record<string, string>>
-    time_columns?: string[]
-    grain?: string
-  }
-  lineage: Record<string, unknown>
-  validation_report: { status?: string; errors?: string[]; warnings?: string[] }
-  project_id?: string | null
-  approved_by?: string | null
-  approved_at?: string | null
-  created_at?: string
-  updated_at?: string
-}
-export interface SQLAssetSourceItem {
-  id: string
-  filename: string
-  dialect: string
-  status: string
-  statement_count: number
-  version: number
-  parse_report: Record<string, unknown>
-  created_at?: string
-}
-export interface SQLQueryCandidateItem {
-  id: string
-  position: number
-  title: string
-  description: string
-  sql: string
-  sql_hash: string
-  asset_ids: string[]
-  tables: string[]
-  columns: string[]
-  execution_status: 'pending' | 'executing' | 'completed' | 'failed'
-  rows: Array<Record<string, unknown>>
-  row_count: number
-  returned_row_count: number
-  result_truncated: boolean
-  error_message?: string | null
-}
-export interface SQLQueryDraftItem {
-  id: string
-  status: string
-  group_type: 'alternative' | 'batch'
-  candidates: SQLQueryCandidateItem[]
-  execution_summary?: Record<string, unknown>
-}
-export interface SQLAssetListParams {
-  status?: SQLAssetItem['status'] | ''
-  project_id?: string
-  search?: string
-  offset?: number
-  limit?: number
-}
-export interface SQLAssetListResponse {
-  sources: SQLAssetSourceItem[]
-  assets: SQLAssetItem[]
-  pagination: { offset: number; limit: number; total: number; has_more: boolean }
-}
-export async function apiListSQLAssets(token: string, databaseId: string, params: SQLAssetListParams = {}): Promise<SQLAssetListResponse> {
-  const query = new URLSearchParams()
-  if (params.status) query.set('status', params.status)
-  if (params.project_id) query.set('project_id', params.project_id)
-  if (params.search?.trim()) query.set('search', params.search.trim())
-  if (params.offset !== undefined) query.set('offset', String(params.offset))
-  if (params.limit !== undefined) query.set('limit', String(params.limit))
-  const suffix = query.size ? `?${query.toString()}` : ''
-  const res = await apiFetch(`/databases/${databaseId}/sql-assets${suffix}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取 SQL 资产失败'))
-  return res.json()
-}
-export async function apiUploadSQLAsset(token: string, databaseId: string, file: File): Promise<any> {
-  const form = new FormData()
-  form.append('file', file)
-  const res = await apiFetch(`/databases/${databaseId}/sql-assets/upload`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: form,
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '上传 SQL 资产失败'))
-  return res.json()
-}
-export async function apiUpdateSQLAsset(token: string, databaseId: string, assetId: string, payload: Record<string, unknown>): Promise<SQLAssetItem> {
-  const res = await apiFetch(`/databases/${databaseId}/sql-assets/${assetId}`, {
-    method: 'PATCH',
-    headers: authHeaders(token),
-    body: JSON.stringify(payload),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '更新 SQL 资产失败'))
-  return res.json()
-}
-export async function apiDeleteSQLAssetSource(token: string, databaseId: string, sourceId: string): Promise<void> {
-  const res = await apiFetch(`/databases/${databaseId}/sql-assets/sources/${sourceId}`, { method: 'DELETE', headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '删除 SQL 资产源失败'))
-}
+export * from './sqlAssets'
 export interface SchemaAnnotationItem {
   id: string
   target_type: 'table' | 'column'
@@ -2774,20 +2663,6 @@ export async function apiReviewSchemaAnnotation(token: string, databaseId: strin
 export async function apiDeleteSchemaAnnotation(token: string, databaseId: string, targetType: 'table' | 'column', annotationId: string): Promise<void> {
   const res = await apiFetch(`/databases/${databaseId}/schema-annotations/${targetType}/${annotationId}`, { method: 'DELETE', headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '删除 Schema 标注失败'))
-}
-export async function apiGetSQLDraft(token: string, databaseId: string, draftId: string): Promise<SQLQueryDraftItem> {
-  const res = await apiFetch(`/databases/${databaseId}/sql-drafts/${draftId}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取 SQL 草案失败'))
-  return res.json()
-}
-export async function apiExecuteSQLDraft(token: string, databaseId: string, draftId: string, payload: { candidate_ids?: string[]; execute_all?: boolean; retry_failed?: boolean }): Promise<SQLQueryDraftItem> {
-  const res = await apiFetch(`/databases/${databaseId}/sql-drafts/${draftId}/execute`, {
-    method: 'POST',
-    headers: authHeaders(token),
-    body: JSON.stringify({ candidate_ids: payload.candidate_ids || [], execute_all: !!payload.execute_all, retry_failed: !!payload.retry_failed }),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '执行 SQL 草案失败'))
-  return res.json()
 }
 export { apiGetDatabaseSchema } from './databaseSchema'
 export type { DatabaseSchemaPagination, DatabaseSchemaPayload } from './databaseSchema'

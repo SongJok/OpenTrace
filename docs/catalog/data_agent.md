@@ -22,12 +22,17 @@
 ### 2.1 SQL 资产与确认执行主链
 
 ```text
-.sql/.txt 上传
+.sql/.txt 批量上传（每批最多 100 个文件）
   → sqlglot 按数据源方言拆分和规范化
+  → AST 字面量归一化并生成结构哈希，识别仅日期/ID 不同的同模板 SQL
   → 分类 query / ETL / DDL，提取表列与读写血缘
+  → 标记硬编码日期/ID、测试条件、SELECT *、缺少 LIMIT 等风险
+  → 分入检索库 / 评测集 / 隔离区
   → Schema、敏感字段和只读 AST 静态校验
   → 人工审核发布
-  → 按 tenant/workspace/data_source/project 检索已发布资产
+  → 仅检索“检索库 + 已验证 + 已发布”资产
+  → 混合匹配问题示例、业务语义、Schema 和 SQL 结构
+  → 生成并持久化结构化 QueryPlan，必要时先追问口径
   → 生成 SQLQueryDraft + 1-N 个稳定 SQLQueryCandidate
   → 向用户展示 SQL，状态为 awaiting_confirmation
   → 用户选择候选或全部
@@ -40,8 +45,9 @@
 完成显式确认；Responses 通过 `execute_sql_draft` typed tool 进入持久化 `ResponseApproval`
 暂停点。后台报告和预警仍可使用各自已有的受信执行路径，不继承交互式参数。
 
-SQL 资产是独立治理域，不写入无租户边界的历史 `QueryPattern`。ETL、DDL 和 DML 仅保存为
-血缘参考，只有审核发布且通过校验的 `SELECT/WITH` 可以参与在线生成和执行。
+SQL 资产是独立治理域，不写入无租户边界的历史 `QueryPattern`。检索库用于线上生成，评测集
+永不进入检索和知识晋升链路，隔离区保存废弃、临时、高风险或 ETL/DDL 参考。ETL、DDL 和 DML
+会自动进入隔离区；只有检索库中审核发布且通过校验的 `SELECT/WITH` 可以参与在线生成和执行。
 
 ### 2.2 Schema 业务标注与 SQL 知识接入
 
@@ -72,11 +78,16 @@ SQL 资产是独立治理域，不写入无租户边界的历史 `QueryPattern`�
 -- @joins: orders.channel_id=channels.id;orders.id=refunds.order_id
 -- @time-column: orders.paid_at
 -- @grain: day
+-- @filters: orders.status='paid';orders.is_test=false
+-- @assumptions: 按支付时间统计;默认时区 Asia/Shanghai
+-- @domain: 订单
+-- @owner: growth_team
 SELECT ...;
 ```
 
 支持的键包括 `title`、`description`、`questions`、`tags`、`metrics`、`dimensions`、
-`joins`、`time-column`、`grain` 和 `parameters`，也支持对应中文键。上传不会执行 SQL；语句仍需
+`joins`、`time-column`、`grain`、`parameters`、`filters`、`assumptions`、`domain` 和
+`owner`，也支持对应中文键。上传不会执行 SQL；语句仍需
 通过只读 AST、Schema 和敏感字段校验并人工发布。发布时，指标会创建为 `draft`，关系和字段标注
 会创建为待审核候选，只有确认后的知识才用于稳定生成。
 
@@ -84,6 +95,19 @@ SELECT ...;
 该服务在相同 tenant/workspace/project/data_source 范围内组合物理 Schema、人工标注、已发布指标、
 已验证 JOIN 和已发布 SQL 资产，再交给模型生成 1–N 个候选；候选仍必须经过只读、安全、Schema
 指纹和显式确认执行约束。因此补充上述资料后，无需训练模型，也能让问数请求稳定理解业务口径。
+
+### 2.3 大批量历史 SQL 的操作顺序
+
+1. 在数据库工作台“SQL 资产”页选择业务域、负责人和语料分区，再多选 `.sql/.txt` 文件上传；
+2. 日常稳定查询放入“检索库”，留作离线验收的问题—SQL 放入“评测集”，临时、废弃、ETL 或
+   未确认口径的内容放入“隔离区”；
+3. 检查解析错误、风险标记和 AST 模板重复组，补充 SQL 头部的业务问题、指标、维度、JOIN、
+   过滤口径与假设；
+4. 逐条审核可用的只读查询并发布。发布会记录审核人、Schema 指纹和验证时间；
+5. 在“查询”页提问。系统会先显示结构化查询计划；口径不完整时返回 `clarification`，补充后
+   重新规划；明确后返回完整 SQL 草案；
+6. `sql_only` 只用于生成和审核。`execute_and_answer` 表示确认执行后的目标，但仍不能绕过
+   候选选择、持久化审批、只读账号、限行、超时和敏感字段校验。
 
 ---
 

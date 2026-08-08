@@ -481,6 +481,8 @@ class AppSettings(BaseSettings):
     text2sql_statement_timeout_ms: int = 15000
     text2sql_join_inference_enabled: bool = True
     text2sql_max_join_depth: int = 3
+    text2sql_generation_max_tokens: int = Field(default=1600, ge=400, le=8192)
+    text2sql_schema_hint_max_chars: int = Field(default=16000, ge=4000, le=100000)
     # Schema 元数据同步使用独立预算，不能复用 Text2SQL 的 500 行结果保护器。
     database_schema_sync_page_size: int = Field(default=2000, ge=100, le=10000)
     database_schema_sync_max_tables: int = Field(default=100000, ge=1000, le=1000000)

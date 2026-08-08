@@ -195,6 +195,9 @@ echo "▸ 使用 OpenTrace 应用镜像: $OPENTRACE_IMAGE"
 echo "▸ 使用 OpenTrace 前端镜像: $OPENTRACE_FRONTEND_IMAGE"
 echo "▸ 当前源码指纹: ${OPENTRACE_BUILD_FINGERPRINT:0:12}"
 echo "▸ 使用 docker compose 内 PostgreSQL 服务 (postgres:5432)"
+echo "▸ Python 依赖主镜像: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
+echo "▸ Python 依赖兜底源: ${PIP_EXTRA_INDEX_URL:-https://pypi.org/simple}"
+echo "▸ 依赖安装器: uv ${UV_VERSION:-0.8.24}（超时 ${UV_HTTP_TIMEOUT:-120}s，重试 ${UV_HTTP_RETRIES:-5} 次）"
 
 if [ "$PULL_IMAGES" -eq 1 ]; then
   echo "▸ 更新所需镜像..."
