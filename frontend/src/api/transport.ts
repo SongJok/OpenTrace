@@ -10,6 +10,8 @@ export const RESPONSES_BASE = '/api/v2'
 const ENV_API = (import.meta as any)?.env?.VITE_API_URL as string | undefined
 const CONFIGURED_API = ENV_API?.trim() || ''
 
+type ApiErr = { code?: number; message?: string; detail?: string }
+
 if (typeof window !== 'undefined') {
   console.info('[OpenTrace] API config:', {
     VITE_API_URL: CONFIGURED_API || '(unset)',
@@ -21,6 +23,12 @@ if (typeof window !== 'undefined') {
 
 export function authHeaders(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+}
+
+export async function readApiError(res: Response, fallback: string): Promise<string> {
+  const err = (await res.json().catch(() => ({}))) as ApiErr
+  if (res.status === 413) return '上传内容超过服务允许的大小，请压缩或拆分后重试'
+  return err.message || err.detail || fallback
 }
 
 function captureRequestAuthSession(init?: RequestInit): AuthSessionSnapshot | null {

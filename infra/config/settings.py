@@ -481,6 +481,14 @@ class AppSettings(BaseSettings):
     text2sql_statement_timeout_ms: int = 15000
     text2sql_join_inference_enabled: bool = True
     text2sql_max_join_depth: int = 3
+    # Schema 元数据同步使用独立预算，不能复用 Text2SQL 的 500 行结果保护器。
+    database_schema_sync_page_size: int = Field(default=2000, ge=100, le=10000)
+    database_schema_sync_max_tables: int = Field(default=100000, ge=1000, le=1000000)
+    database_schema_sync_max_columns: int = Field(
+        default=1000000,
+        ge=10000,
+        le=10000000,
+    )
 
     # Shared marketplace management is admin-only. Dynamic Python execution is
     # explicitly opt-in for local development until an isolated runner exists.

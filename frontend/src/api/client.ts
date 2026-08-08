@@ -8,7 +8,7 @@ import {
   type ReasoningStep,
   type ResponseStreamCallbacks,
 } from './responseStream'
-import { apiFetch, apiFetchResponses, authHeaders, RESPONSES_BASE } from './transport'
+import { apiFetch, apiFetchResponses, authHeaders, readApiError, RESPONSES_BASE } from './transport'
 
 export type { TurnMetaEnvelope }
 export { streamSseResponse }
@@ -203,14 +203,6 @@ export interface MessageItem {
 export interface MemorySettings {
   memory_learning_enabled: boolean
   preference_learning_enabled: boolean
-}
-
-type ApiErr = { code?: number; message?: string; detail?: string }
-
-async function readApiError(res: Response, fallback: string): Promise<string> {
-  const err = (await res.json().catch(() => ({}))) as ApiErr
-  if (res.status === 413) return '上传内容超过服务允许的大小，请压缩或拆分后重试'
-  return err.message || err.detail || fallback
 }
 
 export type ResponseStatus = 'queued' | 'in_progress' | 'requires_action' | 'completed' | 'failed' | 'incomplete' | 'cancelled'
@@ -2718,7 +2710,8 @@ export async function apiExecuteSQLDraft(token: string, databaseId: string, draf
   if (!res.ok) throw new Error(await readApiError(res, '执行 SQL 草案失败'))
   return res.json()
 }
-export async function apiGetDatabaseSchema(token: string, id: string): Promise<any> { const res = await apiFetch(`/databases/${id}/schema`, { headers: authHeaders(token) }); if (!res.ok) throw new Error('Failed to get database schema'); return res.json() }
+export { apiGetDatabaseSchema } from './databaseSchema'
+export type { DatabaseSchemaPagination, DatabaseSchemaPayload } from './databaseSchema'
 export async function apiSyncDatabaseSchema(token: string, id: string): Promise<any> { const res = await apiFetch(`/databases/${id}/sync-schema`, { method: 'POST', headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '同步数据库 Schema 失败')); return res.json() }
 export async function apiTestDatabaseConnection(token: string, databaseId: string): Promise<any> { const res = await apiFetch(`/databases/${databaseId}/test-connection`, { method: 'POST', headers: authHeaders(token) }); if (!res.ok) throw new Error('Failed to test database connection'); return res.json() }
 export async function apiGetDatabaseWorkbench(token: string, databaseId: string): Promise<any> { const res = await apiFetch(`/databases/${databaseId}/workbench`, { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取数据工作台失败')); return res.json() }
@@ -2823,6 +2816,8 @@ export interface DataSourceItem {
   table_count?: number
   database_count?: number
   metadata_warning?: string | null
+  tables_truncated?: boolean
+  columns_truncated?: boolean
   last_schema_sync_at?: string
   synced_at?: string
   updated_at?: string

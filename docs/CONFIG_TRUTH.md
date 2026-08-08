@@ -28,6 +28,19 @@
 | `RAG_MIN_EVIDENCE_SCORE` | `settings.rag_min_evidence_score` | 证据门禁（默认 0.65） |
 | `RAG_MIN_SCORE` | 仅部分遗留代码 | **未**在 `settings.py` 定义；新配置请用 `RAG_MIN_EVIDENCE_SCORE` |
 
+## 数据库 Schema 元数据
+
+| 变量 | 默认值 | 说明 |
+|------|-------:|------|
+| `DATABASE_SCHEMA_SYNC_PAGE_SIZE` | `2000` | Schema 同步访问目标数据库时的每批行数 |
+| `DATABASE_SCHEMA_SYNC_MAX_TABLES` | `100000` | 单次同步表安全预算，达到后返回 `tables_truncated=true` |
+| `DATABASE_SCHEMA_SYNC_MAX_COLUMNS` | `1000000` | 单次同步列安全预算，达到后返回 `columns_truncated=true` |
+
+Schema 同步不得复用 `TEXT2SQL_MAX_RESULT_ROWS=500`：后者只保护业务查询结果。同步端按批次读取
+元数据，目录 API 默认每页返回 100 张表、最多 200 张，并支持 `search`、`database`、`offset`
+和 `limit`；前端通过“继续加载”渐进展示。达到同步安全预算时统计是下限，API 和页面必须保留
+明确告警。
+
 ## 知识编排
 
 | 变量 | 定义位置 | 说明 |

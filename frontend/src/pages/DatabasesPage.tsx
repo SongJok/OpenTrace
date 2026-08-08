@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Archive, BarChart3, CheckCircle2, ChevronLeft, Circle, Database, FileCode2, Gauge, Pencil, PlayCircle, Plus, RefreshCw, Search, Settings2, ShieldCheck, Table2, Trash2, Upload, Users, Zap } from 'lucide-react'
 import DatabaseTypeSelect, { DATABASE_HOST_MODE_OPTIONS, type DatabaseHostMode, type DatabaseType } from '../components/DatabaseTypeSelect'
 import MarkdownMessage from '../components/MarkdownMessage'
@@ -39,6 +39,8 @@ import {
   apiUpdateSQLAsset,
   apiUploadSQLAsset,
   type DataSourceItem,
+  type DatabaseSchemaPagination,
+  type DatabaseSchemaPayload,
   type ResourcePermissionItem,
   type SQLAssetItem,
   type SQLAssetSourceItem,
@@ -48,6 +50,7 @@ import {
 type TabKey = 'overview' | 'tables' | 'query' | 'sql_assets' | 'analysis' | 'settings' | 'metrics' | 'relationships' | 'skills'
 
 const SQL_ASSET_PAGE_SIZE = 20
+const SCHEMA_TABLE_PAGE_SIZE = 100
 const SQL_ASSET_STATUS_LABELS: Record<SQLAssetItem['status'], string> = {
   draft: '草稿',
   published: '已发布',
@@ -97,10 +100,18 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     answer: string
     isClarification: boolean
   }>>([])
-  const [schema, setSchema] = useState<{ tables: Array<{ name: string; comment?: string; columns: Array<{ name: string; type: string; comment?: string }> }> } | null>(null)
+  const [schema, setSchema] = useState<DatabaseSchemaPayload | null>(null)
+  const [schemaPagination, setSchemaPagination] = useState<DatabaseSchemaPagination | null>(null)
+  const [schemaSearch, setSchemaSearch] = useState('')
+  const [schemaAppliedSearch, setSchemaAppliedSearch] = useState('')
+  const [schemaDatabase, setSchemaDatabase] = useState('')
+  const [schemaLoading, setSchemaLoading] = useState(false)
+  const [schemaError, setSchemaError] = useState('')
+  const schemaRequestId = useRef(0)
   const [analysis, setAnalysis] = useState<{ summary: string; charts: any[]; tables: any[]; insights: string[] } | null>(null)
   const [creating, setCreating] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [schemaSyncing, setSchemaSyncing] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
 
   // semantic layer state
@@ -173,6 +184,38 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     }
   }
 
+  const loadSchemaPage = async (
+    databaseId: string,
+    options: { search?: string; database?: string; offset?: number; append?: boolean } = {},
+  ) => {
+    const requestId = schemaRequestId.current + 1
+    schemaRequestId.current = requestId
+    setSchemaLoading(true)
+    setSchemaError('')
+    try {
+      const result = await apiGetDatabaseSchema(token, databaseId, {
+        search: options.search,
+        database: options.database,
+        offset: options.offset || 0,
+        limit: SCHEMA_TABLE_PAGE_SIZE,
+      })
+      if (requestId !== schemaRequestId.current) return
+      setSchema((previous) => options.append && previous
+        ? { ...result.schema, tables: [...previous.tables, ...(result.schema.tables || [])] }
+        : result.schema)
+      setSchemaPagination(result.pagination)
+    } catch (error) {
+      if (requestId !== schemaRequestId.current) return
+      setSchemaError(error instanceof Error ? error.message : '读取数据库 Schema 失败')
+      if (!options.append) {
+        setSchema({ tables: [] })
+        setSchemaPagination(null)
+      }
+    } finally {
+      if (requestId === schemaRequestId.current) setSchemaLoading(false)
+    }
+  }
+
   useEffect(() => {
     void load()
   }, [])
@@ -182,9 +225,12 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     setSqlAssetSearch('')
     setSqlAssetStatus('')
     setSqlAssetOffset(0)
-    void apiGetDatabaseSchema(token, selected.id)
-      .then((x) => setSchema(x?.schema || { tables: [] }))
-      .catch(() => setSchema({ tables: [] }))
+    setSchemaSearch('')
+    setSchemaAppliedSearch('')
+    setSchemaDatabase('')
+    setSchema(null)
+    setSchemaPagination(null)
+    void loadSchemaPage(selected.id)
     void apiGetSemanticConfig(token, selected.id)
       .then((x) => setSemanticConfig({
         dimensions: x?.dimensions || {},
@@ -473,13 +519,23 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   }
 
   const syncSchema = async () => {
-    if (!selected) return
-    const sync = await apiSyncDatabaseSchema(token, selected.id)
-    const out = await apiGetDatabaseSchema(token, selected.id)
-    setSchema(out.schema)
-    setActiveTab('tables')
-    await load()
-    alert(sync.metadata_warning || `Schema 已同步，库数: ${sync.database_count || 0}，表数: ${out.schema.tables?.length || 0}`)
+    if (!selected || schemaSyncing) return
+    setSchemaSyncing(true)
+    setSchemaError('')
+    try {
+      const sync = await apiSyncDatabaseSchema(token, selected.id)
+      setSchemaSearch('')
+      setSchemaAppliedSearch('')
+      setSchemaDatabase('')
+      await loadSchemaPage(selected.id)
+      setActiveTab('tables')
+      await load()
+      alert(sync.metadata_warning || `Schema 已同步，库数: ${sync.database_count || 0}，表数: ${sync.tables_truncated ? '至少 ' : ''}${sync.table_count || 0}`)
+    } catch (error) {
+      setSchemaError(error instanceof Error ? error.message : '同步数据库 Schema 失败')
+    } finally {
+      setSchemaSyncing(false)
+    }
   }
 
   const runAnalysis = async () => {
@@ -703,7 +759,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                   <span>状态：{x.status}</span>
                 </div>
                 <div className="text-[var(--text-secondary)]">
-                  库数：{x.database_count ?? (x.database ? 1 : 0)} · 表数：{x.table_count ?? 0} · 更新：{x.updated_at || '—'} · 上次同步：{x.last_schema_sync_at || x.synced_at || '—'}
+                  库数：{x.database_count ?? (x.database ? 1 : 0)} · 表数：{x.tables_truncated ? '至少 ' : ''}{x.table_count ?? 0} · 更新：{x.updated_at || '—'} · 上次同步：{x.last_schema_sync_at || x.synced_at || '—'}
                 </div>
                 {x.metadata_warning ? <div className="mt-1 text-amber-500">{x.metadata_warning}</div> : null}
               </div>
@@ -718,7 +774,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                 <h2 className="text-sm font-semibold">{selected.name}</h2>
                 <div className="flex gap-2">
                   <button className="px-2 py-1 rounded border text-xs inline-flex items-center gap-1" onClick={() => void testConn()}><PlayCircle size={12} /> 测试连接</button>
-                  <button className="px-2 py-1 rounded border text-xs inline-flex items-center gap-1" onClick={() => void syncSchema()}><RefreshCw size={12} /> 同步Schema</button>
+                  <button disabled={schemaSyncing} className="px-2 py-1 rounded border text-xs inline-flex items-center gap-1 disabled:opacity-50" onClick={() => void syncSchema()}><RefreshCw size={12} className={schemaSyncing ? 'animate-spin' : ''} /> {schemaSyncing ? '同步中' : '同步Schema'}</button>
                 </div>
               </div>
 
@@ -748,22 +804,39 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
               ) : null}
 
               {activeTab === 'tables' ? (
-                <div className="space-y-2">
-                  {(schema?.tables || []).length === 0 ? <div className="text-xs text-[var(--text-secondary)]">暂无 schema，请先同步</div> : null}
+                <div className="space-y-3">
+                  <div className="flex flex-col gap-2 rounded-xl border border-[var(--border)] p-3 lg:flex-row lg:items-center">
+                    <label className="relative min-w-0 flex-1">
+                      <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
+                      <input value={schemaSearch} onChange={(event) => setSchemaSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && selected) { setSchemaAppliedSearch(schemaSearch); void loadSchemaPage(selected.id, { search: schemaSearch, database: schemaDatabase }) } }} placeholder="搜索表名、注释或所属库" aria-label="搜索数据库表" className="h-9 w-full rounded-lg border border-[var(--border)] bg-transparent pl-9 pr-3 text-xs outline-none focus:border-[var(--accent)]" />
+                    </label>
+                    {(schema?.databases || []).length > 1 ? <select value={schemaDatabase} onChange={(event) => { const database = event.target.value; setSchemaDatabase(database); setSchemaAppliedSearch(schemaSearch); if (selected) void loadSchemaPage(selected.id, { search: schemaSearch, database }) }} aria-label="按数据库筛选" className="h-9 rounded-lg border border-[var(--border)] bg-transparent px-3 text-xs"><option value="">全部数据库</option>{(schema?.databases || []).map((database) => <option key={database} value={database}>{database}</option>)}</select> : null}
+                    <button disabled={schemaLoading || !selected} onClick={() => { setSchemaAppliedSearch(schemaSearch); if (selected) void loadSchemaPage(selected.id, { search: schemaSearch, database: schemaDatabase }) }} className="h-9 rounded-lg bg-[var(--accent)] px-4 text-xs font-medium text-[var(--accent-foreground)] disabled:opacity-50">搜索</button>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--text-secondary)]">
+                    <span>已展示 {(schema?.tables || []).length} / {schemaPagination?.total ?? schema?.table_count ?? 0} 张匹配表{schema?.table_count != null && schemaPagination?.total !== schema.table_count ? ` · 全库 ${schema.tables_truncated ? '至少 ' : ''}${schema.table_count} 张` : ''}</span>
+                    <span>每次加载 {SCHEMA_TABLE_PAGE_SIZE} 张，列详情随表返回</span>
+                  </div>
+                  {schema?.metadata_warning ? <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-500">{schema.metadata_warning}</div> : null}
+                  {schemaError ? <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-500">{schemaError}</div> : null}
+                  {schemaLoading && (schema?.tables || []).length === 0 ? <div className="rounded-lg border border-dashed border-[var(--border)] p-8 text-center text-xs text-[var(--text-secondary)]">正在读取表目录…</div> : null}
+                  {!schemaLoading && !schemaError && (schema?.tables || []).length === 0 ? <div className="rounded-lg border border-dashed border-[var(--border)] p-8 text-center text-xs text-[var(--text-secondary)]">{schemaAppliedSearch || schemaDatabase ? '没有匹配的表，请调整搜索或数据库筛选。' : '暂无 Schema，请先同步。'}</div> : null}
                   {(schema?.tables || []).map((t) => (
-                    <details key={t.name} className="rounded border border-[var(--border)] p-2">
-                      <summary className="cursor-pointer text-sm font-medium">{t.name}</summary>
+                    <details key={t.qualified_name || `${t.database || ''}.${t.name}`} className="rounded border border-[var(--border)] p-2">
+                      <summary className="cursor-pointer text-sm font-medium"><span>{t.name}</span>{t.database && t.database !== schema?.schema ? <span className="ml-2 rounded bg-[var(--surface-raised)] px-1.5 py-0.5 text-[10px] font-normal text-[var(--text-secondary)]">{t.database}</span> : null}</summary>
                       {t.comment ? <div className="mt-1 text-xs text-[var(--text-secondary)]">{t.comment}</div> : null}
-                      <div className="mt-2 grid grid-cols-2 gap-1 text-xs">
+                      {(t.columns || []).length > 0 ? <div className="mt-2 grid grid-cols-1 gap-1 text-xs sm:grid-cols-2">
                         {(t.columns || []).map((c) => (
-                          <div key={`${t.name}_${c.name}`} className="rounded bg-[var(--surface-raised)] px-2 py-1">
+                          <div key={`${t.qualified_name || t.name}_${c.name}`} className="rounded bg-[var(--surface-raised)] px-2 py-1">
                             {c.name} <span className="text-[var(--text-secondary)]">({c.type})</span>
                             {c.comment ? <div className="text-[10px] text-[var(--text-secondary)]">{c.comment}</div> : null}
                           </div>
                         ))}
-                      </div>
+                      </div> : <div className="mt-2 text-[11px] text-[var(--text-secondary)]">暂无列详情{schema?.columns_truncated ? '，列元数据同步已达到安全预算。' : '。'}</div>}
                     </details>
                   ))}
+                  {schemaPagination?.has_more ? <button disabled={schemaLoading || !selected} onClick={() => { if (selected && schemaPagination.next_offset != null) void loadSchemaPage(selected.id, { search: schemaAppliedSearch, database: schemaDatabase, offset: schemaPagination.next_offset, append: true }) }} className="flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--border)] py-2.5 text-xs hover:border-[var(--accent)] disabled:opacity-50"><RefreshCw size={12} className={schemaLoading ? 'animate-spin' : ''} />{schemaLoading ? '加载中…' : `继续加载（剩余 ${Math.max(0, schemaPagination.total - (schema?.tables || []).length)} 张）`}</button> : null}
                 </div>
               ) : null}
 

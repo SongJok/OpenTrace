@@ -20,12 +20,12 @@ def test_model_api_key_is_encrypted_and_masked(monkeypatch):
     from infra.config.settings import get_settings
 
     monkeypatch.setattr(get_settings(), "data_secret_key", "dynamic-model-test-secret")
-    plain = "sk-super-secret-model-key"
+    plain = "model-super-secret-key"
     encrypted = encrypt_model_api_key(plain)
 
     assert plain not in encrypted
     assert decrypt_model_api_key(encrypted) == plain
-    assert mask_api_key(plain).startswith("sk-s")
+    assert mask_api_key(plain).startswith("mode")
     assert mask_api_key(plain).endswith("-key")
     assert plain not in mask_api_key(plain)
 

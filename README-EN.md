@@ -11,8 +11,8 @@ OpenTrace 是一个可自托管的企业 AgentOS。它以 OpenAI 风格的 Respo
 Agent Loop 和 PostgreSQL 持久化事件为核心，把企业数据库、知识库、审批治理、主动预警、
 对话、记忆、Goal 与定时任务组织到同一条产品主链中。
 
-> **项目状态：Alpha。** 核心链路和合约测试已经建立，但在生产部署前仍应完成密钥托管、
-> 网络隔离、备份恢复、容量评估和组织级安全审查。
+> **项目状态：受控企业 Beta。** 支持范围内的产品主路径可进入受治理租户试点，但尚未达到
+> GA；真实放量仍需通过主链评测，并完成密钥托管、网络隔离、备份恢复、容量评估和组织级安全审查。
 
 ## 为什么是 OpenTrace
 
@@ -255,6 +255,7 @@ python -m pytest -q
 bash scripts/check_import_boundaries.sh
 bash scripts/run_vnext_final_tests.sh
 bash scripts/run_enterprise_contract_tests.sh
+bash scripts/run_product_beta_gate.sh --contract
 
 # 对本次修改的 Python 文件做静态检查（替换为实际文件路径）
 ruff check path/to/changed.py
@@ -298,6 +299,7 @@ tests/            单元、集成与架构合约测试
 
 ## 文档
 
+- [受控企业 Beta 就绪说明](docs/BETA_READINESS.md)
 - [架构概览](docs/architecture_overview.md)
 - [Responses 切换与回滚](docs/runbooks/chatgpt_cutover.md)
 - [DataAgent](docs/catalog/data_agent.md)

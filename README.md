@@ -13,9 +13,10 @@ knowledge bases, approval governance, proactive alerts, conversations, memory, g
 scheduled tasks into one coherent product workflow. The enterprise AI workbench turns those
 durable capabilities into one actionable employee home.
 
-> **Project status: Alpha.** The core runtime and contract suites are in place. Before using
-> OpenTrace in production, complete secret management, network isolation, backup and recovery,
-> capacity planning, and an organization-level security review.
+> **Project status: Controlled enterprise Beta.** The supported product path is ready for
+> governed tenant pilots and is protected by product-wide Beta gates. This is not GA: production
+> rollout still requires real Responses evaluation results, secret and network isolation,
+> backup/recovery evidence, capacity planning, and an organization-level security review.
 
 ## Why OpenTrace
 
@@ -284,6 +285,7 @@ python -m pytest -q
 bash scripts/check_import_boundaries.sh
 bash scripts/run_vnext_final_tests.sh
 bash scripts/run_enterprise_contract_tests.sh
+bash scripts/run_product_beta_gate.sh --contract
 
 # Check the Python files changed by your patch; replace these example paths.
 ruff check path/to/changed.py
@@ -330,6 +332,7 @@ tests/            Unit, integration, and architecture contract tests
 - [Product vision: enterprise organization OS](docs/PRODUCT_VISION.md)
 - [Enterprise organization OS architecture](docs/architecture/enterprise_organization_os.md)
 - [Responses enterprise Beta runbook](docs/runbooks/responses_enterprise_beta.md)
+- [Product-wide controlled Beta readiness](docs/BETA_READINESS.md)
 - [Architecture overview](docs/architecture_overview.md)
 - [Enterprise AI workbench](docs/architecture/enterprise_ai_workbench.md)
 - [Enterprise identity and operations](docs/architecture/enterprise_identity_and_operations.md)

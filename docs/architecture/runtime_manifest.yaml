@@ -1,9 +1,9 @@
 schema_version: 1
 product:
   name: OpenTrace
-  maturity: Alpha
+  maturity: Beta
   maturity_scale: [Alpha, Beta, GA]
-  current_as_of: "2026-07-25"
+  current_as_of: "2026-08-08"
   positioning: 可治理的企业数据与知识 Agent 执行平台
 
 online_runtime:
@@ -55,7 +55,7 @@ online_runtime:
 
 
 enterprise_knowledge:
-  maturity: Alpha
+  maturity: Beta
   control_plane: knowledge-orchestration
   employee_product: enterprise-knowledge-base
   api_routes:

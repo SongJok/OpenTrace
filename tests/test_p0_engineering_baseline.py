@@ -25,7 +25,7 @@ def test_product_maturity_uses_alpha_beta_ga_only() -> None:
     manifest = yaml.safe_load(
         (ROOT / "docs/architecture/runtime_manifest.yaml").read_text(encoding="utf-8")
     )
-    assert manifest["product"]["maturity"] == "Alpha"
+    assert manifest["product"]["maturity"] == "Beta"
     assert manifest["product"]["maturity_scale"] == ["Alpha", "Beta", "GA"]
     maturity = (ROOT / "docs/CAPABILITY_MATURITY.md").read_text(encoding="utf-8")
     assert "**生产**" not in maturity

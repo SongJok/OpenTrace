@@ -1,6 +1,6 @@
 # OpenTrace 架构总览
 
-> **产品成熟度：Alpha。** 本文与 `docs/architecture/runtime_manifest.yaml` 共同构成在线架构单一真相；清单由 `python scripts/check_architecture_manifest.py` 自动校验。
+> **产品成熟度：受控企业 Beta。** 本文与 `docs/architecture/runtime_manifest.yaml` 共同构成在线架构单一真相；清单由 `python scripts/check_architecture_manifest.py` 自动校验。
 
 ## 唯一在线对话主路径
 
@@ -40,8 +40,8 @@ PostgreSQL 是在线执行事实来源；Redis 只承担投递、唤醒和可重
 
 OpenTrace 对外只使用 **Alpha / Beta / GA**：
 
-- **Alpha（当前）**：核心持久化执行链可用，但备份恢复、容量基线、完整安全隔离和持续评测尚未全部完成。
-- **Beta**：关键场景具备真实 PostgreSQL 故障恢复、跨租户负向测试、Golden Dataset 和试点运维基线。
+- **Alpha**：核心持久化执行链可用，但恢复、隔离、评测和试点运维合同尚未闭环。
+- **Beta（当前）**：关键场景具备持久化恢复、跨租户负向测试、Golden Dataset 合同和试点运维基线；真实租户放量仍需运行 release 门禁并归档证据。
 - **GA**：完成生产 SLO、备份恢复演练、安全评审、容量与升级策略，并通过发布门禁。
 
 模块不得单独宣称“生产级”来绕过产品整体成熟度。

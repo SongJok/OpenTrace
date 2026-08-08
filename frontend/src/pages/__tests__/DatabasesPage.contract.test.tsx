@@ -44,4 +44,17 @@ describe('DatabasesPage contract', () => {
     expect(client.apiExecuteSQLDraft.toString()).toContain('retry_failed')
     expect(client.apiGetSQLDraft.toString()).toContain('/sql-drafts/${draftId}')
   })
+
+  it('loads large schema catalogs through searchable server pagination', async () => {
+    const page = await import('../DatabasesPage')
+    const client = await import('../../api/client')
+    const source = page.default.toString()
+
+    expect(source).toContain('SCHEMA_TABLE_PAGE_SIZE')
+    expect(source).toContain('schemaPagination')
+    expect(source).toContain('搜索表名、注释或所属库')
+    expect(source).toContain('继续加载')
+    expect(client.apiGetDatabaseSchema.toString()).toContain('URLSearchParams')
+    expect(client.apiGetDatabaseSchema.toString()).toContain('/schema?')
+  })
 })

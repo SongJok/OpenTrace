@@ -4,7 +4,7 @@ import json
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,7 @@ from gateway.api_gateway.resource_scope import (
 )
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
+from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
 from infra.security.data_source_secrets import (
     decrypt_data_source_secret,
@@ -42,6 +43,8 @@ router = APIRouter()
 
 
 SUPPORTED_SOURCE_TYPES = {"mysql", "clickhouse", "doris", "postgres"}
+SCHEMA_CATALOG_DEFAULT_PAGE_SIZE = 100
+SCHEMA_CATALOG_MAX_PAGE_SIZE = 200
 
 
 async def _owned_data_source(
@@ -173,6 +176,85 @@ def _schema_sql(source_type: str, schema_name: str) -> tuple[str, str]:
 def _normalize_comment_row(row: dict[str, object]) -> str:
     comment = row.get("column_comment") or row.get("table_comment") or row.get("comment")
     return str(comment or "")
+
+
+async def _fetch_schema_rows(
+    executor: SQLExecutor,
+    dsn: str,
+    sql: str,
+    *,
+    source_type: str,
+    page_size: int,
+    max_rows: int,
+) -> tuple[list[dict[str, object]], bool]:
+    """按批次读取元数据，避免复用业务查询的 500 行上限。"""
+
+    bounded_page_size = max(1, min(int(page_size), int(max_rows)))
+    bounded_max_rows = max(1, int(max_rows))
+    base_sql = sql.strip().rstrip(";")
+    rows: list[dict[str, object]] = []
+    offset = 0
+    while len(rows) < bounded_max_rows:
+        current_limit = min(bounded_page_size, bounded_max_rows - len(rows))
+        page = await executor.run_on_dsn(
+            dsn,
+            f"{base_sql} LIMIT {current_limit} OFFSET {offset}",
+            source_type=source_type,
+        )
+        rows.extend(page)
+        if len(page) < current_limit:
+            return rows, False
+        offset += len(page)
+    # 达到安全预算时保守标记为截断；即使恰好等于总量，也不能误报“完整”。
+    return rows, True
+
+
+def _schema_catalog_page(
+    payload: dict,
+    *,
+    search: str,
+    database: str | None,
+    offset: int,
+    limit: int,
+) -> tuple[dict, dict[str, int | bool | None]]:
+    """从持久化 Schema 生成有界、可搜索的表目录响应。"""
+
+    raw_tables = payload.get("tables") if isinstance(payload, dict) else []
+    tables = (
+        [row for row in raw_tables if isinstance(row, dict)] if isinstance(raw_tables, list) else []
+    )
+    normalized_search = search.strip().casefold()
+    normalized_database = str(database or "").strip().casefold()
+    filtered: list[dict] = []
+    for table in tables:
+        table_database = str(table.get("database") or "").strip()
+        if normalized_database and table_database.casefold() != normalized_database:
+            continue
+        if normalized_search:
+            searchable = " ".join(
+                str(table.get(key) or "")
+                for key in ("name", "qualified_name", "comment", "database")
+            ).casefold()
+            if normalized_search not in searchable:
+                continue
+        filtered.append(table)
+
+    total = len(filtered)
+    bounded_offset = min(max(0, int(offset)), total)
+    bounded_limit = max(1, min(int(limit), SCHEMA_CATALOG_MAX_PAGE_SIZE))
+    page_tables = filtered[bounded_offset : bounded_offset + bounded_limit]
+    next_offset = bounded_offset + len(page_tables)
+    has_more = next_offset < total
+    page_payload = {key: value for key, value in payload.items() if key != "tables"}
+    page_payload["tables"] = page_tables
+    return page_payload, {
+        "offset": bounded_offset,
+        "limit": bounded_limit,
+        "count": len(page_tables),
+        "total": total,
+        "has_more": has_more,
+        "next_offset": next_offset if has_more else None,
+    }
 
 
 def _validate_database_host(host: str) -> str:
@@ -326,6 +408,8 @@ async def list_databases(
                 "table_count": schema_payload.get("table_count", 0),
                 "database_count": schema_payload.get("database_count", 0),
                 "metadata_warning": schema_payload.get("metadata_warning"),
+                "tables_truncated": bool(schema_payload.get("tables_truncated", False)),
+                "columns_truncated": bool(schema_payload.get("columns_truncated", False)),
                 "owned": x.user_id == current_user.id,
                 "last_schema_sync_at": (
                     schema_row.updated_at.isoformat()
@@ -481,6 +565,8 @@ async def database_workbench(
             "database_count": int(schema.get("database_count") or 0),
             "synced_at": schema.get("synced_at"),
             "metadata_warning": schema.get("metadata_warning"),
+            "tables_truncated": bool(schema.get("tables_truncated", False)),
+            "columns_truncated": bool(schema.get("columns_truncated", False)),
         },
         "relationships": {"total": relationships, "verified": verified_relationships},
         "metrics": {"total": metrics, "published": published_metrics},
@@ -536,8 +622,24 @@ async def sync_schema(
     schema_name = _schema_name(x.source_type, x.database)
     tables_sql, cols_sql = _schema_sql(x.source_type, schema_name)
 
-    tables_rows = await SQLExecutor().run_on_dsn(dsn, tables_sql, source_type=x.source_type)
-    cols_rows = await SQLExecutor().run_on_dsn(dsn, cols_sql, source_type=x.source_type)
+    metadata_page_size = max(1, int(settings.database_schema_sync_page_size))
+    executor = SQLExecutor(max_rows=metadata_page_size)
+    tables_rows, tables_truncated = await _fetch_schema_rows(
+        executor,
+        dsn,
+        tables_sql,
+        source_type=x.source_type,
+        page_size=metadata_page_size,
+        max_rows=settings.database_schema_sync_max_tables,
+    )
+    cols_rows, columns_truncated = await _fetch_schema_rows(
+        executor,
+        dsn,
+        cols_sql,
+        source_type=x.source_type,
+        page_size=metadata_page_size,
+        max_rows=settings.database_schema_sync_max_columns,
+    )
 
     table_columns: dict[str, list[dict]] = {}
     for c in cols_rows:
@@ -559,12 +661,23 @@ async def sync_schema(
             if str(row.get("database_name") or "").strip()
         }
     )
-    metadata_warning = None
+    metadata_warnings: list[str] = []
     if x.source_type == "clickhouse" and not x.database and not databases:
-        metadata_warning = (
+        metadata_warnings.append(
             "连接成功，但当前账号无法发现任何业务库；请检查 ClickHouse SHOW/SELECT 授权，"
             "或为账号授予目标库的只读权限"
         )
+    if tables_truncated:
+        metadata_warnings.append(
+            f"表元数据达到安全预算 {settings.database_schema_sync_max_tables} 张，"
+            "本次结果按下限展示；请缩小数据库授权范围或提高部署预算后重新同步"
+        )
+    if columns_truncated:
+        metadata_warnings.append(
+            f"列元数据达到安全预算 {settings.database_schema_sync_max_columns} 列，"
+            "部分表可能缺少列详情；请缩小数据库授权范围或提高部署预算后重新同步"
+        )
+    metadata_warning = "；".join(metadata_warnings) or None
 
     payload = {
         "schema": schema_name,
@@ -572,6 +685,9 @@ async def sync_schema(
         "databases": databases,
         "database_count": len(databases),
         "metadata_warning": metadata_warning,
+        "tables_truncated": tables_truncated,
+        "columns_truncated": columns_truncated,
+        "sync_page_size": metadata_page_size,
         "tables": [
             {
                 "name": t.get("qualified_table_name") or t.get("table_name"),
@@ -627,6 +743,8 @@ async def sync_schema(
         "data_source_id": database_id,
         "database_count": len(databases),
         "table_count": len(tables_rows),
+        "tables_truncated": tables_truncated,
+        "columns_truncated": columns_truncated,
         "metadata_warning": metadata_warning,
         "auto_extracted_dimensions": len(extracted["dimensions"]),
         "auto_extracted_metrics": len(extracted["metrics"]),
@@ -734,6 +852,14 @@ async def query_database(
 async def get_database_schema(
     http_request: Request,
     database_id: str,
+    search: str = Query(default="", max_length=200),
+    database: str | None = Query(default=None, max_length=255),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(
+        default=SCHEMA_CATALOG_DEFAULT_PAGE_SIZE,
+        ge=1,
+        le=SCHEMA_CATALOG_MAX_PAGE_SIZE,
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -746,12 +872,36 @@ async def get_database_schema(
     )
     s = rs.scalar_one_or_none()
     if s is None:
-        return {"data_source_id": database_id, "schema": {"tables": []}}
+        return {
+            "data_source_id": database_id,
+            "schema": {"tables": []},
+            "pagination": {
+                "offset": 0,
+                "limit": limit,
+                "count": 0,
+                "total": 0,
+                "has_more": False,
+                "next_offset": None,
+            },
+        }
     try:
         payload = json.loads(s.schema_json or "{}")
     except Exception:
         payload = {"tables": []}
-    return {"data_source_id": database_id, "schema": payload}
+    if not isinstance(payload, dict):
+        payload = {"tables": []}
+    page_payload, pagination = _schema_catalog_page(
+        payload,
+        search=search,
+        database=database,
+        offset=offset,
+        limit=limit,
+    )
+    return {
+        "data_source_id": database_id,
+        "schema": page_payload,
+        "pagination": pagination,
+    }
 
 
 @router.post("/databases/{database_id}/analysis")
@@ -784,7 +934,7 @@ async def analyze_database(
             "analysis_plan": {},
         }
 
-    columns = []
+    columns: list[dict] = []
     for t in tables:
         if t.get("name") == table_name:
             columns = t.get("columns") or []

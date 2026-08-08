@@ -1,6 +1,6 @@
 # OpenTrace — 高影响 Feature Flag 注册表
 
-> 产品成熟度：**Alpha**。能力组合优先使用 `CAPABILITY_PROFILE`；本表只保留少量紧急熔断、迁移与实验例外。旧 Cognitive Runtime 细粒度字段仅兼容读取，不属于产品配置面。
+> 产品成熟度：**受控企业 Beta**。能力组合优先使用 `CAPABILITY_PROFILE`；本表只保留少量紧急熔断、迁移与实验例外。旧 Cognitive Runtime 细粒度字段仅兼容读取，不属于产品配置面。
 
 ## 能力 Profile（默认组合不超过 5 套）
 
@@ -39,5 +39,17 @@
 - 实验开关必须同时声明 owner、引入版本、退出条件和最晚删除版本。
 - deprecated 开关只用于滚动升级，禁止在新部署模板中默认开启。
 - `development/staging/production` 决定安全强度；`CAPABILITY_PROFILE` 决定能力集合。
+
+## 数据库 Schema 运行预算（非 Feature Flag）
+
+| 配置 | 默认值 | 说明 |
+|---|---:|---|
+| `DATABASE_SCHEMA_SYNC_PAGE_SIZE` | 2000 | 元数据源端每批读取行数，不影响业务 SQL 返回上限 |
+| `DATABASE_SCHEMA_SYNC_MAX_TABLES` | 100000 | 单数据源单次同步的表安全预算，达到后显式标记截断 |
+| `DATABASE_SCHEMA_SYNC_MAX_COLUMNS` | 1000000 | 单数据源单次同步的列安全预算，达到后显式标记截断 |
+
+这些数值控制不是能力开关。表目录 API 固定采用有界分页响应，不能通过提高同步预算改回一次性
+返回完整 Schema；生产调整预算前必须先验证 API 内存、目标数据库元数据查询和 PostgreSQL
+`DataSourceSchema` 体积。
 
 钉钉企业数据接入不是运行时 Feature Flag；它以 `DINGTALK_DWS_BINARY` 和有效只读认证是否可用作为显式部署门禁。未配置时同步请求失败关闭，不会回退到模拟数据或绕过企业知识/目录治理链。
