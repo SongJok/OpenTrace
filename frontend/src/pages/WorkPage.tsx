@@ -28,6 +28,7 @@ import {
 import { useAuthStore } from '../store/auth'
 import { useChatPreferences } from '../store/chatPreferences'
 import { WorkbenchActionCenter } from '../components/WorkbenchActionCenter'
+import { WorkbenchPortfolio, WorkbenchPortfolioSnapshot } from '../components/WorkbenchPortfolio'
 import { WorkbenchTodayPulse } from '../components/WorkbenchTodayPulse'
 import {
   apiCreateAssistantProfile,
@@ -48,7 +49,7 @@ import {
   type ProjectItem,
 } from '../api/client'
 
-type WorkbenchTab = 'overview' | 'inbox' | 'projects' | 'profiles' | 'goals'
+type WorkbenchTab = 'overview' | 'portfolio' | 'inbox' | 'projects' | 'profiles' | 'goals'
 type AssistantPersonality = AssistantProfileItem['personality']
 
 export const ASSISTANT_PERSONALITY_OPTIONS: Array<{
@@ -107,13 +108,17 @@ export function scenarioLaunchIntent(scenario: EnterpriseWorkbenchScenario): {
   }
 }
 
+export function goalExecutionRoute(goal: Pick<GoalItem, 'conversation_id'>): string {
+  return goal.conversation_id ? `/chat?conversation=${encodeURIComponent(goal.conversation_id)}` : '/chat'
+}
+
 export default function WorkPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((state) => state.token)!
   const displayName = useAuthStore((state) => state.displayName)
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedTab = searchParams.get('tab') as WorkbenchTab | null
-  const activeTab: WorkbenchTab = requestedTab && ['overview', 'inbox', 'projects', 'profiles', 'goals'].includes(requestedTab)
+  const activeTab: WorkbenchTab = requestedTab && ['overview', 'portfolio', 'inbox', 'projects', 'profiles', 'goals'].includes(requestedTab)
     ? requestedTab
     : 'overview'
 
@@ -129,6 +134,8 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
   const [projectInstructions, setProjectInstructions] = useState('')
   const [projectMemoryMode, setProjectMemoryMode] = useState<'default' | 'project_only'>('default')
   const [projectDataSourceIds, setProjectDataSourceIds] = useState<string[]>([])
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null)
+  const [editingProjectInstructions, setEditingProjectInstructions] = useState('')
   const [objective, setObjective] = useState('')
   const [successCriteria, setSuccessCriteria] = useState('')
   const [projectId, setProjectId] = useState('')
@@ -172,8 +179,10 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
     try {
       await action()
       await load(true)
+      return true
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : '操作失败')
+      return false
     }
   }
 
@@ -198,6 +207,26 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
       assistant_profile_id: project.assistant_profile_id,
       data_source_ids: nextIds,
     }))
+  }
+
+  const editProjectInstructions = (project: ProjectItem) => {
+    setEditingProjectId(project.id)
+    setEditingProjectInstructions(project.instructions)
+  }
+
+  const saveProjectInstructions = async (project: ProjectItem) => {
+    const saved = await runAction(() => apiUpdateProject(token, project.id, {
+      name: project.name,
+      description: project.description,
+      instructions: editingProjectInstructions.trim(),
+      memory_mode: project.memory_mode,
+      assistant_profile_id: project.assistant_profile_id,
+      data_source_ids: project.data_source_ids,
+    }))
+    if (saved) {
+      setEditingProjectId(null)
+      setEditingProjectInstructions('')
+    }
   }
 
   const createProject = () => runAction(async () => {
@@ -242,6 +271,7 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
   const projectNames = useMemo(() => new Map(projects.map((project) => [project.id, project.name])), [projects])
   const tabs: Array<{ id: WorkbenchTab; label: string }> = [
     { id: 'overview', label: '总览' },
+    { id: 'portfolio', label: overview?.portfolio.summary.critical_projects ? `工作组合 ${overview.portfolio.summary.critical_projects}` : '工作组合' },
     { id: 'inbox', label: overview?.summary.unread_notifications ? `行动中心 ${overview.summary.unread_notifications}` : '行动中心' },
     { id: 'projects', label: 'Projects' },
     { id: 'profiles', label: 'AI 角色' },
@@ -270,6 +300,7 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
         {loading && !overview ? <div className="grid min-h-[50vh] place-items-center text-sm text-[var(--text-secondary)]"><div className="flex items-center gap-2"><RefreshCw size={16} className="animate-spin" />正在汇总企业工作状态…</div></div> : null}
 
         {activeTab === 'overview' && overview && <OverviewPanel overview={overview} displayName={displayName} navigate={navigate} />}
+        {activeTab === 'portfolio' && overview && <WorkbenchPortfolio portfolio={overview.portfolio} />}
         {activeTab === 'inbox' && overview && <WorkbenchActionCenter overview={overview} onRefresh={() => load(true)} />}
 
         {activeTab === 'projects' && <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
@@ -283,7 +314,39 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
               <button disabled={!projectName.trim()} onClick={() => void createProject()} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm text-[var(--accent-foreground)] disabled:opacity-40"><Plus size={15} />创建 Project</button>
             </div>
           </section>
-          <section><div className="mb-3 flex items-center justify-between"><div><h2 className="font-medium">业务上下文</h2><p className="text-xs text-[var(--text-secondary)]">Project 会进入 Responses 上下文组装与资源授权链路。</p></div><span className="text-xs text-[var(--text-secondary)]">{projects.length} 个</span></div><div className="grid gap-3 md:grid-cols-2">{projects.map((project) => <article key={project.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-start justify-between gap-3"><div><h3 className="font-medium">{project.name}</h3><p className="mt-1 line-clamp-2 text-xs text-[var(--text-secondary)]">{project.instructions || '尚未设置业务指令'}</p></div><span className="rounded-full bg-[var(--accent-dim)] px-2 py-1 text-[10px] text-[var(--accent)]">{project.memory_mode === 'project_only' ? '隔离记忆' : '融合记忆'}</span></div><div className="mt-4 border-t border-[var(--border)] pt-3"><p className="mb-2 text-[11px] text-[var(--text-secondary)]">已授权数据源 {project.data_source_ids.length}</p><div className="space-y-1.5">{dataSources.map((source) => <label key={source.id} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={project.data_source_ids.includes(source.id)} onChange={() => void updateProjectDataSource(project, source.id)} /><span className="truncate">{source.name}</span></label>)}</div></div></article>)}{projects.length === 0 && <EmptyState title="还没有 Project" description="先将一个真实业务场景沉淀为稳定的 AI 工作上下文。" />}</div></section>
+          <section>
+            <div className="mb-3 flex items-center justify-between">
+              <div><h2 className="font-medium">业务上下文</h2><p className="text-xs text-[var(--text-secondary)]">Project 会进入 Responses 上下文组装与资源授权链路。</p></div>
+              <span className="text-xs text-[var(--text-secondary)]">{projects.length} 个</span>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              {projects.map((project) => (
+                <article key={project.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0"><h3 className="font-medium">{project.name}</h3>{editingProjectId !== project.id && <p className="mt-1 line-clamp-3 text-xs leading-5 text-[var(--text-secondary)]">{project.instructions || '尚未设置业务指令'}</p>}</div>
+                    <span className="flex-none rounded-full bg-[var(--accent-dim)] px-2 py-1 text-[10px] text-[var(--accent)]">{project.memory_mode === 'project_only' ? '隔离记忆' : '融合记忆'}</span>
+                  </div>
+                  {editingProjectId === project.id ? (
+                    <div className="mt-3 rounded-xl border border-[var(--accent)]/30 bg-[var(--accent-dim)]/30 p-3">
+                      <label className="text-[11px] font-medium" htmlFor={`project-instructions-${project.id}`}>业务背景、术语、输出规范和决策约束</label>
+                      <textarea id={`project-instructions-${project.id}`} value={editingProjectInstructions} onChange={(event) => setEditingProjectInstructions(event.target.value)} rows={6} autoFocus className="mt-2 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-xs leading-5 outline-none focus:border-[var(--accent)]" />
+                      <div className="mt-2 flex justify-end gap-2">
+                        <button type="button" onClick={() => setEditingProjectId(null)} className="rounded-lg px-3 py-1.5 text-xs text-[var(--text-secondary)]">取消</button>
+                        <button type="button" onClick={() => void saveProjectInstructions(project)} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--accent-foreground)]">保存业务指令</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => editProjectInstructions(project)} className="mt-3 inline-flex items-center gap-1 rounded-lg border border-[var(--border)] px-2.5 py-1.5 text-xs text-[var(--text-secondary)] hover:border-[var(--accent)] hover:text-[var(--accent)]">编辑业务指令</button>
+                  )}
+                  <div className="mt-4 border-t border-[var(--border)] pt-3">
+                    <p className="mb-2 text-[11px] text-[var(--text-secondary)]">已授权数据源 {project.data_source_ids.length}</p>
+                    <div className="space-y-1.5">{dataSources.map((source) => <label key={source.id} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={project.data_source_ids.includes(source.id)} onChange={() => void updateProjectDataSource(project, source.id)} /><span className="truncate">{source.name}</span></label>)}</div>
+                  </div>
+                </article>
+              ))}
+              {projects.length === 0 && <EmptyState title="还没有 Project" description="先将一个真实业务场景沉淀为稳定的 AI 工作上下文。" />}
+            </div>
+          </section>
         </div>}
 
         {activeTab === 'profiles' && <div className="grid gap-6 lg:grid-cols-[380px_1fr]">
@@ -293,7 +356,7 @@ export default function WorkPage({ onBack }: { onBack: () => void }) {
 
         {activeTab === 'goals' && <div className="grid gap-6 lg:grid-cols-[400px_1fr]">
           <section className="h-fit rounded-3xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="mb-4 flex items-center gap-2"><Target size={18} /><div><h2 className="font-medium">启动长期 Goal</h2><p className="text-xs text-[var(--text-secondary)]">通过可恢复 Responses 主链路持续推进。</p></div></div><div className="space-y-3"><textarea value={objective} onChange={(event) => setObjective(event.target.value)} rows={5} placeholder="描述需要持续推进的业务目标" className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm" /><textarea value={successCriteria} onChange={(event) => setSuccessCriteria(event.target.value)} rows={3} placeholder="可验证的成功标准" className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm" /><select value={projectId} onChange={(event) => setProjectId(event.target.value)} className="w-full rounded-xl border border-[var(--border)] bg-transparent px-3 py-2.5 text-sm"><option value="">不绑定 Project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><button disabled={objective.trim().length < 3} onClick={() => void createGoal()} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm text-[var(--accent-foreground)] disabled:opacity-40"><Play size={15} />启动 Goal</button></div></section>
-          <section><div className="mb-3"><h2 className="font-medium">Goal 运行态</h2><p className="text-xs text-[var(--text-secondary)]">状态、检查点和 Response 均持久化，可暂停和恢复。</p></div><div className="space-y-3">{goals.map((goal) => <article key={goal.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><h3 className="font-medium">{goal.objective}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{goal.project_id ? projectNames.get(goal.project_id) || 'Project' : '独立 Goal'} · 检查点 {goal.current_step}</p></div><span className="flex-none rounded-full border border-[var(--border)] px-2 py-1 text-xs">{statusLabel[goal.status] || goal.status}</span></div>{goal.success_criteria && <p className="mt-3 rounded-xl bg-[var(--surface-raised)] p-3 text-xs text-[var(--text-secondary)]">成功标准：{goal.success_criteria}</p>}<div className="mt-3 flex flex-wrap gap-2">{['queued', 'in_progress', 'requires_action'].includes(goal.status) && <button onClick={() => void goalAction(goal.id, 'pause')} className="inline-flex items-center gap-1 rounded-lg border border-[var(--border)] px-2 py-1 text-xs"><Pause size={12} />暂停</button>}{goal.status === 'paused' && <button onClick={() => void goalAction(goal.id, 'resume')} className="inline-flex items-center gap-1 rounded-lg border border-[var(--border)] px-2 py-1 text-xs"><Play size={12} />恢复</button>}{!['completed', 'cancelled'].includes(goal.status) && <button onClick={() => void goalAction(goal.id, 'cancel')} className="inline-flex items-center gap-1 rounded-lg border border-red-500/30 px-2 py-1 text-xs text-red-500"><Ban size={12} />取消</button>}{goal.response_id && <button onClick={() => navigate('/chat')} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--accent)]">查看执行<ArrowRight size={12} /></button>}</div></article>)}{goals.length === 0 && <EmptyState title="还没有运行中的 Goal" description="将跨小时、跨天的复杂工作交给可恢复 Agent Loop。" />}</div></section>
+          <section><div className="mb-3"><h2 className="font-medium">Goal 运行态</h2><p className="text-xs text-[var(--text-secondary)]">状态、检查点和 Response 均持久化，可暂停和恢复。</p></div><div className="space-y-3">{goals.map((goal) => <article key={goal.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-start justify-between gap-4"><div className="min-w-0"><h3 className="font-medium">{goal.objective}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{goal.project_id ? projectNames.get(goal.project_id) || 'Project' : '独立 Goal'} · 检查点 {goal.current_step}</p></div><span className="flex-none rounded-full border border-[var(--border)] px-2 py-1 text-xs">{statusLabel[goal.status] || goal.status}</span></div>{goal.success_criteria && <p className="mt-3 rounded-xl bg-[var(--surface-raised)] p-3 text-xs text-[var(--text-secondary)]">成功标准：{goal.success_criteria}</p>}<div className="mt-3 flex flex-wrap gap-2">{['queued', 'in_progress', 'requires_action'].includes(goal.status) && <button onClick={() => void goalAction(goal.id, 'pause')} className="inline-flex items-center gap-1 rounded-lg border border-[var(--border)] px-2 py-1 text-xs"><Pause size={12} />暂停</button>}{goal.status === 'paused' && <button onClick={() => void goalAction(goal.id, 'resume')} className="inline-flex items-center gap-1 rounded-lg border border-[var(--border)] px-2 py-1 text-xs"><Play size={12} />恢复</button>}{!['completed', 'cancelled'].includes(goal.status) && <button onClick={() => void goalAction(goal.id, 'cancel')} className="inline-flex items-center gap-1 rounded-lg border border-red-500/30 px-2 py-1 text-xs text-red-500"><Ban size={12} />取消</button>}{goal.response_id && <button onClick={() => navigate(goalExecutionRoute(goal))} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--accent)]">查看执行<ArrowRight size={12} /></button>}</div></article>)}{goals.length === 0 && <EmptyState title="还没有运行中的 Goal" description="将跨小时、跨天的复杂工作交给可恢复 Agent Loop。" />}</div></section>
         </div>}
       </main>
     </div>
@@ -337,6 +400,7 @@ export function OverviewPanel({ overview, displayName, navigate }: { overview: E
   return <div className="space-y-6">
     <WorkbenchTodayPulse pulse={overview.operating_pulse} />
     <WorkbenchContinuity items={overview.recent_activity} navigate={navigate} />
+    <WorkbenchPortfolioSnapshot portfolio={overview.portfolio} />
 
     <section aria-label="工作台状态" className="grid gap-5 border-y border-[var(--border)] py-5 lg:grid-cols-[1fr_1.1fr] lg:items-center">
       <div>

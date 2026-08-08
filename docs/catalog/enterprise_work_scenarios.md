@@ -13,6 +13,10 @@ OpenTrace 用 `services/enterprise_scenarios.py` 维护确定性的场景目录�
 场景投影。目录不执行模型或工具，不形成第二套 Runtime；可用场景最终仍进入 Responses、
 Goal、Skill 和 typed tools 主链路。
 
+同一总览中的 Project 工作组合由 `services/workbench_portfolio.py` 生成。它负责把场景启动后
+形成的 Responses、Goal、审批、自动化和预警重新收敛到 Project，并给出可追溯下一步；它不
+修改本目录的前置条件、工具、审批或证据合同。
+
 ## 对标结论与设计取舍
 
 - WorkBuddy 的有效产品模式是用日常语言发起完整工作、由专家和工具产出可验收交付物，并用
@@ -84,8 +88,10 @@ Goal、Skill 和 typed tools 主链路。
 ```bash
 python -m pytest -q tests/test_enterprise_work_scenarios_contract.py
 python -m pytest -q tests/test_enterprise_workbench_templates.py
+python -m pytest -q tests/test_workbench_portfolio.py
 python scripts/run_enterprise_evals.py --minimum-pass-rate 1.0
 cd frontend && npm test -- src/pages/__tests__/WorkPage.contract.test.tsx
+npm test -- src/components/__tests__/WorkbenchPortfolio.test.tsx
 bash scripts/run_enterprise_contract_tests.sh
 ```
 

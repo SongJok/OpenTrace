@@ -12,6 +12,7 @@ OpenTrace 的企业化目标不是把多个 AI 功能堆叠成菜单，而是成
 企业 AI 工作台 /work
   ├─ 今日工作脉搏：确定性优先级、逾期自动化、Goal 停滞与统一时间线
   ├─ 工作续接：按持久会话合并 Response / Goal，并给出精确下一步
+  ├─ Project 工作组合：项目健康、当前工作、7 日交付、风险与唯一下一步
   ├─ 员工行动面：待审批、关键预警、失败重试、最近工作
   ├─ 统一行动中心：分类、搜索、未读通知确认与站内处置跳转
   ├─ 企业工作场景：前置条件、能力链、记忆、证据、审批与可验收交付物
@@ -64,6 +65,28 @@ Responses 主链路
 `failed / incomplete` 检查并重试，暂停 Goal 恢复运行，已完成工作继续下一轮。会话型工作返回
 `/chat?conversation=<id>`；聊天页先在当前 user、tenant、workspace 可见会话中解析该 ID，再读取
 消息并恢复 SSE，不能仅切换一个前端活动标识。无会话的 Goal 继续进入 Goal 管理页。
+
+### Project 工作组合
+
+工作组合把员工拥有的 Project 作为稳定业务工作单元，将绑定会话中的最新 Responses、关联
+Goal、持久化审批、定时任务和主动预警投影到同一张驾驶舱。它不根据模型正文猜测“进度百分比”，
+而是返回以下可核验状态：
+
+- `critical`：近 7 日存在失败/不完整 Response，或 Project 有未确认关键预警；
+- `attention`：存在待审批动作、普通未确认预警、暂停 Goal，或工作尚未归入 Project；
+- `active`：Response、Goal 或自动化正在运行；
+- `ready`：Project 业务指令已配置，可以继承上下文开始新工作；
+- `foundation`：Project 尚缺业务背景、术语、输出规范或决策约束。
+
+每个 Project 只返回一个按风险确定性选择的 `next_action`：关键预警优先于失败执行，失败优先于
+审批和运行态，所有会话型动作都回到 `/chat?conversation=<id>`。新工作入口会先选择对应
+Project，再进入聊天页；“完善上下文”进入 Projects 页面并允许修改现有业务指令。未绑定工作
+单独形成“未归入 Project”项，避免它在总览中静默丢失。
+
+工作组合最多读取最新 500 条作用域内 Response 候选。达到上限时 API 返回
+`response_candidates_truncated=true`，前端用“≥”标记交付轮次并显示说明，不能把有界投影伪装
+为完整历史统计。Project、Goal、任务、预警、审批和会话查询继续同时限定 user、tenant 与
+workspace；工作组合只读这些事实，不写状态、不调用模型，也不替代管理员运营报表。
 
 场景目录见[企业日常工作场景目录](../catalog/enterprise_work_scenarios.md)。工作台根据当前
 Project、已发布知识、授权数据源、个人安装 Skill、可见公司 Skill、Goal、定时任务和预警

@@ -44,6 +44,22 @@ const overview: EnterpriseWorkbenchOverview = {
     summary: { urgent_items: 1, calendar_events: 0, due_automations: 0, overdue_automations: 0, stale_goals: 0, focus_minutes: 0, meeting_minutes: 0 },
     focus_items: [], timeline: [],
   },
+  portfolio: {
+    window_days: 7,
+    window_start: '2026-07-22T00:00:00Z',
+    summary: {
+      projects: 1,
+      critical_projects: 0,
+      attention_projects: 1,
+      active_projects: 0,
+      active_work: 1,
+      pending_approvals: 1,
+      unacknowledged_alerts: 0,
+      delivered_turns_7d: 0,
+      unassigned_work: 0,
+    },
+    items: [],
+  },
   scenarios: [],
   attention_items: [
     {

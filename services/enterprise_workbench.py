@@ -44,6 +44,7 @@ from services.calendar import list_calendar_events, local_day_window
 from services.enterprise_cognition import load_enterprise_context
 from services.enterprise_scenarios import apply_organization_templates, build_enterprise_scenarios
 from services.enterprise_workbench_templates import resolve_user_workbench_templates
+from services.workbench_portfolio import build_workbench_portfolio
 from services.workbench_pulse import (
     build_workbench_operating_pulse,
     rank_workbench_actions,
@@ -53,6 +54,7 @@ ACTIVE_RESPONSE_STATUSES = {"queued", "in_progress", "requires_action"}
 ACTIVE_GOAL_STATUSES = {"queued", "in_progress", "requires_action", "paused"}
 FAILED_RESPONSE_STATUSES = {"failed", "incomplete"}
 DEFAULT_CONVERSATION_TITLES = {"new conversation", "新对话", "新会话"}
+WORKBENCH_RESPONSE_CANDIDATE_LIMIT = 500
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -457,10 +459,12 @@ async def enterprise_workbench_overview(
                     ResponseRecord.conversation_id.in_(active_session_ids),
                 )
                 .order_by(ResponseRecord.updated_at.desc())
-                .limit(max(50, recent_limit * 8))
+                .limit(max(WORKBENCH_RESPONSE_CANDIDATE_LIMIT + 1, recent_limit * 8))
             )
         ).scalars()
     )
+    response_candidates_truncated = len(responses) > WORKBENCH_RESPONSE_CANDIDATE_LIMIT
+    responses = responses[:WORKBENCH_RESPONSE_CANDIDATE_LIMIT]
     activity_session_ids = {
         str(row.conversation_id) for row in responses if row.conversation_id
     } | {str(row.conversation_id) for row in goals if row.conversation_id}
@@ -493,11 +497,16 @@ async def enterprise_workbench_overview(
     pending_approval_rows = list(
         (
             await db.execute(
-                select(ResponseApproval, ResponseRecord.conversation_id)
+                select(
+                    ResponseApproval,
+                    ResponseRecord.conversation_id,
+                    ChatSession.project_id,
+                )
                 .join(ResponseRecord, ResponseApproval.response_id == ResponseRecord.id)
+                .join(ChatSession, ChatSession.id == ResponseRecord.conversation_id)
                 .where(ResponseApproval.status == "pending", *response_scope)
                 .order_by(ResponseApproval.created_at.desc())
-                .limit(candidate_limit)
+                .limit(WORKBENCH_RESPONSE_CANDIDATE_LIMIT)
             )
         ).all()
     )
@@ -631,7 +640,7 @@ async def enterprise_workbench_overview(
                     select(AlertEvent)
                     .where(*alert_scope)
                     .order_by(AlertEvent.created_at.desc())
-                    .limit(candidate_limit)
+                    .limit(WORKBENCH_RESPONSE_CANDIDATE_LIMIT)
                 )
             ).scalars()
         )
@@ -765,7 +774,7 @@ async def enterprise_workbench_overview(
                 "created_at": _iso(notification.created_at),
             }
         )
-    for approval, conversation_id in pending_approval_rows:
+    for approval, conversation_id, _project_id in pending_approval_rows:
         attention_items.append(
             {
                 "id": approval.id,
@@ -841,6 +850,22 @@ async def enterprise_workbench_overview(
         projects=projects,
         limit=recent_limit,
     )
+    portfolio = build_workbench_portfolio(
+        projects=projects,
+        sessions=sessions,
+        responses=responses,
+        goals=goals,
+        pending_approvals=[
+            (approval, conversation_id, project_id)
+            for approval, conversation_id, project_id in pending_approval_rows
+        ],
+        tasks=tasks,
+        alerts=alerts,
+        alert_events=alert_events,
+        now=generated_at,
+        response_candidate_limit=WORKBENCH_RESPONSE_CANDIDATE_LIMIT,
+        response_candidates_truncated=response_candidates_truncated,
+    )
 
     return {
         "generated_at": generated_at.isoformat(),
@@ -876,6 +901,7 @@ async def enterprise_workbench_overview(
             "principals": directory_principals,
         },
         "operating_pulse": operating_pulse,
+        "portfolio": portfolio,
         "scenarios": scenarios,
         "attention_items": attention_items,
         "recent_activity": recent_activity,

@@ -1782,6 +1782,56 @@ export interface WorkbenchActivityItem {
   created_at?: string | null
 }
 
+export type WorkbenchPortfolioStatus = 'critical' | 'attention' | 'active' | 'ready' | 'foundation'
+
+export interface WorkbenchPortfolioNextAction {
+  type: 'alert' | 'approval' | 'response' | 'goal' | 'automation' | 'continue' | 'organize' | 'setup' | 'start' | string
+  label: string
+  title: string
+  description: string
+  route: string
+  created_at?: string | null
+}
+
+export interface WorkbenchPortfolioItem {
+  project_id?: string | null
+  name: string
+  description: string
+  status: WorkbenchPortfolioStatus
+  status_reason: string
+  instructions_ready: boolean
+  data_source_count: number
+  active_work: number
+  active_responses: number
+  active_goals: number
+  pending_approvals: number
+  failed_responses_7d: number
+  unacknowledged_alerts: number
+  active_automations: number
+  delivered_turns_7d: number
+  last_activity_at?: string | null
+  next_action: WorkbenchPortfolioNextAction
+}
+
+export interface WorkbenchPortfolio {
+  window_days: number
+  window_start: string
+  response_candidate_limit?: number | null
+  response_candidates_truncated?: boolean
+  summary: {
+    projects: number
+    critical_projects: number
+    attention_projects: number
+    active_projects: number
+    active_work: number
+    pending_approvals: number
+    unacknowledged_alerts: number
+    delivered_turns_7d: number
+    unassigned_work: number
+  }
+  items: WorkbenchPortfolioItem[]
+}
+
 export interface EnterpriseWorkbenchScenario {
   id: string
   category: string
@@ -1853,6 +1903,7 @@ export interface EnterpriseWorkbenchOverview {
     }>
   }
   operating_pulse: WorkbenchOperatingPulse
+  portfolio: WorkbenchPortfolio
   scenarios: EnterpriseWorkbenchScenario[]
   attention_items: WorkbenchAttentionItem[]
   recent_activity: WorkbenchActivityItem[]

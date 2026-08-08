@@ -46,7 +46,7 @@ creating a second execution plane. See
 
 ```text
 Enterprise AI Workbench
-  `-- Attention queue / readiness / recent durable work / capability launchpad
+  `-- Today pulse / Project portfolio / attention queue / durable work / capability launchpad
        `-- Project
             |-- Enterprise databases: MySQL / Doris / ClickHouse / PostgreSQL
             |     `-- Connection test -> Schema sync -> Semantic layer -> DataAgent / Text2SQL

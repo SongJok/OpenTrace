@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiGetEnterpriseWorkbench, type EnterpriseWorkbenchScenario } from '../../api/client'
 import { resolveRequestedConversation } from '../../components/Sidebar'
-import { scenarioLaunchIntent } from '../WorkPage'
+import { goalExecutionRoute, scenarioLaunchIntent } from '../WorkPage'
 
 describe('enterprise AI workbench contracts', () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -15,10 +15,14 @@ describe('enterprise AI workbench contracts', () => {
     expect(source).toContain('apiGetEnterpriseWorkbench')
     expect(source).toContain('OverviewPanel')
     expect(source).toContain('WorkbenchActionCenter')
+    expect(source).toContain('WorkbenchPortfolio')
     expect(source).toContain('apiListProjects')
+    expect(source).toContain('saveProjectInstructions')
+    expect(source).toContain('保存业务指令')
     expect(source).toContain('apiListGoals')
     expect(overviewSource).toContain('WorkbenchTodayPulse')
     expect(overviewSource).toContain('WorkbenchContinuity')
+    expect(overviewSource).toContain('WorkbenchPortfolioSnapshot')
     expect(overviewSource).toContain('企业日常工作场景')
     expect(overviewSource).toContain('personalization')
     expect(overviewSource).toContain('organization_recommended')
@@ -37,6 +41,8 @@ describe('enterprise AI workbench contracts', () => {
       .toBe('conversation-2')
     expect(resolveRequestedConversation(conversations, null, 'conversation-1')).toBeNull()
     expect(resolveRequestedConversation(conversations, 'missing', null)?.id).toBe('conversation-1')
+    expect(goalExecutionRoute({ conversation_id: 'conversation/2' })).toBe('/chat?conversation=conversation%2F2')
+    expect(goalExecutionRoute({ conversation_id: null })).toBe('/chat')
   })
 
   it('prefills ready chat scenarios but routes setup gaps without unsafe execution', () => {
