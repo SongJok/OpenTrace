@@ -4,12 +4,12 @@ KnowledgeRetrieverAgent — 查询知识资产表并向认知流水线注入已 
 连接知识层与推理层：拉取指标定义、schema 元数据、表关系、分析技能与查询模式，
 写入 CognitiveContext，下游 Agent 无需猜测业务逻辑。
 """
+
 from __future__ import annotations
 
 import hashlib
-from typing import Any
 
-from sqlalchemy import select, and_, or_
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agents.base import AgentResult, BaseAgent, TaskMessage
@@ -51,6 +51,7 @@ class KnowledgeRetrieverAgent(BaseAgent):
 
             if ctx.data_source_id:
                 await self._retrieve_metric_definitions(db, ctx, spec)
+                await self._retrieve_table_semantics(db, ctx, spec)
                 await self._retrieve_column_semantics(db, ctx, spec)
                 await self._retrieve_table_relationships(db, ctx, spec)
                 await self._retrieve_analytical_skills(db, ctx, spec)
@@ -63,19 +64,22 @@ class KnowledgeRetrieverAgent(BaseAgent):
                 content="knowledge retrieval complete",
                 confidence=0.95,
                 ctx=ctx,
-                evidence=[self._make_evidence(
-                    source="knowledge_retriever",
-                    source_type="system",
-                    payload={
-                        "matched_metrics": len(ctx.matched_metrics or []),
-                        "matched_skills": len(ctx.matched_skills or []),
-                        "matched_relationships": len(ctx.matched_relationships or []),
-                        "column_semantics_count": len(ctx.column_semantics or []),
-                        "pattern_hit": ctx.pattern_hit is not None,
-                    },
-                    credibility=0.90,
-                    relevance=1.0,
-                )],
+                evidence=[
+                    self._make_evidence(
+                        source="knowledge_retriever",
+                        source_type="system",
+                        payload={
+                            "matched_metrics": len(ctx.matched_metrics or []),
+                            "matched_skills": len(ctx.matched_skills or []),
+                            "matched_relationships": len(ctx.matched_relationships or []),
+                            "table_semantics_count": len(ctx.table_semantics or []),
+                            "column_semantics_count": len(ctx.column_semantics or []),
+                            "pattern_hit": ctx.pattern_hit is not None,
+                        },
+                        credibility=0.90,
+                        relevance=1.0,
+                    )
+                ],
             )
         except Exception as exc:
             return AgentResult(
@@ -91,7 +95,10 @@ class KnowledgeRetrieverAgent(BaseAgent):
     # ── 检索方法 ──────────────────────────────────────────────────
 
     async def _retrieve_metric_definitions(
-        self, db: AsyncSession, ctx: CognitiveContext, spec: KnowledgeRetrievalSpec,
+        self,
+        db: AsyncSession,
+        ctx: CognitiveContext,
+        spec: KnowledgeRetrievalSpec,
     ) -> None:
         """按名称/别名和 data_source_id 匹配 metric_definitions。"""
         from infra.storage.models import MetricDefinition
@@ -115,9 +122,7 @@ class KnowledgeRetrieverAgent(BaseAgent):
 
         conditions.append(MetricDefinition.status == "published")
 
-        result = await db.execute(
-            select(MetricDefinition).where(and_(*conditions)).limit(10)
-        )
+        result = await db.execute(select(MetricDefinition).where(and_(*conditions)).limit(10))
         rows = result.scalars().all()
 
         ctx.matched_metrics = [
@@ -138,7 +143,10 @@ class KnowledgeRetrieverAgent(BaseAgent):
         ]
 
     async def _retrieve_column_semantics(
-        self, db: AsyncSession, ctx: CognitiveContext, spec: KnowledgeRetrievalSpec,
+        self,
+        db: AsyncSession,
+        ctx: CognitiveContext,
+        spec: KnowledgeRetrievalSpec,
     ) -> None:
         """检索本查询涉及表的 schema_metadata。"""
         from infra.storage.models import SchemaMetadata
@@ -151,6 +159,7 @@ class KnowledgeRetrieverAgent(BaseAgent):
                 and_(
                     SchemaMetadata.data_source_id == spec.data_source_id,
                     SchemaMetadata.table_name.in_(spec.table_names),
+                    SchemaMetadata.annotation_status != "rejected",
                 )
             )
         )
@@ -162,6 +171,8 @@ class KnowledgeRetrieverAgent(BaseAgent):
                 "column_name": r.column_name,
                 "business_name": r.business_name,
                 "business_description": r.business_description,
+                "aliases": r.aliases or [],
+                "tags": r.tags or [],
                 "semantic_type": r.semantic_type,
                 "value_map": r.value_map,
                 "is_primary_key": r.is_primary_key,
@@ -173,12 +184,66 @@ class KnowledgeRetrieverAgent(BaseAgent):
                 "is_sensitive": r.is_sensitive,
                 "lifecycle_stage": r.lifecycle_stage,
                 "sample_values": r.sample_values,
+                "annotation_source": r.annotation_source,
+                "annotation_status": r.annotation_status,
+                "annotation_confidence": r.annotation_confidence,
             }
             for r in rows
+            if r.annotation_status == "verified"
+            or (
+                r.annotation_source == "database_comment"
+                and float(r.annotation_confidence or 0) >= 0.85
+            )
+        ]
+
+    async def _retrieve_table_semantics(
+        self,
+        db: AsyncSession,
+        ctx: CognitiveContext,
+        spec: KnowledgeRetrievalSpec,
+    ) -> None:
+        """读取人工审核或高可信数据库注释形成的表级语义。"""
+        from infra.storage.models import SchemaTableMetadata
+
+        if not spec.table_names:
+            return
+        rows = list(
+            (
+                await db.execute(
+                    select(SchemaTableMetadata).where(
+                        SchemaTableMetadata.data_source_id == spec.data_source_id,
+                        SchemaTableMetadata.table_name.in_(spec.table_names),
+                        SchemaTableMetadata.annotation_status != "rejected",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        ctx.table_semantics = [
+            {
+                "table_name": row.table_name,
+                "business_name": row.business_name,
+                "business_description": row.business_description,
+                "aliases": row.aliases or [],
+                "tags": row.tags or [],
+                "annotation_source": row.annotation_source,
+                "annotation_status": row.annotation_status,
+                "annotation_confidence": row.annotation_confidence,
+            }
+            for row in rows
+            if row.annotation_status == "verified"
+            or (
+                row.annotation_source == "database_comment"
+                and float(row.annotation_confidence or 0) >= 0.85
+            )
         ]
 
     async def _retrieve_table_relationships(
-        self, db: AsyncSession, ctx: CognitiveContext, spec: KnowledgeRetrievalSpec,
+        self,
+        db: AsyncSession,
+        ctx: CognitiveContext,
+        spec: KnowledgeRetrievalSpec,
     ) -> None:
         """检索涉及表的已验证关系。"""
         from infra.storage.models import TableRelationship
@@ -187,17 +252,20 @@ class KnowledgeRetrieverAgent(BaseAgent):
             return
 
         result = await db.execute(
-            select(TableRelationship).where(
+            select(TableRelationship)
+            .where(
                 and_(
                     TableRelationship.data_source_id == spec.data_source_id,
                     TableRelationship.left_table.in_(spec.table_names),
                     TableRelationship.right_table.in_(spec.table_names),
                 )
-            ).order_by(
+            )
+            .order_by(
                 TableRelationship.is_verified.desc(),
                 TableRelationship.success_rate.desc(),
                 TableRelationship.usage_count.desc(),
-            ).limit(20)
+            )
+            .limit(20)
         )
         rows = result.scalars().all()
 
@@ -218,7 +286,10 @@ class KnowledgeRetrieverAgent(BaseAgent):
         ]
 
     async def _retrieve_analytical_skills(
-        self, db: AsyncSession, ctx: CognitiveContext, spec: KnowledgeRetrievalSpec,
+        self,
+        db: AsyncSession,
+        ctx: CognitiveContext,
+        spec: KnowledgeRetrievalSpec,
     ) -> None:
         """按意图类型匹配 analytical_skills。"""
         from infra.storage.models import AnalyticalSkill
@@ -226,13 +297,9 @@ class KnowledgeRetrieverAgent(BaseAgent):
         conditions = [AnalyticalSkill.status == "active"]
 
         if spec.intent_type:
-            conditions.append(
-                AnalyticalSkill.required_intent_types.any(spec.intent_type)
-            )
+            conditions.append(AnalyticalSkill.required_intent_types.any(spec.intent_type))
 
-        result = await db.execute(
-            select(AnalyticalSkill).where(and_(*conditions)).limit(5)
-        )
+        result = await db.execute(select(AnalyticalSkill).where(and_(*conditions)).limit(5))
         rows = result.scalars().all()
 
         ctx.matched_skills = [
@@ -251,7 +318,10 @@ class KnowledgeRetrieverAgent(BaseAgent):
         ]
 
     async def _check_query_patterns(
-        self, db: AsyncSession, ctx: CognitiveContext, spec: KnowledgeRetrievalSpec,
+        self,
+        db: AsyncSession,
+        ctx: CognitiveContext,
+        spec: KnowledgeRetrievalSpec,
     ) -> None:
         """检查是否有相似查询曾成功执行。"""
         from infra.storage.models import QueryPattern
@@ -260,9 +330,7 @@ class KnowledgeRetrieverAgent(BaseAgent):
         pattern_hash = hashlib.sha256(pattern_key.encode()).hexdigest()
 
         result = await db.execute(
-            select(QueryPattern).where(
-                QueryPattern.pattern_hash == pattern_hash
-            ).limit(1)
+            select(QueryPattern).where(QueryPattern.pattern_hash == pattern_hash).limit(1)
         )
         row = result.scalar()
 

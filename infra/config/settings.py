@@ -489,6 +489,11 @@ class AppSettings(BaseSettings):
         ge=10000,
         le=10000000,
     )
+    schema_annotation_auto_suggest_max_items: int = Field(
+        default=20000,
+        ge=100,
+        le=200000,
+    )
 
     # Shared marketplace management is admin-only. Dynamic Python execution is
     # explicitly opt-in for local development until an isolated runner exists.
@@ -586,6 +591,7 @@ class AppSettings(BaseSettings):
     responses_capability_catalog_limit: int = 48
     responses_agent_deep_max_rounds: int = 16
     responses_agent_replan_limit: int = 3
+    responses_data_knowledge_context_max_chars: int = 12000
 
     # Feature ③ Memory Value Feedback Loop
     kernel_memory_value_scoring_enabled: bool = True

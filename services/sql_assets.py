@@ -19,18 +19,21 @@ from sqlglot.optimizer.scope import traverse_scope
 
 from execution.data.db_router import DBConnectionInfo, DBRouter
 from execution.data.sql_executor import SQLExecutor
+from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes, NotFoundException, ValidationException
 from infra.metadata.schema_inspector import build_schema_hint, load_schema_inspection
 from infra.security.data_source_secrets import decrypt_data_source_secret
 from infra.security.resource_scope import get_accessible_data_source
 from infra.storage.models import (
     DataSource,
+    MetricDefinition,
     Project,
     SchemaMetadata,
     SQLAsset,
     SQLAssetSource,
     SQLQueryCandidate,
     SQLQueryDraft,
+    TableRelationship,
 )
 from kernel.data_cognition.sql_dialect import detect_sql_dialect
 from kernel.data_cognition.sql_planner import SQLPlanner
@@ -63,6 +66,10 @@ class ParsedSQLAsset:
     columns: list[str]
     parameters: dict[str, Any]
     lineage: dict[str, Any]
+    title: str
+    description: str
+    tags: list[str]
+    knowledge_metadata: dict[str, Any]
     validation_report: dict[str, Any]
 
 
@@ -246,6 +253,282 @@ def _extract_parameters(expression: Any) -> dict[str, Any]:
                 if value and value not in names:
                     names.append(value)
     return {"names": names}
+
+
+_DOCUMENTATION_KEY_ALIASES = {
+    "title": "title",
+    "name": "title",
+    "标题": "title",
+    "description": "description",
+    "summary": "description",
+    "logic": "description",
+    "说明": "description",
+    "描述": "description",
+    "逻辑": "description",
+    "tags": "tags",
+    "tag": "tags",
+    "标签": "tags",
+    "questions": "questions",
+    "question": "questions",
+    "examples": "questions",
+    "问题": "questions",
+    "metrics": "metrics",
+    "metric": "metrics",
+    "指标": "metrics",
+    "dimensions": "dimensions",
+    "dimension": "dimensions",
+    "维度": "dimensions",
+    "joins": "joins",
+    "join": "joins",
+    "关联": "joins",
+    "time-column": "time_columns",
+    "time_column": "time_columns",
+    "time-columns": "time_columns",
+    "时间字段": "time_columns",
+    "grain": "grain",
+    "粒度": "grain",
+    "parameters": "documented_parameters",
+    "params": "documented_parameters",
+    "参数": "documented_parameters",
+}
+
+
+def _comment_lines(expression: Any) -> list[str]:
+    comments: list[str] = []
+    seen: set[str] = set()
+    for node in expression.walk():
+        for raw in getattr(node, "comments", None) or []:
+            value = str(raw or "").strip()
+            if value and value not in seen:
+                seen.add(value)
+                comments.append(value)
+    lines: list[str] = []
+    for comment in comments:
+        for raw_line in comment.splitlines():
+            line = re.sub(r"^\s*\*\s?", "", raw_line).strip()
+            if line:
+                lines.append(line)
+    return lines
+
+
+def _split_documentation_values(value: str) -> list[str]:
+    return list(
+        dict.fromkeys(
+            item.strip() for item in re.split(r"[,，;；|]", str(value or "")) if item.strip()
+        )
+    )
+
+
+def _parse_named_expressions(value: str, *, formula_key: str) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for item in re.split(r"[;；\n]", str(value or "")):
+        text = item.strip()
+        if not text:
+            continue
+        if "=" not in text:
+            items.append({"name": text, formula_key: ""})
+            continue
+        name, expression = text.split("=", 1)
+        items.append({"name": name.strip(), formula_key: expression.strip()})
+    return [item for item in items if item["name"]]
+
+
+def _parse_dimensions(value: str) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for item in _parse_named_expressions(value, formula_key="column_ref"):
+        reference = item.get("column_ref", "")
+        table_name, _, column_name = reference.rpartition(".")
+        result.append(
+            {
+                "name": item["name"],
+                "table": table_name,
+                "column": column_name or reference,
+            }
+        )
+    return result
+
+
+def _parse_joins(value: str) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for item in re.split(r"[;；\n]", str(value or "")):
+        text = item.strip()
+        if "=" not in text:
+            continue
+        left, right = (part.strip() for part in text.split("=", 1))
+        left_table, _, left_column = left.rpartition(".")
+        right_table, _, right_column = right.rpartition(".")
+        if all((left_table, left_column, right_table, right_column)):
+            result.append(
+                {
+                    "left_table": left_table,
+                    "left_column": left_column,
+                    "right_table": right_table,
+                    "right_column": right_column,
+                    "join_type": "INNER",
+                }
+            )
+    return result
+
+
+def _extract_ast_knowledge(expression: Any) -> dict[str, Any]:
+    """从已解析 SQL 自动提取 JOIN、聚合指标、分组维度和时间字段候选。"""
+
+    joins: list[dict[str, str]] = []
+    for join in expression.find_all(exp.Join):
+        on_expression = join.args.get("on")
+        if on_expression is None:
+            continue
+        for equality in on_expression.find_all(exp.EQ):
+            left = equality.this
+            right = equality.expression
+            if not isinstance(left, exp.Column) or not isinstance(right, exp.Column):
+                continue
+            if not all((left.table, left.name, right.table, right.name)):
+                continue
+            joins.append(
+                {
+                    "left_table": str(left.table),
+                    "left_column": str(left.name),
+                    "right_table": str(right.table),
+                    "right_column": str(right.name),
+                    "join_type": str(
+                        join.args.get("side") or join.args.get("kind") or "INNER"
+                    ).upper(),
+                }
+            )
+
+    metrics: list[dict[str, str]] = []
+    for selection in getattr(expression, "selects", []) or []:
+        if not any(isinstance(node, exp.AggFunc) for node in selection.walk()):
+            continue
+        name = str(selection.alias_or_name or "").strip()
+        formula_expression = selection.this if isinstance(selection, exp.Alias) else selection
+        formula = formula_expression.sql(comments=False)
+        if name and formula:
+            metrics.append({"name": name, "formula": formula})
+
+    dimensions: list[dict[str, str]] = []
+    group = expression.args.get("group")
+    if group is not None:
+        for column in group.find_all(exp.Column):
+            dimensions.append(
+                {
+                    "name": str(column.alias_or_name or column.name),
+                    "table": str(column.table or ""),
+                    "column": str(column.name or ""),
+                }
+            )
+
+    time_columns = sorted(
+        {
+            f"{column.table}.{column.name}" if column.table else str(column.name)
+            for column in expression.find_all(exp.Column)
+            if re.search(r"(^|_)(at|time|date|day|month|year)($|_)", str(column.name), re.I)
+        }
+    )
+    return {
+        "joins": joins,
+        "metrics": metrics,
+        "dimensions": dimensions,
+        "time_columns": time_columns,
+    }
+
+
+def _merge_named_metadata(
+    primary: list[dict[str, Any]], inferred: list[dict[str, Any]], *, key: str
+) -> list[dict[str, Any]]:
+    merged = list(primary)
+    seen = {str(item.get(key) or "").strip().lower() for item in primary}
+    for item in inferred:
+        identity = str(item.get(key) or "").strip().lower()
+        if identity and identity not in seen:
+            seen.add(identity)
+            merged.append(item)
+    return merged
+
+
+def _extract_asset_documentation(expression: Any) -> dict[str, Any]:
+    """从 SQL 注释读取结构化知识；普通说明也会进入 description。"""
+
+    raw_values: dict[str, list[str]] = {}
+    narrative: list[str] = []
+    active_key: str | None = None
+    for line in _comment_lines(expression):
+        match = re.match(r"^@([^:：]+)\s*[:：]\s*(.*)$", line)
+        if match:
+            normalized_key = _DOCUMENTATION_KEY_ALIASES.get(match.group(1).strip().lower())
+            if normalized_key:
+                active_key = normalized_key
+                raw_values.setdefault(normalized_key, []).append(match.group(2).strip())
+                continue
+        if active_key == "description" and raw_values.get(active_key):
+            raw_values[active_key][-1] = f"{raw_values[active_key][-1]}\n{line}".strip()
+        else:
+            active_key = None
+            narrative.append(line)
+
+    title = " ".join(raw_values.get("title", [])).strip()
+    descriptions = [value for value in raw_values.get("description", []) if value]
+    if narrative:
+        descriptions.extend(narrative)
+        if not title:
+            title = narrative[0][:255]
+    description = "\n".join(dict.fromkeys(descriptions)).strip()
+    tags = _split_documentation_values(",".join(raw_values.get("tags", [])))
+    questions = _split_documentation_values("；".join(raw_values.get("questions", [])))
+    metrics: list[dict[str, str]] = []
+    for value in raw_values.get("metrics", []):
+        metrics.extend(_parse_named_expressions(value, formula_key="formula"))
+    dimensions: list[dict[str, str]] = []
+    for value in raw_values.get("dimensions", []):
+        dimensions.extend(_parse_dimensions(value))
+    joins: list[dict[str, str]] = []
+    for value in raw_values.get("joins", []):
+        joins.extend(_parse_joins(value))
+    time_columns = _split_documentation_values(",".join(raw_values.get("time_columns", [])))
+    documented_parameters = _split_documentation_values(
+        ",".join(raw_values.get("documented_parameters", []))
+    )
+    inferred = _extract_ast_knowledge(expression)
+    metrics = _merge_named_metadata(metrics, inferred["metrics"], key="name")
+    dimensions = _merge_named_metadata(dimensions, inferred["dimensions"], key="name")
+    join_keys = {
+        (
+            item.get("left_table"),
+            item.get("left_column"),
+            item.get("right_table"),
+            item.get("right_column"),
+        )
+        for item in joins
+    }
+    joins.extend(
+        item
+        for item in inferred["joins"]
+        if (
+            item.get("left_table"),
+            item.get("left_column"),
+            item.get("right_table"),
+            item.get("right_column"),
+        )
+        not in join_keys
+    )
+    time_columns = list(dict.fromkeys([*time_columns, *inferred["time_columns"]]))
+    return {
+        "title": title,
+        "description": description,
+        "tags": tags,
+        "knowledge_metadata": {
+            "questions": questions,
+            "metrics": metrics,
+            "dimensions": dimensions,
+            "joins": joins,
+            "time_columns": time_columns,
+            "grain": " ".join(raw_values.get("grain", [])).strip(),
+            "documented_parameters": documented_parameters,
+            "source": "sql_comments",
+            "ast_inferred": True,
+        },
+    }
 
 
 def _extract_tables_columns(expression: Any) -> tuple[list[str], list[str]]:
@@ -479,6 +762,7 @@ def parse_sql_assets(
 
     parsed: list[ParsedSQLAsset] = []
     for index, statement in enumerate(statements, start=1):
+        documentation = _extract_asset_documentation(statement)
         normalized = statement.sql(dialect=_sqlglot_dialect(dialect), pretty=True, comments=False)
         tables, columns = _extract_tables_columns(statement)
         executable = isinstance(statement, exp.Query)
@@ -515,6 +799,10 @@ def parse_sql_assets(
                 columns=columns,
                 parameters=_extract_parameters(statement),
                 lineage=_lineage(statement, tables, columns),
+                title=documentation["title"],
+                description=documentation["description"],
+                tags=documentation["tags"],
+                knowledge_metadata=documentation["knowledge_metadata"],
                 validation_report={
                     "status": "pass" if not errors else "fail",
                     "errors": errors,
@@ -554,6 +842,173 @@ async def evaluate_data_source_schema_fingerprint(
         schema_fingerprint_matches(stored_fingerprint, schema_payload, sensitive),
         schema_fingerprint(schema_payload, sensitive),
     )
+
+
+async def promote_sql_asset_knowledge(
+    db: AsyncSession,
+    *,
+    asset: SQLAsset,
+    user_id: str,
+) -> dict[str, int]:
+    """把已审核 SQL 注释转成待审核知识候选，不直接发布指标或关系。"""
+
+    metadata = asset.knowledge_metadata or {}
+    stats = {"metrics_created": 0, "relationships_created": 0, "annotations_suggested": 0}
+    source_ref = f"sql_asset:{asset.id}"
+    inspection = await load_schema_inspection(db, asset.data_source_id)
+    physical_columns = inspection.column_map
+
+    def valid_reference(table_name: str, column_name: str) -> bool:
+        if column_name in set(physical_columns.get(table_name, [])):
+            return True
+        unqualified = [
+            columns
+            for physical_table, columns in physical_columns.items()
+            if physical_table.rsplit(".", 1)[-1] == table_name
+        ]
+        return len(unqualified) == 1 and column_name in set(unqualified[0])
+
+    for metric in metadata.get("metrics") or []:
+        if not isinstance(metric, dict):
+            continue
+        name = str(metric.get("name") or "").strip()
+        formula = str(metric.get("formula") or "").strip()
+        if not name or not formula:
+            continue
+        existing = await db.scalar(
+            select(MetricDefinition).where(
+                MetricDefinition.data_source_id == asset.data_source_id,
+                MetricDefinition.name == name,
+                MetricDefinition.status.in_(["draft", "published"]),
+            )
+        )
+        if existing is not None:
+            continue
+        underlying_columns = sorted(
+            {
+                match.group(0)
+                for match in re.finditer(
+                    r"\b[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\b", formula
+                )
+            }
+        )
+        if underlying_columns and any(
+            not valid_reference(*reference.split(".", 1)) for reference in underlying_columns
+        ):
+            continue
+        db.add(
+            MetricDefinition(
+                id=str(uuid.uuid4()),
+                data_source_id=asset.data_source_id,
+                name=name,
+                aliases=[],
+                formula=formula,
+                underlying_columns=underlying_columns,
+                business_definition=asset.description or None,
+                tags=asset.tags or [],
+                status="draft",
+                version=1,
+                created_by=user_id,
+            )
+        )
+        stats["metrics_created"] += 1
+
+    for relationship in metadata.get("joins") or []:
+        if not isinstance(relationship, dict):
+            continue
+        left_table = str(relationship.get("left_table") or "").strip()
+        left_column = str(relationship.get("left_column") or "").strip()
+        right_table = str(relationship.get("right_table") or "").strip()
+        right_column = str(relationship.get("right_column") or "").strip()
+        if not all((left_table, left_column, right_table, right_column)):
+            continue
+        if not valid_reference(left_table, left_column) or not valid_reference(
+            right_table, right_column
+        ):
+            continue
+        existing = await db.scalar(
+            select(TableRelationship).where(
+                TableRelationship.data_source_id == asset.data_source_id,
+                TableRelationship.left_table == left_table,
+                TableRelationship.left_column == left_column,
+                TableRelationship.right_table == right_table,
+                TableRelationship.right_column == right_column,
+            )
+        )
+        if existing is not None:
+            continue
+        db.add(
+            TableRelationship(
+                id=str(uuid.uuid4()),
+                data_source_id=asset.data_source_id,
+                left_table=left_table,
+                left_column=left_column,
+                right_table=right_table,
+                right_column=right_column,
+                join_type=str(relationship.get("join_type") or "LEFT").upper(),
+                is_verified=False,
+            )
+        )
+        stats["relationships_created"] += 1
+
+    from services.schema_annotations import suggest_column_annotation
+
+    for dimension in metadata.get("dimensions") or []:
+        if not isinstance(dimension, dict):
+            continue
+        name = str(dimension.get("name") or "").strip()
+        table_name = str(dimension.get("table") or "").strip()
+        column_name = str(dimension.get("column") or "").strip()
+        if not all((name, table_name, column_name)):
+            continue
+        if not valid_reference(table_name, column_name):
+            continue
+        outcome = await suggest_column_annotation(
+            db,
+            data_source_id=asset.data_source_id,
+            table_name=table_name,
+            column_name=column_name,
+            candidate={
+                "business_name": name,
+                "business_description": asset.description or None,
+                "aliases": [name],
+                "tags": asset.tags or [],
+                "semantic_type": "dimension",
+                "is_dimension_column": True,
+            },
+            source="sql_asset",
+            confidence=0.9,
+            source_ref=source_ref,
+            fingerprint=asset.schema_fingerprint,
+        )
+        if outcome in {"created", "updated", "conflict"}:
+            stats["annotations_suggested"] += 1
+
+    for reference in metadata.get("time_columns") or []:
+        table_name, _, column_name = str(reference or "").strip().rpartition(".")
+        if not table_name or not column_name:
+            continue
+        if not valid_reference(table_name, column_name):
+            continue
+        outcome = await suggest_column_annotation(
+            db,
+            data_source_id=asset.data_source_id,
+            table_name=table_name,
+            column_name=column_name,
+            candidate={
+                "business_description": asset.description or None,
+                "semantic_type": "time",
+                "is_time_column": True,
+                "time_grain": str(metadata.get("grain") or "").strip() or None,
+            },
+            source="sql_asset",
+            confidence=0.9,
+            source_ref=source_ref,
+            fingerprint=asset.schema_fingerprint,
+        )
+        if outcome in {"created", "updated", "conflict"}:
+            stats["annotations_suggested"] += 1
+    return stats
 
 
 async def _validate_project_scope(
@@ -732,7 +1187,8 @@ async def create_sql_asset_source(
             project_id=project_id,
             data_source_id=data_source_id,
             statement_index=item.statement_index,
-            title=f"{filename} / SQL {item.statement_index}",
+            title=item.title or f"{filename} / SQL {item.statement_index}",
+            description=item.description,
             normalized_sql=item.normalized_sql,
             sql_hash=item.sql_hash,
             asset_type=item.asset_type,
@@ -744,6 +1200,8 @@ async def create_sql_asset_source(
             columns=item.columns,
             lineage=item.lineage,
             parameters=item.parameters,
+            tags=item.tags,
+            knowledge_metadata=item.knowledge_metadata,
             validation_report=item.validation_report,
             schema_fingerprint=fingerprint,
         )
@@ -768,6 +1226,7 @@ def serialize_asset(asset: SQLAsset, *, include_sql: bool = True) -> dict[str, A
         "tables": asset.tables or [],
         "columns": asset.columns or [],
         "tags": asset.tags or [],
+        "knowledge_metadata": asset.knowledge_metadata or {},
         "lineage": asset.lineage or {},
         "validation_report": asset.validation_report or {},
         "schema_fingerprint": asset.schema_fingerprint,
@@ -834,6 +1293,8 @@ async def retrieve_sql_assets(
                 asset.description,
                 " ".join(asset.tags or []),
                 " ".join(asset.tables or []),
+                json.dumps(asset.knowledge_metadata or {}, ensure_ascii=False),
+                asset.normalized_sql,
             ]
         ).lower()
         return sum(1 for token in query_tokens if token in searchable)
@@ -936,11 +1397,35 @@ async def generate_sql_query_draft(
         dialect=dialect,
         project_id=project_id,
     )
+    from services.data_knowledge_context import build_data_knowledge_context
+
+    knowledge_context = await build_data_knowledge_context(
+        db,
+        data_source_id=data_source.id,
+        question=question,
+        assets=assets,
+        max_chars=settings.responses_data_knowledge_context_max_chars,
+    )
     asset_context = "\n\n".join(
-        f"资产 {index + 1}（{asset.title}）：\n{asset.normalized_sql}"
+        "\n".join(
+            part
+            for part in (
+                f"资产 {index + 1}（{asset.title}）",
+                f"业务说明：{asset.description}" if asset.description else "",
+                (
+                    "结构化知识：" + json.dumps(asset.knowledge_metadata, ensure_ascii=False)
+                    if asset.knowledge_metadata
+                    else ""
+                ),
+                asset.normalized_sql,
+            )
+            if part
+        )
         for index, asset in enumerate(assets[:3])
     )
     grounded_question = question
+    if knowledge_context.prompt:
+        grounded_question += "\n\n" + knowledge_context.prompt
     if asset_context:
         grounded_question += (
             "\n以下是同一数据源内已审核发布的 SQL 资产。仅复用与问题相关的表、JOIN 和指标口径，"
@@ -1023,7 +1508,10 @@ async def generate_sql_query_draft(
             tables=tables,
             columns=columns,
             assumptions=[],
-            validation_report=report,
+            validation_report={
+                **report,
+                "knowledge_context_counts": knowledge_context.counts,
+            },
         )
         db.add(candidate)
         candidates.append(candidate)

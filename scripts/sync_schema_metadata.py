@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import hashlib
 import os
 import re
 import sys
@@ -19,28 +21,63 @@ from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
+from sqlalchemy import select, text
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from infra.config.settings import get_settings
-from infra.storage.database import SessionLocal
-from infra.storage.models import DataSource, SchemaMetadata
+from infra.config.settings import get_settings  # noqa: E402
+from infra.storage.database import SessionLocal  # noqa: E402
+from infra.storage.models import DataSource, SchemaMetadata  # noqa: E402
 
 # ── Semantic type inference patterns ─────────────────────────────────────
 
 SEMANTIC_PATTERNS: list[tuple[re.Pattern, str, dict[str, Any]]] = [
     # (regex, semantic_type, extra_flags)
     (re.compile(r"(^|_)id$", re.I), "id", {"is_dimension_column": True}),
-    (re.compile(r"(^|_)(name|title|label|description|comment|note|remark)$", re.I), "name", {"is_dimension_column": True}),
-    (re.compile(r"(^|_)(amount|price|cost|revenue|fee|charge|sales|gmv|income|profit|loss|balance|budget)$", re.I), "amount", {"is_metric_column": True}),
-    (re.compile(r"(^|_)(count|qty|quantity|num|number|cnt)$", re.I), "count", {"is_metric_column": True}),
-    (re.compile(r"(^|_)(rate|ratio|pct|percent|percentage|avg|average)$", re.I), "percentage", {"is_metric_column": True}),
-    (re.compile(r"(^|_)(at|time|date|day|month|year|hour|minute|second|timestamp|ts|created|updated|deleted|expired|start|end|begin|finish)$", re.I), "time", {"is_time_column": True, "is_dimension_column": True}),
-    (re.compile(r"(^|_)(status|state|type|kind|category|stage|level|tier|grade|rank|role|gender|mode|channel|source|platform|device|region|country|city|province|area)$", re.I), "category", {"is_dimension_column": True}),
-    (re.compile(r"(^|_)(email|phone|mobile|tel|address|zip|postal)$", re.I), "name", {"is_dimension_column": True, "is_sensitive": True}),
+    (
+        re.compile(r"(^|_)(name|title|label|description|comment|note|remark)$", re.I),
+        "name",
+        {"is_dimension_column": True},
+    ),
+    (
+        re.compile(
+            r"(^|_)(amount|price|cost|revenue|fee|charge|sales|gmv|income|profit|loss|balance|budget)$",
+            re.I,
+        ),
+        "amount",
+        {"is_metric_column": True},
+    ),
+    (
+        re.compile(r"(^|_)(count|qty|quantity|num|number|cnt)$", re.I),
+        "count",
+        {"is_metric_column": True},
+    ),
+    (
+        re.compile(r"(^|_)(rate|ratio|pct|percent|percentage|avg|average)$", re.I),
+        "percentage",
+        {"is_metric_column": True},
+    ),
+    (
+        re.compile(
+            r"(^|_)(at|time|date|day|month|year|hour|minute|second|timestamp|ts|created|updated|deleted|expired|start|end|begin|finish)$",
+            re.I,
+        ),
+        "time",
+        {"is_time_column": True, "is_dimension_column": True},
+    ),
+    (
+        re.compile(
+            r"(^|_)(status|state|type|kind|category|stage|level|tier|grade|rank|role|gender|mode|channel|source|platform|device|region|country|city|province|area)$",
+            re.I,
+        ),
+        "category",
+        {"is_dimension_column": True},
+    ),
+    (
+        re.compile(r"(^|_)(email|phone|mobile|tel|address|zip|postal)$", re.I),
+        "name",
+        {"is_dimension_column": True, "is_sensitive": True},
+    ),
 ]
 
 TIME_GRAIN_PATTERNS: list[tuple[re.Pattern, str]] = [
@@ -100,8 +137,6 @@ async def _get_columns(conn_info: DataSource) -> list[dict]:
 
     settings_obj = get_settings()
     from cryptography.fernet import Fernet
-    import hashlib
-    import base64
 
     secret = settings_obj.data_secret_key
     digest = hashlib.sha256(secret.encode("utf-8")).digest()
@@ -141,10 +176,9 @@ async def _fetch_sample_values(
     conn_info: DataSource, table_name: str, column_name: str, limit: int = 10
 ) -> list[str]:
     """Fetch sample values from a column."""
-    from execution.data.db_router import DBConnectionInfo, DBRouter
     from cryptography.fernet import Fernet
-    import hashlib
-    import base64
+
+    from execution.data.db_router import DBConnectionInfo, DBRouter
 
     settings_obj = get_settings()
     secret = settings_obj.data_secret_key
@@ -193,7 +227,9 @@ async def sync_schema_metadata(
         print("Fetching columns from information_schema...")
 
         columns = await _get_columns(ds)
-        print(f"Found {len(columns)} columns across {len(set(c['table_name'] for c in columns))} tables")
+        print(
+            f"Found {len(columns)} columns across {len(set(c['table_name'] for c in columns))} tables"
+        )
 
         upserted = 0
         for col in columns:
@@ -210,7 +246,9 @@ async def sync_schema_metadata(
 
             sample_values = None
             if fetch_samples:
-                sample_values = await _fetch_sample_values(ds, table_name, column_name, sample_limit)
+                sample_values = await _fetch_sample_values(
+                    ds, table_name, column_name, sample_limit
+                )
 
             # Upsert
             result = await session.execute(
@@ -223,12 +261,26 @@ async def sync_schema_metadata(
             existing = result.scalar_one_or_none()
 
             if existing:
-                existing.business_name = existing.business_name or business_name
-                existing.semantic_type = existing.semantic_type or semantic_type
-                existing.is_time_column = existing.is_time_column or flags.get("is_time_column", False)
-                existing.is_metric_column = existing.is_metric_column or flags.get("is_metric_column", False)
-                existing.is_dimension_column = existing.is_dimension_column or flags.get("is_dimension_column", False)
-                existing.is_sensitive = existing.is_sensitive or flags.get("is_sensitive", False)
+                if existing.annotation_status != "verified":
+                    existing.business_name = existing.business_name or business_name
+                    existing.semantic_type = existing.semantic_type or semantic_type
+                    existing.is_time_column = existing.is_time_column or flags.get(
+                        "is_time_column", False
+                    )
+                    existing.is_metric_column = existing.is_metric_column or flags.get(
+                        "is_metric_column", False
+                    )
+                    existing.is_dimension_column = existing.is_dimension_column or flags.get(
+                        "is_dimension_column", False
+                    )
+                    existing.is_sensitive = existing.is_sensitive or flags.get(
+                        "is_sensitive", False
+                    )
+                    existing.annotation_source = "inferred"
+                    existing.annotation_confidence = max(
+                        float(existing.annotation_confidence or 0), 0.5
+                    )
+                    existing.annotation_status = "suggested"
                 existing.nullable = is_nullable
                 existing.default_value = default_value
                 existing.time_grain = existing.time_grain or time_grain
@@ -252,6 +304,10 @@ async def sync_schema_metadata(
                         time_grain=time_grain,
                         lifecycle_stage=lifecycle_stage,
                         sample_values=sample_values,
+                        annotation_source="inferred",
+                        annotation_confidence=0.5,
+                        annotation_status="suggested",
+                        source_refs=[f"schema_sync:{table_name}.{column_name}"],
                     )
                 )
             upserted += 1
@@ -264,7 +320,12 @@ async def sync_schema_metadata(
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Sync schema metadata from data source")
     parser.add_argument("--data-source-id", required=True, help="UUID of the data source")
-    parser.add_argument("--sample-rows", type=int, default=0, help="Number of sample rows to fetch per column (0=skip)")
+    parser.add_argument(
+        "--sample-rows",
+        type=int,
+        default=0,
+        help="Number of sample rows to fetch per column (0=skip)",
+    )
     args = parser.parse_args()
 
     await sync_schema_metadata(

@@ -4,6 +4,7 @@ EntityAgent — 将自然语言实体提及映射到表/列。
 封装 SchemaLinker，并用知识层 schema_metadata、table_relationships  grounding；
 优先规则匹配，必要时 LLM 回退。
 """
+
 from __future__ import annotations
 
 from agents.base import AgentResult, BaseAgent, TaskMessage
@@ -38,13 +39,15 @@ class EntityAgent(BaseAgent):
                 content=f"resolved {len(entities)} entities",
                 confidence=self._entity_confidence(entities),
                 ctx=ctx,
-                evidence=[self._make_evidence(
-                    source="entity_resolver",
-                    source_type="data_cognition",
-                    payload={"entities": entities},
-                    credibility=0.85,
-                    relevance=0.95,
-                )],
+                evidence=[
+                    self._make_evidence(
+                        source="entity_resolver",
+                        source_type="data_cognition",
+                        payload={"entities": entities},
+                        credibility=0.85,
+                        relevance=0.95,
+                    )
+                ],
             )
         except Exception as exc:
             # 非关键错误 — 返回空实体，下游仍可规划
@@ -64,15 +67,41 @@ class EntityAgent(BaseAgent):
         entities: list[dict] = []
         query_lower = ctx.query.lower()
 
+        # 人工审核的表级业务名、别名和说明优先于物理表名猜测。
+        for table_meta in ctx.table_semantics or []:
+            candidates = [
+                table_meta.get("business_name"),
+                *(table_meta.get("aliases") or []),
+            ]
+            description = str(table_meta.get("business_description") or "").lower()
+            matched = next(
+                (str(value) for value in candidates if value and str(value).lower() in query_lower),
+                None,
+            )
+            if matched or (
+                description
+                and any(word in query_lower for word in description.split() if len(word) >= 2)
+            ):
+                entities.append(
+                    {
+                        "mention": matched or table_meta.get("business_name"),
+                        "mapped_table": table_meta["table_name"],
+                        "confidence": 0.95 if matched else 0.75,
+                        "source": "schema_table_metadata",
+                    }
+                )
+
         # 第一轮：精确表名匹配
         for table in ctx.table_names:
             if table.lower() in query_lower:
-                entities.append({
-                    "mention": table,
-                    "mapped_table": table,
-                    "confidence": 1.0,
-                    "source": "exact_match",
-                })
+                entities.append(
+                    {
+                        "mention": table,
+                        "mapped_table": table,
+                        "confidence": 1.0,
+                        "source": "exact_match",
+                    }
+                )
 
         # 第 1.5 轮：value_map 分类筛选匹配
         # 例如查询包含"队长" → dim_user.role 有 value_map {"captain": "队长"}
@@ -95,15 +124,17 @@ class EntityAgent(BaseAgent):
                         if dedup_key in seen_filter_tables:
                             continue
                         seen_filter_tables.add(dedup_key)
-                        entities.append({
-                            "mention": label_str,
-                            "mapped_table": table_name,
-                            "mapped_column": col_name,
-                            "mapped_value": str(db_value),
-                            "mapped_value_label": label_str,
-                            "confidence": 0.92,
-                            "source": "value_map_match",
-                        })
+                        entities.append(
+                            {
+                                "mention": label_str,
+                                "mapped_table": table_name,
+                                "mapped_column": col_name,
+                                "mapped_value": str(db_value),
+                                "mapped_value_label": label_str,
+                                "confidence": 0.92,
+                                "source": "value_map_match",
+                            }
+                        )
 
         # 第二轮：使用 schema_metadata 业务名称
         if ctx.column_semantics:
@@ -114,19 +145,23 @@ class EntityAgent(BaseAgent):
                 biz_name = (col_meta.get("business_name") or "").lower()
                 biz_desc = (col_meta.get("business_description") or "").lower()
                 if biz_name and biz_name in query_lower:
-                    entities.append({
-                        "mention": col_meta["business_name"],
-                        "mapped_table": col_meta["table_name"],
-                        "confidence": 0.9,
-                        "source": "schema_metadata_business_name",
-                    })
+                    entities.append(
+                        {
+                            "mention": col_meta["business_name"],
+                            "mapped_table": col_meta["table_name"],
+                            "confidence": 0.9,
+                            "source": "schema_metadata_business_name",
+                        }
+                    )
                 elif biz_desc and any(w in query_lower for w in biz_desc.split() if len(w) >= 2):
-                    entities.append({
-                        "mention": col_meta["business_name"] or col_meta["table_name"],
-                        "mapped_table": col_meta["table_name"],
-                        "confidence": 0.7,
-                        "source": "schema_metadata_description",
-                    })
+                    entities.append(
+                        {
+                            "mention": col_meta["business_name"] or col_meta["table_name"],
+                            "mapped_table": col_meta["table_name"],
+                            "confidence": 0.7,
+                            "source": "schema_metadata_description",
+                        }
+                    )
 
         # 第三轮：若仍无匹配，尝试通过 SchemaLinker 启发式匹配
         if not entities and len(ctx.table_names) > 0:

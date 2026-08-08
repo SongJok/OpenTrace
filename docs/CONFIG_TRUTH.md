@@ -35,6 +35,7 @@
 | `DATABASE_SCHEMA_SYNC_PAGE_SIZE` | `2000` | Schema 同步访问目标数据库时的每批行数 |
 | `DATABASE_SCHEMA_SYNC_MAX_TABLES` | `100000` | 单次同步表安全预算，达到后返回 `tables_truncated=true` |
 | `DATABASE_SCHEMA_SYNC_MAX_COLUMNS` | `1000000` | 单次同步列安全预算，达到后返回 `columns_truncated=true` |
+| `SCHEMA_ANNOTATION_AUTO_SUGGEST_MAX_ITEMS` | `20000` | 单次 Schema 同步最多生成的表/字段业务标注建议数 |
 
 Schema 同步不得复用 `TEXT2SQL_MAX_RESULT_ROWS=500`：后者只保护业务查询结果。同步端按批次读取
 元数据，目录 API 默认每页返回 100 张表、最多 200 张，并支持 `search`、`database`、`offset`
@@ -111,6 +112,7 @@ Schema 同步不得复用 `TEXT2SQL_MAX_RESULT_ROWS=500`：后者只保护业务
 | `RESPONSES_CAPABILITY_CATALOG_LIMIT` | `48` | 大型工具生态中交给规划器的相关能力上限；调用方显式工具始终保留 |
 | `RESPONSES_AGENT_DEEP_MAX_ROUNDS` | `16` | deep/complex 任务单个 Response 的最大工具轮次 |
 | `RESPONSES_AGENT_REPLAN_LIMIT` | `3` | 只读工具失败后的最大重规划次数 |
+| `RESPONSES_DATA_KNOWLEDGE_CONTEXT_MAX_CHARS` | `12000` | Text2SQL 草案中 Schema 标注、指标、关系与 SQL 资产知识的总字符预算 |
 | `MULTIMODAL_INLINE_MAX_MB` | `7` | Base64 音视频上传上限，编码后保持在 Provider 10MB 限制内 |
 
 每轮实际上下文用量、裁剪数、摘要命中、媒体数量和工具 schema 估算会写入

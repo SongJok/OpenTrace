@@ -15,9 +15,11 @@ import {
 } from '../lib/databaseConnection'
 import {
   apiAnalyzeDatabase,
+  apiAutoSuggestSchemaAnnotations,
   apiCreateDatabase,
   apiDatabaseQuery,
   apiDeleteDatabase,
+  apiDeleteSchemaAnnotation,
   apiGetDatabaseSchema,
   apiListDatabases,
   apiSyncDatabaseSchema,
@@ -34,20 +36,24 @@ import {
   apiListSQLAssets,
   apiListPermissionSubjects,
   apiListResourcePermissions,
+  apiListSchemaAnnotations,
   apiGrantResourcePermission,
   apiRevokeResourcePermission,
+  apiReviewSchemaAnnotation,
   apiUpdateSQLAsset,
+  apiUpsertSchemaAnnotation,
   apiUploadSQLAsset,
   type DataSourceItem,
   type DatabaseSchemaPagination,
   type DatabaseSchemaPayload,
   type ResourcePermissionItem,
+  type SchemaAnnotationItem,
   type SQLAssetItem,
   type SQLAssetSourceItem,
   type SQLQueryCandidateItem,
 } from '../api/client'
 
-type TabKey = 'overview' | 'tables' | 'query' | 'sql_assets' | 'analysis' | 'settings' | 'metrics' | 'relationships' | 'skills'
+type TabKey = 'overview' | 'tables' | 'annotations' | 'query' | 'sql_assets' | 'analysis' | 'settings' | 'metrics' | 'relationships' | 'skills'
 
 const SQL_ASSET_PAGE_SIZE = 20
 const SCHEMA_TABLE_PAGE_SIZE = 100
@@ -147,6 +153,27 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     title: string
     description: string
     tags: string
+  } | null>(null)
+  const [schemaAnnotations, setSchemaAnnotations] = useState<SchemaAnnotationItem[]>([])
+  const [schemaAnnotationLoading, setSchemaAnnotationLoading] = useState(false)
+  const [schemaAnnotationSearch, setSchemaAnnotationSearch] = useState('')
+  const [schemaAnnotationOffset, setSchemaAnnotationOffset] = useState(0)
+  const [schemaAnnotationHasMore, setSchemaAnnotationHasMore] = useState(false)
+  const [editingSchemaAnnotation, setEditingSchemaAnnotation] = useState<{
+    id?: string
+    target_type: 'table' | 'column'
+    table_name: string
+    column_name: string
+    business_name: string
+    business_description: string
+    aliases: string
+    tags: string
+    semantic_type: string
+    value_map: string
+    is_time_column: boolean
+    is_metric_column: boolean
+    is_dimension_column: boolean
+    is_sensitive: boolean
   } | null>(null)
 
   const [form, setForm] = useState({
@@ -258,7 +285,31 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
         setSqlAssetOffset(0)
         setSqlAssetTotal(0)
       })
+    setSchemaAnnotationSearch('')
+    setSchemaAnnotationOffset(0)
+    apiListSchemaAnnotations(token, selected.id)
+      .then((result) => {
+        setSchemaAnnotations([...(result.tables || []), ...(result.columns || [])])
+        setSchemaAnnotationHasMore(!!result.pagination?.has_more)
+      })
+      .catch(() => setSchemaAnnotations([]))
   }, [selected?.id, token])
+
+  const reloadSchemaAnnotations = async (options: { search?: string; offset?: number; append?: boolean } = {}) => {
+    if (!selected) return
+    setSchemaAnnotationLoading(true)
+    try {
+      const search = options.search ?? schemaAnnotationSearch
+      const offset = options.offset ?? 0
+      const result = await apiListSchemaAnnotations(token, selected.id, { search, offset })
+      const incoming = [...(result.tables || []), ...(result.columns || [])]
+      setSchemaAnnotations((current) => options.append ? [...current, ...incoming] : incoming)
+      setSchemaAnnotationOffset(offset)
+      setSchemaAnnotationHasMore(!!result.pagination?.has_more)
+    } finally {
+      setSchemaAnnotationLoading(false)
+    }
+  }
 
   const reloadSQLAssets = async (overrides: { search?: string; status?: SQLAssetItem['status'] | ''; offset?: number } = {}) => {
     if (!selected) return
@@ -324,6 +375,86 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     if (!window.confirm('删除该源文件及其全部 SQL 资产？')) return
     await apiDeleteSQLAssetSource(token, selected.id, sourceId)
     await reloadSQLAssets()
+  }
+
+  const beginSchemaAnnotation = (
+    targetType: 'table' | 'column',
+    annotation?: SchemaAnnotationItem,
+  ) => {
+    setEditingSchemaAnnotation({
+      id: annotation?.id,
+      target_type: targetType,
+      table_name: annotation?.table_name || '',
+      column_name: annotation?.column_name || '',
+      business_name: annotation?.business_name || '',
+      business_description: annotation?.business_description || '',
+      aliases: (annotation?.aliases || []).join(', '),
+      tags: (annotation?.tags || []).join(', '),
+      semantic_type: annotation?.semantic_type || '',
+      value_map: JSON.stringify(annotation?.value_map || {}, null, 2),
+      is_time_column: !!annotation?.is_time_column,
+      is_metric_column: !!annotation?.is_metric_column,
+      is_dimension_column: !!annotation?.is_dimension_column,
+      is_sensitive: !!annotation?.is_sensitive,
+    })
+  }
+
+  const saveSchemaAnnotation = async () => {
+    if (!selected || !editingSchemaAnnotation) return
+    let valueMap: Record<string, string> = {}
+    try {
+      valueMap = editingSchemaAnnotation.value_map.trim()
+        ? JSON.parse(editingSchemaAnnotation.value_map)
+        : {}
+    } catch {
+      alert('枚举值映射必须是合法 JSON 对象')
+      return
+    }
+    try {
+      await apiUpsertSchemaAnnotation(token, selected.id, {
+        ...editingSchemaAnnotation,
+        column_name: editingSchemaAnnotation.target_type === 'column'
+          ? editingSchemaAnnotation.column_name
+          : null,
+        aliases: editingSchemaAnnotation.aliases.split(',').map((item) => item.trim()).filter(Boolean),
+        tags: editingSchemaAnnotation.tags.split(',').map((item) => item.trim()).filter(Boolean),
+        semantic_type: editingSchemaAnnotation.semantic_type || null,
+        value_map: valueMap,
+      })
+      setEditingSchemaAnnotation(null)
+      await reloadSchemaAnnotations()
+    } catch (error: any) {
+      alert(error?.message || '保存 Schema 标注失败')
+    }
+  }
+
+  const reviewSchemaAnnotation = async (annotation: SchemaAnnotationItem, action: 'accept' | 'reject') => {
+    if (!selected) return
+    await apiReviewSchemaAnnotation(token, selected.id, {
+      target_type: annotation.target_type,
+      annotation_id: annotation.id,
+      action,
+    })
+    await reloadSchemaAnnotations()
+  }
+
+  const autoSuggestSchemaAnnotations = async () => {
+    if (!selected) return
+    setSchemaAnnotationLoading(true)
+    try {
+      await apiAutoSuggestSchemaAnnotations(token, selected.id)
+      await reloadSchemaAnnotations()
+    } catch (error: any) {
+      alert(error?.message || '生成 Schema 标注建议失败')
+    } finally {
+      setSchemaAnnotationLoading(false)
+    }
+  }
+
+  const removeSchemaAnnotation = async (annotation: SchemaAnnotationItem) => {
+    if (!selected || !window.confirm('删除该 Schema 业务标注？')) return
+    await apiDeleteSchemaAnnotation(token, selected.id, annotation.target_type, annotation.id)
+    await reloadSchemaAnnotations()
   }
 
   const validateWorkbench = async () => {
@@ -528,6 +659,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
       setSchemaAppliedSearch('')
       setSchemaDatabase('')
       await loadSchemaPage(selected.id)
+      await reloadSchemaAnnotations()
       setActiveTab('tables')
       await load()
       alert(sync.metadata_warning || `Schema 已同步，库数: ${sync.database_count || 0}，表数: ${sync.tables_truncated ? '至少 ' : ''}${sync.table_count || 0}`)
@@ -781,6 +913,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
               <div className="flex flex-wrap gap-2 border-b border-[var(--border)] pb-2">
                 <TabButton active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} icon={<Gauge size={14} />} label="总览" />
                 <TabButton active={activeTab === 'tables'} onClick={() => setActiveTab('tables')} icon={<Table2 size={14} />} label="Tables" />
+                <TabButton active={activeTab === 'annotations'} onClick={() => setActiveTab('annotations')} icon={<Pencil size={14} />} label="Schema 标注" />
                 <TabButton active={activeTab === 'query'} onClick={() => setActiveTab('query')} icon={<Search size={14} />} label="Query" />
                 <TabButton active={activeTab === 'sql_assets'} onClick={() => setActiveTab('sql_assets')} icon={<FileCode2 size={14} />} label="SQL 资产" />
                 <TabButton active={activeTab === 'analysis'} onClick={() => setActiveTab('analysis')} icon={<BarChart3 size={14} />} label="Analysis" />
@@ -837,6 +970,89 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                     </details>
                   ))}
                   {schemaPagination?.has_more ? <button disabled={schemaLoading || !selected} onClick={() => { if (selected && schemaPagination.next_offset != null) void loadSchemaPage(selected.id, { search: schemaAppliedSearch, database: schemaDatabase, offset: schemaPagination.next_offset, append: true }) }} className="flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--border)] py-2.5 text-xs hover:border-[var(--accent)] disabled:opacity-50"><RefreshCw size={12} className={schemaLoading ? 'animate-spin' : ''} />{schemaLoading ? '加载中…' : `继续加载（剩余 ${Math.max(0, schemaPagination.total - (schema?.tables || []).length)} 张）`}</button> : null}
+                </div>
+              ) : null}
+
+              {activeTab === 'annotations' ? (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold">Schema 业务标注</h3>
+                      <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                        人工审核内容优先级最高；数据库注释、字段名和已发布 SQL 只生成建议，不会覆盖人工标注。
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <button className="rounded border border-[var(--border)] px-2 py-1 text-xs" onClick={() => beginSchemaAnnotation('table')}><Plus size={12} className="mr-1 inline" />表标注</button>
+                      <button className="rounded border border-[var(--border)] px-2 py-1 text-xs" onClick={() => beginSchemaAnnotation('column')}><Plus size={12} className="mr-1 inline" />字段标注</button>
+                      <button disabled={schemaAnnotationLoading} className="rounded bg-[var(--accent)] px-2 py-1 text-xs text-[var(--accent-foreground)] disabled:opacity-50" onClick={() => void autoSuggestSchemaAnnotations()}><Zap size={12} className="mr-1 inline" />{schemaAnnotationLoading ? '处理中' : '自动建议'}</button>
+                    </div>
+                  </div>
+
+                  <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void reloadSchemaAnnotations({ search: schemaAnnotationSearch, offset: 0 }) }}>
+                    <label className="relative min-w-0 flex-1">
+                      <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
+                      <input value={schemaAnnotationSearch} onChange={(event) => setSchemaAnnotationSearch(event.target.value)} className="h-9 w-full rounded border border-[var(--border)] bg-transparent pl-9 pr-3 text-xs" placeholder="搜索物理表、字段或业务说明" />
+                    </label>
+                    <button disabled={schemaAnnotationLoading} className="rounded border border-[var(--border)] px-3 text-xs disabled:opacity-50">搜索</button>
+                  </form>
+
+                  {editingSchemaAnnotation ? (
+                    <div className="space-y-3 rounded border border-[var(--accent)]/40 p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-semibold">{editingSchemaAnnotation.target_type === 'table' ? '表级标注' : '字段级标注'}</div>
+                        <button className="text-xs text-[var(--text-secondary)]" onClick={() => setEditingSchemaAnnotation(null)}>取消</button>
+                      </div>
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <input disabled={!!editingSchemaAnnotation.id} value={editingSchemaAnnotation.table_name} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, table_name: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs disabled:opacity-60" placeholder="物理表名" />
+                        {editingSchemaAnnotation.target_type === 'column' ? <input disabled={!!editingSchemaAnnotation.id} value={editingSchemaAnnotation.column_name} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, column_name: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs disabled:opacity-60" placeholder="物理字段名" /> : null}
+                        <input value={editingSchemaAnnotation.business_name} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, business_name: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="业务名称" />
+                        <input value={editingSchemaAnnotation.aliases} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, aliases: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="别名，逗号分隔" />
+                        <input value={editingSchemaAnnotation.tags} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, tags: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="标签，逗号分隔" />
+                        {editingSchemaAnnotation.target_type === 'column' ? <input value={editingSchemaAnnotation.semantic_type} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, semantic_type: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="语义类型：dimension / metric / time" /> : null}
+                      </div>
+                      <textarea value={editingSchemaAnnotation.business_description} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, business_description: event.target.value })} className="min-h-20 w-full rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="业务含义、适用范围、统计口径及注意事项" />
+                      {editingSchemaAnnotation.target_type === 'column' ? (
+                        <>
+                          <textarea value={editingSchemaAnnotation.value_map} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, value_map: event.target.value })} className="min-h-20 w-full rounded border border-[var(--border)] bg-transparent px-2 py-1.5 font-mono text-xs" placeholder={'枚举映射 JSON，例如 {"2":"已支付"}'} />
+                          <div className="flex flex-wrap gap-4 text-xs">
+                            {[
+                              ['is_dimension_column', '维度字段'],
+                              ['is_metric_column', '指标字段'],
+                              ['is_time_column', '时间字段'],
+                              ['is_sensitive', '敏感字段'],
+                            ].map(([field, label]) => <label key={field} className="inline-flex items-center gap-1"><input type="checkbox" checked={!!editingSchemaAnnotation[field as 'is_dimension_column']} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, [field]: event.target.checked })} />{label}</label>)}
+                          </div>
+                        </>
+                      ) : null}
+                      <div className="flex justify-end"><button className="rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]" onClick={() => void saveSchemaAnnotation()}>保存并审核通过</button></div>
+                    </div>
+                  ) : null}
+
+                  <div className="space-y-2">
+                    {schemaAnnotations.length === 0 ? <div className="rounded border border-dashed border-[var(--border)] p-8 text-center text-xs text-[var(--text-secondary)]">暂无 Schema 标注，请先同步 Schema 或手工添加。</div> : schemaAnnotations.map((annotation) => (
+                      <div key={`${annotation.target_type}:${annotation.id}`} className="rounded border border-[var(--border)] p-3 text-xs">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-medium">{annotation.business_name || annotation.column_name || annotation.table_name}</div>
+                            <div className="mt-1 font-mono text-[11px] text-[var(--text-secondary)]">{annotation.target_type === 'column' ? `${annotation.table_name}.${annotation.column_name}` : annotation.table_name}</div>
+                            {annotation.business_description ? <div className="mt-2 leading-5 text-[var(--text-secondary)]">{annotation.business_description}</div> : null}
+                            {annotation.aliases.length || annotation.tags.length ? <div className="mt-2 text-[11px] text-[var(--text-secondary)]">{[...annotation.aliases, ...annotation.tags].join(' · ')}</div> : null}
+                            {Object.keys(annotation.suggested_changes?.fields || {}).length ? <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-amber-500/5 p-2 text-[11px] text-amber-500">待合并建议：{JSON.stringify(annotation.suggested_changes.fields, null, 2)}</pre> : null}
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <span className="rounded bg-[var(--surface-raised)] px-2 py-0.5 text-[10px]">{annotation.annotation_source} · {Math.round(annotation.annotation_confidence * 100)}%</span>
+                            <span className={`rounded px-2 py-0.5 text-[10px] ${annotation.annotation_status === 'verified' ? 'bg-emerald-500/10 text-emerald-500' : annotation.annotation_status === 'rejected' ? 'bg-red-500/10 text-red-500' : 'bg-amber-500/10 text-amber-500'}`}>{annotation.annotation_status === 'verified' ? '已审核' : annotation.annotation_status === 'rejected' ? '已驳回' : '待审核'}</span>
+                            <button title="编辑标注" className="rounded border border-[var(--border)] p-1" onClick={() => beginSchemaAnnotation(annotation.target_type, annotation)}><Pencil size={12} /></button>
+                            {annotation.annotation_status === 'suggested' || Object.keys(annotation.suggested_changes?.fields || {}).length ? <button className="rounded bg-emerald-500/10 px-2 py-1 text-emerald-500" onClick={() => void reviewSchemaAnnotation(annotation, 'accept')}>接受</button> : null}
+                            {annotation.annotation_status === 'suggested' || Object.keys(annotation.suggested_changes?.fields || {}).length ? <button className="rounded bg-red-500/10 px-2 py-1 text-red-500" onClick={() => void reviewSchemaAnnotation(annotation, 'reject')}>驳回</button> : null}
+                            <button title="删除标注" className="text-red-500" onClick={() => void removeSchemaAnnotation(annotation)}><Trash2 size={12} /></button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {schemaAnnotationHasMore ? <button disabled={schemaAnnotationLoading} className="w-full rounded border border-[var(--border)] py-2 text-xs disabled:opacity-50" onClick={() => void reloadSchemaAnnotations({ offset: schemaAnnotationOffset + 250, append: true })}>{schemaAnnotationLoading ? '加载中…' : '继续加载标注'}</button> : null}
                 </div>
               ) : null}
 
@@ -985,6 +1201,12 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                                 {asset.description ? <div>{asset.description}</div> : null}
                                 {asset.tags.length ? <div>{asset.tags.join(' · ')}</div> : null}
                               </div>
+                            ) : null}
+                            {asset.knowledge_metadata && Object.values(asset.knowledge_metadata).some((value) => Array.isArray(value) ? value.length > 0 : !!value) ? (
+                              <details className="rounded border border-[var(--border)] p-2 text-xs">
+                                <summary className="cursor-pointer font-medium">从 SQL 注释提取的结构化知识</summary>
+                                <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap text-[11px] text-[var(--text-secondary)]">{JSON.stringify(asset.knowledge_metadata, null, 2)}</pre>
+                              </details>
                             ) : null}
                             <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded border border-[var(--border)] bg-black/20 p-3 text-xs">{asset.sql}</pre>
                             {(asset.validation_report?.errors || []).map((error, index) => (

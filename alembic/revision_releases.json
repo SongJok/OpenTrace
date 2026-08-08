@@ -51,6 +51,9 @@
     },
     "r0017_sql_asset_governance": {
       "release": "unreleased"
+    },
+    "r0018_data_knowledge": {
+      "release": "unreleased"
     }
   }
 }

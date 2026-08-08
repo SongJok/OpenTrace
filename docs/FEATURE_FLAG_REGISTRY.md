@@ -47,6 +47,8 @@
 | `DATABASE_SCHEMA_SYNC_PAGE_SIZE` | 2000 | 元数据源端每批读取行数，不影响业务 SQL 返回上限 |
 | `DATABASE_SCHEMA_SYNC_MAX_TABLES` | 100000 | 单数据源单次同步的表安全预算，达到后显式标记截断 |
 | `DATABASE_SCHEMA_SYNC_MAX_COLUMNS` | 1000000 | 单数据源单次同步的列安全预算，达到后显式标记截断 |
+| `SCHEMA_ANNOTATION_AUTO_SUGGEST_MAX_ITEMS` | 20000 | 单次同步自动生成的 Schema 业务标注建议安全预算 |
+| `RESPONSES_DATA_KNOWLEDGE_CONTEXT_MAX_CHARS` | 12000 | 在线 Text2SQL 草案可注入的已审核数据知识字符预算 |
 
 这些数值控制不是能力开关。表目录 API 固定采用有界分页响应，不能通过提高同步预算改回一次性
 返回完整 Schema；生产调整预算前必须先验证 API 内存、目标数据库元数据查询和 PostgreSQL

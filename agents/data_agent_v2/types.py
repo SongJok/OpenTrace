@@ -4,21 +4,12 @@ DataAgent V2 — 多 Agent 认知流水线共享类型与协议。
 各子 Agent 经 TaskMessage.params / AgentResult.metadata 传递 CognitiveContext，
 DAG 调度器可串联执行而无需改动 BaseAgent 接口。
 """
+
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
-
-from kernel.data_cognition.types import (
-    EntityMapping,
-    MetricMapping,
-    SemanticContext,
-    LogicalPlan,
-)
-from kernel.data_cognition.table_graph import JoinStep
-from kernel.data_cognition.sql_dialect import SQLDialectSpec
-
 
 # ── Cognitive Context ──────────────────────────────────────────────────────
 
@@ -56,6 +47,7 @@ class CognitiveContext:
     matched_metrics: list[dict[str, Any]] | None = None  # from metric_definitions
     matched_skills: list[dict[str, Any]] | None = None  # from analytical_skills
     matched_relationships: list[dict[str, Any]] | None = None  # from table_relationships
+    table_semantics: list[dict[str, Any]] | None = None  # from schema_table_metadata
     column_semantics: list[dict[str, Any]] | None = None  # from schema_metadata
     pattern_hit: dict[str, Any] | None = None  # from query_patterns (fast path)
 
@@ -142,20 +134,22 @@ def unpack_cognitive_context(params: dict[str, Any]) -> CognitiveContext:
 
 # ── Intent Types ───────────────────────────────────────────────────────────
 
-INTENT_TYPES = frozenset({
-    "aggregation",       # "每个地区的销售额"
-    "filtering",         # "销售额大于1000的订单"
-    "ranking",           # "销售额最高的10个产品"
-    "trend",             # "过去6个月的趋势"
-    "comparison",        # "今年 vs 去年的对比"
-    "distribution",      # "用户等级的分布"
-    "raw_lookup",        # "查询用户123的订单"
-    "metadata",          # "这个数据库有哪些表"
-    "anomaly_detection", # "哪些指标有异常"
-    "funnel",            # "从注册到付费的转化"
-    "cohort",            # "每月新增用户的留存"
-    "composition",       # "各部分占比"
-})
+INTENT_TYPES = frozenset(
+    {
+        "aggregation",  # "每个地区的销售额"
+        "filtering",  # "销售额大于1000的订单"
+        "ranking",  # "销售额最高的10个产品"
+        "trend",  # "过去6个月的趋势"
+        "comparison",  # "今年 vs 去年的对比"
+        "distribution",  # "用户等级的分布"
+        "raw_lookup",  # "查询用户123的订单"
+        "metadata",  # "这个数据库有哪些表"
+        "anomaly_detection",  # "哪些指标有异常"
+        "funnel",  # "从注册到付费的转化"
+        "cohort",  # "每月新增用户的留存"
+        "composition",  # "各部分占比"
+    }
+)
 
 INTENT_TO_SKILL_TYPE: dict[str, str] = {
     "comparison": "comparison",
@@ -170,22 +164,28 @@ INTENT_TO_SKILL_TYPE: dict[str, str] = {
 
 # ── Knowledge Retrieval Specs ──────────────────────────────────────────────
 
+
 class LowConfidenceError(Exception):
     """当 V2 流水线置信度低于配置阈值时抛出。
 
     由 DataAgent 包装器捕获以触发 V1 回退，
     同时保留 V2 尝试的诊断上下文。
     """
+
     def __init__(self, confidence: float, threshold: float, detail: str = ""):
         self.confidence = confidence
         self.threshold = threshold
         self.detail = detail
-        super().__init__(f"Confidence {confidence:.2f} below threshold {threshold:.2f}" + (f": {detail}" if detail else ""))
+        super().__init__(
+            f"Confidence {confidence:.2f} below threshold {threshold:.2f}"
+            + (f": {detail}" if detail else "")
+        )
 
 
 @dataclass
 class KnowledgeRetrievalSpec:
     """描述知识层应检索的内容。"""
+
     query: str
     intent_type: str | None = None
     entity_names: list[str] = field(default_factory=list)

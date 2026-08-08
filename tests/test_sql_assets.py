@@ -11,6 +11,7 @@ import pytest
 from agents.base import AgentResult, TaskMessage
 from agents.data_agent import DataAgent
 from infra.errors import NotFoundException, ValidationException
+from infra.storage.models import MetricDefinition, SchemaMetadata, TableRelationship
 from services import sql_assets
 
 SCHEMA_COLUMNS = {
@@ -43,6 +44,73 @@ def test_sql_asset_parser_classifies_read_only_and_etl_without_execution() -> No
     assert parsed[1].lineage["write_tables"] == ["monthly_orders"]
     assert "SQLExecutor" not in inspect.getsource(sql_assets.create_sql_asset_source)
     assert "DBRouter" not in inspect.getsource(sql_assets.create_sql_asset_source)
+
+
+def test_sql_asset_parser_extracts_structured_and_narrative_comments() -> None:
+    parsed = sql_assets.parse_sql_assets(
+        """
+        -- @title: 按渠道统计净收入
+        -- @description: 支付金额扣除退款金额
+        -- 仅统计支付成功订单
+        -- @questions: 各渠道收入是多少；渠道 GMV 趋势
+        -- @tags: 订单, 渠道, 收入
+        -- @metrics: 净收入=SUM(orders.amount-refunds.amount)
+        -- @dimensions: 渠道=channels.name
+        -- @joins: orders.channel_id=channels.id;orders.id=refunds.order_id
+        -- @time-column: orders.paid_at
+        -- @grain: day
+        SELECT channels.name, SUM(orders.amount) AS revenue
+        FROM orders
+        LEFT JOIN channels ON orders.channel_id = channels.id
+        GROUP BY channels.name;
+        """,
+        dialect="postgres",
+        table_columns={
+            **SCHEMA_COLUMNS,
+            "channels": ["id", "name"],
+        },
+    )[0]
+
+    assert parsed.title == "按渠道统计净收入"
+    assert "支付成功" in parsed.description
+    assert parsed.tags == ["订单", "渠道", "收入"]
+    assert parsed.knowledge_metadata["questions"] == ["各渠道收入是多少", "渠道 GMV 趋势"]
+    assert parsed.knowledge_metadata["metrics"][0]["name"] == "净收入"
+    assert {"name": "渠道", "table": "channels", "column": "name"} in (
+        parsed.knowledge_metadata["dimensions"]
+    )
+    assert len(parsed.knowledge_metadata["joins"]) == 2
+    assert parsed.knowledge_metadata["time_columns"] == ["orders.paid_at"]
+    assert parsed.knowledge_metadata["grain"] == "day"
+    assert "@title" not in parsed.normalized_sql
+
+
+def test_sql_asset_parser_keeps_plain_comments_as_business_description() -> None:
+    parsed = sql_assets.parse_sql_assets(
+        "-- 订单收入业务口径\n-- 排除测试订单\nSELECT amount FROM orders",
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+    )[0]
+
+    assert parsed.description == "订单收入业务口径\n排除测试订单"
+
+
+def test_sql_asset_parser_infers_inner_join_and_aggregate_knowledge() -> None:
+    parsed = sql_assets.parse_sql_assets(
+        """
+        SELECT customers.name, SUM(orders.amount) AS revenue
+        FROM orders
+        JOIN customers ON orders.customer_id = customers.id
+        GROUP BY customers.name
+        """,
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+    )[0]
+
+    assert parsed.knowledge_metadata["joins"][0]["join_type"] == "INNER"
+    assert {"name": "revenue", "formula": "SUM(orders.amount)"} in (
+        parsed.knowledge_metadata["metrics"]
+    )
 
 
 def test_sql_asset_parser_rejects_unknown_and_sensitive_columns() -> None:
@@ -306,6 +374,71 @@ def test_sql_asset_status_transitions_are_governed() -> None:
 
     with pytest.raises(ValidationException, match="状态不能从 published 变更为 rejected"):
         sql_assets.validate_asset_status_transition("published", "rejected")
+
+
+@pytest.mark.asyncio
+async def test_published_sql_asset_promotes_reviewable_knowledge_candidates(monkeypatch) -> None:
+    asset = SimpleNamespace(
+        id="asset-1",
+        data_source_id="source-1",
+        description="订单收入口径",
+        tags=["订单", "收入"],
+        schema_fingerprint="fingerprint-1",
+        knowledge_metadata={
+            "metrics": [{"name": "净收入", "formula": "SUM(orders.amount)"}],
+            "dimensions": [{"name": "渠道", "table": "orders", "column": "channel_id"}],
+            "joins": [
+                {
+                    "left_table": "orders",
+                    "left_column": "customer_id",
+                    "right_table": "customers",
+                    "right_column": "id",
+                    "join_type": "LEFT",
+                }
+            ],
+            "time_columns": ["orders.paid_at"],
+            "grain": "day",
+        },
+    )
+    monkeypatch.setattr(
+        sql_assets,
+        "load_schema_inspection",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                column_map={
+                    "orders": ["amount", "channel_id", "customer_id", "paid_at"],
+                    "customers": ["id"],
+                }
+            )
+        ),
+    )
+
+    class _DB:
+        def __init__(self):
+            self.added = []
+
+        async def scalar(self, _statement):
+            return None
+
+        def add(self, record):
+            self.added.append(record)
+
+    db = _DB()
+    stats = await sql_assets.promote_sql_asset_knowledge(db, asset=asset, user_id="user-1")
+
+    assert stats == {
+        "metrics_created": 1,
+        "relationships_created": 1,
+        "annotations_suggested": 2,
+    }
+    metric = next(item for item in db.added if isinstance(item, MetricDefinition))
+    relationship = next(item for item in db.added if isinstance(item, TableRelationship))
+    annotations = [item for item in db.added if isinstance(item, SchemaMetadata)]
+    assert metric.status == "draft"
+    assert metric.formula == "SUM(orders.amount)"
+    assert relationship.is_verified is False
+    assert {item.column_name for item in annotations} == {"channel_id", "paid_at"}
+    assert all(item.annotation_status == "suggested" for item in annotations)
 
 
 @pytest.mark.asyncio
@@ -739,6 +872,13 @@ def test_sql_asset_migration_and_responses_approval_contract() -> None:
     assert "execution_started_at" in governance_migration
     assert "project_id" in governance_migration
     assert "uq_sql_asset_source_global_hash" in governance_migration
+
+    knowledge_migration = (root / "alembic/versions/r0018_data_knowledge_annotations.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'down_revision = "r0017_sql_asset_governance"' in knowledge_migration
+    assert "schema_table_metadata" in knowledge_migration
+    assert "knowledge_metadata" in knowledge_migration
 
     import tools.builtin_tools.analytics_tools  # noqa: F401
     from tools.registry.registry import registry

@@ -2648,6 +2648,7 @@ class SQLAsset(Base):
     lineage: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     parameters: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    knowledge_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     validation_report: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     schema_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_start_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -2786,6 +2787,8 @@ class SchemaMetadata(Base):
     column_name: Mapped[str] = mapped_column(String(255), nullable=False)
     business_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     business_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     semantic_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     value_map: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_primary_key: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -2800,6 +2803,51 @@ class SchemaMetadata(Base):
     nullable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     default_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     sample_values: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    annotation_source: Mapped[str] = mapped_column(String(32), nullable=False, default="inferred")
+    annotation_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    annotation_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="suggested", index=True
+    )
+    suggested_changes: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    source_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    schema_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SchemaTableMetadata(Base):
+    """表级业务语义，独立于物理数据库是否提供 COMMENT。"""
+
+    __tablename__ = "schema_table_metadata"
+    __table_args__ = (
+        UniqueConstraint("data_source_id", "table_name", name="uq_schema_table_meta_ds_table"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    data_source_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    table_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    business_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    business_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    aliases: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    annotation_source: Mapped[str] = mapped_column(String(32), nullable=False, default="inferred")
+    annotation_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    annotation_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="suggested", index=True
+    )
+    suggested_changes: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    source_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    schema_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

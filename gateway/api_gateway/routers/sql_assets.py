@@ -24,6 +24,7 @@ from services.sql_assets import (
     evaluate_data_source_schema_fingerprint,
     execute_sql_query_draft,
     load_scoped_draft,
+    promote_sql_asset_knowledge,
     serialize_asset,
     serialize_draft,
     serialize_source,
@@ -305,6 +306,7 @@ async def update_sql_asset(
         )
     if payload.status is not None:
         validate_asset_status_transition(asset.status, payload.status)
+    newly_published = payload.status == "published" and asset.status != "published"
     if payload.status == "published":
         if not asset.executable or (asset.validation_report or {}).get("status") != "pass":
             raise ValidationException("只有通过安全校验的只读 SQL 才能发布")
@@ -332,6 +334,11 @@ async def update_sql_asset(
         asset.tags = sorted({item.strip() for item in payload.tags if item.strip()})[:30]
     if payload.status is not None:
         asset.status = payload.status
+    knowledge_promotion = None
+    if newly_published:
+        knowledge_promotion = await promote_sql_asset_knowledge(
+            db, asset=asset, user_id=current_user.id
+        )
     await db.commit()
     await write_audit_log(
         user_id=current_user.id,
@@ -345,7 +352,10 @@ async def update_sql_asset(
             "updated_fields": sorted(payload.model_fields_set - {"expected_updated_at"}),
         },
     )
-    return serialize_asset(asset)
+    result = serialize_asset(asset)
+    if knowledge_promotion is not None:
+        result["knowledge_promotion"] = knowledge_promotion
+    return result
 
 
 @router.delete("/databases/{database_id}/sql-assets/sources/{source_id}", status_code=204)

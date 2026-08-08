@@ -233,6 +233,20 @@ async def _verify_runtime_schema(conn) -> None:
             "sql_hash",
             "validation_report",
             "schema_fingerprint",
+            "knowledge_metadata",
+        },
+        "schema_metadata": {
+            "aliases",
+            "tags",
+            "annotation_source",
+            "annotation_confidence",
+            "annotation_status",
+            "suggested_changes",
+            "source_refs",
+            "schema_fingerprint",
+            "created_by",
+            "approved_by",
+            "approved_at",
         },
         "sql_query_drafts": {
             "user_id",
@@ -326,6 +340,8 @@ async def _verify_runtime_schema(conn) -> None:
         "sql_assets",
         "sql_query_drafts",
         "sql_query_candidates",
+        "schema_metadata",
+        "schema_table_metadata",
     }
     table_rows = await conn.execute(
         text(

@@ -2606,6 +2606,14 @@ export interface SQLAssetItem {
   tables: string[]
   columns: string[]
   tags: string[]
+  knowledge_metadata?: {
+    questions?: string[]
+    metrics?: Array<{ name: string; formula: string }>
+    dimensions?: Array<{ name: string; table: string; column: string }>
+    joins?: Array<Record<string, string>>
+    time_columns?: string[]
+    grain?: string
+  }
   lineage: Record<string, unknown>
   validation_report: { status?: string; errors?: string[]; warnings?: string[] }
   project_id?: string | null
@@ -2695,6 +2703,77 @@ export async function apiUpdateSQLAsset(token: string, databaseId: string, asset
 export async function apiDeleteSQLAssetSource(token: string, databaseId: string, sourceId: string): Promise<void> {
   const res = await apiFetch(`/databases/${databaseId}/sql-assets/sources/${sourceId}`, { method: 'DELETE', headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '删除 SQL 资产源失败'))
+}
+export interface SchemaAnnotationItem {
+  id: string
+  target_type: 'table' | 'column'
+  data_source_id: string
+  table_name: string
+  column_name?: string
+  business_name?: string | null
+  business_description?: string | null
+  aliases: string[]
+  tags: string[]
+  semantic_type?: string | null
+  value_map?: Record<string, string>
+  is_primary_key?: boolean
+  is_foreign_key?: boolean
+  is_time_column?: boolean
+  time_grain?: string | null
+  is_metric_column?: boolean
+  is_dimension_column?: boolean
+  is_sensitive?: boolean
+  masking_rule?: string | null
+  annotation_source: string
+  annotation_confidence: number
+  annotation_status: 'suggested' | 'verified' | 'rejected'
+  suggested_changes: { fields?: Record<string, unknown>; source?: string; confidence?: number }
+  source_refs: string[]
+  updated_at?: string
+}
+export interface SchemaAnnotationListResponse {
+  data_source_id: string
+  tables: SchemaAnnotationItem[]
+  columns: SchemaAnnotationItem[]
+  suggested_count: number
+  pagination: { offset: number; limit: number; has_more: boolean }
+}
+export async function apiListSchemaAnnotations(token: string, databaseId: string, options: { search?: string; status?: SchemaAnnotationItem['annotation_status']; offset?: number; limit?: number } = {}): Promise<SchemaAnnotationListResponse> {
+  const params = new URLSearchParams()
+  if (options.search?.trim()) params.set('search', options.search.trim())
+  if (options.status) params.set('status', options.status)
+  params.set('offset', String(options.offset || 0))
+  params.set('limit', String(options.limit || 250))
+  const res = await apiFetch(`/databases/${databaseId}/schema-annotations?${params}`, { headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '读取 Schema 标注失败'))
+  return res.json()
+}
+export async function apiUpsertSchemaAnnotation(token: string, databaseId: string, payload: Record<string, unknown>): Promise<{ annotation: SchemaAnnotationItem }> {
+  const res = await apiFetch(`/databases/${databaseId}/schema-annotations`, {
+    method: 'PUT',
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '保存 Schema 标注失败'))
+  return res.json()
+}
+export async function apiAutoSuggestSchemaAnnotations(token: string, databaseId: string): Promise<{ stats: Record<string, number> }> {
+  const res = await apiFetch(`/databases/${databaseId}/schema-annotations/auto-suggest`, { method: 'POST', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '生成 Schema 标注建议失败'))
+  return res.json()
+}
+export async function apiReviewSchemaAnnotation(token: string, databaseId: string, payload: { target_type: 'table' | 'column'; annotation_id: string; action: 'accept' | 'reject' }): Promise<{ annotation: SchemaAnnotationItem }> {
+  const res = await apiFetch(`/databases/${databaseId}/schema-annotations/review`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '审核 Schema 标注失败'))
+  return res.json()
+}
+export async function apiDeleteSchemaAnnotation(token: string, databaseId: string, targetType: 'table' | 'column', annotationId: string): Promise<void> {
+  const res = await apiFetch(`/databases/${databaseId}/schema-annotations/${targetType}/${annotationId}`, { method: 'DELETE', headers: authHeaders(token) })
+  if (!res.ok) throw new Error(await readApiError(res, '删除 Schema 标注失败'))
 }
 export async function apiGetSQLDraft(token: string, databaseId: string, draftId: string): Promise<SQLQueryDraftItem> {
   const res = await apiFetch(`/databases/${databaseId}/sql-drafts/${draftId}`, { headers: authHeaders(token) })

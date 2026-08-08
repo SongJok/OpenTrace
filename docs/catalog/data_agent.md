@@ -43,6 +43,48 @@
 SQL 资产是独立治理域，不写入无租户边界的历史 `QueryPattern`。ETL、DDL 和 DML 仅保存为
 血缘参考，只有审核发布且通过校验的 `SELECT/WITH` 可以参与在线生成和执行。
 
+### 2.2 Schema 业务标注与 SQL 知识接入
+
+物理数据库没有表或字段注释时，可以在数据库工作台的“Schema 语义”页签手工维护表名、
+字段业务名、别名、说明、枚举映射、时间/指标/维度标记和敏感属性。人工保存的标注立即变为
+`verified`，后续同步 Schema 时不会被数据库注释、命名规则或 SQL 资产自动覆盖；新发现的差异
+保存在 `suggested_changes` 中，由用户接受或拒绝。
+
+同步 Schema 或点击“生成自动建议”时，系统按以下来源生成待审核知识：
+
+1. 数据库中的表与字段 COMMENT（高可信）；
+2. 字段名称和类型推断出的时间、指标、维度、敏感字段候选（低可信）；
+3. 已审核发布 SQL 资产中的结构化注释，以及 SQL AST 中的 JOIN、聚合、分组和时间字段。
+
+建议优先级为人工标注 > 已发布 SQL 资产 > 数据库 COMMENT > 规则推断。人工结果始终保留，
+自动结果必须审核后才能成为普通业务知识；只有数据库 COMMENT 产生的高可信建议可以在未审核时
+进入生成上下文。
+
+推荐在 `.sql` 文件的每条语句前使用以下格式。普通 `--` 注释也会保存为业务说明：
+
+```sql
+-- @title: 按渠道统计净收入
+-- @description: 支付成功金额扣除退款金额，不包含测试订单
+-- @questions: 各渠道净收入是多少；最近 30 天渠道收入趋势
+-- @tags: 订单, 渠道, 收入
+-- @metrics: 净收入=SUM(orders.amount-refunds.amount)
+-- @dimensions: 渠道=channels.name
+-- @joins: orders.channel_id=channels.id;orders.id=refunds.order_id
+-- @time-column: orders.paid_at
+-- @grain: day
+SELECT ...;
+```
+
+支持的键包括 `title`、`description`、`questions`、`tags`、`metrics`、`dimensions`、
+`joins`、`time-column`、`grain` 和 `parameters`，也支持对应中文键。上传不会执行 SQL；语句仍需
+通过只读 AST、Schema 和敏感字段校验并人工发布。发布时，指标会创建为 `draft`，关系和字段标注
+会创建为待审核候选，只有确认后的知识才用于稳定生成。
+
+当前 `/api/v2/responses`、数据库问数和 `/api/v1/data/query` 最终都会调用统一 SQL 草案服务。
+该服务在相同 tenant/workspace/project/data_source 范围内组合物理 Schema、人工标注、已发布指标、
+已验证 JOIN 和已发布 SQL 资产，再交给模型生成 1–N 个候选；候选仍必须经过只读、安全、Schema
+指纹和显式确认执行约束。因此补充上述资料后，无需训练模型，也能让问数请求稳定理解业务口径。
+
 ---
 
 ## 3. 关键策略与算法

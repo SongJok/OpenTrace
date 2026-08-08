@@ -99,7 +99,7 @@ def _schema_sql(source_type: str, schema_name: str) -> tuple[str, str]:
     if t == "clickhouse":
         if schema_name == "*":
             tables_sql = (
-                "SELECT database AS database_name, name AS table_name, "
+                "SELECT database AS database_name, name AS table_name, comment AS table_comment, "
                 "concat(database, '.', name) AS qualified_table_name "
                 "FROM system.tables "
                 "WHERE database NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') "
@@ -107,7 +107,8 @@ def _schema_sql(source_type: str, schema_name: str) -> tuple[str, str]:
             )
             cols_sql = (
                 "SELECT database AS database_name, table AS physical_table_name, "
-                "concat(database, '.', table) AS table_name, name AS column_name, type AS data_type "
+                "concat(database, '.', table) AS table_name, name AS column_name, "
+                "type AS data_type, comment AS column_comment "
                 "FROM system.columns "
                 "WHERE database NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') "
                 "ORDER BY database, table, position"
@@ -115,13 +116,14 @@ def _schema_sql(source_type: str, schema_name: str) -> tuple[str, str]:
             return tables_sql, cols_sql
         safe_schema = schema_name.replace("'", "''")
         tables_sql = (
-            "SELECT database AS database_name, name AS table_name "
+            "SELECT database AS database_name, name AS table_name, comment AS table_comment "
             "FROM system.tables "
             f"WHERE database = '{safe_schema}' "
             "ORDER BY name"
         )
         cols_sql = (
-            "SELECT database AS database_name, table AS table_name, name AS column_name, type AS data_type "
+            "SELECT database AS database_name, table AS table_name, name AS column_name, "
+            "type AS data_type, comment AS column_comment "
             "FROM system.columns "
             f"WHERE database = '{safe_schema}' "
             "ORDER BY table, position"
@@ -724,19 +726,30 @@ async def sync_schema(
         db.add(s)
     else:
         s.schema_json = json.dumps(payload, ensure_ascii=False)
-    await db.commit()
+    await db.flush()
 
-    # Auto-extract semantic mappings from schema comments
+    # 物理注释和字段名只生成可审核建议，人工审核标注永不被 Schema 重同步覆盖。
+    from services.schema_annotations import reconcile_schema_annotations
+    from services.sql_assets import schema_fingerprint
+
+    annotation_stats = await reconcile_schema_annotations(
+        db,
+        data_source_id=database_id,
+        schema_payload=payload,
+        fingerprint=schema_fingerprint(payload),
+        max_items=settings.schema_annotation_auto_suggest_max_items,
+    )
+
+    # 兼容旧语义层：自动结果只补空缺，已有人工维度、指标和时间宏始终优先。
     extracted = _auto_extract_semantics_from_schema(payload)
     if extracted["dimensions"] or extracted["metrics"]:
+        existing = s.semantic_mappings or {}
         s.semantic_mappings = {
-            "dimensions": extracted["dimensions"],
-            "metrics": extracted["metrics"],
-            "time_macros": (
-                s.semantic_mappings.get("time_macros", []) if s.semantic_mappings else []
-            ),
+            "dimensions": {**extracted["dimensions"], **existing.get("dimensions", {})},
+            "metrics": {**extracted["metrics"], **existing.get("metrics", {})},
+            "time_macros": existing.get("time_macros", []),
         }
-        await db.commit()
+    await db.commit()
 
     return {
         "synced": True,
@@ -748,6 +761,7 @@ async def sync_schema(
         "metadata_warning": metadata_warning,
         "auto_extracted_dimensions": len(extracted["dimensions"]),
         "auto_extracted_metrics": len(extracted["metrics"]),
+        "schema_annotation_stats": annotation_stats,
     }
 
 
@@ -1188,8 +1202,8 @@ async def auto_extract_semantic(
     # Merge with existing semantic mappings
     existing = s.semantic_mappings or {}
     merged = {
-        "dimensions": {**existing.get("dimensions", {}), **extracted["dimensions"]},
-        "metrics": {**existing.get("metrics", {}), **extracted["metrics"]},
+        "dimensions": {**extracted["dimensions"], **existing.get("dimensions", {})},
+        "metrics": {**extracted["metrics"], **existing.get("metrics", {})},
         "time_macros": existing.get("time_macros", []),
     }
     s.semantic_mappings = merged

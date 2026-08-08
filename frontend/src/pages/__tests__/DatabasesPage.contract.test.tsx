@@ -45,6 +45,20 @@ describe('DatabasesPage contract', () => {
     expect(client.apiGetSQLDraft.toString()).toContain('/sql-drafts/${draftId}')
   })
 
+  it('exposes governed schema annotation review and SQL comment knowledge', async () => {
+    const page = await import('../DatabasesPage')
+    const client = await import('../../api/client')
+    const source = page.default.toString()
+
+    expect(source).toContain('Schema 业务标注')
+    expect(source).toContain('自动建议')
+    expect(source).toContain('保存并审核通过')
+    expect(source).toContain('从 SQL 注释提取的结构化知识')
+    expect(client.apiListSchemaAnnotations.toString()).toContain('/schema-annotations')
+    expect(client.apiReviewSchemaAnnotation.toString()).toContain('/schema-annotations/review')
+    expect(client.apiAutoSuggestSchemaAnnotations.toString()).toContain('/schema-annotations/auto-suggest')
+  })
+
   it('loads large schema catalogs through searchable server pagination', async () => {
     const page = await import('../DatabasesPage')
     const client = await import('../../api/client')

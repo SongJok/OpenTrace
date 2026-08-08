@@ -46,6 +46,7 @@ from gateway.api_gateway.routers import (
     responses,
     rules,
     sandbox,
+    schema_annotations,
     skills,
     sql_assets,
     table_relationships,
@@ -217,6 +218,7 @@ app.include_router(skills.router, prefix="/api/v1", tags=["skills"])
 app.include_router(ui_settings.router, prefix="/api/v1", tags=["ui_settings"])
 app.include_router(data.router, prefix="/api/v1", tags=["data"])
 app.include_router(databases.router, prefix="/api/v1", tags=["databases"])
+app.include_router(schema_annotations.router, prefix="/api/v1", tags=["schema-annotations"])
 app.include_router(sql_assets.router, prefix="/api/v1", tags=["sql-assets"])
 app.include_router(feedback.router, prefix="/api/v1", tags=["feedback"])
 app.include_router(sandbox.router, prefix="/api/v1", tags=["sandbox"])
