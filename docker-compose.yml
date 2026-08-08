@@ -9,6 +9,11 @@ x-opentrace-build: &opentrace-build
     UV_VERSION: ${UV_VERSION:-0.8.24}
     UV_HTTP_TIMEOUT: ${UV_HTTP_TIMEOUT:-120}
     UV_HTTP_RETRIES: ${UV_HTTP_RETRIES:-5}
+    UV_BOOTSTRAP_INDEX_URL: ${UV_BOOTSTRAP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
+    UV_BOOTSTRAP_FALLBACK_INDEX_URL: ${UV_BOOTSTRAP_FALLBACK_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    UV_BOOTSTRAP_TIMEOUT: ${UV_BOOTSTRAP_TIMEOUT:-60}
+    UV_BOOTSTRAP_RETRIES: ${UV_BOOTSTRAP_RETRIES:-2}
+    UV_BOOTSTRAP_MAX_SECONDS: ${UV_BOOTSTRAP_MAX_SECONDS:-300}
 
 x-opentrace-frontend-build: &opentrace-frontend-build
   context: ./frontend

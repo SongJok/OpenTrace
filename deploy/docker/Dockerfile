@@ -8,13 +8,23 @@ ARG PIP_EXTRA_INDEX_URL=https://pypi.org/simple
 ARG UV_VERSION=0.8.24
 ARG UV_HTTP_TIMEOUT=120
 ARG UV_HTTP_RETRIES=5
+ARG UV_BOOTSTRAP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+ARG UV_BOOTSTRAP_FALLBACK_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG UV_BOOTSTRAP_TIMEOUT=60
+ARG UV_BOOTSTRAP_RETRIES=2
+ARG UV_BOOTSTRAP_MAX_SECONDS=300
 
 COPY requirements.lock ./
+COPY scripts/install_uv.sh /usr/local/bin/opentrace-install-uv
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/uv \
-    PIP_INDEX_URL="${PIP_INDEX_URL}" \
-    PIP_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}" \
-    pip install --prefer-binary --disable-pip-version-check "uv==${UV_VERSION}" \
+    UV_VERSION="${UV_VERSION}" \
+    UV_BOOTSTRAP_INDEX_URL="${UV_BOOTSTRAP_INDEX_URL}" \
+    UV_BOOTSTRAP_FALLBACK_INDEX_URL="${UV_BOOTSTRAP_FALLBACK_INDEX_URL}" \
+    UV_BOOTSTRAP_TIMEOUT="${UV_BOOTSTRAP_TIMEOUT}" \
+    UV_BOOTSTRAP_RETRIES="${UV_BOOTSTRAP_RETRIES}" \
+    UV_BOOTSTRAP_MAX_SECONDS="${UV_BOOTSTRAP_MAX_SECONDS}" \
+    sh /usr/local/bin/opentrace-install-uv \
     && UV_INDEX_URL="${PIP_INDEX_URL}" \
     UV_EXTRA_INDEX_URL="${PIP_EXTRA_INDEX_URL}" \
     UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT}" \

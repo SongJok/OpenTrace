@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 
@@ -60,10 +61,65 @@ def test_dockerfile_uses_buildkit_dependency_caches_without_remote_frontend():
     assert "libpq-dev" not in dockerfile
     assert "urllib.request.urlopen" in dockerfile
     assert "PIP_INDEX_URL" in dockerfile
-    assert "pip install --prefer-binary" in dockerfile
+    assert "scripts/install_uv.sh" in dockerfile
     assert "uv pip install --system --require-hashes" in dockerfile
     assert "UV_HTTP_RETRIES" in dockerfile
+    assert "UV_BOOTSTRAP_FALLBACK_INDEX_URL" in dockerfile
+    assert "UV_BOOTSTRAP_MAX_SECONDS" in dockerfile
     assert "# syntax=" not in dockerfile
+
+
+def test_uv_bootstrap_uses_one_domestic_index_at_a_time_with_bounded_fallback():
+    installer = _read("scripts/install_uv.sh")
+
+    assert 'PIP_EXTRA_INDEX_URL=""' in installer
+    assert '--index-url "${index_url}"' in installer
+    assert 'timeout "${UV_BOOTSTRAP_MAX_SECONDS}"' in installer
+    assert "UV_BOOTSTRAP_FALLBACK_INDEX_URL" in installer
+    assert "pypi.org" not in installer
+    assert "files.pythonhosted.org" not in installer
+
+
+def test_uv_bootstrap_switches_to_fallback_after_primary_failure(tmp_path: Path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "calls.log"
+
+    fake_timeout = fake_bin / "timeout"
+    fake_timeout.write_text('#!/bin/sh\nshift\nexec "$@"\n', encoding="utf-8")
+    fake_timeout.chmod(0o755)
+
+    fake_python = fake_bin / "python"
+    fake_python.write_text(
+        '#!/bin/sh\nprintf "%s|%s\\n" "${PIP_EXTRA_INDEX_URL-unset}" "$*" >> "$UV_TEST_CALLS"\n'
+        'case "$*" in *primary.invalid*) exit 9 ;; esac\nexit 0\n',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "UV_TEST_CALLS": str(calls),
+        "UV_BOOTSTRAP_INDEX_URL": "https://primary.invalid/simple",
+        "UV_BOOTSTRAP_FALLBACK_INDEX_URL": "https://fallback.invalid/simple",
+        "UV_BOOTSTRAP_MAX_SECONDS": "1",
+    }
+    result = subprocess.run(
+        ["sh", str(ROOT / "scripts/install_uv.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    attempted = calls.read_text(encoding="utf-8").splitlines()
+    assert len(attempted) == 2
+    assert attempted[0].startswith("|")
+    assert "primary.invalid" in attempted[0]
+    assert attempted[1].startswith("|")
+    assert "fallback.invalid" in attempted[1]
 
 
 def test_mysql_driver_is_platform_independent_and_security_maintained():

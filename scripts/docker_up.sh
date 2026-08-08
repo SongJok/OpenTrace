@@ -198,6 +198,8 @@ echo "▸ 使用 docker compose 内 PostgreSQL 服务 (postgres:5432)"
 echo "▸ Python 依赖主镜像: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
 echo "▸ Python 依赖兜底源: ${PIP_EXTRA_INDEX_URL:-https://pypi.org/simple}"
 echo "▸ 依赖安装器: uv ${UV_VERSION:-0.8.24}（超时 ${UV_HTTP_TIMEOUT:-120}s，重试 ${UV_HTTP_RETRIES:-5} 次）"
+echo "▸ uv 引导镜像: ${UV_BOOTSTRAP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
+echo "▸ uv 引导备用镜像: ${UV_BOOTSTRAP_FALLBACK_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}（单源最长 ${UV_BOOTSTRAP_MAX_SECONDS:-300}s）"
 
 if [ "$PULL_IMAGES" -eq 1 ]; then
   echo "▸ 更新所需镜像..."
