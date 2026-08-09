@@ -195,11 +195,13 @@ echo "▸ 使用 OpenTrace 应用镜像: $OPENTRACE_IMAGE"
 echo "▸ 使用 OpenTrace 前端镜像: $OPENTRACE_FRONTEND_IMAGE"
 echo "▸ 当前源码指纹: ${OPENTRACE_BUILD_FINGERPRINT:0:12}"
 echo "▸ 使用 docker compose 内 PostgreSQL 服务 (postgres:5432)"
-echo "▸ Python 依赖主镜像: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
-echo "▸ Python 依赖兜底源: ${PIP_EXTRA_INDEX_URL:-https://pypi.org/simple}"
-echo "▸ 依赖安装器: uv ${UV_VERSION:-0.8.24}（超时 ${UV_HTTP_TIMEOUT:-120}s，重试 ${UV_HTTP_RETRIES:-5} 次）"
+echo "▸ Python 依赖主镜像: ${PYTHON_DEPENDENCY_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
+echo "▸ Python 依赖备用镜像: ${PYTHON_DEPENDENCY_FALLBACK_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+echo "▸ 依赖安装器: uv ${UV_VERSION:-0.8.24}（请求超时 ${PYTHON_DEPENDENCY_HTTP_TIMEOUT:-60}s，重试 ${PYTHON_DEPENDENCY_HTTP_RETRIES:-3} 次）"
+echo "▸ 备用源整层重试: ${PYTHON_DEPENDENCY_FALLBACK_ATTEMPTS:-2} 次"
+echo "▸ 依赖并发: 下载 ${UV_CONCURRENT_DOWNLOADS:-4} / 安装 ${UV_CONCURRENT_INSTALLS:-2} / 构建 ${UV_CONCURRENT_BUILDS:-1}"
 echo "▸ uv 引导镜像: ${UV_BOOTSTRAP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
-echo "▸ uv 引导备用镜像: ${UV_BOOTSTRAP_FALLBACK_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}（单源最长 ${UV_BOOTSTRAP_MAX_SECONDS:-300}s）"
+echo "▸ uv 引导备用镜像: ${UV_BOOTSTRAP_FALLBACK_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 
 if [ "$PULL_IMAGES" -eq 1 ]; then
   echo "▸ 更新所需镜像..."
@@ -254,7 +256,8 @@ if [ "$BUILD_MODE" == "build" ] || [ "$BUILD_MODE" == "rebuild" ]; then
   fi
   BUILD_ARGS+=(api frontend)
   echo "▸ 构建应用镜像（API 与 Worker 共用）和生产前端镜像..."
-  DOCKER_BUILDKIT=1 docker compose "${BUILD_ARGS[@]}"
+  DOCKER_BUILDKIT=1 BUILDKIT_PROGRESS="${BUILDKIT_PROGRESS:-plain}" \
+    docker compose "${BUILD_ARGS[@]}"
 else
   if ! docker image inspect "$OPENTRACE_IMAGE" >/dev/null 2>&1 \
     || ! docker image inspect "$OPENTRACE_FRONTEND_IMAGE" >/dev/null 2>&1; then

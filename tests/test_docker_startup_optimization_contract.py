@@ -60,12 +60,13 @@ def test_dockerfile_uses_buildkit_dependency_caches_without_remote_frontend():
     assert "build-essential" not in dockerfile
     assert "libpq-dev" not in dockerfile
     assert "urllib.request.urlopen" in dockerfile
-    assert "PIP_INDEX_URL" in dockerfile
     assert "scripts/install_uv.sh" in dockerfile
-    assert "uv pip install --system --require-hashes" in dockerfile
-    assert "UV_HTTP_RETRIES" in dockerfile
+    assert "scripts/install_python_dependencies.sh" in dockerfile
+    assert "PYTHON_DEPENDENCY_FALLBACK_INDEX_URL" in dockerfile
+    assert "PYTHON_DEPENDENCY_HTTP_RETRIES" in dockerfile
     assert "UV_BOOTSTRAP_FALLBACK_INDEX_URL" in dockerfile
-    assert "UV_BOOTSTRAP_MAX_SECONDS" in dockerfile
+    assert "UV_BOOTSTRAP_PRIMARY_MAX_SECONDS" in dockerfile
+    assert "UV_CONCURRENT_INSTALLS" in dockerfile
     assert "# syntax=" not in dockerfile
 
 
@@ -74,7 +75,7 @@ def test_uv_bootstrap_uses_one_domestic_index_at_a_time_with_bounded_fallback():
 
     assert 'PIP_EXTRA_INDEX_URL=""' in installer
     assert '--index-url "${index_url}"' in installer
-    assert 'timeout "${UV_BOOTSTRAP_MAX_SECONDS}"' in installer
+    assert 'timeout "${max_seconds}"' in installer
     assert "UV_BOOTSTRAP_FALLBACK_INDEX_URL" in installer
     assert "pypi.org" not in installer
     assert "files.pythonhosted.org" not in installer
@@ -103,7 +104,8 @@ def test_uv_bootstrap_switches_to_fallback_after_primary_failure(tmp_path: Path)
         "UV_TEST_CALLS": str(calls),
         "UV_BOOTSTRAP_INDEX_URL": "https://primary.invalid/simple",
         "UV_BOOTSTRAP_FALLBACK_INDEX_URL": "https://fallback.invalid/simple",
-        "UV_BOOTSTRAP_MAX_SECONDS": "1",
+        "UV_BOOTSTRAP_PRIMARY_MAX_SECONDS": "1",
+        "UV_BOOTSTRAP_FALLBACK_MAX_SECONDS": "1",
     }
     result = subprocess.run(
         ["sh", str(ROOT / "scripts/install_uv.sh")],
@@ -120,6 +122,61 @@ def test_uv_bootstrap_switches_to_fallback_after_primary_failure(tmp_path: Path)
     assert "primary.invalid" in attempted[0]
     assert attempted[1].startswith("|")
     assert "fallback.invalid" in attempted[1]
+
+
+def test_python_dependencies_use_one_domestic_index_at_a_time_with_bounded_fallback():
+    installer = _read("scripts/install_python_dependencies.sh")
+
+    assert 'UV_EXTRA_INDEX_URL=""' in installer
+    assert 'UV_INDEX_URL="${index_url}"' in installer
+    assert 'timeout "${max_seconds}"' in installer
+    assert "PYTHON_DEPENDENCY_FALLBACK_INDEX_URL" in installer
+    assert "UV_CONCURRENT_DOWNLOADS" in installer
+    assert "UV_CONCURRENT_INSTALLS" in installer
+    assert "PYTHON_DEPENDENCY_FALLBACK_ATTEMPTS" in installer
+    assert "pypi.org" not in installer
+    assert "files.pythonhosted.org" not in installer
+
+
+def test_python_dependencies_switch_to_fallback_after_primary_failure(tmp_path: Path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "calls.log"
+
+    fake_timeout = fake_bin / "timeout"
+    fake_timeout.write_text('#!/bin/sh\nshift\nexec "$@"\n', encoding="utf-8")
+    fake_timeout.chmod(0o755)
+
+    fake_uv = fake_bin / "uv"
+    fake_uv.write_text(
+        '#!/bin/sh\nprintf "%s|%s|%s\\n" "$UV_INDEX_URL" "${UV_EXTRA_INDEX_URL-unset}" "$*" >> "$UV_TEST_CALLS"\n'
+        'case "$UV_INDEX_URL" in *primary.invalid*) exit 9 ;; esac\nexit 0\n',
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "UV_TEST_CALLS": str(calls),
+        "PYTHON_DEPENDENCY_INDEX_URL": "https://primary.invalid/simple",
+        "PYTHON_DEPENDENCY_FALLBACK_INDEX_URL": "https://fallback.invalid/simple",
+        "PYTHON_DEPENDENCY_PRIMARY_MAX_SECONDS": "1",
+        "PYTHON_DEPENDENCY_FALLBACK_MAX_SECONDS": "1",
+    }
+    result = subprocess.run(
+        ["sh", str(ROOT / "scripts/install_python_dependencies.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    attempted = calls.read_text(encoding="utf-8").splitlines()
+    assert len(attempted) == 2
+    assert attempted[0].startswith("https://primary.invalid/simple||")
+    assert attempted[1].startswith("https://fallback.invalid/simple||")
 
 
 def test_mysql_driver_is_platform_independent_and_security_maintained():
