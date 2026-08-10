@@ -1768,22 +1768,80 @@ async def retrieve_sql_assets(
     dialect: str,
     project_id: str | None,
     limit: int = 5,
+    include_draft_reference: bool = False,
+    available_tables: list[str] | None = None,
 ) -> list[SQLAsset]:
-    stmt = select(SQLAsset).where(
-        SQLAsset.tenant_id == tenant_id,
-        SQLAsset.workspace_id == workspace_id,
-        SQLAsset.data_source_id == data_source_id,
-        SQLAsset.status == "published",
-        SQLAsset.corpus_role == "retrieval",
-        SQLAsset.quality_status == "verified",
-        SQLAsset.executable.is_(True),
-        SQLAsset.dialect == dialect,
-    )
+    # 默认路径保持严格的线上执行资产语义；参考模式才额外读取历史草案。
+    # 草案只进入知识上下文，最终候选仍需重新通过当前 Schema 和只读校验。
+    if include_draft_reference:
+        stmt = select(SQLAsset).where(
+            SQLAsset.tenant_id == tenant_id,
+            SQLAsset.workspace_id == workspace_id,
+            SQLAsset.data_source_id == data_source_id,
+            SQLAsset.dialect == dialect,
+        )
+    else:
+        stmt = select(SQLAsset).where(
+            SQLAsset.tenant_id == tenant_id,
+            SQLAsset.workspace_id == workspace_id,
+            SQLAsset.data_source_id == data_source_id,
+            SQLAsset.status == "published",
+            SQLAsset.corpus_role == "retrieval",
+            SQLAsset.quality_status == "verified",
+            SQLAsset.executable.is_(True),
+            SQLAsset.dialect == dialect,
+        )
     if project_id:
         stmt = stmt.where(or_(SQLAsset.project_id.is_(None), SQLAsset.project_id == project_id))
     else:
         stmt = stmt.where(SQLAsset.project_id.is_(None))
-    rows = list((await db.execute(stmt.limit(300))).scalars().all())
+    rows = list((await db.execute(stmt.limit(500))).scalars().all())
+
+    known_tables = {
+        str(table).strip().lower() for table in (available_tables or []) if str(table).strip()
+    }
+    known_bare_tables: dict[str, set[str]] = {}
+    for table in known_tables:
+        known_bare_tables.setdefault(table.rsplit(".", 1)[-1], set()).add(table)
+
+    def uses_current_schema(asset: SQLAsset) -> bool:
+        """参考资产的表必须能在本回合 Schema 中证明属于当前数据源。"""
+        if not known_tables:
+            return True
+        for raw_table in asset.tables or []:
+            table = str(raw_table or "").strip().lower()
+            if not table:
+                continue
+            if "." in table:
+                if table not in known_tables:
+                    return False
+            elif table not in known_tables and len(known_bare_tables.get(table, set())) != 1:
+                return False
+        return True
+
+    def reference_eligible(asset: SQLAsset) -> bool:
+        # ETL、DDL、DML、Schema 失败和敏感字段资产永不进入检索参考。
+        if (
+            asset.asset_type != "query"
+            or not bool(asset.executable)
+            or (asset.validation_report or {}).get("status") != "pass"
+            or not uses_current_schema(asset)
+        ):
+            return False
+        published = (
+            asset.status == "published"
+            and asset.corpus_role == "retrieval"
+            and asset.quality_status == "verified"
+        )
+        draft_reference = (
+            include_draft_reference
+            and asset.status in {"draft", "published"}
+            and asset.corpus_role == "retrieval"
+            and asset.quality_status in {"unverified", "verified"}
+        )
+        return published or draft_reference
+
+    rows = [asset for asset in rows if reference_eligible(asset)]
     query_tokens = set(re.findall(r"[a-zA-Z0-9_]+", question.lower()))
     for segment in re.findall(r"[\u4e00-\u9fff]{2,}", question):
         query_tokens.add(segment)
@@ -1815,6 +1873,18 @@ async def retrieve_sql_assets(
     relevant_rows.sort(
         key=lambda asset: (relevance(asset), str(asset.created_at or "")), reverse=True
     )
+    if include_draft_reference and not relevant_rows:
+        # 没有词面命中时仍提供同一数据源的少量历史 SQL，避免因无表注释而完全失去业务口径。
+        # 这里仅是参考上下文，不会改变候选生成与执行校验边界。
+        relevant_rows = sorted(
+            rows,
+            key=lambda asset: (
+                asset.status == "published",
+                asset.quality_status == "verified",
+                str(asset.created_at or ""),
+            ),
+            reverse=True,
+        )
     selected = relevant_rows[: max(1, min(limit, 10))]
     for asset in selected:
         asset.retrieval_count = int(asset.retrieval_count or 0) + 1
@@ -2464,6 +2534,8 @@ async def generate_sql_query_draft(
         question=question,
         dialect=dialect,
         project_id=project_id,
+        include_draft_reference=True,
+        available_tables=list(inspection.column_map) or inspection.table_names,
     )
     governed_metrics = list(
         (
@@ -2498,7 +2570,7 @@ async def generate_sql_query_draft(
         "\n".join(
             part
             for part in (
-                f"资产 {index + 1}（{asset.title}）",
+                f"资产 {index + 1}（{asset.title}，状态={asset.status}/{asset.quality_status}）",
                 f"业务说明：{asset.description}" if asset.description else "",
                 (
                     "结构化知识：" + json.dumps(asset.knowledge_metadata, ensure_ascii=False)
@@ -2519,7 +2591,8 @@ async def generate_sql_query_draft(
         grounded_question += "\n\n" + knowledge_context.prompt
     if asset_context:
         grounded_question += (
-            "\n以下是同一数据源内已审核发布的 SQL 资产。仅复用与问题相关的表、JOIN 和指标口径，"
+            "\n以下是同一数据源内通过当前 Schema 范围校验的 SQL 历史资产。它们是业务口径参考，"
+            "可能尚未发布，禁止直接执行原文；仅复用与问题相关的表、JOIN 和指标逻辑，"
             "不要照搬不匹配的过滤值：\n" + asset_context
         )
     if query_plan["needs_clarification"] and not (supplied_sql and supplied_sql.strip()):

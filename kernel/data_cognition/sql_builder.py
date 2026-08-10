@@ -53,6 +53,21 @@ class SQLBuilder:
         items: list[str] = []
         for p in plan.projections:
             expr = p.expr
+            agg_func = str(p.agg_func or "").strip().upper()
+            if agg_func and expr:
+                # LLM 可能只填写 expr + agg_func，编译时统一落成聚合表达式。
+                if expr == "*" and agg_func == "COUNT":
+                    expr = "COUNT(*)"
+                elif expr == "*":
+                    expr = f"{agg_func}(*)"
+                aggregate_prefix = re.match(
+                    r"^\s*(COUNT(?:_DISTINCT)?|SUM|AVG|MIN|MAX)\s*\(", expr, re.I
+                )
+                if expr != "*" and aggregate_prefix is None:
+                    if agg_func == "COUNT_DISTINCT":
+                        expr = f"COUNT(DISTINCT {expr})"
+                    elif agg_func in {"COUNT", "SUM", "AVG", "MIN", "MAX"}:
+                        expr = f"{agg_func}({expr})"
             if p.alias:
                 alias = self._escape_ident(p.alias, dialect)
                 items.append(f"{expr} AS {alias}")
@@ -76,7 +91,6 @@ class SQLBuilder:
             join_type = join.join_type.upper()
             if join_type == "INNER":
                 join_type = ""  # 默认 JOIN 为 INNER
-            left = self._escape_ident(join.left_table, dialect)
             right = self._escape_ident(join.right_table, dialect)
             on = join.on_clause
             if not on:

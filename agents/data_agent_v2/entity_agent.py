@@ -7,6 +7,9 @@ EntityAgent — 将自然语言实体提及映射到表/列。
 
 from __future__ import annotations
 
+import json
+import re
+
 from agents.base import AgentResult, BaseAgent, TaskMessage
 from agents.data_agent_v2.types import (
     CognitiveContext,
@@ -102,6 +105,105 @@ class EntityAgent(BaseAgent):
                         "source": "exact_match",
                     }
                 )
+
+        # 没有表注释时，历史 SQL 仍能提供“业务词 → 物理表/字段”的证据。
+        # 只消费当前数据源已通过范围校验的资产摘要，不把资产 SQL 当作执行语句。
+        if not entities and ctx.sql_asset_context:
+            query_tokens = set(re.findall(r"[a-zA-Z0-9_]+", query_lower))
+            query_tokens.update(
+                part
+                for segment in re.findall(r"[\u4e00-\u9fff]{2,}", query_lower)
+                for part in (
+                    segment,
+                    *(segment[index : index + 2] for index in range(len(segment) - 1)),
+                )
+            )
+            id_match = re.search(
+                r"(?P<label>[\w\u4e00-\u9fff]{0,32})\s*id\s*(?:=|为|是|:)\s*(?P<value>\d+)",
+                ctx.query,
+                flags=re.IGNORECASE,
+            )
+            label = str(id_match.group("label") or "").lower() if id_match else ""
+            label_hints = {
+                "队长": "captain",
+                "用户": "user",
+                "主播": "anchor",
+                "玩家": "player",
+                "订单": "order",
+            }
+            label_hint = next((value for key, value in label_hints.items() if key in label), "")
+            selected_asset = None
+            for asset in ctx.sql_asset_context:
+                searchable = " ".join(
+                    [
+                        str(asset.get("title") or ""),
+                        str(asset.get("description") or ""),
+                        json.dumps(asset.get("knowledge_metadata") or {}, ensure_ascii=False),
+                        " ".join(str(value) for value in asset.get("tables") or []),
+                        " ".join(str(value) for value in asset.get("columns") or []),
+                        str(asset.get("sql") or ""),
+                    ]
+                ).lower()
+                if query_tokens and any(token in searchable for token in query_tokens):
+                    selected_asset = asset
+                    break
+            if selected_asset:
+                available = {str(table).lower(): str(table) for table in ctx.table_names}
+                asset_tables = []
+                for raw_table in selected_asset.get("tables") or []:
+                    table = str(raw_table or "").strip()
+                    if not table:
+                        continue
+                    mapped = available.get(table.lower())
+                    if mapped is None:
+                        bare = table.rsplit(".", 1)[-1].lower()
+                        matches = [
+                            value
+                            for key, value in available.items()
+                            if key.rsplit(".", 1)[-1] == bare
+                        ]
+                        mapped = matches[0] if len(matches) == 1 else None
+                    if mapped and mapped not in asset_tables:
+                        asset_tables.append(mapped)
+                if asset_tables:
+                    mapped_table = asset_tables[0]
+                    if id_match:
+                        candidates = [
+                            str(value).split(".")[-1]
+                            for value in selected_asset.get("columns") or []
+                            if re.search(r"(?:^|_)id$", str(value).split(".")[-1], re.I)
+                        ]
+                        candidates.extend(
+                            column
+                            for column in (ctx.table_columns or {}).get(mapped_table, [])
+                            if re.search(r"(?:^|_)id$", str(column), re.I)
+                        )
+                        candidates = list(dict.fromkeys(candidates))
+                        if label_hint:
+                            candidates.sort(
+                                key=lambda value: (label_hint not in value.lower(), -len(value))
+                            )
+                        if candidates:
+                            entities.append(
+                                {
+                                    "mention": label or "id",
+                                    "mapped_table": mapped_table,
+                                    "mapped_column": candidates[0],
+                                    "mapped_value": id_match.group("value"),
+                                    "confidence": 0.86,
+                                    "source": "sql_asset_reference",
+                                }
+                            )
+                    if not entities:
+                        entities.extend(
+                            {
+                                "mention": table,
+                                "mapped_table": table,
+                                "confidence": 0.82,
+                                "source": "sql_asset_reference",
+                            }
+                            for table in asset_tables
+                        )
 
         # 第 1.5 轮：value_map 分类筛选匹配
         # 例如查询包含"队长" → dim_user.role 有 value_map {"captain": "队长"}

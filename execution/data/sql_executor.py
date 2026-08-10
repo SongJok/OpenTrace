@@ -31,6 +31,7 @@ def validate_sql_table_scope(
     *,
     table_columns: dict[str, list[str]],
     source_type: str | None = None,
+    allow_metadata_tables: bool = False,
 ) -> None:
     """拒绝 SQL 引用当前选定数据源 Schema 之外的表。
 
@@ -64,6 +65,12 @@ def validate_sql_table_scope(
         if str(cte.alias_or_name).strip()
     }
     outside: list[str] = []
+    metadata_tables = {
+        "system.columns",
+        "system.tables",
+        "information_schema.columns",
+        "information_schema.tables",
+    }
     for table in expressions[0].find_all(exp.Table):
         table_name = str(table.name or "").strip()
         if not table_name or table_name.lower() in cte_names:
@@ -71,6 +78,8 @@ def validate_sql_table_scope(
         database_name = str(table.db or "").strip()
         if database_name:
             physical_name = f"{database_name}.{table_name}".lower()
+            if allow_metadata_tables and physical_name in metadata_tables:
+                continue
             if physical_name not in lookup:
                 outside.append(f"{database_name}.{table_name}")
             continue
@@ -116,6 +125,7 @@ class SQLExecutor:
         *,
         table_columns: dict[str, list[str]] | None = None,
         source_type: str | None = None,
+        allow_metadata_tables: bool = False,
     ) -> list[dict[str, Any]]:
         safe_sql = self._validated_sql(sql)
         if table_columns is not None:
@@ -123,6 +133,7 @@ class SQLExecutor:
                 safe_sql,
                 table_columns=table_columns,
                 source_type=source_type,
+                allow_metadata_tables=allow_metadata_tables,
             )
         result = await asyncio.wait_for(
             db.execute(text(safe_sql)),
@@ -142,6 +153,7 @@ class SQLExecutor:
         *,
         source_type: str | None = None,
         table_columns: dict[str, list[str]] | None = None,
+        allow_metadata_tables: bool = False,
     ) -> list[dict[str, Any]]:
         safe_sql = self._validated_sql(sql)
         if table_columns is not None:
@@ -149,6 +161,7 @@ class SQLExecutor:
                 safe_sql,
                 table_columns=table_columns,
                 source_type=source_type,
+                allow_metadata_tables=allow_metadata_tables,
             )
         if dsn.startswith(("clickhouse+http://", "clickhouse+https://")):
             return await self._run_clickhouse_http_on_dsn(dsn, safe_sql)

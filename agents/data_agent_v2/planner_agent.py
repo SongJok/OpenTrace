@@ -6,19 +6,28 @@ PlannerAgent — 汇总各认知 Agent 输出为 LogicalPlan（查询 DAG）。
 
 LLM（PLANNING）+ 硬校验 + 确定性回退。
 """
+
 from __future__ import annotations
 
 from agents.base import AgentResult, BaseAgent, TaskMessage
 from agents.data_agent_v2.types import (
+    CognitiveContext,
     pack_cognitive_result,
     unpack_cognitive_context,
 )
 
 # 使用 GROUP BY + 聚合的意图类型
-_DEFAULT_PLAN_ANALYTICAL_INTENTS = frozenset({
-    "aggregation", "ranking", "distribution", "composition",
-    "comparison", "trend", "anomaly_detection",
-})
+_DEFAULT_PLAN_ANALYTICAL_INTENTS = frozenset(
+    {
+        "aggregation",
+        "ranking",
+        "distribution",
+        "composition",
+        "comparison",
+        "trend",
+        "anomaly_detection",
+    }
+)
 
 
 class PlannerAgent(BaseAgent):
@@ -45,13 +54,18 @@ class PlannerAgent(BaseAgent):
                 content=f"plan generated: {len(plan.get('tables', []))} tables, {len(plan.get('projections', []))} projections",
                 confidence=0.80,
                 ctx=ctx,
-                evidence=[self._make_evidence(
-                    source="planner_agent",
-                    source_type="data_cognition",
-                    payload={"plan_tables": plan.get("tables", []), "plan_summary": plan.get("metadata", {})},
-                    credibility=0.85,
-                    relevance=1.0,
-                )],
+                evidence=[
+                    self._make_evidence(
+                        source="planner_agent",
+                        source_type="data_cognition",
+                        payload={
+                            "plan_tables": plan.get("tables", []),
+                            "plan_summary": plan.get("metadata", {}),
+                        },
+                        credibility=0.85,
+                        relevance=1.0,
+                    )
+                ],
             )
         except Exception as exc:
             # 回退：从实体 + 指标构建最小计划
@@ -82,8 +96,8 @@ class PlannerAgent(BaseAgent):
         if intent_type in _DEFAULT_PLAN_ANALYTICAL_INTENTS and dimensions:
             return await self._fallback_plan(ctx)
 
-        from model.model_gateway.gateway import LLMRole, get_model_gateway
         from model.llm_adapter.base import LLMMessage
+        from model.model_gateway.gateway import LLMRole, get_model_gateway
 
         prompt = self._build_prompt(ctx)
         gw = get_model_gateway()
@@ -101,6 +115,7 @@ class PlannerAgent(BaseAgent):
                 )
 
                 import json
+
                 plan = json.loads(response.content.strip())
 
                 # 校验计划是否符合 Schema
@@ -110,7 +125,11 @@ class PlannerAgent(BaseAgent):
 
                 # 带错误反馈重试
                 if attempt < 1:
-                    prompt = f"{prompt}\n\nPrevious plan had errors:\n" + "\n".join(errors) + "\nGenerate a corrected plan."
+                    prompt = (
+                        f"{prompt}\n\nPrevious plan had errors:\n"
+                        + "\n".join(errors)
+                        + "\nGenerate a corrected plan."
+                    )
 
             except json.JSONDecodeError:
                 continue
@@ -130,7 +149,9 @@ class PlannerAgent(BaseAgent):
         使用意图类型、实体、指标和查询文本，
         即使 LLM 不可用也能构建有意义的计划。
         """
-        tables = ctx.table_names[:] or []
+        # 一旦上游已确定实体，只使用实体涉及的表；把整个 Schema 当作 FROM
+        # 候选会让无注释数据库在 LLM/回退失败时误选第一张表。
+        tables = [] if ctx.entities else (ctx.table_names[:] or [])
         if ctx.entities:
             for e in ctx.entities:
                 # 仅使用表映射实体进行表选择。
@@ -160,11 +181,14 @@ class PlannerAgent(BaseAgent):
                 col = m.get("mapped_column", "")
                 agg = m.get("agg", "SUM")
                 if col:
-                    projections.append({
-                        "expr": col,
-                        "alias": m.get("mention", f"agg_{col}"),
-                        "agg_func": agg,
-                    })
+                    formula = str(m.get("formula") or "").strip()
+                    projections.append(
+                        {
+                            "expr": formula or f"{agg}({col})",
+                            "alias": m.get("mention", f"agg_{col}"),
+                            "agg_func": "" if formula else agg,
+                        }
+                    )
 
         # 安全：构建所选表的有效列集合
         valid_columns: set[str] = set()
@@ -180,31 +204,39 @@ class PlannerAgent(BaseAgent):
 
         if not projections and intent_type in _DEFAULT_PLAN_ANALYTICAL_INTENTS:
             # 默认：COUNT(*) + GROUP BY 维度
-            projections.append({
-                "expr": "*",
-                "alias": "count",
-                "agg_func": "COUNT",
-            })
+            projections.append(
+                {
+                    "expr": "*",
+                    "alias": "count",
+                    "agg_func": "COUNT",
+                }
+            )
             # 添加维度列作为标签投影（无聚合）
             for dim in safe_dimensions:
-                projections.append({
-                    "expr": dim,
-                    "alias": dim,
-                    "agg_func": None,
-                })
+                projections.append(
+                    {
+                        "expr": dim,
+                        "alias": dim,
+                        "agg_func": None,
+                    }
+                )
         elif not projections and safe_dimensions:
             # 有维度但非分析意图 — 仍添加 COUNT(*)
-            projections.append({
-                "expr": "*",
-                "alias": "count",
-                "agg_func": "COUNT",
-            })
+            projections.append(
+                {
+                    "expr": "*",
+                    "alias": "count",
+                    "agg_func": "COUNT",
+                }
+            )
             for dim in safe_dimensions:
-                projections.append({
-                    "expr": dim,
-                    "alias": dim,
-                    "agg_func": None,
-                })
+                projections.append(
+                    {
+                        "expr": dim,
+                        "alias": dim,
+                        "agg_func": None,
+                    }
+                )
 
         # ── 解析 group_by ─────────────────────────────────────────────
         group_by: list[str] = list(safe_dimensions)
@@ -228,7 +260,9 @@ class PlannerAgent(BaseAgent):
         elif intent_type == "trend" and group_by:
             # 若有时间列按时间升序，否则按计数降序
             first_gb = group_by[0].lower()
-            is_time_col = any(t in first_gb for t in ("time", "date", "day", "month", "year", "week"))
+            is_time_col = any(
+                t in first_gb for t in ("time", "date", "day", "month", "year", "week")
+            )
             if is_time_col:
                 order_by.append({"expr": group_by[0], "direction": "ASC"})
             else:
@@ -275,7 +309,6 @@ class PlannerAgent(BaseAgent):
 
     def _infer_group_by_from_query(self, ctx: CognitiveContext) -> list[str]:
         """从查询关键词与 schema 列名推断 GROUP BY 列。"""
-        import re
         all_columns: dict[str, str] = {}  # col_name → table_name
         for table, cols in (ctx.table_columns or {}).items():
             for col in cols:
@@ -287,8 +320,7 @@ class PlannerAgent(BaseAgent):
         for col_lower, col_name in all_columns.items():
             if col_lower in query.lower() and col_name not in group_by:
                 group_by.append(col_name)
-        # 同时尝试从 schema_hint 匹配列名
-        schema_lower = (ctx.schema_hint or "").lower()
+        # 同时尝试从 schema_hint 匹配列名（列名集合已来自当前 Schema）
         for col_lower, col_name in all_columns.items():
             if col_lower in query.lower() and col_name not in group_by:
                 group_by.append(col_name)
@@ -319,8 +351,10 @@ class PlannerAgent(BaseAgent):
                         if d in cols:
                             parents.append(t)
                     dim_table_map[d] = parents
-                dim_strs = [f"{d} (table: {dim_table_map[d][0]})" if dim_table_map.get(d)
-                           else d for d in dims]
+                dim_strs = [
+                    f"{d} (table: {dim_table_map[d][0]})" if dim_table_map.get(d) else d
+                    for d in dims
+                ]
                 parts.append(f"Dimensions: {', '.join(dim_strs)}")
                 # 若某维度仅存在于一个表中，告知 LLM 使用该表
                 dim_tables = set()
@@ -336,7 +370,7 @@ class PlannerAgent(BaseAgent):
         if ctx.metrics:
             metric_strs = [
                 f"{m.get('mention', '')} → {m.get('mapped_column', '')} ({m.get('agg', 'SUM')})"
-                + (f" [formula: {m.get('formula', '')}]" if m.get('formula') else "")
+                + (f" [formula: {m.get('formula', '')}]" if m.get("formula") else "")
                 for m in ctx.metrics
             ]
             parts.append("Metrics:\n" + "\n".join(metric_strs))
@@ -360,7 +394,9 @@ class PlannerAgent(BaseAgent):
 
         if ctx.time_window and ctx.time_window.get("type") not in (None, "none"):
             tw = ctx.time_window
-            parts.append(f"Time Window: {tw.get('description', '')} ({tw.get('start', '')} to {tw.get('end', '')})")
+            parts.append(
+                f"Time Window: {tw.get('description', '')} ({tw.get('start', '')} to {tw.get('end', '')})"
+            )
             if tw.get("column_hint"):
                 parts.append(f"Time Column: {tw['column_hint']}")
 
@@ -376,9 +412,41 @@ class PlannerAgent(BaseAgent):
             skill = ctx.matched_skills[0]
             if skill.get("plan_template"):
                 import json
-                parts.append(f"Skill Template ({skill['name']}):\n{json.dumps(skill['plan_template'], ensure_ascii=False)}")
+
+                parts.append(
+                    f"Skill Template ({skill['name']}):\n{json.dumps(skill['plan_template'], ensure_ascii=False)}"
+                )
             if skill.get("sql_template"):
                 parts.append(f"Reference SQL:\n{skill['sql_template']}")
+
+        if ctx.sql_asset_context:
+            import json
+
+            asset_parts: list[str] = []
+            for index, asset in enumerate(ctx.sql_asset_context[:3], start=1):
+                knowledge = asset.get("knowledge_metadata") or {}
+                asset_parts.append(
+                    "\n".join(
+                        item
+                        for item in (
+                            f"资产 {index}：{asset.get('title') or '历史 SQL'}",
+                            f"资产表：{', '.join(asset.get('tables') or [])}",
+                            (
+                                "资产指标/JOIN/过滤："
+                                + json.dumps(knowledge, ensure_ascii=False)[:2400]
+                                if knowledge
+                                else ""
+                            ),
+                            f"参考 SQL（仅学习逻辑，不得直接执行）：{asset.get('sql') or ''}",
+                        )
+                        if item
+                    )
+                )
+            parts.append(
+                "SQL 历史资产（均已绑定当前 DataSource Schema）：\n"
+                + "\n\n".join(asset_parts)
+                + "\n必须将历史 SQL 的逻辑改写到当前 Schema，替换用户过滤值，并只使用可用表。"
+            )
 
         return "\n\n".join(parts)
 
@@ -389,7 +457,9 @@ class PlannerAgent(BaseAgent):
 
         for table in plan.get("tables", []):
             if table not in valid_tables:
-                errors.append(f"Table '{table}' not found in schema. Valid tables: {', '.join(sorted(valid_tables))}")
+                errors.append(
+                    f"Table '{table}' not found in schema. Valid tables: {', '.join(sorted(valid_tables))}"
+                )
 
         # 校验 JOIN 表是否存在
         for join in plan.get("joins", []):

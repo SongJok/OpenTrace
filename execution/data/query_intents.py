@@ -5,7 +5,6 @@ from dataclasses import dataclass
 
 from kernel.data_cognition.sql_dialect import SQLDialectSpec
 
-
 ENGLISH_DATABASE_PATTERN = re.compile(
     r"\b(sql|query|database|schema|tables?|columns?|describe|desc|show tables|table list|list tables|table count|data source|analysis|report|stats|group by|count|sum|avg|limit)\b",
     re.IGNORECASE,
@@ -40,18 +39,24 @@ def is_database_question(query: str) -> bool:
         return False
     # Exclude SQL generation intent — user wants to write SQL, not execute query
     sql_gen_keywords = [
-        "帮我写一段sql", "帮我写个sql", "帮我写sql",
-        "写一个sql", "写一段sql", "写sql",
-        "生成sql", "生成一段sql",
-        "sql语句", "sql代码", "sql查询语句",
-        "write a sql", "create a sql", "generate sql",
+        "帮我写一段sql",
+        "帮我写个sql",
+        "帮我写sql",
+        "写一个sql",
+        "写一段sql",
+        "写sql",
+        "生成sql",
+        "生成一段sql",
+        "sql语句",
+        "sql代码",
+        "sql查询语句",
+        "write a sql",
+        "create a sql",
+        "generate sql",
     ]
     if any(kw in text.lower() for kw in sql_gen_keywords):
         return False
-    return bool(
-        ENGLISH_DATABASE_PATTERN.search(text)
-        or CHINESE_DATABASE_PATTERN.search(text)
-    )
+    return bool(ENGLISH_DATABASE_PATTERN.search(text) or CHINESE_DATABASE_PATTERN.search(text))
 
 
 def _metadata_database_name(dialect: SQLDialectSpec, database_name: str) -> str:
@@ -62,19 +67,38 @@ def _metadata_database_name(dialect: SQLDialectSpec, database_name: str) -> str:
     return (database_name or "").strip() or dialect.schema_name
 
 
-def _pick_table_name(query: str, table_names: list[str]) -> str | None:
+def _pick_table_name(query: str, table_names: list[str], database_name: str = "") -> str | None:
     if not table_names:
         return None
     lowered_query = (query or "").lower()
+    qualified_mentions = re.findall(
+        r"(?<![\w])([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)(?![\w])", lowered_query
+    )
+    selected_database = str(database_name or "").strip().lower()
+    for mentioned_database, _mentioned_table in qualified_mentions:
+        if selected_database and mentioned_database != selected_database:
+            return None
+    known_bare = {str(table or "").strip().rsplit(".", 1)[-1].lower() for table in table_names}
+    explicit_table_words = re.findall(r"\b([a-zA-Z_][\w]*)\s*(?:表|table)\b", lowered_query)
+    if any(word not in known_bare for word in explicit_table_words):
+        return None
     for table_name in table_names:
         candidate = str(table_name or "").strip()
-        if candidate and candidate.lower() in lowered_query:
-            return candidate
+        if not candidate:
+            continue
+        bare_candidate = candidate.rsplit(".", 1)[-1]
+        if candidate.lower() in lowered_query or bare_candidate.lower() in lowered_query:
+            # system.columns 等元数据查询需要 table 字段的裸名；数据库范围
+            # 由上层传入的 DataSource.database 固定，不接受用户输入覆盖。
+            return bare_candidate
     for table_name in table_names:
         candidate = str(table_name or "").strip()
-        if candidate and not re.search(r"^(information_schema|sys|pg_|mysql\.|system\.)", candidate, re.IGNORECASE):
-            return candidate
-    return str(table_names[0] or "").strip() or None
+        if candidate and not re.search(
+            r"^(information_schema|sys|pg_|mysql\.|system\.)", candidate, re.IGNORECASE
+        ):
+            return candidate.rsplit(".", 1)[-1]
+    fallback = str(table_names[0] or "").strip()
+    return fallback.rsplit(".", 1)[-1] if fallback else None
 
 
 def _table_count_sql(dialect: SQLDialectSpec, database_name: str) -> str:
@@ -143,7 +167,7 @@ def build_structured_database_query(
         )
 
     if TABLE_SCHEMA_PATTERN.search(text):
-        table_name = _pick_table_name(text, table_names)
+        table_name = _pick_table_name(text, table_names, database_name)
         if not table_name:
             return None
         return StructuredDatabaseQuery(

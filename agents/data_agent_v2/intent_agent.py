@@ -6,6 +6,7 @@ IntentAgent — 自然语言 → 结构化分析意图。
 
 使用 LLM（PLANNING 角色）输出结构化 JSON。
 """
+
 from __future__ import annotations
 
 import json
@@ -14,15 +15,23 @@ import re
 from agents.base import AgentResult, BaseAgent, TaskMessage
 from agents.data_agent_v2.types import (
     INTENT_TYPES,
+    CognitiveContext,
     pack_cognitive_result,
     unpack_cognitive_context,
 )
 
 # 使用 GROUP BY + 聚合的意图类型
-_ANALYTICAL_INTENTS = frozenset({
-    "aggregation", "ranking", "distribution", "composition",
-    "comparison", "trend", "anomaly_detection",
-})
+_ANALYTICAL_INTENTS = frozenset(
+    {
+        "aggregation",
+        "ranking",
+        "distribution",
+        "composition",
+        "comparison",
+        "trend",
+        "anomaly_detection",
+    }
+)
 
 
 def _is_likely_non_dimension(col_name: str) -> bool:
@@ -41,13 +50,37 @@ def _is_likely_non_dimension(col_name: str) -> bool:
     # 实体名称列 — 这些是唯一标识符（每行一个），
     # 而非共享的分类维度。例如 GROUP BY user_name
     # 在聚合查询中几乎总是错误的。
-    if lower in ("user_name", "product_name", "item_name", "person_name",
-                 "username", "customer_name", "client_name", "member_name",
-                 "player_name", "student_name", "teacher_name"):
+    if lower in (
+        "user_name",
+        "product_name",
+        "item_name",
+        "person_name",
+        "username",
+        "customer_name",
+        "client_name",
+        "member_name",
+        "player_name",
+        "student_name",
+        "teacher_name",
+    ):
         return True
     # 类指标列
-    if lower in ("nums", "num", "count", "amount", "total", "sum", "value",
-                 "quantity", "price", "cost", "score", "rate", "ratio", "avg"):
+    if lower in (
+        "nums",
+        "num",
+        "count",
+        "amount",
+        "total",
+        "sum",
+        "value",
+        "quantity",
+        "price",
+        "cost",
+        "score",
+        "rate",
+        "ratio",
+        "avg",
+    ):
         return True
     # 时间戳列
     if lower.endswith(("_time", "_at", "_date", "_ts", "_timestamp")):
@@ -121,13 +154,15 @@ class IntentAgent(BaseAgent):
                     content="metadata query — bypassing reasoning pipeline",
                     confidence=1.0,
                     ctx=ctx,
-                    evidence=[self._make_evidence(
-                        source="intent_agent",
-                        source_type="data_cognition",
-                        payload={"intent": ctx.intent, "fast_path": "metadata"},
-                        credibility=1.0,
-                        relevance=1.0,
-                    )],
+                    evidence=[
+                        self._make_evidence(
+                            source="intent_agent",
+                            source_type="data_cognition",
+                            payload={"intent": ctx.intent, "fast_path": "metadata"},
+                            credibility=1.0,
+                            relevance=1.0,
+                        )
+                    ],
                 )
 
             # LLM 分类
@@ -141,13 +176,15 @@ class IntentAgent(BaseAgent):
                 content=json.dumps(intent, ensure_ascii=False),
                 confidence=intent.get("confidence", 0.7),
                 ctx=ctx,
-                evidence=[self._make_evidence(
-                    source="intent_agent",
-                    source_type="data_cognition",
-                    payload={"intent": intent},
-                    credibility=0.85,
-                    relevance=1.0,
-                )],
+                evidence=[
+                    self._make_evidence(
+                        source="intent_agent",
+                        source_type="data_cognition",
+                        payload={"intent": intent},
+                        credibility=0.85,
+                        relevance=1.0,
+                    )
+                ],
             )
         except Exception as exc:
             # 回退：基于启发式的意图识别（含 Schema 感知的维度提取）
@@ -170,21 +207,22 @@ class IntentAgent(BaseAgent):
         """
         try:
             from kernel.data_cognition.semantic_parser import SemanticParser
+            from kernel.data_cognition.sql_dialect import detect_sql_dialect
 
             parser = SemanticParser()
             return parser.check_structured_intent(
                 ctx.query,
                 ctx.table_names,
-                "",  # database_name
-                ctx.dialect,
+                ctx.database_name,
+                detect_sql_dialect(ctx.dialect),
             )
         except Exception:
             return None
 
     async def _classify_intent(self, ctx: CognitiveContext) -> dict:
         """基于 LLM 的意图分类。"""
-        from model.model_gateway.gateway import LLMRole, get_model_gateway
         from model.llm_adapter.base import LLMMessage
+        from model.model_gateway.gateway import LLMRole, get_model_gateway
 
         gw = get_model_gateway()
 
@@ -249,29 +287,77 @@ class IntentAgent(BaseAgent):
 
         # metadata — 仅当查询关于表/Schema 时，而非"表"作为
         # 位置限定词如"用户表中"或"订单表里"
-        meta_structure = any(w in q for w in ("表结构", "schema", "字段", "列", "有哪些表",
-                                                "多少张表", "几个表", "哪些表", "所有表"))
-        meta_question = (any(w in q for w in ("多少", "几个", "哪些"))
-                         and any(w in q for w in ("表", "table")))
+        meta_structure = any(
+            w in q
+            for w in (
+                "表结构",
+                "schema",
+                "字段",
+                "列",
+                "有哪些表",
+                "多少张表",
+                "几个表",
+                "哪些表",
+                "所有表",
+            )
+        )
+        meta_question = any(w in q for w in ("多少", "几个", "哪些")) and any(
+            w in q for w in ("表", "table")
+        )
         if meta_structure or meta_question:
-            return {**base_intent, "intent_type": "metadata", "output_format": "table", "confidence": 0.8}
+            return {
+                **base_intent,
+                "intent_type": "metadata",
+                "output_format": "table",
+                "confidence": 0.8,
+            }
 
         if any(w in q for w in ("趋势", "趋势图", "变化", "走势")):
-            return {**base_intent, "intent_type": "trend", "output_format": "chart", "confidence": 0.55}
+            return {
+                **base_intent,
+                "intent_type": "trend",
+                "output_format": "chart",
+                "confidence": 0.55,
+            }
 
         if any(w in q for w in ("排名", "top", "前", "最高", "最低", "最大", "最小")):
-            return {**base_intent, "intent_type": "ranking", "output_format": "table", "confidence": 0.55}
+            return {
+                **base_intent,
+                "intent_type": "ranking",
+                "output_format": "table",
+                "confidence": 0.55,
+            }
 
         if any(w in q for w in ("对比", "比较", "vs", "环比", "同比")):
-            return {**base_intent, "intent_type": "comparison", "output_format": "table", "confidence": 0.55}
+            return {
+                **base_intent,
+                "intent_type": "comparison",
+                "output_format": "table",
+                "confidence": 0.55,
+            }
 
         if any(w in q for w in ("分布", "占比", "组成", "构成", "比例")):
-            return {**base_intent, "intent_type": "distribution", "output_format": "table", "confidence": 0.55}
+            return {
+                **base_intent,
+                "intent_type": "distribution",
+                "output_format": "table",
+                "confidence": 0.55,
+            }
 
         if any(w in q for w in ("汇总", "统计", "各", "每个", "按", "每", "合计")):
-            return {**base_intent, "intent_type": "aggregation", "output_format": "table", "confidence": 0.55}
+            return {
+                **base_intent,
+                "intent_type": "aggregation",
+                "output_format": "table",
+                "confidence": 0.55,
+            }
 
-        return {**base_intent, "intent_type": "raw_lookup", "output_format": "table", "confidence": 0.3}
+        return {
+            **base_intent,
+            "intent_type": "raw_lookup",
+            "output_format": "table",
+            "confidence": 0.3,
+        }
 
     def _extract_dimensions_from_query(self, ctx: CognitiveContext) -> list[str]:
         """通过匹配查询文本与 Schema 列名和注释，提取可能的 GROUP BY 列。
@@ -287,6 +373,7 @@ class IntentAgent(BaseAgent):
         col_meta: dict[str, tuple[str, str]] = {}  # col_name → (comment, table_name)
         try:
             import json
+
             schema = json.loads(ctx.schema_hint) if ctx.schema_hint else {}
             tables = schema.get("tables", []) if isinstance(schema, dict) else []
             for t in tables:
@@ -332,7 +419,7 @@ class IntentAgent(BaseAgent):
                         break
 
         # 从括号提示中提取列名
-        paren_matches = re.findall(r'\((\w+)\)', query_text)
+        paren_matches = re.findall(r"\((\w+)\)", query_text)
         for match in paren_matches:
             match_lower = match.lower()
             for col_name in col_meta:
@@ -355,12 +442,10 @@ class IntentAgent(BaseAgent):
                     table_scores[t] = table_scores.get(t, 0) + 1
             if table_scores:
                 best_table = max(table_scores, key=table_scores.get)
-                dimensions = [d for d in dimensions
-                              if col_meta.get(d, ("", ""))[1] == best_table]
+                dimensions = [d for d in dimensions if col_meta.get(d, ("", ""))[1] == best_table]
         elif matched_tables:
             best_table = next(iter(matched_tables))
-            dimensions = [d for d in dimensions
-                         if col_meta.get(d, ("", ""))[1] == best_table]
+            dimensions = [d for d in dimensions if col_meta.get(d, ("", ""))[1] == best_table]
 
         return dimensions
 
@@ -368,8 +453,8 @@ class IntentAgent(BaseAgent):
     def _extract_cn_words(text: str) -> list[str]:
         """从文本中提取中文词片段（2-4 字符序列）。"""
         words = []
-        cn_chars = [c for c in text if '一' <= c <= '鿿']
+        cn_chars = [c for c in text if "一" <= c <= "鿿"]
         for size in (2, 3, 4):
             for i in range(len(cn_chars) - size + 1):
-                words.append(''.join(cn_chars[i:i+size]))
+                words.append("".join(cn_chars[i : i + size]))
         return words

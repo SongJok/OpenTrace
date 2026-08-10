@@ -11,12 +11,13 @@ import re
 import uuid
 from dataclasses import dataclass, field
 
-
 # ── 共享类型 ────────────────────────────────────────────────────────────
+
 
 @dataclass
 class ClarificationQuestion:
     """结构化澄清问题，用于前端渲染。"""
+
     question_id: str = ""
     question_text: str = ""
     missing_entities: list[str] = field(default_factory=list)
@@ -31,6 +32,7 @@ class ClarificationResult:
 
 
 # ── 原始桩（保留用于对话编排器兼容性） ────────────
+
 
 class ClarificationGate:
     """原始桩 — 保留用于对话编排器向后兼容。"""
@@ -93,25 +95,28 @@ class DataClarificationGate:
 
         # ── 信号提取 ────────────────────────────────────────────
         no_entities = not entities or all(
-            not (e.get("mapped_table") if isinstance(e, dict) else False)
-            for e in entities
+            not (e.get("mapped_table") if isinstance(e, dict) else False) for e in entities
         )
         no_metrics = not metrics or all(
-            not (m.get("mapped_column") if isinstance(m, dict) else False)
-            for m in metrics
+            not (m.get("mapped_column") if isinstance(m, dict) else False) for m in metrics
         )
         low_intent_confidence = intent_confidence <= 0.55
         raw_lookup_intent = intent_type == "raw_lookup"
         is_analytical = intent_type in {
-            "aggregation", "ranking", "distribution", "composition",
-            "comparison", "trend", "anomaly_detection",
+            "aggregation",
+            "ranking",
+            "distribution",
+            "composition",
+            "comparison",
+            "trend",
+            "anomaly_detection",
         }
         dimensions = intent.get("dimensions", []) if isinstance(intent, dict) else []
         empty_dimensions = is_analytical and (not dimensions)
 
         # 过短：去除空白和常见标点
         q_clean = re.sub(
-            r"[\s.,;:!?，。；：！？、""'']+",
+            r"[\s.,;:!?，。；：！？、" "'']+",
             "",
             ctx.query or "",
         )
@@ -120,6 +125,23 @@ class DataClarificationGate:
         # 通用模式匹配
         query_text = ctx.query or ""
         generic_pattern = any(p.search(query_text) for p in _GENERIC_PATTERNS)
+
+        # Schema/SQL 资产已经给出确定证据时，不要再泛化追问。
+        # 尤其是“某个 id 的数据”这类查询，历史 SQL 常常是唯一的业务口径来源。
+        query_lower = query_text.lower()
+        explicit_table = any(
+            str(table).strip() and str(table).strip().lower() in query_lower
+            for table in (ctx.table_names or [])
+        )
+        explicit_column = any(
+            str(column).strip() and str(column).strip().lower() in query_lower
+            for columns in (ctx.table_columns or {}).values()
+            for column in columns
+        )
+        explicit_id = bool(
+            re.search(r"(?:[a-zA-Z_\u4e00-\u9fff]*id|编号)\s*(?:=|为|是|:)\s*\d+", query_text)
+        )
+        has_sql_asset_evidence = bool(getattr(ctx, "sql_asset_context", None)) and explicit_id
 
         # ── 组合规则（先特殊后一般） ───────────────────
         signals = {
@@ -130,7 +152,13 @@ class DataClarificationGate:
             "empty_dimensions": empty_dimensions,
             "too_short": too_short,
             "generic_pattern": generic_pattern,
+            "explicit_table": explicit_table,
+            "explicit_column": explicit_column,
+            "sql_asset_evidence": has_sql_asset_evidence,
         }
+
+        if explicit_table or explicit_column or has_sql_asset_evidence:
+            return {**signals, "needs_clarification": False, "reason": "explicit_schema_evidence"}
 
         # 规则1：无实体且分析意图无维度
         # （例如"统计分布"但未指明哪个表）
@@ -180,8 +208,8 @@ class DataClarificationGate:
             prompt = f"{prompt}\n\n{enrich[:2000]}"
 
         try:
-            from model.model_gateway.gateway import LLMRole, get_model_gateway
             from model.llm_adapter.base import LLMMessage
+            from model.model_gateway.gateway import LLMRole, get_model_gateway
 
             gw = get_model_gateway()
             response = await gw.chat(
@@ -195,6 +223,7 @@ class DataClarificationGate:
             )
 
             import json
+
             data = json.loads(response.content.strip())
 
             return ClarificationQuestion(
@@ -235,9 +264,7 @@ class DataClarificationGate:
 
         return "\n".join(parts)
 
-    def _build_generation_prompt(
-        self, query: str, detect_result: dict, schema_summary: str
-    ) -> str:
+    def _build_generation_prompt(self, query: str, detect_result: dict, schema_summary: str) -> str:
         reason = detect_result.get("reason", "")
         reason_labels = {
             "no_entities_and_no_metrics": "无法从提问中识别出任何表名、字段名或指标名称",
@@ -255,9 +282,7 @@ class DataClarificationGate:
             "请生成一个友好的反问，帮助用户明确需求。"
         )
 
-    def _fallback_question(
-        self, query: str, detect_result: dict, ctx
-    ) -> ClarificationQuestion:
+    def _fallback_question(self, query: str, detect_result: dict, ctx) -> ClarificationQuestion:
         """LLM 不可用时的基于规则的降级方案。"""
         tables = ctx.table_names or []
         table_hint = f"可用的数据表包括：{', '.join(tables[:5])}" if tables else ""
@@ -272,11 +297,7 @@ class DataClarificationGate:
                 f"3. 有什么筛选条件或时间范围？"
             ),
             missing_entities=[],
-            suggested_options=(
-                [f"查看 {t} 表的数据概览" for t in tables[:3]]
-                if tables
-                else []
-            ),
+            suggested_options=([f"查看 {t} 表的数据概览" for t in tables[:3]] if tables else []),
         )
 
 

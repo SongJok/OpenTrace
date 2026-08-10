@@ -165,6 +165,22 @@ def test_sql_table_scope_rejects_missing_and_cross_database_tables():
         )
 
 
+def test_sql_table_scope_allows_only_generated_metadata_tables_when_enabled():
+    with pytest.raises(ValueError, match="不存在的表"):
+        validate_sql_table_scope(
+            "SELECT name FROM system.tables",
+            table_columns={"analytics.orders": ["id"]},
+            source_type="clickhouse",
+        )
+
+    validate_sql_table_scope(
+        "SELECT name FROM system.tables WHERE database = 'analytics'",
+        table_columns={"analytics.orders": ["id"]},
+        source_type="clickhouse",
+        allow_metadata_tables=True,
+    )
+
+
 @pytest.mark.asyncio
 async def test_sql_executor_rejects_cross_database_table_before_connection(monkeypatch):
     monkeypatch.setattr(

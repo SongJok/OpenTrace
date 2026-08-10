@@ -25,6 +25,7 @@ class CognitiveContext:
     # ── 输入（Supervisor 在 DAG 执行前设置）──────────────────
     query: str = ""
     data_source_id: str = ""
+    database_name: str = ""  # 来自用户选定 DataSource，禁止使用用户输入覆盖
     dialect: str = "postgresql"  # SQLDialectSpec.value
     schema_hint: str = ""  # human-readable schema summary
     table_names: list[str] = field(default_factory=list)
@@ -50,6 +51,7 @@ class CognitiveContext:
     table_semantics: list[dict[str, Any]] | None = None  # from schema_table_metadata
     column_semantics: list[dict[str, Any]] | None = None  # from schema_metadata
     pattern_hit: dict[str, Any] | None = None  # from query_patterns (fast path)
+    sql_asset_context: list[dict[str, Any]] | None = None  # 当前数据源 SQL 历史参考
 
     # ── 执行结果（执行后写入）────────────────────────────
     execution_rows: list[dict[str, Any]] | None = None

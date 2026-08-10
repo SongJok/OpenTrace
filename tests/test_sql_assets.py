@@ -1355,3 +1355,78 @@ async def test_asset_retrieval_only_uses_published_scoped_assets() -> None:
         "sql_assets.dialect",
     ):
         assert column in compiled
+
+
+@pytest.mark.asyncio
+async def test_asset_retrieval_uses_valid_draft_as_scoped_reference_fallback() -> None:
+    def asset(**overrides):
+        defaults = {
+            "id": "asset-draft",
+            "title": "历史定级查询",
+            "description": "",
+            "domain": None,
+            "tags": [],
+            "knowledge_metadata": {},
+            "tables": ["tuwan_mysql.play_captain_hpay"],
+            "columns": ["tuwan_mysql.play_captain_hpay.captain_id"],
+            "normalized_sql": (
+                "SELECT captain_id FROM tuwan_mysql.play_captain_hpay WHERE captain_id = 1"
+            ),
+            "status": "draft",
+            "corpus_role": "retrieval",
+            "quality_status": "unverified",
+            "asset_type": "query",
+            "executable": True,
+            "validation_report": {"status": "pass"},
+            "created_at": datetime.now(UTC),
+            "retrieval_count": 0,
+        }
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    valid = asset()
+    etl = asset(
+        id="asset-etl",
+        asset_type="etl",
+        executable=False,
+        normalized_sql="INSERT INTO target SELECT * FROM source",
+    )
+    stale = asset(
+        id="asset-stale",
+        tables=["other_database.other_table"],
+        normalized_sql="SELECT id FROM other_database.other_table",
+    )
+    failed = asset(id="asset-failed", quality_status="failed")
+
+    class Result:
+        @staticmethod
+        def scalars():
+            return SimpleNamespace(all=lambda: [valid, etl, stale, failed])
+
+    class CaptureDB:
+        statement = None
+
+        async def execute(self, statement):
+            self.statement = statement
+            return Result()
+
+    db = CaptureDB()
+    rows = await sql_assets.retrieve_sql_assets(
+        db,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        data_source_id="source-a",
+        question="完全没有关键词命中",
+        dialect="clickhouse",
+        project_id=None,
+        include_draft_reference=True,
+        available_tables=["tuwan_mysql.play_captain_hpay"],
+    )
+
+    assert rows == [valid]
+    assert valid.retrieval_count == 1
+    compiled = str(db.statement)
+    assert "sql_assets.tenant_id" in compiled
+    assert "sql_assets.workspace_id" in compiled
+    assert "sql_assets.data_source_id" in compiled
+    assert "sql_assets.dialect" in compiled

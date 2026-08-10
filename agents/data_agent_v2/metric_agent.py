@@ -4,10 +4,12 @@ MetricAgent — 将业务指标提及映射到列与聚合函数。
 以知识层 metric_definitions 为主数据源；
 回退 SchemaLinker.link_metrics() 模式字典与 LLM。
 """
+
 from __future__ import annotations
 
 from agents.base import AgentResult, BaseAgent, TaskMessage
 from agents.data_agent_v2.types import (
+    CognitiveContext,
     pack_cognitive_result,
     unpack_cognitive_context,
 )
@@ -39,13 +41,15 @@ class MetricAgent(BaseAgent):
                 content=f"resolved {len(metrics)} metrics",
                 confidence=self._metric_confidence(metrics),
                 ctx=ctx,
-                evidence=[self._make_evidence(
-                    source="metric_resolver",
-                    source_type="data_cognition",
-                    payload={"metrics": metrics},
-                    credibility=0.90,
-                    relevance=1.0,
-                )],
+                evidence=[
+                    self._make_evidence(
+                        source="metric_resolver",
+                        source_type="data_cognition",
+                        payload={"metrics": metrics},
+                        credibility=0.90,
+                        relevance=1.0,
+                    )
+                ],
             )
         except Exception as exc:
             ctx.metrics = []
@@ -68,20 +72,25 @@ class MetricAgent(BaseAgent):
             for m in ctx.matched_metrics:
                 name_lower = (m["name"] or "").lower()
                 alias_match = any(
-                    (a or "").lower() in query_lower
-                    for a in (m.get("aliases") or [])
+                    (a or "").lower() in query_lower for a in (m.get("aliases") or [])
                 )
                 name_match = name_lower and name_lower in query_lower
                 if name_match or alias_match:
-                    metrics.append({
-                        "mention": m["name"],
-                        "mapped_column": m["underlying_columns"][0] if m["underlying_columns"] else "",
-                        "agg": m.get("agg_function") or "SUM",
-                        "formula": m["formula"],
-                        "business_definition": m.get("business_definition", ""),
-                        "source": "metric_definitions",
-                        "confidence": 0.95,
-                    })
+                    metrics.append(
+                        {
+                            "mention": m["name"],
+                            "mapped_column": (
+                                m["underlying_columns"][0] if m["underlying_columns"] else ""
+                            ),
+                            "agg": m.get("agg_function") or "SUM",
+                            "formula": m["formula"],
+                            "business_definition": m.get("business_definition", ""),
+                            "source": m.get("source") or "metric_definitions",
+                            "confidence": (
+                                0.95 if m.get("source") != "sql_asset_reference" else 0.82
+                            ),
+                        }
+                    )
 
         # 优先级 2：内置模式字典
         if not metrics:

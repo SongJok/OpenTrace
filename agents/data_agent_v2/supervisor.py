@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from dataclasses import asdict
@@ -61,6 +62,22 @@ class DataAgentV2Supervisor:
 
         # 2. 加载数据源元数据
         await self._load_datasource_metadata(task, ctx)
+        scope_violation = self._query_database_scope_violation(ctx)
+        if scope_violation:
+            return AgentResult(
+                task_id=task.task_id,
+                agent_type="data",
+                status="error",
+                content="",
+                confidence=0.0,
+                error=scope_violation,
+                metadata={
+                    "data_source_id": ctx.data_source_id,
+                    "mode": "data_agent_v2",
+                    "turn_outcome": "error",
+                    "pipeline_stage": "data_source_scope",
+                },
+            )
 
         # 3. 知识层
         knowledge_enabled = bool(
@@ -76,6 +93,7 @@ class DataAgentV2Supervisor:
                 {"duration_ms": int((time.monotonic() - t_kb) * 1000)},
                 status="success",
             )
+        ctx = self._merge_sql_asset_knowledge(ctx)
 
         # 4. 检查直接 SQL / 模式命中（快速路径：跳过推理 DAG）
         if ctx.compiled_sql:
@@ -586,6 +604,7 @@ class DataAgentV2Supervisor:
                 safe_sql,
                 source_type=str(task.params.get("_data_source_type") or ctx.dialect),
                 table_columns=ctx.table_columns,
+                allow_metadata_tables=bool((ctx.intent or {}).get("intent_type") == "metadata"),
             )
 
             ctx.execution_rows = rows
@@ -1089,6 +1108,7 @@ class DataAgentV2Supervisor:
         ctx = CognitiveContext(
             query=query,
             data_source_id=ds_id,
+            database_name=str(task.params.get("_db_database") or "").strip(),
             dialect=task.params.get("dialect", "postgresql"),
             schema_hint=task.params.get("schema_hint", ""),
             table_names=task.params.get("table_names", []),
@@ -1139,6 +1159,7 @@ class DataAgentV2Supervisor:
                     raise PermissionError("data source not found or not authorized")
                 dialect = detect_sql_dialect(ds.source_type)
                 ctx.dialect = dialect.name
+                ctx.database_name = str(ds.database or "").strip()
                 task.params["_db_host"] = ds.host
                 task.params["_db_port"] = ds.port
                 task.params["_db_database"] = ds.database
@@ -1165,15 +1186,82 @@ class DataAgentV2Supervisor:
                     if not ctx.table_names:
                         schema_dict = json.loads(schema_row.schema_json or "{}")
                         tables = schema_dict.get("tables", [])
-                        ctx.table_names = [t.get("name", "") for t in tables]
-                        ctx.table_columns = {
-                            t.get("name", ""): [c.get("name", "") for c in t.get("columns", [])]
-                            for t in tables
-                        }
+                        database_scope = str(schema_dict.get("database_scope") or "").strip()
+                        table_names: list[str] = []
+                        table_columns: dict[str, list[str]] = {}
+                        for table in tables if isinstance(tables, list) else []:
+                            if not isinstance(table, dict):
+                                continue
+                            table_name = str(table.get("name") or "").strip()
+                            if not table_name:
+                                continue
+                            table_database = str(table.get("database") or "").strip()
+                            physical_name = table_name
+                            if (
+                                database_scope == "*"
+                                and table_database
+                                and table_database != "*"
+                                and "." not in table_name
+                            ):
+                                physical_name = f"{table_database}.{table_name}"
+                            table_names.append(physical_name)
+                            columns = table.get("columns") or []
+                            table_columns[physical_name] = [
+                                str(column.get("name") or "").strip()
+                                for column in columns
+                                if isinstance(column, dict)
+                                and str(column.get("name") or "").strip()
+                            ]
+                        ctx.table_names = table_names
+                        ctx.table_columns = table_columns
                     if not ctx.schema_hint:
                         ctx.schema_hint = schema_row.schema_json or ""
                     if not ctx.semantic_config:
                         ctx.semantic_config = schema_row.semantic_mappings or {}
+
+                # SQL 资产是当前真实 Schema 之外的业务证据来源。只读取同一
+                # data_source_id 且能在本次 Schema 中证明范围合法的查询资产；
+                # 草案/未验证资产只能帮助理解，不能绕过后续只读校验执行。
+                try:
+                    from services.sql_assets import retrieve_sql_assets
+
+                    assets = await retrieve_sql_assets(
+                        db,
+                        tenant_id=tenant_id,
+                        workspace_id=workspace_id,
+                        data_source_id=ctx.data_source_id,
+                        question=ctx.query,
+                        dialect=ctx.dialect,
+                        project_id=str(task.params.get("project_id") or "").strip() or None,
+                        limit=5,
+                        include_draft_reference=True,
+                        available_tables=list(ctx.table_columns or ctx.table_names),
+                    )
+                    ctx.sql_asset_context = [
+                        {
+                            "id": asset.id,
+                            "title": asset.title,
+                            "description": asset.description,
+                            "status": asset.status,
+                            "quality_status": asset.quality_status,
+                            "tables": list(asset.tables or []),
+                            "columns": list(asset.columns or []),
+                            "knowledge_metadata": dict(asset.knowledge_metadata or {}),
+                            "sql": str(asset.normalized_sql or "")[:6000],
+                            "reference_only": not (
+                                asset.status == "published"
+                                and asset.quality_status == "verified"
+                                and asset.corpus_role == "retrieval"
+                                and bool(asset.executable)
+                            ),
+                        }
+                        for asset in assets
+                    ]
+                    ctx.metadata_extra = dict(ctx.metadata_extra or {})
+                    ctx.metadata_extra["sql_asset_context_count"] = len(ctx.sql_asset_context)
+                    ctx.metadata_extra["sql_asset_context_source"] = "scoped_sql_assets"
+                except Exception as exc:
+                    logger.warning("SQL asset context load failed", error=str(exc))
 
         except Exception as exc:
             logger.warning("Supervisor operation failed", error=str(exc))
@@ -1188,6 +1276,138 @@ class DataAgentV2Supervisor:
                 continue
             merged[key] = value
         return CognitiveContext.from_dict(merged)
+
+    def _query_database_scope_violation(self, ctx: CognitiveContext) -> str | None:
+        """拒绝自然语言中明确引用当前 DataSource 之外的全限定表。"""
+        mentions = re.findall(
+            r"(?<![\w])([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)(?![\w])",
+            str(ctx.query or "").lower(),
+        )
+        if not mentions:
+            return None
+        known_tables = {
+            str(table).strip().lower() for table in ctx.table_names if str(table).strip()
+        }
+        known_bare = {table.rsplit(".", 1)[-1] for table in known_tables}
+        selected_database = str(ctx.database_name or "").strip().lower()
+        for qualifier, name in mentions:
+            qualified = f"{qualifier}.{name}"
+            if qualified in known_tables:
+                continue
+            if selected_database and qualifier == selected_database and name in known_bare:
+                continue
+            # `orders.amount` 也符合二段式语法；若前段是当前表且后段是其字段，允许继续。
+            column_matches = [
+                table
+                for table, columns in (ctx.table_columns or {}).items()
+                if str(table).rsplit(".", 1)[-1].lower() == qualifier
+                and name in {str(column).lower() for column in columns}
+            ]
+            if column_matches:
+                continue
+            return (
+                f"查询引用的数据库或表不属于当前选择的数据源：{qualified}；"
+                f"当前数据源数据库为 {ctx.database_name or '未配置'}"
+            )
+        return None
+
+    def _merge_sql_asset_knowledge(self, ctx: CognitiveContext) -> CognitiveContext:
+        """把已限定数据源的 SQL 资产规则并入 V2 指标和 JOIN 知识。"""
+        query_lower = str(ctx.query or "").lower()
+        query_terms = {
+            term.lower()
+            for segment in re.findall(r"[\u4e00-\u9fff]{2,}", query_lower)
+            for term in (
+                segment,
+                *(segment[index : index + 2] for index in range(len(segment) - 1)),
+            )
+            if len(term) >= 2
+        }
+        metrics = list(ctx.matched_metrics or [])
+        metric_keys = {str(metric.get("name") or "").strip().lower() for metric in metrics}
+        relationships = list(ctx.matched_relationships or [])
+        relationship_keys = {
+            (
+                str(item.get("left_table") or "").lower(),
+                str(item.get("left_column") or "").lower(),
+                str(item.get("right_table") or "").lower(),
+                str(item.get("right_column") or "").lower(),
+            )
+            for item in relationships
+        }
+
+        for asset in ctx.sql_asset_context or []:
+            knowledge = asset.get("knowledge_metadata") or {}
+            for metric in knowledge.get("metric_rules") or knowledge.get("metrics") or []:
+                if not isinstance(metric, dict):
+                    continue
+                name = str(metric.get("name") or "").strip()
+                aliases = [
+                    str(alias).strip()
+                    for alias in metric.get("aliases") or []
+                    if str(alias).strip()
+                ]
+                if not name or name.lower() in metric_keys:
+                    continue
+                name_lower = name.lower()
+                if not (
+                    name_lower in query_lower
+                    or any(term in name_lower for term in query_terms)
+                    or any(alias.lower() in query_lower for alias in aliases)
+                ):
+                    continue
+                source_columns = [
+                    str(value).strip()
+                    for value in metric.get("source_columns") or []
+                    if str(value).strip()
+                ]
+                metrics.append(
+                    {
+                        "id": f"sql_asset:{asset.get('id') or ''}:{name}",
+                        "name": name,
+                        "aliases": aliases,
+                        "formula": str(metric.get("formula") or "").strip(),
+                        "underlying_columns": source_columns,
+                        "agg_function": str(metric.get("aggregation") or "").strip(),
+                        "business_definition": str(asset.get("description") or "").strip(),
+                        "source_tables": list(metric.get("source_tables") or []),
+                        "filter_contracts": list(metric.get("filter_contracts") or []),
+                        "source": "sql_asset_reference",
+                    }
+                )
+                metric_keys.add(name.lower())
+
+            for join in knowledge.get("joins") or []:
+                if not isinstance(join, dict):
+                    continue
+                key = (
+                    str(join.get("left_table") or "").lower(),
+                    str(join.get("left_column") or "").lower(),
+                    str(join.get("right_table") or "").lower(),
+                    str(join.get("right_column") or "").lower(),
+                )
+                if not all(key) or key in relationship_keys:
+                    continue
+                relationships.append(
+                    {
+                        "left_table": join.get("left_table"),
+                        "left_column": join.get("left_column"),
+                        "right_table": join.get("right_table"),
+                        "right_column": join.get("right_column"),
+                        "join_type": join.get("join_type") or "INNER",
+                        "cardinality": None,
+                        "amplification_risk": "medium",
+                        "is_verified": False,
+                        "usage_count": 0,
+                        "success_rate": 0.0,
+                        "source": "sql_asset_reference",
+                    }
+                )
+                relationship_keys.add(key)
+
+        ctx.matched_metrics = metrics
+        ctx.matched_relationships = relationships
+        return ctx
 
     def _coerce_agent_result(self, result: AgentResult | dict[str, Any]) -> AgentResult:
         """在 Supervisor 边界将子 Agent 结果归一化为 AgentResult。"""
