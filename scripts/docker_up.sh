@@ -184,6 +184,12 @@ done
 if [ -z "${PYTHON_BASE_IMAGE:-}" ]; then
   export PYTHON_BASE_IMAGE="python:3.11-slim"
 fi
+if [ -z "${FRONTEND_NODE_BASE_IMAGE:-}" ]; then
+  export FRONTEND_NODE_BASE_IMAGE="docker.m.daocloud.io/library/node:20-alpine"
+fi
+if [ -z "${FRONTEND_NGINX_BASE_IMAGE:-}" ]; then
+  export FRONTEND_NGINX_BASE_IMAGE="docker.m.daocloud.io/library/nginx:alpine"
+fi
 REMOTE_APP_IMAGE="${OPENTRACE_IMAGE:-}"
 export OPENTRACE_IMAGE="${OPENTRACE_IMAGE:-opentrace-app:local}"
 export OPENTRACE_FRONTEND_IMAGE="${OPENTRACE_FRONTEND_IMAGE:-opentrace-frontend:local}"
@@ -191,6 +197,8 @@ export OPENTRACE_BUILD_FINGERPRINT="$(source_fingerprint)"
 export OPENTRACE_FRONTEND_BUILD_FINGERPRINT="$OPENTRACE_BUILD_FINGERPRINT"
 
 echo "▸ 使用 Python 基础镜像: $PYTHON_BASE_IMAGE"
+echo "▸ 使用前端 Node 基础镜像: $FRONTEND_NODE_BASE_IMAGE"
+echo "▸ 使用前端 Nginx 基础镜像: $FRONTEND_NGINX_BASE_IMAGE"
 echo "▸ 使用 OpenTrace 应用镜像: $OPENTRACE_IMAGE"
 echo "▸ 使用 OpenTrace 前端镜像: $OPENTRACE_FRONTEND_IMAGE"
 echo "▸ 当前源码指纹: ${OPENTRACE_BUILD_FINGERPRINT:0:12}"
@@ -207,8 +215,8 @@ if [ "$PULL_IMAGES" -eq 1 ]; then
   echo "▸ 更新所需镜像..."
   pull_with_retry "redis:7-alpine"
   pull_with_retry "pgvector/pgvector:pg16"
-  pull_with_retry "node:20-alpine"
-  pull_with_retry "nginx:alpine"
+  pull_with_retry "$FRONTEND_NODE_BASE_IMAGE"
+  pull_with_retry "$FRONTEND_NGINX_BASE_IMAGE"
   if [ -n "$REMOTE_APP_IMAGE" ]; then
     pull_with_retry "$OPENTRACE_IMAGE"
   else

@@ -1,4 +1,7 @@
-FROM node:20-alpine AS build
+ARG FRONTEND_NODE_BASE_IMAGE=docker.m.daocloud.io/library/node:20-alpine
+ARG FRONTEND_NGINX_BASE_IMAGE=docker.m.daocloud.io/library/nginx:alpine
+
+FROM ${FRONTEND_NODE_BASE_IMAGE} AS build
 
 WORKDIR /app
 
@@ -24,7 +27,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 COPY . .
 RUN npm run build
 
-FROM nginx:alpine
+FROM ${FRONTEND_NGINX_BASE_IMAGE}
 
 ARG OPENTRACE_FRONTEND_BUILD_FINGERPRINT=unknown
 LABEL org.opentrace.build-fingerprint="${OPENTRACE_FRONTEND_BUILD_FINGERPRINT}"

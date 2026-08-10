@@ -150,8 +150,10 @@ Agent Loop 会把重复工具参数、重复有效结果、连续失败和无结
 bash restart.sh --build
 ```
 
-镜像构建依赖源由 `PYTHON_DEPENDENCY_INDEX_URL`、
-`PYTHON_DEPENDENCY_FALLBACK_INDEX_URL` 和 `NPM_REGISTRY` 控制。Python 依赖使用固定版本 `uv`
+镜像构建基础镜像由 `PYTHON_BASE_IMAGE`、`FRONTEND_NODE_BASE_IMAGE` 和
+`FRONTEND_NGINX_BASE_IMAGE` 控制，默认使用国内 Docker 镜像代理；依赖源由
+`PYTHON_DEPENDENCY_INDEX_URL`、`PYTHON_DEPENDENCY_FALLBACK_INDEX_URL` 和 `NPM_REGISTRY` 控制。
+Python 依赖使用固定版本 `uv`
 安装，BuildKit 会复用 `/root/.cache/uv`。两个 Python 镜像源按顺序独立尝试，不再把官方 PyPI
 作为并列 extra index，避免国内服务器反复等待 `files.pythonhosted.org`。主源和备用源的整次
 安装时限分别由 `PYTHON_DEPENDENCY_PRIMARY_MAX_SECONDS` 和

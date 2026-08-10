@@ -70,6 +70,20 @@ def test_dockerfile_uses_buildkit_dependency_caches_without_remote_frontend():
     assert "# syntax=" not in dockerfile
 
 
+def test_frontend_uses_configurable_domestic_base_images():
+    dockerfile = _read("frontend/Dockerfile")
+    compose = _read("docker-compose.yml")
+
+    assert "ARG FRONTEND_NODE_BASE_IMAGE=" in dockerfile
+    assert "ARG FRONTEND_NGINX_BASE_IMAGE=" in dockerfile
+    assert "FROM ${FRONTEND_NODE_BASE_IMAGE} AS build" in dockerfile
+    assert "FROM ${FRONTEND_NGINX_BASE_IMAGE}" in dockerfile
+    assert "FRONTEND_NODE_BASE_IMAGE" in compose
+    assert "FRONTEND_NGINX_BASE_IMAGE" in compose
+    assert "docker.m.daocloud.io/library/node:20-alpine" in compose
+    assert "docker.m.daocloud.io/library/nginx:alpine" in compose
+
+
 def test_uv_bootstrap_uses_one_domestic_index_at_a_time_with_bounded_fallback():
     installer = _read("scripts/install_uv.sh")
 
