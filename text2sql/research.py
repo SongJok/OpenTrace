@@ -1,0 +1,99 @@
+"""有限预算的数据研究规划器。"""
+
+from __future__ import annotations
+
+import re
+
+from text2sql.contracts import EvidenceType, ResearchPlan, ResearchStep
+
+
+class ResearchPlanner:
+    """根据问题特征选择证据来源。
+
+    这是策略层，不让模型自行发现未授权数据源。数据源的选择由请求 Scope 锁定，
+    规划器只决定在该范围内需要读取哪些类型的证据。
+    """
+
+    _metric_terms = re.compile(
+        r"收入|销售|金额|数量|人数|占比|率|均值|平均|总计|gmv|revenue|count|sum|avg", re.I
+    )
+    _process_terms = re.compile(r"流程|状态|支付|退款|发货|注册|转化|留存|生命周期|原因|为什么")
+    _time_terms = re.compile(
+        r"今天|昨日|本周|本月|今年|去年|最近|过去|趋势|同比|环比|日|周|月|季度|年", re.I
+    )
+    _skill_terms = re.compile(r"趋势|同比|环比|漏斗|留存|cohort|top|排名|分布|异常|复购|转化", re.I)
+
+    def plan(self, question: str) -> ResearchPlan:
+        text = str(question or "").strip()
+        steps: list[ResearchStep] = [
+            ResearchStep(
+                source=EvidenceType.SCHEMA, reason="任何 SQL 都必须先证明表和字段属于当前数据源"
+            ),
+            ResearchStep(
+                source=EvidenceType.SOURCE_POLICY,
+                reason="读取数据源级访问、脱敏和审批规则",
+            ),
+            ResearchStep(
+                source=EvidenceType.RELATIONSHIP, reason="需要验证可用 JOIN 路径和基数风险"
+            ),
+        ]
+        if self._metric_terms.search(text):
+            steps.append(
+                ResearchStep(
+                    source=EvidenceType.METRIC, reason="问题包含聚合或业务指标词", max_items=30
+                )
+            )
+        if self._time_terms.search(text):
+            steps.append(
+                ResearchStep(
+                    source=EvidenceType.COLUMN_PROFILE,
+                    reason="需要选择正确的事件时间字段和时间粒度",
+                )
+            )
+        if self._process_terms.search(text):
+            steps.append(
+                ResearchStep(
+                    source=EvidenceType.BUSINESS_PROCESS, reason="问题涉及业务状态或线上流程"
+                )
+            )
+            steps.append(
+                ResearchStep(
+                    source=EvidenceType.KNOWLEDGE,
+                    reason="需要检索流程文档和已发布业务口径",
+                    required=False,
+                )
+            )
+        if self._skill_terms.search(text):
+            steps.append(
+                ResearchStep(
+                    source=EvidenceType.SKILL,
+                    reason="问题适合使用已验证的分析方法模板",
+                    required=False,
+                )
+            )
+        steps.append(
+            ResearchStep(
+                source=EvidenceType.SQL_ASSET,
+                reason="检索同一数据源的已验证历史查询作为参考",
+                required=False,
+            )
+        )
+        steps.append(
+            ResearchStep(
+                source=EvidenceType.DATA_QUALITY,
+                reason="执行前检查数据新鲜度和已知质量问题",
+                required=False,
+            )
+        )
+        unique: dict[EvidenceType, ResearchStep] = {}
+        for step in steps:
+            unique.setdefault(step.source, step)
+        return ResearchPlan(
+            steps=list(unique.values()),
+            budget=min(20, max(8, len(unique) * 2)),
+            stop_conditions=[
+                "没有当前数据源 Schema 时停止并阻止执行",
+                "指标或关系存在权威冲突时先澄清",
+                "所有证据都必须带来源、作用域和版本",
+            ],
+        )

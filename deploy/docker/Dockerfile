@@ -33,6 +33,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     sh /usr/local/bin/opentrace-install-uv
 
 COPY requirements.lock /tmp/requirements.lock
+# 依赖安装脚本使用同一份锁文件执行 --require-hashes -r requirements.lock。
 COPY scripts/install_python_dependencies.sh /usr/local/bin/opentrace-install-dependencies
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     PYTHON_DEPENDENCY_INDEX_URL="${PYTHON_DEPENDENCY_INDEX_URL}" \

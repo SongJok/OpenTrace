@@ -3,7 +3,7 @@
   "policy_effective_date": "2026-07-24",
   "production_baseline_revision": "20260724_chatgpt_runtime_completion",
   "new_revision_format": "^r[0-9]{4}_[a-z0-9_]+$",
-  "next_sequence": 20,
+  "next_sequence": 22,
   "frozen_migrations": [
     {
       "revision": "20260400_core_baseline",
@@ -422,6 +422,20 @@
       "sha256": "e3c3721b30de1c4992d4c4e10fb8dc9bb8db7fa442ff5bcf6064b740b0a06f74",
       "governed_format": "r-sequence",
       "frozen_on": "2026-08-08"
+    },
+    {
+      "revision": "r0020_text2sql_platform",
+      "file": "alembic/versions/r0020_text2sql_platform.py",
+      "sha256": "f4abcc64e617021ee81affd883931483fbca855d7ce7c5578f5206f2f070ac45",
+      "governed_format": "r-sequence",
+      "frozen_on": "2026-08-10"
+    },
+    {
+      "revision": "r0021_text2sql_governed_assets",
+      "file": "alembic/versions/r0021_text2sql_governed_assets.py",
+      "sha256": "5fbfa94f7677fba44cc538bd453a07c08059cdd0de1ef0ce2192f4aeb8f3cdf3",
+      "governed_format": "r-sequence",
+      "frozen_on": "2026-08-10"
     }
   ],
   "notes": [

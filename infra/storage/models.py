@@ -40,6 +40,11 @@ from infra.storage.sql_asset_models import SQLAsset as SQLAsset
 from infra.storage.sql_asset_models import SQLAssetSource as SQLAssetSource
 from infra.storage.sql_asset_models import SQLQueryCandidate as SQLQueryCandidate
 from infra.storage.sql_asset_models import SQLQueryDraft as SQLQueryDraft
+from infra.storage.text2sql_models import Text2SQLRunEvent as Text2SQLRunEvent
+from infra.storage.text2sql_models import Text2SQLRunRecord as Text2SQLRunRecord
+from infra.storage.text2sql_models import Text2SQLSemanticAsset as Text2SQLSemanticAsset
+from infra.storage.text2sql_models import Text2SQLEvaluationCase as Text2SQLEvaluationCase
+from infra.storage.text2sql_models import Text2SQLFeedback as Text2SQLFeedback
 
 
 def _uuid() -> str:

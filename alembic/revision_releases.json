@@ -57,6 +57,12 @@
     },
     "r0019_sql_asset_corpus_and_query_plans": {
       "release": "unreleased"
+    },
+    "r0020_text2sql_platform": {
+      "release": "unreleased"
+    },
+    "r0021_text2sql_governed_assets": {
+      "release": "unreleased"
     }
   }
 }
