@@ -94,12 +94,24 @@ def _schema_name(source_type: str, database: str) -> str:
     return database or "information_schema"
 
 
-def _schema_sql(source_type: str, schema_name: str) -> tuple[str, str]:
+def _schema_sql(
+    source_type: str,
+    schema_name: str,
+    *,
+    clickhouse_include_comments: bool = True,
+) -> tuple[str, str]:
     t = (source_type or "").lower()
     if t == "clickhouse":
+        table_comment_sql = (
+            "comment AS table_comment" if clickhouse_include_comments else "'' AS table_comment"
+        )
+        column_comment_sql = (
+            "comment AS column_comment" if clickhouse_include_comments else "'' AS column_comment"
+        )
         if schema_name == "*":
             tables_sql = (
-                "SELECT database AS database_name, name AS table_name, comment AS table_comment, "
+                "SELECT database AS database_name, name AS table_name, "
+                f"{table_comment_sql}, "
                 "concat(database, '.', name) AS qualified_table_name "
                 "FROM system.tables "
                 "WHERE database NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') "
@@ -108,7 +120,7 @@ def _schema_sql(source_type: str, schema_name: str) -> tuple[str, str]:
             cols_sql = (
                 "SELECT database AS database_name, table AS physical_table_name, "
                 "concat(database, '.', table) AS table_name, name AS column_name, "
-                "type AS data_type, comment AS column_comment "
+                f"type AS data_type, {column_comment_sql} "
                 "FROM system.columns "
                 "WHERE database NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') "
                 "ORDER BY database, table, position"
@@ -116,14 +128,15 @@ def _schema_sql(source_type: str, schema_name: str) -> tuple[str, str]:
             return tables_sql, cols_sql
         safe_schema = schema_name.replace("'", "''")
         tables_sql = (
-            "SELECT database AS database_name, name AS table_name, comment AS table_comment "
+            "SELECT database AS database_name, name AS table_name, "
+            f"{table_comment_sql} "
             "FROM system.tables "
             f"WHERE database = '{safe_schema}' "
             "ORDER BY name"
         )
         cols_sql = (
             "SELECT database AS database_name, table AS table_name, name AS column_name, "
-            "type AS data_type, comment AS column_comment "
+            f"type AS data_type, {column_comment_sql} "
             "FROM system.columns "
             f"WHERE database = '{safe_schema}' "
             "ORDER BY table, position"
@@ -180,6 +193,13 @@ def _normalize_comment_row(row: dict[str, object]) -> str:
     return str(comment or "")
 
 
+def _is_clickhouse_missing_comment_error(exc: Exception) -> bool:
+    """识别旧版 ClickHouse system 表不支持 comment 列的错误。"""
+
+    message = str(exc).lower()
+    return "missing columns" in message and "comment" in message
+
+
 async def _fetch_schema_rows(
     executor: SQLExecutor,
     dsn: str,
@@ -209,6 +229,62 @@ async def _fetch_schema_rows(
         offset += len(page)
     # 达到安全预算时保守标记为截断；即使恰好等于总量，也不能误报“完整”。
     return rows, True
+
+
+async def _fetch_schema_metadata(
+    executor: SQLExecutor,
+    dsn: str,
+    *,
+    source_type: str,
+    schema_name: str,
+    page_size: int,
+    max_tables: int,
+    max_columns: int,
+) -> tuple[list[dict[str, object]], bool, list[dict[str, object]], bool, bool]:
+    """读取表和字段元数据，并兼容旧版 ClickHouse 的系统表字段。"""
+
+    include_comments_attempts = [True]
+    if str(source_type).lower() == "clickhouse":
+        include_comments_attempts.append(False)
+
+    for include_comments in include_comments_attempts:
+        tables_sql, cols_sql = _schema_sql(
+            source_type,
+            schema_name,
+            clickhouse_include_comments=include_comments,
+        )
+        try:
+            tables_rows, tables_truncated = await _fetch_schema_rows(
+                executor,
+                dsn,
+                tables_sql,
+                source_type=source_type,
+                page_size=page_size,
+                max_rows=max_tables,
+            )
+            cols_rows, columns_truncated = await _fetch_schema_rows(
+                executor,
+                dsn,
+                cols_sql,
+                source_type=source_type,
+                page_size=page_size,
+                max_rows=max_columns,
+            )
+            return (
+                tables_rows,
+                tables_truncated,
+                cols_rows,
+                columns_truncated,
+                not include_comments,
+            )
+        except Exception as exc:
+            if include_comments and _is_clickhouse_missing_comment_error(exc):
+                # ClickHouse 21.x 的 system.tables/system.columns 可能没有 comment 列，
+                # 下一轮改用不读取物理注释的兼容查询。
+                continue
+            raise
+
+    raise RuntimeError("ClickHouse Schema 元数据兼容查询失败")
 
 
 def _schema_catalog_page(
@@ -622,25 +698,23 @@ async def sync_schema(
     )
 
     schema_name = _schema_name(x.source_type, x.database)
-    tables_sql, cols_sql = _schema_sql(x.source_type, schema_name)
 
     metadata_page_size = max(1, int(settings.database_schema_sync_page_size))
     executor = SQLExecutor(max_rows=metadata_page_size)
-    tables_rows, tables_truncated = await _fetch_schema_rows(
+    (
+        tables_rows,
+        tables_truncated,
+        cols_rows,
+        columns_truncated,
+        clickhouse_legacy_metadata,
+    ) = await _fetch_schema_metadata(
         executor,
         dsn,
-        tables_sql,
         source_type=x.source_type,
+        schema_name=schema_name,
         page_size=metadata_page_size,
-        max_rows=settings.database_schema_sync_max_tables,
-    )
-    cols_rows, columns_truncated = await _fetch_schema_rows(
-        executor,
-        dsn,
-        cols_sql,
-        source_type=x.source_type,
-        page_size=metadata_page_size,
-        max_rows=settings.database_schema_sync_max_columns,
+        max_tables=settings.database_schema_sync_max_tables,
+        max_columns=settings.database_schema_sync_max_columns,
     )
 
     table_columns: dict[str, list[dict]] = {}
@@ -664,6 +738,10 @@ async def sync_schema(
         }
     )
     metadata_warnings: list[str] = []
+    if clickhouse_legacy_metadata:
+        metadata_warnings.append(
+            "当前 ClickHouse 版本的系统表不提供 comment 列，已忽略物理表/字段注释，但 Schema 已完成同步"
+        )
     if x.source_type == "clickhouse" and not x.database and not databases:
         metadata_warnings.append(
             "连接成功，但当前账号无法发现任何业务库；请检查 ClickHouse SHOW/SELECT 授权，"

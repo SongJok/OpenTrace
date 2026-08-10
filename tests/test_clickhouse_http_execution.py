@@ -3,7 +3,12 @@ from __future__ import annotations
 import pytest
 
 from execution.data.sql_executor import SQLExecutor
-from gateway.api_gateway.routers.databases import _schema_sql, _validate_database_name
+from gateway.api_gateway.routers.databases import (
+    _fetch_schema_metadata,
+    _is_clickhouse_missing_comment_error,
+    _schema_sql,
+    _validate_database_name,
+)
 from infra.errors import AppException
 
 
@@ -58,6 +63,71 @@ def test_clickhouse_empty_database_schema_lists_all_business_databases():
     assert "database NOT IN ('system'" in tables_sql
     assert "concat(database, '.', table)" in columns_sql
     assert "database NOT IN ('system'" in columns_sql
+
+
+def test_clickhouse_schema_sql_can_skip_comments_for_legacy_system_tables():
+    tables_sql, columns_sql = _schema_sql(
+        "clickhouse",
+        "*",
+        clickhouse_include_comments=False,
+    )
+
+    assert "'' AS table_comment" in tables_sql
+    assert "'' AS column_comment" in columns_sql
+    assert "comment AS table_comment" not in tables_sql
+    assert "comment AS column_comment" not in columns_sql
+
+
+def test_clickhouse_missing_comment_error_is_recognized():
+    error = RuntimeError("Code: 47, Missing columns: 'comment'")
+
+    assert _is_clickhouse_missing_comment_error(error) is True
+    assert _is_clickhouse_missing_comment_error(RuntimeError("Code: 60, Table not found")) is False
+
+
+@pytest.mark.asyncio
+async def test_clickhouse_schema_metadata_falls_back_without_comments():
+    class _LegacyClickHouseExecutor:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        async def run_on_dsn(self, _dsn, sql, *, source_type):
+            assert source_type == "clickhouse"
+            self.queries.append(sql)
+            if "comment AS" in sql:
+                raise RuntimeError("Code: 47, Missing columns: 'comment'")
+            if "system.tables" in sql:
+                return [{"database_name": "analytics", "table_name": "orders"}]
+            return [
+                {
+                    "database_name": "analytics",
+                    "table_name": "analytics.orders",
+                    "column_name": "id",
+                    "data_type": "UInt64",
+                }
+            ]
+
+    executor = _LegacyClickHouseExecutor()
+    tables, tables_truncated, columns, columns_truncated, used_legacy = (
+        await _fetch_schema_metadata(
+            executor,
+            "clickhouse+http://example.com:8123/default",
+            source_type="clickhouse",
+            schema_name="*",
+            page_size=100,
+            max_tables=1000,
+            max_columns=1000,
+        )
+    )
+
+    assert tables == [{"database_name": "analytics", "table_name": "orders"}]
+    assert columns[0]["column_name"] == "id"
+    assert tables_truncated is False
+    assert columns_truncated is False
+    assert used_legacy is True
+    assert len(executor.queries) == 3
+    assert "'' AS table_comment" in executor.queries[1]
+    assert "'' AS column_comment" in executor.queries[2]
 
 
 def test_only_clickhouse_can_leave_database_empty():
