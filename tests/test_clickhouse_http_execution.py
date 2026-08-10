@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from execution.data.sql_executor import SQLExecutor
+from execution.data.sql_executor import SQLExecutor, validate_sql_table_scope
 from gateway.api_gateway.routers.databases import (
     _fetch_schema_metadata,
     _is_clickhouse_missing_comment_error,
@@ -135,3 +135,50 @@ def test_only_clickhouse_can_leave_database_empty():
 
     with pytest.raises(AppException, match="必须填写数据库名"):
         _validate_database_name("mysql", "")
+
+
+def test_sql_table_scope_rejects_missing_and_cross_database_tables():
+    table_columns = {"analytics.orders": ["id"], "customers": ["id"]}
+
+    validate_sql_table_scope(
+        "SELECT id FROM analytics.orders",
+        table_columns=table_columns,
+        source_type="clickhouse",
+    )
+    validate_sql_table_scope(
+        "WITH scoped AS (SELECT id FROM analytics.orders) SELECT id FROM scoped",
+        table_columns=table_columns,
+        source_type="clickhouse",
+    )
+
+    with pytest.raises(ValueError, match="不存在的表"):
+        validate_sql_table_scope(
+            "SELECT id FROM other.orders",
+            table_columns=table_columns,
+            source_type="clickhouse",
+        )
+    with pytest.raises(ValueError, match="不存在的表"):
+        validate_sql_table_scope(
+            "SELECT id FROM missing_table",
+            table_columns=table_columns,
+            source_type="postgres",
+        )
+
+
+@pytest.mark.asyncio
+async def test_sql_executor_rejects_cross_database_table_before_connection(monkeypatch):
+    monkeypatch.setattr(
+        "execution.data.sql_executor.httpx.AsyncClient",
+        _FakeAsyncClient,
+    )
+    _FakeAsyncClient.calls = []
+
+    with pytest.raises(ValueError, match="other.orders"):
+        await SQLExecutor().run_on_dsn(
+            "clickhouse+http://readonly_user:secret@clickhouse.example.com:80/analytics",
+            "SELECT id FROM other.orders",
+            source_type="clickhouse",
+            table_columns={"analytics.orders": ["id"]},
+        )
+
+    assert _FakeAsyncClient.calls == []

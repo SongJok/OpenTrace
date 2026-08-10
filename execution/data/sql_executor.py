@@ -10,9 +10,77 @@ from urllib.parse import unquote, unquote_plus, urlsplit
 import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlglot import exp, parse
+from sqlglot.errors import ParseError
 
 from infra.config.settings import settings
 from kernel.data_cognition.sql_validator import SQLValidator
+
+
+def _sqlglot_dialect(source_type: str | None) -> str:
+    normalized = str(source_type or "").strip().lower()
+    if normalized in {"postgres", "postgresql", "pg"}:
+        return "postgres"
+    if normalized == "clickhouse":
+        return "clickhouse"
+    return "mysql"
+
+
+def validate_sql_table_scope(
+    sql: str,
+    *,
+    table_columns: dict[str, list[str]],
+    source_type: str | None = None,
+) -> None:
+    """拒绝 SQL 引用当前选定数据源 Schema 之外的表。
+
+    `table_columns` 来自当前 DataSource 的 Schema 快照。查询显式写出数据库名时
+    必须精确命中同名物理表；未带数据库名时只有唯一裸表名可以通过，避免把另一库的
+    同名表误认为当前数据源中的表。空 Schema 也按拒绝处理，不能在无法证明范围时执行。
+    """
+
+    if not table_columns:
+        raise ValueError("当前选定数据库没有可用 Schema，拒绝执行表范围未确认的 SQL")
+    try:
+        expressions = [
+            statement
+            for statement in parse(str(sql or ""), read=_sqlglot_dialect(source_type))
+            if statement is not None
+        ]
+    except ParseError as exc:
+        raise ValueError(f"SQL 表范围解析失败：{exc}") from exc
+    if len(expressions) != 1:
+        raise ValueError("SQL 必须包含且只能包含一条语句")
+
+    lookup = {
+        str(name).strip().lower(): str(name).strip() for name in table_columns if str(name).strip()
+    }
+    bare_lookup: dict[str, list[str]] = {}
+    for name in lookup:
+        bare_lookup.setdefault(name.rsplit(".", 1)[-1], []).append(name)
+    cte_names = {
+        str(cte.alias_or_name).strip().lower()
+        for cte in expressions[0].find_all(exp.CTE)
+        if str(cte.alias_or_name).strip()
+    }
+    outside: list[str] = []
+    for table in expressions[0].find_all(exp.Table):
+        table_name = str(table.name or "").strip()
+        if not table_name or table_name.lower() in cte_names:
+            continue
+        database_name = str(table.db or "").strip()
+        if database_name:
+            physical_name = f"{database_name}.{table_name}".lower()
+            if physical_name not in lookup:
+                outside.append(f"{database_name}.{table_name}")
+            continue
+        candidates = bare_lookup.get(table_name.lower(), [])
+        if len(candidates) != 1:
+            outside.append(table_name)
+
+    if outside:
+        names = ", ".join(dict.fromkeys(outside))
+        raise ValueError(f"SQL 引用了当前选定数据库不存在的表：{names}")
 
 
 def _make_json_safe(val: Any) -> Any:
@@ -41,8 +109,21 @@ class SQLExecutor:
         rows = result.mappings().fetchmany(self.max_rows)
         return [{k: _make_json_safe(v) for k, v in dict(row).items()} for row in rows]
 
-    async def run(self, db: AsyncSession, sql: str) -> list[dict[str, Any]]:
+    async def run(
+        self,
+        db: AsyncSession,
+        sql: str,
+        *,
+        table_columns: dict[str, list[str]] | None = None,
+        source_type: str | None = None,
+    ) -> list[dict[str, Any]]:
         safe_sql = self._validated_sql(sql)
+        if table_columns is not None:
+            validate_sql_table_scope(
+                safe_sql,
+                table_columns=table_columns,
+                source_type=source_type,
+            )
         result = await asyncio.wait_for(
             db.execute(text(safe_sql)),
             timeout=self.timeout_ms / 1000,
@@ -60,8 +141,15 @@ class SQLExecutor:
         sql: str,
         *,
         source_type: str | None = None,
+        table_columns: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
         safe_sql = self._validated_sql(sql)
+        if table_columns is not None:
+            validate_sql_table_scope(
+                safe_sql,
+                table_columns=table_columns,
+                source_type=source_type,
+            )
         if dsn.startswith(("clickhouse+http://", "clickhouse+https://")):
             return await self._run_clickhouse_http_on_dsn(dsn, safe_sql)
         runtime_dsn = self._runtime_dsn(dsn)

@@ -293,6 +293,7 @@ class DataAgentV1(BaseAgent):
                 schema_hint,
                 semantic_config,
                 start_ts,
+                table_columns,
             )
 
         except SQLValidationError as exc:
@@ -375,6 +376,7 @@ class DataAgentV1(BaseAgent):
                 dialect,
                 data_source_id,
                 meta={"mode": "pipeline_structured"},
+                table_columns=table_columns,
             )
 
         # 步骤 2：语义解析
@@ -391,6 +393,7 @@ class DataAgentV1(BaseAgent):
                 schema_hint,
                 semantic_config,
                 start_ts,
+                table_columns,
                 fallback_reason=f"semantic_parse_failed: {exc}",
             )
 
@@ -414,6 +417,7 @@ class DataAgentV1(BaseAgent):
                 schema_hint,
                 semantic_config,
                 start_ts,
+                table_columns,
                 fallback_reason=f"query_plan_failed: {exc}",
             )
 
@@ -425,6 +429,7 @@ class DataAgentV1(BaseAgent):
                 dialect=dialect,
                 query=task.query,
                 schema_hint=schema_hint,
+                table_columns=table_columns,
             )
         except Exception as exc:
             return AgentResult(
@@ -536,6 +541,7 @@ class DataAgentV1(BaseAgent):
         schema_hint: str,
         semantic_config: dict[str, Any],
         start_ts: float,
+        table_columns: dict[str, list[str]],
         fallback_reason: str = "",
     ) -> AgentResult:
         """遗留 LLM 直连 SQL 生成模式。"""
@@ -597,6 +603,7 @@ class DataAgentV1(BaseAgent):
             task.query,
             schema_hint,
             semantic_ctx,
+            table_columns,
         )
 
         elapsed_ms = (time.monotonic() - start_ts) * 1000
@@ -688,6 +695,7 @@ class DataAgentV1(BaseAgent):
         query: str,
         schema_hint: str,
         semantic_ctx: SemanticContext | None,
+        table_columns: dict[str, list[str]],
     ) -> tuple[list, str]:
         dsn = self._build_dsn(ds)
         max_rounds = self.reflector.MAX_REFLECTION_ROUNDS
@@ -699,7 +707,10 @@ class DataAgentV1(BaseAgent):
         for attempt in range(max_rounds + 1):
             try:
                 rows = await SQLExecutor_from_executor().run_on_dsn(  # noqa: N802
-                    dsn, current_sql, source_type=ds.source_type
+                    dsn,
+                    current_sql,
+                    source_type=ds.source_type,
+                    table_columns=table_columns,
                 )
                 validation = self.reflector.validate_result(current_sql, rows, query, semantic_ctx)
                 if validation.passed or attempt >= max_rounds:
@@ -773,10 +784,14 @@ class DataAgentV1(BaseAgent):
         dialect: SQLDialectSpec,
         data_source_id: str,
         meta: dict,
+        table_columns: dict[str, list[str]],
     ) -> AgentResult:
         dsn = self._build_dsn(ds)
         rows = await SQLExecutor_from_executor().run_on_dsn(  # noqa: N802
-            dsn, safe_sql, source_type=ds.source_type
+            dsn,
+            safe_sql,
+            source_type=ds.source_type,
+            table_columns=table_columns,
         )
         row_count = len(rows)
         from kernel.result_reference import ResultRef, serialize_refs

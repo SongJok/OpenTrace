@@ -27,6 +27,7 @@ from infra.security.resource_scope import get_accessible_data_source
 from infra.storage.models import (
     DataSource,
     MetricDefinition,
+    MetricLineage,
     Project,
     SchemaMetadata,
     SQLAsset,
@@ -389,7 +390,12 @@ def _parse_joins(value: str) -> list[dict[str, str]]:
 
 
 def _extract_ast_knowledge(expression: Any) -> dict[str, Any]:
-    """从已解析 SQL 自动提取 JOIN、聚合指标、分组维度和时间字段候选。"""
+    """从已解析 SQL 提取可审计的指标、过滤、JOIN、粒度和时间字段候选。
+
+    这里记录的是 SQL 中已经存在的事实，不把模型猜测混入资产知识。后续
+    生成 SQL 时可以据此组合指标和 JOIN；固定过滤条件会单独标记为候选，
+    避免把历史查询的日期或状态值静默带入新问题。
+    """
 
     joins: list[dict[str, str]] = []
     for join in expression.find_all(exp.Join):
@@ -416,24 +422,115 @@ def _extract_ast_knowledge(expression: Any) -> dict[str, Any]:
             )
 
     metrics: list[dict[str, str]] = []
-    for selection in getattr(expression, "selects", []) or []:
-        if not any(isinstance(node, exp.AggFunc) for node in selection.walk()):
-            continue
-        name = str(selection.alias_or_name or "").strip()
-        formula_expression = selection.this if isinstance(selection, exp.Alias) else selection
-        formula = formula_expression.sql(comments=False)
-        if name and formula:
-            metrics.append({"name": name, "formula": formula})
-
+    metric_rules: list[dict[str, Any]] = []
     dimensions: list[dict[str, str]] = []
-    group = expression.args.get("group")
-    if group is not None:
-        for column in group.find_all(exp.Column):
-            dimensions.append(
+    filters: list[str] = []
+    grains: list[str] = []
+
+    def expression_sql(node: Any) -> str:
+        return str(node.sql(comments=False)).strip() if node is not None else ""
+
+    def unique(values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value for value in values if value))
+
+    def metric_name(formula_expression: Any, aggregate: Any) -> str:
+        explicit = str(getattr(formula_expression, "alias_or_name", "") or "").strip()
+        if explicit:
+            return explicit
+        aggregate_name = type(aggregate).__name__.lower()
+        argument = getattr(aggregate, "this", None)
+        if isinstance(argument, exp.Column):
+            suffix = str(argument.name or "").strip()
+            return f"{aggregate_name}_{suffix}" if suffix else f"{aggregate_name}_value"
+        if isinstance(argument, exp.Distinct):
+            column = next(argument.find_all(exp.Column), None)
+            suffix = str(column.name or "").strip() if column is not None else "value"
+            return f"{aggregate_name}_distinct_{suffix}"
+        if isinstance(argument, exp.Star) or aggregate_name == "count":
+            return "count_rows"
+        return aggregate_name
+
+    for query in expression.find_all(exp.Select):
+        local_tables = sorted(
+            {
+                str(table.name or "").strip()
+                for table in query.find_all(exp.Table)
+                if str(table.name or "").strip()
+            }
+        )
+        query_filters: list[str] = []
+        for clause_name in ("where", "having"):
+            clause = query.args.get(clause_name)
+            if clause is not None:
+                value = expression_sql(getattr(clause, "this", clause))
+                if value:
+                    query_filters.append(value)
+                    filters.append(value)
+        group = query.args.get("group")
+        if group is not None:
+            group_columns = [
+                column for column in group.find_all(exp.Column) if str(column.name or "").strip()
+            ]
+            for column in group_columns:
+                dimensions.append(
+                    {
+                        "name": str(column.alias_or_name or column.name),
+                        "table": str(column.table or ""),
+                        "column": str(column.name or ""),
+                    }
+                )
+            if len(group_columns) == 1:
+                grains.append(str(group_columns[0].name or "").strip())
+            elif group_columns:
+                grains.append("、".join(str(column.name or "").strip() for column in group_columns))
+
+        for selection in query.selects:
+            aggregate = next(
+                (node for node in selection.walk() if isinstance(node, exp.AggFunc)), None
+            )
+            if aggregate is None:
+                continue
+            formula_expression = selection.this if isinstance(selection, exp.Alias) else selection
+            formula = expression_sql(formula_expression)
+            name = metric_name(selection, aggregate)
+            if not formula or not name:
+                continue
+            metric_filters = list(query_filters)
+            for filter_node in formula_expression.find_all(exp.Filter):
+                condition = expression_sql(
+                    getattr(filter_node.args.get("expression"), "this", None)
+                )
+                if condition:
+                    metric_filters.append(condition)
+            for case_node in formula_expression.find_all(exp.Case):
+                for branch in case_node.args.get("ifs") or []:
+                    condition = expression_sql(branch.args.get("this"))
+                    if condition:
+                        metric_filters.append(condition)
+            source_columns = sorted(
                 {
-                    "name": str(column.alias_or_name or column.name),
-                    "table": str(column.table or ""),
-                    "column": str(column.name or ""),
+                    (
+                        f"{column.table}.{column.name}"
+                        if column.table
+                        else (
+                            f"{local_tables[0]}.{column.name}"
+                            if len(local_tables) == 1
+                            else str(column.name)
+                        )
+                    )
+                    for column in formula_expression.find_all(exp.Column)
+                    if str(column.name or "").strip()
+                }
+            )
+            metrics.append({"name": name, "formula": formula})
+            metric_rules.append(
+                {
+                    "name": name,
+                    "formula": formula,
+                    "aggregation": type(aggregate).__name__.upper(),
+                    "source_columns": source_columns,
+                    "filters": unique(metric_filters),
+                    "grain": grains[-1] if grains else "",
                 }
             )
 
@@ -447,8 +544,11 @@ def _extract_ast_knowledge(expression: Any) -> dict[str, Any]:
     return {
         "joins": joins,
         "metrics": metrics,
+        "metric_rules": metric_rules,
         "dimensions": dimensions,
         "time_columns": time_columns,
+        "filters": unique(filters),
+        "grains": unique(grains),
     }
 
 
@@ -456,11 +556,23 @@ def _merge_named_metadata(
     primary: list[dict[str, Any]], inferred: list[dict[str, Any]], *, key: str
 ) -> list[dict[str, Any]]:
     merged = list(primary)
-    seen = {str(item.get(key) or "").strip().lower() for item in primary}
+    positions = {
+        str(item.get(key) or "").strip().lower(): index for index, item in enumerate(merged)
+    }
     for item in inferred:
         identity = str(item.get(key) or "").strip().lower()
-        if identity and identity not in seen:
-            seen.add(identity)
+        if not identity:
+            continue
+        if identity in positions:
+            current = dict(merged[positions[identity]])
+            for field, value in item.items():
+                if field not in current or not current[field]:
+                    current[field] = value
+                elif isinstance(current[field], list) and isinstance(value, list):
+                    current[field] = list(dict.fromkeys([*current[field], *value]))
+            merged[positions[identity]] = current
+        else:
+            positions[identity] = len(merged)
             merged.append(item)
     return merged
 
@@ -507,10 +619,10 @@ def _extract_asset_documentation(expression: Any) -> dict[str, Any]:
     documented_parameters = _split_documentation_values(
         ",".join(raw_values.get("documented_parameters", []))
     )
-    filters = _split_documentation_values("；".join(raw_values.get("filters", [])))
     assumptions = _split_documentation_values("；".join(raw_values.get("assumptions", [])))
     inferred = _extract_ast_knowledge(expression)
     metrics = _merge_named_metadata(metrics, inferred["metrics"], key="name")
+    metric_rules = _merge_named_metadata(metrics, inferred.get("metric_rules", []), key="name")
     dimensions = _merge_named_metadata(dimensions, inferred["dimensions"], key="name")
     join_keys = {
         (
@@ -533,6 +645,12 @@ def _extract_asset_documentation(expression: Any) -> dict[str, Any]:
         not in join_keys
     )
     time_columns = list(dict.fromkeys([*time_columns, *inferred["time_columns"]]))
+    filters = _split_documentation_values("；".join(raw_values.get("filters", [])))
+    filters = list(dict.fromkeys([*filters, *inferred.get("filters", [])]))
+    inferred_grains = inferred.get("grains") or []
+    grain = " ".join(raw_values.get("grain", [])).strip() or (
+        inferred_grains[0] if inferred_grains else ""
+    )
     return {
         "title": title,
         "description": description,
@@ -540,10 +658,11 @@ def _extract_asset_documentation(expression: Any) -> dict[str, Any]:
         "knowledge_metadata": {
             "questions": questions,
             "metrics": metrics,
+            "metric_rules": metric_rules,
             "dimensions": dimensions,
             "joins": joins,
             "time_columns": time_columns,
-            "grain": " ".join(raw_values.get("grain", [])).strip(),
+            "grain": grain,
             "documented_parameters": documented_parameters,
             "filters": filters,
             "assumptions": assumptions,
@@ -948,7 +1067,8 @@ async def promote_sql_asset_knowledge(
         ]
         return len(unqualified) == 1 and column_name in set(unqualified[0])
 
-    for metric in metadata.get("metrics") or []:
+    metric_candidates = metadata.get("metric_rules") or metadata.get("metrics") or []
+    for metric in metric_candidates:
         if not isinstance(metric, dict):
             continue
         name = str(metric.get("name") or "").strip()
@@ -966,31 +1086,63 @@ async def promote_sql_asset_knowledge(
             continue
         underlying_columns = sorted(
             {
-                match.group(0)
-                for match in re.finditer(
-                    r"\b[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\b", formula
-                )
+                *(
+                    str(column).strip()
+                    for column in metric.get("source_columns") or []
+                    if str(column).strip()
+                ),
+                *(
+                    match.group(0)
+                    for match in re.finditer(
+                        r"\b[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\b", formula
+                    )
+                ),
             }
         )
+        if any("." not in reference for reference in underlying_columns):
+            # 多表查询中的裸字段无法安全归属到某一张物理表，留给人工审核。
+            continue
         if underlying_columns and any(
             not valid_reference(*reference.split(".", 1)) for reference in underlying_columns
         ):
             continue
+        metric_id = str(uuid.uuid4())
+        metric_filters = [
+            str(item).strip() for item in metric.get("filters") or [] if str(item).strip()
+        ]
+        logic_parts = [asset.description.strip() if asset.description else ""]
+        if metric_filters:
+            logic_parts.append("过滤条件：" + "；".join(dict.fromkeys(metric_filters)))
+        if str(metric.get("grain") or "").strip():
+            logic_parts.append("查询粒度：" + str(metric["grain"]).strip())
+        if str(metric.get("aggregation") or "").strip():
+            logic_parts.append("聚合方式：" + str(metric["aggregation"]).strip())
         db.add(
             MetricDefinition(
-                id=str(uuid.uuid4()),
+                id=metric_id,
                 data_source_id=asset.data_source_id,
                 name=name,
                 aliases=[],
                 formula=formula,
                 underlying_columns=underlying_columns,
-                business_definition=asset.description or None,
+                agg_function=str(metric.get("aggregation") or "").strip() or None,
+                business_definition="；".join(part for part in logic_parts if part) or None,
                 tags=asset.tags or [],
                 status="draft",
                 version=1,
                 created_by=user_id,
             )
         )
+        for column in underlying_columns:
+            db.add(
+                MetricLineage(
+                    id=str(uuid.uuid4()),
+                    metric_id=metric_id,
+                    depends_on_column=column,
+                    transformation=formula,
+                    lineage_type="sql_asset_inferred",
+                )
+            )
         stats["metrics_created"] += 1
 
     for relationship in metadata.get("joins") or []:
@@ -1518,9 +1670,39 @@ def build_query_plan(
             )
         ]
     )
-    filters = unique(
-        [str(value).strip() for item in metadata for value in item.get("filters") or []]
+    all_filters = unique(
+        [
+            str(value).strip()
+            for item in metadata
+            for value in [
+                *(item.get("filters") or []),
+                *(
+                    filter_value
+                    for rule in item.get("metric_rules") or []
+                    if isinstance(rule, dict)
+                    for filter_value in rule.get("filters") or []
+                ),
+            ]
+        ]
     )
+    effective_question_lower = effective_question.lower()
+
+    def filter_tokens(value: str) -> set[str]:
+        tokens = set(re.findall(r"[a-zA-Z0-9_]+", str(value or "").lower()))
+        for segment in re.findall(r"[\u4e00-\u9fff]{2,}", str(value or "")):
+            tokens.add(segment)
+            tokens.update(segment[index : index + 2] for index in range(len(segment) - 1))
+        return {token for token in tokens if token}
+
+    # 历史资产中的状态、日期和 ID 是上下文证据，不是新问题的默认条件。
+    # 只有问题文本明确出现过滤值/字段时，才把它提升为本次计划的过滤条件。
+    filters = [
+        value
+        for value in all_filters
+        if any(
+            token in effective_question_lower for token in filter_tokens(value) if len(token) >= 2
+        )
+    ]
     assumptions = unique(
         [str(value).strip() for item in metadata for value in item.get("assumptions") or []]
     )
@@ -1566,6 +1748,8 @@ def build_query_plan(
         "metrics": selected_metrics or metric_names[:5],
         "dimensions": selected_dimensions or dimension_names[:8],
         "filters": filters,
+        "available_filters": all_filters,
+        "filter_policy": "仅当用户问题明确提及过滤字段或取值时复用 available_filters",
         "time_range": time_range,
         "required_tables": required_tables,
         "required_columns": required_columns,
@@ -2072,7 +2256,10 @@ async def execute_sql_query_draft(
     for candidate in to_execute:
         try:
             rows = await SQLExecutor().run_on_dsn(
-                dsn, candidate.sql, source_type=source.source_type
+                dsn,
+                candidate.sql,
+                source_type=source.source_type,
+                table_columns=current_schema.column_map,
             )
             bounded_rows, _ = _bounded_result_rows(rows)
             candidate.result_rows = bounded_rows

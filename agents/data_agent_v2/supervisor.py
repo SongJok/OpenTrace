@@ -585,6 +585,7 @@ class DataAgentV2Supervisor:
                 dsn,
                 safe_sql,
                 source_type=str(task.params.get("_data_source_type") or ctx.dialect),
+                table_columns=ctx.table_columns,
             )
 
             ctx.execution_rows = rows

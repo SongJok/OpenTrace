@@ -1039,6 +1039,15 @@ async def analyze_database(
     s = rs.scalar_one_or_none()
     schema_payload = json.loads(s.schema_json or "{}") if s else {"tables": []}
     tables = schema_payload.get("tables") or []
+    table_columns = {
+        str(table.get("name") or "").strip(): [
+            str(column.get("name") or "").strip()
+            for column in table.get("columns") or []
+            if str(column.get("name") or "").strip()
+        ]
+        for table in tables
+        if isinstance(table, dict) and str(table.get("name") or "").strip()
+    }
 
     table_name = req.table or (tables[0]["name"] if tables else None)
     if not table_name:
@@ -1095,7 +1104,12 @@ async def analyze_database(
             password=decrypt_data_source_secret(x.password_encrypted),
         )
     )
-    rows = await SQLExecutor().run_on_dsn(dsn, trend_sql, source_type=x.source_type)
+    rows = await SQLExecutor().run_on_dsn(
+        dsn,
+        trend_sql,
+        source_type=x.source_type,
+        table_columns=table_columns,
+    )
 
     value = rows[0].get("metric_value") if rows else 0
     summary = f"近 {req.period_days} 天 {table_name} 的 {req.metric} 结果为 {value}"

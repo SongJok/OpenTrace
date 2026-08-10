@@ -66,6 +66,12 @@ SQL 资产是独立治理域，不写入无租户边界的历史 `QueryPattern`�
 自动结果必须审核后才能成为普通业务知识；只有数据库 COMMENT 产生的高可信建议可以在未审核时
 进入生成上下文。
 
+SQL AST 会在保留兼容的 `metrics` 摘要之外生成 `metric_rules`。每条规则包含指标公式、聚合
+方式、底层字段、`WHERE`/`HAVING`/`CASE WHEN` 条件和分组粒度；发布资产时这些规则会创建为待审
+核 `MetricDefinition`，并用 `MetricLineage(lineage_type=sql_asset_inferred)` 记录指标到字段的
+来源。学习统计会持久化在资产的 `verification_metadata.knowledge_promotion` 中，便于审计和
+重新审核，而不是只在上传请求的响应里短暂返回。
+
 推荐在 `.sql` 文件的每条语句前使用以下格式。普通 `--` 注释也会保存为业务说明：
 
 ```sql
@@ -95,6 +101,13 @@ SELECT ...;
 该服务在相同 tenant/workspace/project/data_source 范围内组合物理 Schema、人工标注、已发布指标、
 已验证 JOIN 和已发布 SQL 资产，再交给模型生成 1–N 个候选；候选仍必须经过只读、安全、Schema
 指纹和显式确认执行约束。因此补充上述资料后，无需训练模型，也能让问数请求稳定理解业务口径。
+资产中的固定日期、状态和 ID 默认只作为 `available_filters` 参考；只有用户问题明确提及字段或
+取值时才会进入本次 `QueryPlan.filters`，避免把历史 SQL 的条件误套到新问题。
+
+用户在问答时选定的 `data_source_id` 是表范围硬边界。候选生成、草案执行、DataAgent V1/V2 和
+数据库分析都会使用该数据源最新 Schema 构造允许表集合；SQL 中显式限定的 `database.table`
+必须精确命中，未限定数据库名的表必须在当前 Schema 中唯一存在。空 Schema、跨库表、不存在表
+和同名歧义表都会在建立数据库执行连接前被拒绝，SQL 资产也只能从同一 `data_source_id` 检索。
 
 ### 2.3 大批量历史 SQL 的操作顺序
 

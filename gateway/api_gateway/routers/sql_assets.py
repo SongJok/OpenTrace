@@ -529,6 +529,14 @@ async def update_sql_asset(
         knowledge_promotion = await promote_sql_asset_knowledge(
             db, asset=asset, user_id=current_user.id
         )
+        # 将学习结果与审核事实一起落在资产上，后续可解释地回答“这条
+        # 指标/字段知识来自哪里”，也避免只依赖一次请求的返回值。
+        asset.verification_metadata = {
+            **(asset.verification_metadata or {}),
+            "knowledge_promotion": knowledge_promotion,
+            "knowledge_promoted_at": datetime.now(UTC).isoformat(),
+            "knowledge_promoted_by": current_user.id,
+        }
     await db.commit()
     await write_audit_log(
         user_id=current_user.id,

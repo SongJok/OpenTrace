@@ -45,6 +45,7 @@ class QueryExecutor:
         dialect: SQLDialectSpec,
         query: str = "",
         schema_hint: str = "",
+        table_columns: dict[str, list[str]] | None = None,
     ) -> tuple[list[dict[str, Any]], str, list[str]]:
         """
         执行 LogicalPlan，失败时自动重试。
@@ -114,7 +115,12 @@ class QueryExecutor:
 
             # 执行
             try:
-                rows = await SQLExecutor().run_on_dsn(dsn, safe_sql)
+                rows = await SQLExecutor().run_on_dsn(
+                    dsn,
+                    safe_sql,
+                    source_type=dialect.name,
+                    table_columns=table_columns,
+                )
             except Exception as exc:
                 last_error = str(exc)
                 if attempt >= self._max_retries:

@@ -11,7 +11,7 @@ import pytest
 from agents.base import AgentResult, TaskMessage
 from agents.data_agent import DataAgent
 from infra.errors import NotFoundException, ValidationException
-from infra.storage.models import MetricDefinition, SchemaMetadata, TableRelationship
+from infra.storage.models import MetricDefinition, MetricLineage, SchemaMetadata, TableRelationship
 from services import sql_assets
 
 SCHEMA_COLUMNS = {
@@ -111,6 +111,33 @@ def test_sql_asset_parser_infers_inner_join_and_aggregate_knowledge() -> None:
     assert {"name": "revenue", "formula": "SUM(orders.amount)"} in (
         parsed.knowledge_metadata["metrics"]
     )
+
+
+def test_sql_asset_parser_extracts_metric_rules_without_losing_legacy_metric_shape() -> None:
+    parsed = sql_assets.parse_sql_assets(
+        """
+        SELECT channel_id,
+               SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS revenue
+        FROM orders
+        WHERE is_test = false
+        GROUP BY channel_id
+        """,
+        dialect="postgres",
+        table_columns={"orders": ["channel_id", "status", "amount", "is_test"]},
+    )[0]
+
+    assert parsed.knowledge_metadata["metrics"] == [
+        {
+            "name": "revenue",
+            "formula": "SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END)",
+        }
+    ]
+    rule = parsed.knowledge_metadata["metric_rules"][0]
+    assert rule["aggregation"] == "SUM"
+    assert rule["source_columns"] == ["orders.amount", "orders.status"]
+    assert "is_test = FALSE" in rule["filters"]
+    assert "status = 'paid'" in rule["filters"]
+    assert rule["grain"] == "channel_id"
 
 
 def test_sql_asset_parser_rejects_unknown_and_sensitive_columns() -> None:
@@ -358,6 +385,10 @@ def test_query_plan_uses_governed_asset_knowledge_and_can_request_clarification(
     assert plan["dimensions"] == ["渠道"]
     assert plan["time_range"] == {"type": "last_n", "value": 30, "unit": "天"}
     assert plan["joins"] == ["orders.channel_id=channels.id"]
+    assert plan["filters"] == []
+    assert plan["available_filters"] == ["orders.status='paid'"]
+    explicit = sql_assets.build_query_plan("最近30天 orders.status='paid' 各渠道净收入", [asset])
+    assert explicit["filters"] == ["orders.status='paid'"]
     assert ambiguous["needs_clarification"] is True
     assert "收入" in ambiguous["clarification_question"]
 
@@ -492,10 +523,14 @@ async def test_published_sql_asset_promotes_reviewable_knowledge_candidates(monk
         "annotations_suggested": 2,
     }
     metric = next(item for item in db.added if isinstance(item, MetricDefinition))
+    lineage = next(item for item in db.added if isinstance(item, MetricLineage))
     relationship = next(item for item in db.added if isinstance(item, TableRelationship))
     annotations = [item for item in db.added if isinstance(item, SchemaMetadata)]
     assert metric.status == "draft"
     assert metric.formula == "SUM(orders.amount)"
+    assert lineage.metric_id == metric.id
+    assert lineage.depends_on_column == "orders.amount"
+    assert lineage.lineage_type == "sql_asset_inferred"
     assert relationship.is_verified is False
     assert {item.column_name for item in annotations} == {"channel_id", "paid_at"}
     assert all(item.annotation_status == "suggested" for item in annotations)
