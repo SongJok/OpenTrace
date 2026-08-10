@@ -46,6 +46,46 @@ def test_sql_asset_parser_classifies_read_only_and_etl_without_execution() -> No
     assert "DBRouter" not in inspect.getsource(sql_assets.create_sql_asset_source)
 
 
+def test_etl_learning_requires_all_tables_to_exist_in_selected_database() -> None:
+    table_columns = {
+        "orders": ["customer_id", "amount"],
+        "monthly_orders": ["customer_id", "revenue"],
+    }
+    valid = sql_assets.parse_sql_assets(
+        """
+        INSERT INTO monthly_orders (customer_id, revenue)
+        SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id
+        """,
+        dialect="postgres",
+        table_columns=table_columns,
+    )[0]
+    cross_database = sql_assets.parse_sql_assets(
+        """
+        INSERT INTO archive.monthly_orders (customer_id, revenue)
+        SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id
+        """,
+        dialect="postgres",
+        table_columns=table_columns,
+    )[0]
+    missing_source = sql_assets.parse_sql_assets(
+        """
+        INSERT INTO monthly_orders (customer_id, revenue)
+        SELECT customer_id, SUM(amount) FROM missing_orders GROUP BY customer_id
+        """,
+        dialect="postgres",
+        table_columns=table_columns,
+    )[0]
+
+    assert valid.asset_type == "etl"
+    assert valid.executable is False
+    assert valid.validation_report["status"] == "pass"
+    assert valid.knowledge_metadata["metric_rules"][0]["source_columns"] == ["orders.amount"]
+    assert cross_database.validation_report["status"] == "fail"
+    assert "archive.monthly_orders" in "；".join(cross_database.validation_report["errors"])
+    assert missing_source.validation_report["status"] == "fail"
+    assert "missing_orders" in "；".join(missing_source.validation_report["errors"])
+
+
 def test_sql_asset_parser_extracts_structured_and_narrative_comments() -> None:
     parsed = sql_assets.parse_sql_assets(
         """
@@ -111,6 +151,20 @@ def test_sql_asset_parser_infers_inner_join_and_aggregate_knowledge() -> None:
     assert {"name": "revenue", "formula": "SUM(orders.amount)"} in (
         parsed.knowledge_metadata["metrics"]
     )
+    cte = sql_assets.parse_sql_assets(
+        """
+        WITH scoped AS (
+            SELECT o.amount, o.customer_id FROM orders AS o
+        )
+        SELECT SUM(scoped.amount) AS revenue
+        FROM scoped
+        GROUP BY scoped.customer_id
+        """,
+        dialect="postgres",
+        table_columns=SCHEMA_COLUMNS,
+    )[0]
+    assert cte.knowledge_metadata["metric_rules"][0]["source_columns"] == ["orders.amount"]
+    assert cte.knowledge_metadata["metric_rules"][0]["source_tables"] == ["orders"]
 
 
 def test_sql_asset_parser_extracts_metric_rules_without_losing_legacy_metric_shape() -> None:
@@ -393,6 +447,182 @@ def test_query_plan_uses_governed_asset_knowledge_and_can_request_clarification(
     assert "收入" in ambiguous["clarification_question"]
 
 
+def test_query_plan_combines_multiple_metric_contracts_and_required_filters() -> None:
+    revenue_asset = SimpleNamespace(
+        id="asset-revenue",
+        domain="订单",
+        tables=["orders"],
+        columns=["orders.amount", "orders.status", "orders.is_test"],
+        knowledge_metadata={
+            "metrics": [{"name": "净收入", "formula": "SUM(orders.amount)"}],
+            "metric_rules": [
+                {
+                    "name": "净收入",
+                    "formula": "SUM(orders.amount)",
+                    "aggregation": "SUM",
+                    "source_columns": ["orders.amount"],
+                    "source_tables": ["orders"],
+                    "filters": ["orders.status = 'paid'", "orders.is_test = FALSE"],
+                    "filter_contracts": [
+                        {
+                            "expression": "orders.status = 'paid'",
+                            "policy": "required",
+                            "source": "where",
+                        },
+                        {
+                            "expression": "orders.is_test = FALSE",
+                            "policy": "required",
+                            "source": "where",
+                        },
+                    ],
+                    "grain": "day",
+                }
+            ],
+        },
+    )
+    count_asset = SimpleNamespace(
+        id="asset-count",
+        domain="订单",
+        tables=["orders"],
+        columns=["orders.id"],
+        knowledge_metadata={
+            "metrics": [{"name": "支付订单数", "formula": "COUNT(DISTINCT orders.id)"}],
+            "metric_rules": [
+                {
+                    "name": "支付订单数",
+                    "formula": "COUNT(DISTINCT orders.id)",
+                    "aggregation": "COUNT",
+                    "source_columns": ["orders.id"],
+                    "source_tables": ["orders"],
+                    "filters": [],
+                    "filter_contracts": [],
+                    "grain": "day",
+                }
+            ],
+        },
+    )
+
+    plan = sql_assets.build_query_plan("最近30天净收入和支付订单数", [revenue_asset, count_asset])
+
+    assert plan["metrics"] == ["净收入", "支付订单数"]
+    assert {item["source_asset_id"] for item in plan["metric_contracts"]} == {
+        "asset-revenue",
+        "asset-count",
+    }
+    assert all(item["enforcement"] == "required" for item in plan["metric_contracts"])
+    assert plan["required_filters"] == [
+        "orders.status = 'paid'",
+        "orders.is_test = FALSE",
+    ]
+    assert plan["filters"] == plan["required_filters"]
+
+
+def test_query_plan_prefers_published_metric_definition_over_asset_variant() -> None:
+    asset = SimpleNamespace(
+        id="asset-revenue",
+        domain="订单",
+        tables=["orders"],
+        columns=["orders.amount"],
+        knowledge_metadata={
+            "metrics": [{"name": "净收入", "formula": "SUM(orders.amount)"}],
+            "metric_rules": [
+                {
+                    "name": "净收入",
+                    "formula": "SUM(orders.amount)",
+                    "source_columns": ["orders.amount"],
+                    "source_tables": ["orders"],
+                }
+            ],
+        },
+    )
+    governed = SimpleNamespace(
+        id="metric-1",
+        name="净收入",
+        aliases=["实收"],
+        formula="SUM(orders.amount - orders.refund_amount)",
+        underlying_columns=["orders.amount", "orders.refund_amount"],
+        agg_function="SUM",
+    )
+
+    plan = sql_assets.build_query_plan("查询实收", [asset], governed_metrics=[governed])
+
+    assert plan["metrics"] == ["净收入"]
+    assert plan["metric_contracts"][0]["formula"] == ("SUM(orders.amount - orders.refund_amount)")
+    assert plan["metric_contracts"][0]["source_metric_id"] == "metric-1"
+    assert plan["metric_contracts"][0]["enforcement"] == "required"
+
+
+def test_metric_contract_coverage_rejects_incomplete_candidate() -> None:
+    contracts = [
+        {
+            "name": "净收入",
+            "formula": "SUM(orders.amount)",
+            "source_columns": ["orders.amount"],
+            "source_tables": ["orders"],
+            "filter_contracts": [
+                {
+                    "expression": "orders.status = 'paid'",
+                    "policy": "required",
+                    "source": "where",
+                }
+            ],
+            "enforcement": "required",
+        },
+        {
+            "name": "支付订单数",
+            "formula": "COUNT(DISTINCT orders.id)",
+            "source_columns": ["orders.id"],
+            "source_tables": ["orders"],
+            "filter_contracts": [],
+            "enforcement": "required",
+        },
+    ]
+    complete = sql_assets._validate_metric_contract_coverage(
+        """
+        SELECT SUM(o.amount) AS revenue, COUNT(DISTINCT o.id) AS order_count
+        FROM orders AS o
+        WHERE o.status = 'paid'
+        LIMIT 100
+        """,
+        dialect="postgres",
+        metric_contracts=contracts,
+    )
+    incomplete = sql_assets._validate_metric_contract_coverage(
+        "SELECT SUM(amount) AS revenue, COUNT(*) AS order_count FROM orders LIMIT 100",
+        dialect="postgres",
+        metric_contracts=contracts,
+    )
+    wrong_source = sql_assets._validate_metric_contract_coverage(
+        """
+        SELECT SUM(refunds.amount) AS revenue, COUNT(DISTINCT orders.id) AS order_count
+        FROM orders JOIN refunds ON orders.id = refunds.order_id
+        WHERE orders.status = 'paid'
+        LIMIT 100
+        """,
+        dialect="postgres",
+        metric_contracts=contracts,
+    )
+    qualified_contract = {
+        **contracts[0],
+        "source_tables": ["ods.orders"],
+        "source_columns": ["ods.orders.amount"],
+        "filter_contracts": [],
+    }
+    wrong_database = sql_assets._validate_metric_contract_coverage(
+        "SELECT SUM(amount) FROM dwd.orders LIMIT 100",
+        dialect="clickhouse",
+        metric_contracts=[qualified_contract],
+    )
+
+    assert complete["status"] == "pass"
+    assert complete["covered_metrics"] == ["净收入", "支付订单数"]
+    assert incomplete["status"] == "fail"
+    assert any("支付订单数" in error and "指标公式" in error for error in incomplete["errors"])
+    assert any("固有过滤" in error for error in incomplete["errors"])
+    assert any("orders.amount" in error for error in wrong_source["errors"])
+    assert any("ods.orders" in error for error in wrong_database["errors"])
+
+
 def test_schema_fingerprint_only_tracks_query_relevant_structure() -> None:
     original = {
         "schema": "public",
@@ -534,6 +764,57 @@ async def test_published_sql_asset_promotes_reviewable_knowledge_candidates(monk
     assert relationship.is_verified is False
     assert {item.column_name for item in annotations} == {"channel_id", "paid_at"}
     assert all(item.annotation_status == "suggested" for item in annotations)
+
+
+@pytest.mark.asyncio
+async def test_quarantined_etl_learns_reviewable_knowledge_once(monkeypatch) -> None:
+    valid = SimpleNamespace(
+        id="etl-valid",
+        asset_type="etl",
+        corpus_role="quarantine",
+        executable=False,
+        validation_report={"status": "pass"},
+        verification_metadata={},
+    )
+    invalid = SimpleNamespace(
+        id="etl-invalid",
+        asset_type="etl",
+        corpus_role="quarantine",
+        executable=False,
+        validation_report={"status": "fail"},
+        verification_metadata={},
+    )
+    promote = AsyncMock(
+        return_value={
+            "metrics_created": 2,
+            "relationships_created": 1,
+            "annotations_suggested": 3,
+        }
+    )
+    monkeypatch.setattr(sql_assets, "promote_sql_asset_knowledge", promote)
+
+    first = await sql_assets.learn_quarantined_etl_assets(
+        SimpleNamespace(), assets=[valid, invalid], user_id="user-1"
+    )
+    second = await sql_assets.learn_quarantined_etl_assets(
+        SimpleNamespace(), assets=[valid, invalid], user_id="user-1"
+    )
+
+    assert first == {
+        "assets_learned": 1,
+        "metrics_created": 2,
+        "relationships_created": 1,
+        "annotations_suggested": 3,
+    }
+    assert second == {
+        "assets_learned": 0,
+        "metrics_created": 0,
+        "relationships_created": 0,
+        "annotations_suggested": 0,
+    }
+    promote.assert_awaited_once()
+    assert valid.verification_metadata["knowledge_learning_mode"] == "etl_read_only_extract"
+    assert invalid.verification_metadata == {}
 
 
 @pytest.mark.asyncio

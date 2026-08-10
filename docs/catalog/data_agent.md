@@ -67,10 +67,15 @@ SQL 资产是独立治理域，不写入无租户边界的历史 `QueryPattern`�
 进入生成上下文。
 
 SQL AST 会在保留兼容的 `metrics` 摘要之外生成 `metric_rules`。每条规则包含指标公式、聚合
-方式、底层字段、`WHERE`/`HAVING`/`CASE WHEN` 条件和分组粒度；发布资产时这些规则会创建为待审
-核 `MetricDefinition`，并用 `MetricLineage(lineage_type=sql_asset_inferred)` 记录指标到字段的
-来源。学习统计会持久化在资产的 `verification_metadata.knowledge_promotion` 中，便于审计和
-重新审核，而不是只在上传请求的响应里短暂返回。
+方式、底层字段、来源表、`WHERE`/`HAVING`/`CASE WHEN` 条件和分组粒度；过滤条件会标记为
+`required`（指标固有口径）、`explicit_only`（日期/ID 等必须由用户明确提供）或 `contextual`。
+发布资产时这些规则会创建为待审核 `MetricDefinition`，并用
+`MetricLineage(lineage_type=sql_asset_inferred)` 记录指标到字段的来源。ETL/DML/DDL 仍永远
+处于 `quarantine` 且 `executable=false`，但其中通过当前数据源 Schema 表/列校验的 ETL 会自动
+提取 SELECT、聚合、JOIN 和字段建议，写入待审核知识；ETL 原文不会进入线上检索或执行候选。
+学习统计会持久化在资产的 `verification_metadata.knowledge_promotion` 或
+`verification_metadata.knowledge_learning` 中，便于审计和重新审核，而不是只在上传请求的
+响应里短暂返回。
 
 推荐在 `.sql` 文件的每条语句前使用以下格式。普通 `--` 注释也会保存为业务说明：
 
@@ -99,10 +104,15 @@ SELECT ...;
 
 当前 `/api/v2/responses`、数据库问数和 `/api/v1/data/query` 最终都会调用统一 SQL 草案服务。
 该服务在相同 tenant/workspace/project/data_source 范围内组合物理 Schema、人工标注、已发布指标、
-已验证 JOIN 和已发布 SQL 资产，再交给模型生成 1–N 个候选；候选仍必须经过只读、安全、Schema
-指纹和显式确认执行约束。因此补充上述资料后，无需训练模型，也能让问数请求稳定理解业务口径。
-资产中的固定日期、状态和 ID 默认只作为 `available_filters` 参考；只有用户问题明确提及字段或
-取值时才会进入本次 `QueryPlan.filters`，避免把历史 SQL 的条件误套到新问题。
+已验证 JOIN 和已发布 SQL 资产，再交给模型生成 1–N 个候选。复合问题会把每个选中指标保存为
+`metric_contracts`（公式、聚合、来源表/列、固有过滤、粒度和知识来源），并在候选生成与确认
+执行前验证公式/表/列/固有条件是否覆盖；缺项的候选直接拒绝。候选仍必须经过只读、安全、
+Schema 指纹和显式确认执行约束。因此补充上述资料后，无需训练模型，也能让问数请求稳定理解
+业务口径。
+资产中的固定日期、具体 ID 和普通上下文条件默认只作为 `available_filters` 参考；只有用户问题
+明确提及字段或取值时才会进入本次 `QueryPlan.filters`。状态、测试标记以及 `CASE WHEN`/聚合
+`FILTER` 中被识别为指标固有口径的条件，仅在用户选择对应指标时自动加入，避免把历史 SQL 的
+条件误套到无关指标。
 
 用户在问答时选定的 `data_source_id` 是表范围硬边界。候选生成、草案执行、DataAgent V1/V2 和
 数据库分析都会使用该数据源最新 Schema 构造允许表集合；SQL 中显式限定的 `database.table`

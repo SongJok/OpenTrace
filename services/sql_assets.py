@@ -8,7 +8,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -389,6 +389,25 @@ def _parse_joins(value: str) -> list[dict[str, str]]:
     return result
 
 
+def _filter_policy(value: str, *, intrinsic: bool = False) -> str:
+    """区分指标固有条件与只在用户明确提及时才能复用的上下文条件。"""
+
+    if intrinsic:
+        return "required"
+    text = str(value or "").strip().lower()
+    if re.search(
+        r"(?:^|[.\s(])(?:[a-z_][a-z0-9_]*_at|[a-z_][a-z0-9_]*_date|"
+        r"created_at|updated_at|paid_at|date|time)(?:\s|[<>=])",
+        text,
+    ) or re.search(r"\b20\d{2}[-/]\d{1,2}(?:[-/]\d{1,2})?\b", text):
+        return "explicit_only"
+    if re.search(r"(?:^|[.\s(])(?:[a-z_][a-z0-9_]*_id)\s*=\s*", text):
+        return "explicit_only"
+    if re.search(r"(?:^|[.\s(])(?:status|state|is_test|is_demo|is_dummy|test_flag)\b", text):
+        return "required"
+    return "contextual"
+
+
 def _extract_ast_knowledge(expression: Any) -> dict[str, Any]:
     """从已解析 SQL 提取可审计的指标、过滤、JOIN、粒度和时间字段候选。
 
@@ -396,6 +415,52 @@ def _extract_ast_knowledge(expression: Any) -> dict[str, Any]:
     生成 SQL 时可以据此组合指标和 JOIN；固定过滤条件会单独标记为候选，
     避免把历史查询的日期或状态值静默带入新问题。
     """
+
+    def physical_table_name(table: Any) -> str:
+        name = str(table.name or "").strip()
+        database = str(table.db or "").strip()
+        return f"{database}.{name}" if database and name else name
+
+    cte_names = {
+        str(cte.alias_or_name or "").strip().lower()
+        for cte in expression.find_all(exp.CTE)
+        if str(cte.alias_or_name or "").strip()
+    }
+    table_aliases = {
+        str(table.alias_or_name or "").strip(): physical_table_name(table)
+        for table in expression.find_all(exp.Table)
+        if str(table.alias_or_name or "").strip() and physical_table_name(table)
+    }
+    scopes = {id(scope.expression): scope for scope in traverse_scope(expression)}
+
+    def resolve_column(scope: Any, column: Any, seen: set[tuple[int, str]]) -> set[str]:
+        if scope is None:
+            return set()
+        qualifier = str(column.table or "").strip()
+        column_name = str(column.name or "").strip()
+        identity = (id(scope), f"{qualifier}.{column_name}")
+        if not column_name or identity in seen:
+            return set()
+        seen.add(identity)
+        sources = dict(getattr(scope, "sources", {}) or {})
+        source = sources.get(qualifier) if qualifier else None
+        if source is None and not qualifier and len(sources) == 1:
+            source = next(iter(sources.values()))
+        if isinstance(source, exp.Table):
+            table_name = physical_table_name(source)
+            return {f"{table_name}.{column_name}"} if table_name else set()
+        source_expression = getattr(source, "expression", None)
+        if isinstance(source_expression, exp.Select):
+            for projection in source_expression.selects:
+                if str(projection.alias_or_name or "").strip() != column_name:
+                    continue
+                formula = projection.this if isinstance(projection, exp.Alias) else projection
+                resolved: set[str] = set()
+                for dependency in formula.find_all(exp.Column):
+                    resolved.update(resolve_column(source, dependency, seen))
+                return resolved
+        fallback_table = table_aliases.get(qualifier, qualifier)
+        return {f"{fallback_table}.{column_name}"} if fallback_table else {column_name}
 
     joins: list[dict[str, str]] = []
     for join in expression.find_all(exp.Join):
@@ -411,9 +476,9 @@ def _extract_ast_knowledge(expression: Any) -> dict[str, Any]:
                 continue
             joins.append(
                 {
-                    "left_table": str(left.table),
+                    "left_table": table_aliases.get(str(left.table), str(left.table)),
                     "left_column": str(left.name),
-                    "right_table": str(right.table),
+                    "right_table": table_aliases.get(str(right.table), str(right.table)),
                     "right_column": str(right.name),
                     "join_type": str(
                         join.args.get("side") or join.args.get("kind") or "INNER"
@@ -425,6 +490,7 @@ def _extract_ast_knowledge(expression: Any) -> dict[str, Any]:
     metric_rules: list[dict[str, Any]] = []
     dimensions: list[dict[str, str]] = []
     filters: list[str] = []
+    filter_contracts: list[dict[str, str]] = []
     grains: list[str] = []
 
     def expression_sql(node: Any) -> str:
@@ -453,9 +519,10 @@ def _extract_ast_knowledge(expression: Any) -> dict[str, Any]:
     for query in expression.find_all(exp.Select):
         local_tables = sorted(
             {
-                str(table.name or "").strip()
+                physical_table_name(table)
                 for table in query.find_all(exp.Table)
-                if str(table.name or "").strip()
+                if physical_table_name(table)
+                and str(table.name or "").strip().lower() not in cte_names
             }
         )
         query_filters: list[str] = []
@@ -466,6 +533,13 @@ def _extract_ast_knowledge(expression: Any) -> dict[str, Any]:
                 if value:
                     query_filters.append(value)
                     filters.append(value)
+                    filter_contracts.append(
+                        {
+                            "expression": value,
+                            "policy": _filter_policy(value),
+                            "source": clause_name,
+                        }
+                    )
         group = query.args.get("group")
         if group is not None:
             group_columns = [
@@ -502,25 +576,39 @@ def _extract_ast_knowledge(expression: Any) -> dict[str, Any]:
                 )
                 if condition:
                     metric_filters.append(condition)
+                    filter_contracts.append(
+                        {
+                            "expression": condition,
+                            "policy": "required",
+                            "source": "metric_filter",
+                        }
+                    )
             for case_node in formula_expression.find_all(exp.Case):
                 for branch in case_node.args.get("ifs") or []:
                     condition = expression_sql(branch.args.get("this"))
                     if condition:
                         metric_filters.append(condition)
-            source_columns = sorted(
-                {
-                    (
-                        f"{column.table}.{column.name}"
-                        if column.table
-                        else (
-                            f"{local_tables[0]}.{column.name}"
-                            if len(local_tables) == 1
-                            else str(column.name)
+                        filter_contracts.append(
+                            {
+                                "expression": condition,
+                                "policy": "required",
+                                "source": "case_when",
+                            }
                         )
-                    )
-                    for column in formula_expression.find_all(exp.Column)
-                    if str(column.name or "").strip()
-                }
+            source_columns: list[str] = []
+            query_scope = scopes.get(id(query))
+            for column in formula_expression.find_all(exp.Column):
+                source_columns.extend(resolve_column(query_scope, column, set()))
+            source_columns = sorted(set(source_columns))
+            source_tables = (
+                sorted(
+                    {
+                        reference.rsplit(".", 1)[0]
+                        for reference in source_columns
+                        if "." in reference
+                    }
+                )
+                or local_tables
             )
             metrics.append({"name": name, "formula": formula})
             metric_rules.append(
@@ -529,7 +617,13 @@ def _extract_ast_knowledge(expression: Any) -> dict[str, Any]:
                     "formula": formula,
                     "aggregation": type(aggregate).__name__.upper(),
                     "source_columns": source_columns,
+                    "source_tables": source_tables,
                     "filters": unique(metric_filters),
+                    "filter_contracts": [
+                        item
+                        for item in filter_contracts
+                        if item["expression"] in set(metric_filters)
+                    ],
                     "grain": grains[-1] if grains else "",
                 }
             )
@@ -548,6 +642,12 @@ def _extract_ast_knowledge(expression: Any) -> dict[str, Any]:
         "dimensions": dimensions,
         "time_columns": time_columns,
         "filters": unique(filters),
+        "filter_contracts": list(
+            {
+                (item["expression"], item["policy"], item["source"]): item
+                for item in filter_contracts
+            }.values()
+        ),
         "grains": unique(grains),
     }
 
@@ -622,7 +722,10 @@ def _extract_asset_documentation(expression: Any) -> dict[str, Any]:
     assumptions = _split_documentation_values("；".join(raw_values.get("assumptions", [])))
     inferred = _extract_ast_knowledge(expression)
     metrics = _merge_named_metadata(metrics, inferred["metrics"], key="name")
-    metric_rules = _merge_named_metadata(metrics, inferred.get("metric_rules", []), key="name")
+    # 保留兼容的简短 metrics 结构；规则使用独立副本承载来源、过滤和粒度契约。
+    metric_rules = _merge_named_metadata(
+        [dict(item) for item in metrics], inferred.get("metric_rules", []), key="name"
+    )
     dimensions = _merge_named_metadata(dimensions, inferred["dimensions"], key="name")
     join_keys = {
         (
@@ -647,6 +750,43 @@ def _extract_asset_documentation(expression: Any) -> dict[str, Any]:
     time_columns = list(dict.fromkeys([*time_columns, *inferred["time_columns"]]))
     filters = _split_documentation_values("；".join(raw_values.get("filters", [])))
     filters = list(dict.fromkeys([*filters, *inferred.get("filters", [])]))
+    documented_filter_contracts = [
+        {"expression": value, "policy": "required", "source": "sql_comments"}
+        for value in _split_documentation_values("；".join(raw_values.get("filters", [])))
+    ]
+    filter_contracts = list(
+        {
+            (
+                str(item.get("expression") or ""),
+                str(item.get("policy") or "contextual"),
+                str(item.get("source") or "ast"),
+            ): item
+            for item in [*(inferred.get("filter_contracts") or []), *documented_filter_contracts]
+            if str(item.get("expression") or "").strip()
+        }.values()
+    )
+    # 文档中的过滤口径是资产作者显式声明的指标条件，复制到每条指标契约。
+    for rule in metric_rules:
+        if not isinstance(rule, dict):
+            continue
+        rule_contracts = list(rule.get("filter_contracts") or [])
+        known = {str(item.get("expression") or "") for item in rule_contracts}
+        for item in documented_filter_contracts:
+            if item["expression"] not in known:
+                rule_contracts.append(item)
+        rule["filter_contracts"] = rule_contracts
+        rule["filters"] = list(
+            dict.fromkeys(
+                [
+                    *(
+                        str(value).strip()
+                        for value in rule.get("filters") or []
+                        if str(value).strip()
+                    ),
+                    *(item["expression"] for item in documented_filter_contracts),
+                ]
+            )
+        )
     inferred_grains = inferred.get("grains") or []
     grain = " ".join(raw_values.get("grain", [])).strip() or (
         inferred_grains[0] if inferred_grains else ""
@@ -665,6 +805,7 @@ def _extract_asset_documentation(expression: Any) -> dict[str, Any]:
             "grain": grain,
             "documented_parameters": documented_parameters,
             "filters": filters,
+            "filter_contracts": filter_contracts,
             "assumptions": assumptions,
             "source": "sql_comments",
             "ast_inferred": True,
@@ -729,16 +870,33 @@ def _risk_flags(expression: Any, *, description: str = "") -> list[str]:
 def _extract_tables_columns(expression: Any) -> tuple[list[str], list[str]]:
     if exp is None:
         return [], []
+    table_aliases = {
+        str(table.alias_or_name or "").strip(): (
+            f"{str(table.db).strip()}.{str(table.name).strip()}"
+            if str(table.db or "").strip()
+            else str(table.name).strip()
+        )
+        for table in expression.find_all(exp.Table)
+        if str(table.alias_or_name or "").strip() and str(table.name or "").strip()
+    }
     tables = sorted(
         {
-            str(node.name).strip()
+            (
+                f"{str(node.db).strip()}.{str(node.name).strip()}"
+                if str(node.db or "").strip()
+                else str(node.name).strip()
+            )
             for node in expression.find_all(exp.Table)
             if str(node.name).strip()
         }
     )
     columns = sorted(
         {
-            (f"{node.table}.{node.name}" if node.table else str(node.name)).strip()
+            (
+                f"{table_aliases.get(str(node.table), str(node.table))}.{node.name}"
+                if node.table
+                else str(node.name)
+            ).strip()
             for node in expression.find_all(exp.Column)
             if str(node.name).strip()
         }
@@ -751,11 +909,17 @@ def _lineage(expression: Any, tables: list[str], columns: list[str]) -> dict[str
     if exp is not None and not isinstance(expression, exp.Query):
         target = getattr(expression, "this", None)
         if isinstance(target, exp.Table) and target.name:
-            write_tables.append(str(target.name))
+            write_tables.append(
+                f"{target.db}.{target.name}" if str(target.db or "").strip() else str(target.name)
+            )
         elif target is not None:
             target_table = next(iter(target.find_all(exp.Table)), None)
             if target_table is not None and target_table.name:
-                write_tables.append(str(target_table.name))
+                write_tables.append(
+                    f"{target_table.db}.{target_table.name}"
+                    if str(target_table.db or "").strip()
+                    else str(target_table.name)
+                )
     return {"read_tables": tables, "write_tables": write_tables, "columns": columns}
 
 
@@ -790,7 +954,11 @@ def _validate_schema_references(
         if schema_name in {"information_schema", "pg_catalog", "system"}:
             continue
         qualified_name = f"{schema_name}.{table_name}" if schema_name else table_name
-        actual = table_lookup.get(qualified_name.lower()) or table_lookup.get(table_name.lower())
+        actual = (
+            table_lookup.get(qualified_name.lower())
+            if schema_name
+            else table_lookup.get(table_name.lower())
+        )
         if actual is None and not schema_name:
             matches = unqualified_matches.get(table_name.lower(), [])
             if len(matches) == 1:
@@ -799,7 +967,7 @@ def _validate_schema_references(
                 errors.append(f"存在同名跨库表，请使用 database.table：{table_name}")
                 continue
         if actual is None:
-            errors.append(f"Schema 中不存在表：{table_name}")
+            errors.append(f"Schema 中不存在表：{qualified_name}")
             continue
         referenced_tables.append(actual)
 
@@ -831,7 +999,7 @@ def _validate_schema_references(
                 target.update({column_name: "UNKNOWN" for column_name in columns})
             qualified = qualify(
                 expression.copy(),
-                schema=qualify_schema,
+                schema=cast(dict[str, object], qualify_schema),
                 allow_partial_qualification=False,
                 validate_qualify_columns=True,
                 expand_stars=True,
@@ -981,6 +1149,15 @@ def parse_sql_assets(
             except (SQLValidationError, ParseError) as exc:
                 errors.append(str(exc))
         else:
+            # ETL/DDL 只做知识学习，仍必须证明所有读写表和字段属于当前数据源。
+            # 失败语句保留在隔离区供审计，但不会进入知识晋升或线上检索。
+            schema_errors, schema_warnings = _validate_schema_references(
+                statement,
+                table_columns=table_columns or {},
+                sensitive_columns=sensitive_columns,
+            )
+            errors.extend(schema_errors)
+            warnings.extend(schema_warnings)
             warnings.append("非只读语句仅用于血缘参考，不允许发布为在线执行资产")
         parsed.append(
             ParsedSQLAsset(
@@ -1049,7 +1226,11 @@ async def promote_sql_asset_knowledge(
     asset: SQLAsset,
     user_id: str,
 ) -> dict[str, int]:
-    """把已审核 SQL 注释转成待审核知识候选，不直接发布指标或关系。"""
+    """把范围校验通过的 SQL 事实转成待审核知识候选，不直接发布指标或关系。
+
+    ETL 也可以调用本函数学习其中的 SELECT、聚合和 JOIN，但 ETL 本身始终
+    保持 quarantine/executable=False，不能成为检索模板或执行候选。
+    """
 
     metadata = asset.knowledge_metadata or {}
     stats = {"metrics_created": 0, "relationships_created": 0, "annotations_suggested": 0}
@@ -1096,6 +1277,17 @@ async def promote_sql_asset_knowledge(
                     for match in re.finditer(
                         r"\b[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\b", formula
                     )
+                    if (
+                        not metric.get("source_columns")
+                        or match.group(0).split(".", 1)[0].lower()
+                        in {
+                            str(table).lower()
+                            for table in [
+                                *(getattr(asset, "tables", None) or []),
+                                *physical_columns.keys(),
+                            ]
+                        }
+                    )
                 ),
             }
         )
@@ -1103,7 +1295,7 @@ async def promote_sql_asset_knowledge(
             # 多表查询中的裸字段无法安全归属到某一张物理表，留给人工审核。
             continue
         if underlying_columns and any(
-            not valid_reference(*reference.split(".", 1)) for reference in underlying_columns
+            not valid_reference(*reference.rsplit(".", 1)) for reference in underlying_columns
         ):
             continue
         metric_id = str(uuid.uuid4())
@@ -1241,6 +1433,43 @@ async def promote_sql_asset_knowledge(
         if outcome in {"created", "updated", "conflict"}:
             stats["annotations_suggested"] += 1
     return stats
+
+
+async def learn_quarantined_etl_assets(
+    db: AsyncSession,
+    *,
+    assets: list[SQLAsset],
+    user_id: str,
+) -> dict[str, int]:
+    """从范围合法的 ETL 学习待审核知识，同时保持隔离和不可执行。"""
+
+    totals = {
+        "assets_learned": 0,
+        "metrics_created": 0,
+        "relationships_created": 0,
+        "annotations_suggested": 0,
+    }
+    for asset in assets:
+        metadata = asset.verification_metadata or {}
+        if (
+            asset.asset_type != "etl"
+            or asset.corpus_role != "quarantine"
+            or asset.executable
+            or (asset.validation_report or {}).get("status") != "pass"
+            or metadata.get("knowledge_learning_mode") == "etl_read_only_extract"
+        ):
+            continue
+        stats = await promote_sql_asset_knowledge(db, asset=asset, user_id=user_id)
+        totals["assets_learned"] += 1
+        for key, value in stats.items():
+            totals[key] = int(totals.get(key) or 0) + int(value or 0)
+        asset.verification_metadata = {
+            **metadata,
+            "knowledge_learning": stats,
+            "knowledge_learning_mode": "etl_read_only_extract",
+            "knowledge_learning_at": datetime.now(UTC).isoformat(),
+        }
+    return totals
 
 
 async def _validate_project_scope(
@@ -1467,6 +1696,10 @@ async def create_sql_asset_source(
         for item in unique_parsed
     ]
     db.add_all(assets)
+    # ETL 只要通过当前数据源 Schema 校验，就自动产生待审核知识；查询资产
+    # 仍遵循人工发布后再晋升的治理门槛。
+    learning_stats = await learn_quarantined_etl_assets(db, assets=assets, user_id=user_id)
+    source.parse_report["knowledge_learning"] = learning_stats
     await db.commit()
     return source, assets, False
 
@@ -1618,6 +1851,7 @@ def build_query_plan(
     assets: list[SQLAsset],
     *,
     clarification_context: str | None = None,
+    governed_metrics: list[MetricDefinition] | None = None,
 ) -> dict[str, Any]:
     """先把问题映射成可审计计划，再让模型编译 SQL。"""
 
@@ -1639,6 +1873,171 @@ def build_query_plan(
             if isinstance(metric, dict)
         ]
     )
+    governed_metric_names = unique(
+        [
+            str(metric.name or "").strip()
+            for metric in governed_metrics or []
+            if str(metric.name or "").strip()
+        ]
+    )
+    metric_names = unique([*governed_metric_names, *metric_names])
+    metric_aliases = {
+        str(metric.name or "").strip(): [
+            str(alias).strip() for alias in (metric.aliases or []) if str(alias).strip()
+        ]
+        for metric in governed_metrics or []
+        if str(metric.name or "").strip()
+    }
+    metric_contracts_all: list[dict[str, Any]] = []
+    for metric in governed_metrics or []:
+        name = str(metric.name or "").strip()
+        formula = str(metric.formula or "").strip()
+        if not name or not formula:
+            continue
+        source_columns = [
+            str(value).strip() for value in (metric.underlying_columns or []) if str(value).strip()
+        ]
+        metric_contracts_all.append(
+            {
+                "name": name,
+                "formula": formula,
+                "aggregation": str(metric.agg_function or "").strip(),
+                "source_columns": list(dict.fromkeys(source_columns)),
+                "source_tables": list(
+                    dict.fromkeys(
+                        value.rsplit(".", 1)[0] for value in source_columns if "." in value
+                    )
+                ),
+                "filters": [],
+                "filter_contracts": [],
+                "grain": "",
+                "source_asset_id": None,
+                "source_metric_id": str(metric.id),
+                "authority": "published_metric",
+            }
+        )
+    for asset in assets[:5]:
+        knowledge = asset.knowledge_metadata or {}
+        rules = knowledge.get("metric_rules") or knowledge.get("metrics") or []
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            name = str(rule.get("name") or "").strip()
+            formula = str(rule.get("formula") or "").strip()
+            if not name or not formula:
+                continue
+            source_columns = [
+                str(value).strip()
+                for value in rule.get("source_columns") or []
+                if str(value).strip()
+            ]
+            source_tables = [
+                str(value).strip()
+                for value in rule.get("source_tables") or []
+                if str(value).strip()
+            ]
+            if not source_tables:
+                source_tables = list(
+                    dict.fromkeys(
+                        value.rsplit(".", 1)[0] for value in source_columns if "." in value
+                    )
+                )
+            filter_contracts = [
+                {
+                    "expression": str(item.get("expression") or "").strip(),
+                    "policy": str(item.get("policy") or "contextual").strip(),
+                    "source": str(item.get("source") or "asset").strip(),
+                }
+                for item in rule.get("filter_contracts") or []
+                if isinstance(item, dict) and str(item.get("expression") or "").strip()
+            ]
+            if not filter_contracts:
+                filter_contracts = [
+                    {
+                        "expression": str(value).strip(),
+                        "policy": _filter_policy(str(value)),
+                        "source": "metric_rule",
+                    }
+                    for value in rule.get("filters") or []
+                    if str(value).strip()
+                ]
+            metric_contracts_all.append(
+                {
+                    "name": name,
+                    "formula": formula,
+                    "aggregation": str(rule.get("aggregation") or "").strip(),
+                    "source_columns": list(dict.fromkeys(source_columns)),
+                    "source_tables": list(dict.fromkeys(source_tables)),
+                    "filters": list(
+                        dict.fromkeys(
+                            [
+                                str(value).strip()
+                                for value in rule.get("filters") or []
+                                if str(value).strip()
+                            ]
+                            + [item["expression"] for item in filter_contracts]
+                        )
+                    ),
+                    "filter_contracts": filter_contracts,
+                    "grain": str(rule.get("grain") or "").strip(),
+                    "source_asset_id": asset.id,
+                    "authority": "sql_asset",
+                }
+            )
+
+    # 同名指标优先使用已发布定义；相同公式的多条资产合并来源，冲突则显式
+    # 暴露给 QueryPlan，后续追问而不是静默选择一条口径。
+    def formula_signature(value: str) -> str:
+        return re.sub(
+            r"\s+",
+            "",
+            re.sub(r"\b[a-z_][a-z0-9_]*\.", "", str(value or "").lower()),
+        )
+
+    grouped_contracts: dict[str, dict[str, Any]] = {}
+    metric_conflicts: dict[str, list[str]] = {}
+    for contract in metric_contracts_all:
+        key = contract["name"].lower()
+        current = grouped_contracts.get(key)
+        if current is None:
+            grouped_contracts[key] = contract
+            continue
+        if (
+            current.get("authority") != "published_metric"
+            and contract.get("authority") == "published_metric"
+        ):
+            grouped_contracts[key] = contract
+            continue
+        if formula_signature(current["formula"]) != formula_signature(contract["formula"]):
+            metric_conflicts.setdefault(current["name"], []).append(contract["formula"])
+            continue
+        current["source_columns"] = list(
+            dict.fromkeys(
+                [*(current.get("source_columns") or []), *(contract.get("source_columns") or [])]
+            )
+        )
+        current["source_tables"] = list(
+            dict.fromkeys(
+                [*(current.get("source_tables") or []), *(contract.get("source_tables") or [])]
+            )
+        )
+        current["filter_contracts"] = list(
+            {
+                (
+                    item.get("expression"),
+                    item.get("policy"),
+                    item.get("source"),
+                ): item
+                for item in [
+                    *(current.get("filter_contracts") or []),
+                    *(contract.get("filter_contracts") or []),
+                ]
+            }.values()
+        )
+        current["filters"] = list(
+            dict.fromkeys([*(current.get("filters") or []), *(contract.get("filters") or [])])
+        )
+    metric_contracts_all = list(grouped_contracts.values())
     dimension_names = unique(
         [
             str(dimension.get("name") or "").strip()
@@ -1647,7 +2046,14 @@ def build_query_plan(
             if isinstance(dimension, dict)
         ]
     )
-    selected_metrics = [name for name in metric_names if name.lower() in effective_question.lower()]
+    selected_metrics = [
+        name
+        for name in metric_names
+        if name.lower() in effective_question.lower()
+        or any(
+            alias.lower() in effective_question.lower() for alias in metric_aliases.get(name, [])
+        )
+    ]
     selected_dimensions = [
         name for name in dimension_names if name.lower() in effective_question.lower()
     ]
@@ -1696,13 +2102,37 @@ def build_query_plan(
 
     # 历史资产中的状态、日期和 ID 是上下文证据，不是新问题的默认条件。
     # 只有问题文本明确出现过滤值/字段时，才把它提升为本次计划的过滤条件。
-    filters = [
+    selected_metric_names = [
+        name
+        for name in metric_names
+        if name.lower() in effective_question_lower
+        or any(alias.lower() in effective_question_lower for alias in metric_aliases.get(name, []))
+    ]
+    contract_names = selected_metric_names or metric_names[:5]
+    selected_contracts = [
+        dict(contract) for contract in metric_contracts_all if contract["name"] in contract_names
+    ]
+    # 只有问题中明确点名的指标需要覆盖检查；单指标资产在没有别名时也默认要求覆盖。
+    require_contracts = bool(selected_metric_names) or len(selected_contracts) == 1
+    for contract in selected_contracts:
+        contract["enforcement"] = "required" if require_contracts else "advisory"
+    required_filters = unique(
+        [
+            str(item.get("expression") or "").strip()
+            for contract in selected_contracts
+            if contract.get("enforcement") == "required"
+            for item in contract.get("filter_contracts") or []
+            if item.get("policy") == "required"
+        ]
+    )
+    explicit_filters = [
         value
         for value in all_filters
         if any(
             token in effective_question_lower for token in filter_tokens(value) if len(token) >= 2
         )
     ]
+    filters = unique([*required_filters, *explicit_filters])
     assumptions = unique(
         [str(value).strip() for item in metadata for value in item.get("assumptions") or []]
     )
@@ -1728,7 +2158,15 @@ def build_query_plan(
 
     clarification_question = ""
     missing_entities: list[str] = []
-    if len(effective_question) < 4:
+    selected_conflicts = [name for name in contract_names if name in metric_conflicts]
+    if selected_conflicts:
+        clarification_question = (
+            "指标“"
+            + "、".join(selected_conflicts)
+            + "”存在多个已学习公式，请明确采用哪个业务口径后再生成 SQL。"
+        )
+        missing_entities = ["metric_definition"]
+    elif len(effective_question) < 4:
         clarification_question = "请补充需要查询的指标、时间范围和分组维度。"
         missing_entities = ["metric", "time_range", "dimensions"]
     elif (
@@ -1746,10 +2184,22 @@ def build_query_plan(
         "intent": intent,
         "domain": domains[0] if domains else "",
         "metrics": selected_metrics or metric_names[:5],
+        "metric_contracts": selected_contracts,
+        "metric_conflicts": {
+            name: formulas for name, formulas in metric_conflicts.items() if name in contract_names
+        },
         "dimensions": selected_dimensions or dimension_names[:8],
         "filters": filters,
         "available_filters": all_filters,
-        "filter_policy": "仅当用户问题明确提及过滤字段或取值时复用 available_filters",
+        "required_filters": required_filters,
+        "filter_contracts": list(
+            {
+                (item.get("expression"), item.get("policy"), item.get("source")): item
+                for contract in selected_contracts
+                for item in contract.get("filter_contracts") or []
+            }.values()
+        ),
+        "filter_policy": "指标固有条件自动复用；日期、ID 和上下文条件仅在用户明确提及时复用",
         "time_range": time_range,
         "required_tables": required_tables,
         "required_columns": required_columns,
@@ -1825,6 +2275,155 @@ def _validated_candidate(
     return safe_sql, {"status": "pass", "errors": [], "warnings": warnings}, tables, columns
 
 
+def _canonical_sql_fragment(value: str, *, dialect: str) -> str:
+    """去掉表别名后归一化 SQL 片段，用于指标公式/过滤的可解释比对。"""
+
+    try:
+        expression = parse_one(str(value or "").strip(), read=_sqlglot_dialect(dialect))
+    except (ParseError, OptimizeError):
+        return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+    def strip_qualifier(node: Any) -> Any:
+        if isinstance(node, exp.Column):
+            return exp.column(str(node.name or ""))
+        return node
+
+    normalized = expression.transform(strip_qualifier)
+    return normalized.sql(
+        dialect=_sqlglot_dialect(dialect), pretty=False, comments=False, normalize=True
+    )
+
+
+def _predicate_fragments(expression: Any, *, dialect: str) -> set[str]:
+    fragments: set[str] = set()
+
+    def add(node: Any) -> None:
+        if node is None:
+            return
+        fragments.add(_canonical_sql_fragment(node.sql(comments=False), dialect=dialect))
+        if isinstance(node, exp.And):
+            add(node.this)
+            add(node.expression)
+
+    for query in expression.find_all(exp.Select):
+        for clause_name in ("where", "having"):
+            clause = query.args.get(clause_name)
+            add(getattr(clause, "this", clause))
+        for case_node in query.find_all(exp.Case):
+            for branch in case_node.args.get("ifs") or []:
+                add(branch.args.get("this"))
+        for filter_node in query.find_all(exp.Filter):
+            add(getattr(filter_node.args.get("expression"), "this", None))
+    return fragments
+
+
+def _validate_metric_contract_coverage(
+    sql: str,
+    *,
+    dialect: str,
+    metric_contracts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """校验候选 SQL 是否真正实现了计划中必须覆盖的指标契约。"""
+
+    required_contracts = [
+        item
+        for item in metric_contracts
+        if isinstance(item, dict) and item.get("enforcement") == "required"
+    ]
+    if not required_contracts:
+        return {"status": "not_required", "errors": [], "warnings": []}
+    expression = parse_one(sql, read=_sqlglot_dialect(dialect))
+    candidate_tables, candidate_columns = _extract_tables_columns(expression)
+    candidate_table_names = {value.lower() for value in candidate_tables}
+    candidate_column_names = {value.lower() for value in candidate_columns}
+
+    def table_is_present(value: Any) -> bool:
+        expected = str(value or "").strip().lower()
+        if not expected:
+            return True
+        if "." in expected:
+            return expected in candidate_table_names
+        return any(table.rsplit(".", 1)[-1] == expected for table in candidate_table_names)
+
+    def column_is_present(value: Any) -> bool:
+        expected = str(value or "").strip().lower()
+        if not expected:
+            return True
+        if "." not in expected:
+            return any(column.rsplit(".", 1)[-1] == expected for column in candidate_column_names)
+        expected_table, expected_column = expected.rsplit(".", 1)
+        for candidate in candidate_column_names:
+            if "." not in candidate:
+                # 未限定列已经过 Schema 唯一性校验，单独按字段名匹配是安全的。
+                if candidate == expected_column:
+                    return True
+                continue
+            candidate_table, candidate_column = candidate.rsplit(".", 1)
+            if candidate_column != expected_column:
+                continue
+            if "." in expected_table:
+                if candidate_table == expected_table:
+                    return True
+            elif candidate_table.rsplit(".", 1)[-1] == expected_table:
+                return True
+        return False
+
+    candidate_formulas: set[str] = set()
+    for selection in expression.find_all(exp.Select):
+        for projection in selection.selects:
+            nodes = [projection.this] if isinstance(projection, exp.Alias) else [projection]
+            nodes.extend(node for node in projection.walk() if isinstance(node, exp.AggFunc))
+            candidate_formulas.update(
+                _canonical_sql_fragment(node.sql(comments=False), dialect=dialect)
+                for node in nodes
+                if node is not None
+            )
+    predicates = _predicate_fragments(expression, dialect=dialect)
+    errors: list[str] = []
+    warnings: list[str] = []
+    covered: list[str] = []
+    for contract in required_contracts:
+        name = str(contract.get("name") or "未知指标")
+        missing_tables = [
+            table for table in contract.get("source_tables") or [] if not table_is_present(table)
+        ]
+        missing_columns = [
+            column
+            for column in contract.get("source_columns") or []
+            if not column_is_present(column)
+        ]
+        expected_formula = _canonical_sql_fragment(
+            str(contract.get("formula") or ""), dialect=dialect
+        )
+        formula_missing = bool(expected_formula and expected_formula not in candidate_formulas)
+        required_predicates = {
+            _canonical_sql_fragment(str(item.get("expression") or ""), dialect=dialect)
+            for item in contract.get("filter_contracts") or []
+            if item.get("policy") == "required" and str(item.get("expression") or "").strip()
+        }
+        missing_predicates = sorted(required_predicates.difference(predicates))
+        if missing_tables or missing_columns or formula_missing or missing_predicates:
+            details: list[str] = []
+            if missing_tables:
+                details.append("缺少来源表 " + ", ".join(missing_tables))
+            if missing_columns:
+                details.append("缺少来源字段 " + ", ".join(missing_columns))
+            if formula_missing:
+                details.append("缺少指标公式")
+            if missing_predicates:
+                details.append("缺少固有过滤 " + "; ".join(missing_predicates))
+            errors.append(f"指标“{name}”契约未覆盖：" + "；".join(details))
+        else:
+            covered.append(name)
+    return {
+        "status": "pass" if not errors else "fail",
+        "errors": errors,
+        "warnings": warnings,
+        "covered_metrics": list(dict.fromkeys(covered)),
+        "required_metrics": [str(item.get("name") or "") for item in required_contracts],
+    }
+
+
 async def generate_sql_query_draft(
     db: AsyncSession,
     *,
@@ -1866,10 +2465,25 @@ async def generate_sql_query_draft(
         dialect=dialect,
         project_id=project_id,
     )
+    governed_metrics = list(
+        (
+            await db.execute(
+                select(MetricDefinition)
+                .where(
+                    MetricDefinition.data_source_id == data_source.id,
+                    MetricDefinition.status == "published",
+                )
+                .limit(300)
+            )
+        )
+        .scalars()
+        .all()
+    )
     query_plan = build_query_plan(
         question,
         assets,
         clarification_context=clarification_context,
+        governed_metrics=governed_metrics,
     )
     from services.data_knowledge_context import build_data_knowledge_context
 
@@ -1969,6 +2583,14 @@ async def generate_sql_query_draft(
                 table_columns=inspection.column_map,
                 sensitive_columns=sensitive,
             )
+            coverage = _validate_metric_contract_coverage(
+                item[0],
+                dialect=dialect,
+                metric_contracts=query_plan.get("metric_contracts") or [],
+            )
+            if coverage["errors"]:
+                raise SQLValidationError("；".join(coverage["errors"]))
+            item[1]["metric_contract_coverage"] = coverage
         except (SQLValidationError, ParseError) as exc:
             errors.append(str(exc))
             continue
@@ -2223,12 +2845,20 @@ async def execute_sql_query_draft(
                 details={"reason": "sql_hash_mismatch", "candidate_id": candidate.id},
             )
         try:
-            _validated_candidate(
+            validated_sql, _, _, _ = _validated_candidate(
                 candidate.sql,
                 dialect=draft.dialect,
                 table_columns=current_schema.column_map,
                 sensitive_columns=sensitive,
             )
+            coverage = _validate_metric_contract_coverage(
+                validated_sql,
+                dialect=draft.dialect,
+                metric_contracts=(getattr(draft, "query_plan", {}) or {}).get("metric_contracts")
+                or [],
+            )
+            if coverage["errors"]:
+                raise SQLValidationError("；".join(coverage["errors"]))
         except (SQLValidationError, ParseError) as exc:
             raise ValidationException(f"候选 SQL 重新校验失败：{exc}") from exc
 
