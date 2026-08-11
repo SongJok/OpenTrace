@@ -85,27 +85,14 @@ class AgentTopologyManifest:
     def resolve_capability_alias(self, name: str) -> tuple[str, str]:
         """Resolve planner/dispatch aliases to (capability_type, registry_name).
 
-        Accepts: web, web.search, web_search, web_intelligence, data, data_query, etc.
+        Accepts registry names and canonical capability types for the supported data/RAG agents.
         """
         raw = (name or "").strip().lower()
         if not raw:
             return ("", "")
 
-        if raw in {"web", "web.search", "web_search", "web_intel"}:
-            wi = self.get("web_intelligence")
-            if wi:
-                return (wi.capability_type, wi.registry_name or wi.key)
-            web = self.get("web")
-            if web:
-                return (web.capability_type, web.registry_name or web.key)
-
         ent = self.get(raw)
         if ent and ent.runtime == "tier1":
-            if ent.key == "web":
-                pref = self.preferred_web_registry_name()
-                pref_ent = self.get(pref)
-                if pref_ent:
-                    return (pref_ent.capability_type, pref_ent.registry_name or pref_ent.key)
             return (ent.capability_type, ent.registry_name or ent.key)
 
         normalized = raw.replace("_", ".")
@@ -117,27 +104,12 @@ class AgentTopologyManifest:
             if normalized == cap or normalized == reg or raw == cap or raw == reg:
                 return (ent.capability_type, ent.registry_name or ent.key)
 
-        if raw in {"web", "web.search"}:
-            wi = self.get("web_intelligence")
-            web = self.get("web")
-            if wi:
-                return (wi.capability_type, wi.registry_name or wi.key)
-            if web:
-                return (web.capability_type, web.registry_name or web.key)
         if raw in {"data_query", "data_intelligence"}:
             data = self.get("data")
             if data:
                 return (data.capability_type, data.registry_name or data.key)
 
         return (raw, raw.replace(".", "_"))
-
-    def preferred_web_registry_name(self) -> str:
-        """Keep the legacy web alias canonical without enabling web execution."""
-        wi = self.get("web_intelligence")
-        if wi:
-            return wi.registry_name or wi.key
-        web = self.get("web")
-        return (web.registry_name or web.key) if web else "web"
 
     def bus_eligible_agent_types(self) -> tuple[str, ...]:
         """Tier-1 agents that may receive Redis bus tasks (manifest bus_eligible)."""

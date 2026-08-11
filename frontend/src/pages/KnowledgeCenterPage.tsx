@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   Check,
   ChevronLeft,
-  ChevronRight,
   CircleCheck,
   FileText,
   GitBranch,
@@ -12,7 +11,6 @@ import {
   MessageSquareWarning,
   Network,
   Play,
-  Plug,
   RefreshCw,
   Save,
   ScanLine,
@@ -24,13 +22,11 @@ import {
 import clsx from 'clsx'
 import {
   apiApproveKnowledgeRule,
-  apiCreateEnterpriseKnowledgeConnector,
   apiCreateKnowledgeRule,
   apiDecideKnowledgeReview,
   apiGetKnowledgeGovernanceHealth,
   apiGetKnowledgeGraph,
   apiGrantKnowledgeSpaceMember,
-  apiListEnterpriseKnowledgeConnectors,
   apiListKnowledgeFeedback,
   apiListKnowledgeJobs,
   apiListKnowledgeLintIssues,
@@ -41,19 +37,14 @@ import {
   apiListKnowledgeSources,
   apiListKnowledgeSpaceMembers,
   apiListKnowledgeSpaces,
-  apiListKnowledgeSyncRunItems,
-  apiListKnowledgeSyncRuns,
   apiListProjects,
   apiOrchestrateKnowledge,
   apiReconcileDueKnowledgeReviews,
   apiResolveKnowledgeFeedback,
   apiResolveKnowledgeMergeCase,
-  apiRetryKnowledgeSyncRun,
-  apiSyncDingTalkKnowledgeConnector,
   apiRunKnowledgeLint,
   apiRevokeKnowledgeSpaceMember,
   apiWithdrawKnowledgeSource,
-  type EnterpriseKnowledgeConnectorItem,
   type KnowledgeFeedbackItem,
   type KnowledgeGovernanceHealth,
   type KnowledgeGraphData,
@@ -66,14 +57,12 @@ import {
   type KnowledgeSourceItem,
   type KnowledgeSpaceItem,
   type KnowledgeSpaceMemberItem,
-  type KnowledgeSyncItem,
-  type KnowledgeSyncRunItem,
   type ProjectItem,
 } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import { useChatPreferences } from '../store/chatPreferences'
 
-type GovernanceTab = 'pipeline' | 'reviews' | 'quality' | 'connectors' | 'access'
+type GovernanceTab = 'pipeline' | 'reviews' | 'quality' | 'access'
 type NetworkType = KnowledgeGraphData['network']
 
 const NETWORK_LABELS: Record<NetworkType, string> = {
@@ -102,17 +91,11 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
   const [lintIssues, setLintIssues] = useState<KnowledgeLintIssueItem[]>([])
   const [mergeCases, setMergeCases] = useState<KnowledgeMergeCaseItem[]>([])
   const [members, setMembers] = useState<KnowledgeSpaceMemberItem[]>([])
-  const [connectors, setConnectors] = useState<EnterpriseKnowledgeConnectorItem[]>([])
-  const [syncRuns, setSyncRuns] = useState<KnowledgeSyncRunItem[]>([])
-  const [syncItems, setSyncItems] = useState<Record<string, KnowledgeSyncItem[]>>({})
-  const [expandedRunId, setExpandedRunId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [working, setWorking] = useState(false)
   const [message, setMessage] = useState('')
   const [ruleConfig, setRuleConfig] = useState({ summary_length: 420, content_limit: 16000, min_claim_length: 8, max_claims_per_page: 12 })
   const [ruleInstructions, setRuleInstructions] = useState('按标题拆分知识页面，所有事实保留原文证据；优先建立明确依赖和实体引用。')
-  const [connectorName, setConnectorName] = useState('')
-  const [connectorType, setConnectorType] = useState('push')
   const [memberType, setMemberType] = useState<KnowledgeSpaceMemberItem['subject_type']>('user')
   const [memberId, setMemberId] = useState('')
   const [memberRole, setMemberRole] = useState<KnowledgeSpaceMemberItem['role']>('viewer')
@@ -126,7 +109,6 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
     : reviews.length > 0
   const canAdmin = selectedSpace?.role === 'admin'
   const hasActiveJobs = jobs.some((job) => ['pending', 'running'].includes(job.status))
-  const hasActiveSync = syncRuns.some((run) => ['pending', 'running'].includes(run.status))
 
   const loadPipeline = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -157,15 +139,10 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
       setReviews(nextReviews)
       if (!selectedSpaceId) {
         setMembers([])
-        setConnectors([])
-        setSyncRuns([])
         return
       }
       const space = spaces.find((item) => item.id === selectedSpaceId)
-      const tasks: Promise<unknown>[] = [
-        apiListEnterpriseKnowledgeConnectors(token, selectedSpaceId).then(setConnectors),
-        apiListKnowledgeSyncRuns(token, undefined, selectedSpaceId).then(setSyncRuns),
-      ]
+      const tasks: Promise<unknown>[] = []
       if (space?.role === 'admin') {
         tasks.push(apiListKnowledgeSpaceMembers(token, selectedSpaceId).then(setMembers))
       } else {
@@ -213,13 +190,12 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
   useEffect(() => { void loadGovernance() }, [loadGovernance])
   useEffect(() => { void loadQuality() }, [loadQuality])
   useEffect(() => {
-    if (!hasActiveJobs && !hasActiveSync) return
+    if (!hasActiveJobs) return
     const timer = window.setInterval(() => {
-      if (hasActiveJobs) void loadPipeline(true)
-      if (hasActiveSync) void loadGovernance()
+      void loadPipeline(true)
     }, 2500)
     return () => window.clearInterval(timer)
-  }, [hasActiveJobs, hasActiveSync, loadGovernance, loadPipeline])
+  }, [hasActiveJobs, loadPipeline])
 
   async function orchestrate() {
     setWorking(true)
@@ -366,74 +342,6 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
     }
   }
 
-  async function createConnector() {
-    if (!selectedSpace || !connectorName.trim()) return
-    setWorking(true)
-    try {
-      await apiCreateEnterpriseKnowledgeConnector(token, {
-        space_id: selectedSpace.id,
-        name: connectorName.trim(),
-        connector_type: connectorType,
-        config: connectorType === 'dingtalk' ? {
-          root_department_id: '1',
-          chat_since_days: 30,
-          directory_authoritative: false,
-        } : {},
-      })
-      setConnectorName('')
-      setMessage('连接器已创建')
-      await loadGovernance()
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setWorking(false)
-    }
-  }
-
-  async function syncDingTalk(connector: EnterpriseKnowledgeConnectorItem) {
-    setWorking(true)
-    setMessage('')
-    try {
-      const result = await apiSyncDingTalkKnowledgeConnector(token, connector.id)
-      setMessage(`钉钉同步已接入治理链：文档 ${result.documents}、群聊 ${result.chats}、部门 ${result.departments}、成员关系 ${result.memberships}`)
-      await loadGovernance()
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setWorking(false)
-    }
-  }
-
-  async function toggleRun(run: KnowledgeSyncRunItem) {
-    if (expandedRunId === run.id) {
-      setExpandedRunId(null)
-      return
-    }
-    setExpandedRunId(run.id)
-    if (!syncItems[run.id]) {
-      try {
-        const nextItems = await apiListKnowledgeSyncRunItems(token, run.id)
-        setSyncItems((current) => ({ ...current, [run.id]: nextItems }))
-      } catch (error) {
-        setMessage(error instanceof Error ? error.message : String(error))
-      }
-    }
-  }
-
-  async function retryRun(run: KnowledgeSyncRunItem) {
-    setWorking(true)
-    try {
-      const result = await apiRetryKnowledgeSyncRun(token, run.id)
-      setMessage(`已重新入队 ${result.requeued} 个失败项`)
-      setSyncItems((current) => { const next = { ...current }; delete next[run.id]; return next })
-      await loadGovernance()
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setWorking(false)
-    }
-  }
-
   async function grantMember() {
     if (!selectedSpace || !memberId.trim()) return
     setWorking(true)
@@ -467,7 +375,7 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
     <div className="min-h-full bg-[var(--bg)] text-[var(--text)]">
       <header className="sticky top-0 z-10 flex flex-wrap items-center gap-3 border-b border-[var(--border)] bg-[var(--bg)]/95 px-6 py-4 backdrop-blur">
         <button onClick={onBack} className="rounded-lg p-2 hover:bg-[var(--surface)]"><ChevronLeft size={18} /></button>
-        <div className="min-w-52 flex-1"><h1 className="text-lg font-semibold">知识库质量中心</h1><p className="text-xs text-[var(--text-secondary)]">编排、审核、连接器、质量与访问控制的管理员控制面</p></div>
+        <div className="min-w-52 flex-1"><h1 className="text-lg font-semibold">知识库质量中心</h1><p className="text-xs text-[var(--text-secondary)]">编排、审核、质量与访问控制的管理员控制面</p></div>
         <select value={selectedProjectId || ''} onChange={(event) => setSelectedProjectId(event.target.value || null)} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><option value="">工作区默认</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
         <select value={selectedSpaceId} onChange={(event) => setSelectedSpaceId(event.target.value)} className="max-w-56 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><option value="">我的非空间知识</option>{spaces.map((space) => <option key={space.id} value={space.id}>{space.name} · {space.role}</option>)}</select>
         <button onClick={() => { void loadPipeline(); void loadGovernance(); void loadQuality() }} className="rounded-xl border border-[var(--border)] p-2" title="刷新"><RefreshCw size={15} /></button>
@@ -475,29 +383,27 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
 
       <main className="mx-auto max-w-7xl space-y-5 p-6">
         {message && <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3 text-sm">{message}</div>}
-        <nav className="grid gap-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-1 sm:grid-cols-5">
+        <nav className="grid gap-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-1 sm:grid-cols-4">
           <TabButton active={tab === 'pipeline'} onClick={() => setTab('pipeline')} icon={<Network size={14} />} label="知识编排" />
           <TabButton active={tab === 'reviews'} onClick={() => setTab('reviews')} icon={<ShieldCheck size={14} />} label={`审核队列 ${reviews.length}`} />
           <TabButton active={tab === 'quality'} onClick={() => setTab('quality')} icon={<Activity size={14} />} label={`质量与反馈 ${feedback.length}`} />
-          <TabButton active={tab === 'connectors'} onClick={() => setTab('connectors')} icon={<Plug size={14} />} label="连接器与同步" />
           <TabButton active={tab === 'access'} onClick={() => setTab('access')} icon={<Users size={14} />} label="空间访问控制" />
         </nav>
 
         {tab === 'pipeline' && (
           <div className="space-y-5">
-            <section className="grid gap-3 md:grid-cols-5"><Metric label="知识来源" value={sources.length} /><Metric label="已发布页面" value={pages.filter((page) => page.status === 'published').length} /><Metric label="待审核页面" value={pages.filter((page) => page.status === 'review').length} /><Metric label="活跃任务" value={jobs.filter((job) => ['pending', 'running'].includes(job.status)).length} /><Metric label="规则版本" value={rules.length} /></section>
+            <section className="grid gap-3 md:grid-cols-5"><Metric label="知识来源" value={sources.length} /><Metric label="已发布页面" value={pages.filter((page) => page.status === 'published').length} /><Metric label="待审核页面" value={pages.filter((page) => page.status === 'review').length} /><Metric label="活跃任务" value={jobs.filter((job) => ['pending', 'running'].includes(job.status)).length} /><Metric label="策略版本" value={rules.length} /></section>
             <section className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div><h2 className="font-semibold">编排控制</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">资料上传统一在“我的资料”完成；治理中心只处理已登记来源。</p></div><button onClick={() => void orchestrate()} disabled={working} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm text-[var(--accent-foreground)] disabled:opacity-40">{working ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}立即编排</button></section>
             <div className="grid gap-5 xl:grid-cols-[1.4fr_0.8fr]">
               <GraphPanel graph={graph} network={network} onNetwork={setNetwork} loading={loading} />
               <div className="space-y-5"><SourceList sources={sources} canWithdraw={Boolean(selectedSpace && ['publisher', 'admin'].includes(selectedSpace.role))} working={working} onWithdraw={withdrawSource} /><JobList jobs={jobs} /></div>
             </div>
-            <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-center justify-between"><div><h2 className="font-semibold">版本化编排规则</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">保存后生成并批准新规则版本，不直接修改历史版本。</p></div><Save size={17} className="text-[var(--accent)]" /></div><textarea value={ruleInstructions} onChange={(event) => setRuleInstructions(event.target.value)} className="mt-4 min-h-24 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3 text-sm" /><div className="mt-3 grid gap-2 sm:grid-cols-4">{Object.entries(ruleConfig).map(([key, value]) => <label key={key} className="text-[11px] text-[var(--text-secondary)]">{key}<input type="number" value={value} onChange={(event) => setRuleConfig((current) => ({ ...current, [key]: Number(event.target.value) }))} className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2 py-2 text-sm text-[var(--text)]" /></label>)}</div><button onClick={() => void saveRule()} disabled={working} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm text-[var(--accent-foreground)] disabled:opacity-40"><Save size={14} />保存并发布新版本</button></section>
+            <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-center justify-between"><div><h2 className="font-semibold">版本化编排策略</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">保存后生成并批准新策略版本，不直接修改历史版本。</p></div><Save size={17} className="text-[var(--accent)]" /></div><textarea value={ruleInstructions} onChange={(event) => setRuleInstructions(event.target.value)} className="mt-4 min-h-24 w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3 text-sm" /><div className="mt-3 grid gap-2 sm:grid-cols-4">{Object.entries(ruleConfig).map(([key, value]) => <label key={key} className="text-[11px] text-[var(--text-secondary)]">{key}<input type="number" value={value} onChange={(event) => setRuleConfig((current) => ({ ...current, [key]: Number(event.target.value) }))} className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2 py-2 text-sm text-[var(--text)]" /></label>)}</div><button onClick={() => void saveRule()} disabled={working} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2 text-sm text-[var(--accent-foreground)] disabled:opacity-40"><Save size={14} />保存并发布新版本</button></section>
           </div>
         )}
 
         {tab === 'reviews' && <ReviewPanel reviews={reviews} canReview={canReview} working={working} onDecision={decide} />}
         {tab === 'quality' && <QualityPanel selectedSpace={selectedSpace} health={health} feedback={feedback} lintIssues={lintIssues} mergeCases={mergeCases} working={working} onReconcile={reconcileDueReviews} onLint={runLint} onResolveFeedback={resolveFeedback} onKeepSeparate={keepMergeCaseSeparate} onMerge={mergeKnowledgeCase} />}
-        {tab === 'connectors' && <ConnectorPanel selectedSpace={selectedSpace} connectors={connectors} runs={syncRuns} items={syncItems} expandedRunId={expandedRunId} working={working} name={connectorName} type={connectorType} onName={setConnectorName} onType={setConnectorType} onCreate={createConnector} onSyncDingTalk={syncDingTalk} onToggle={toggleRun} onRetry={retryRun} />}
         {tab === 'access' && <AccessPanel selectedSpace={selectedSpace} canAdmin={canAdmin} members={members} subjectType={memberType} subjectId={memberId} role={memberRole} working={working} onSubjectType={setMemberType} onSubjectId={setMemberId} onRole={setMemberRole} onGrant={grantMember} onRevoke={revokeMember} />}
       </main>
     </div>
@@ -510,7 +416,7 @@ function QualityPanel({ selectedSpace, health, feedback, lintIssues, mergeCases,
   }
   const metrics = health?.metrics || {}
   return <div className="space-y-5">
-    <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="flex flex-wrap items-center justify-between gap-4"><div><div className="flex items-center gap-3"><div className={clsx('grid h-16 w-16 place-items-center rounded-2xl text-2xl font-semibold', health?.status === 'critical' ? 'bg-red-500/10 text-red-500' : health?.status === 'attention' ? 'bg-amber-500/10 text-amber-500' : 'bg-emerald-500/10 text-emerald-500')}>{health?.score ?? '—'}</div><div><h2 className="font-semibold">治理健康分</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">综合复审、有效期、质量问题、员工反馈、冲突与连接器状态</p></div></div></div><div className="flex gap-2"><button onClick={() => void onReconcile()} disabled={working} className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2 text-xs disabled:opacity-40"><ScanLine size={14} />扫描到期复审</button><button onClick={() => void onLint()} disabled={working} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-40">{working ? <Loader2 size={14} className="animate-spin" /> : <Activity size={14} />}执行质量检查</button></div></div><div className="mt-5 grid gap-3 sm:grid-cols-4 xl:grid-cols-8"><Metric label="已发布来源" value={metrics.published_sources ?? 0} /><Metric label="到期复审" value={metrics.due_reviews ?? 0} /><Metric label="复审阻塞" value={metrics.blocked_reviews ?? 0} /><Metric label="已过期来源" value={metrics.expired_sources ?? 0} /><Metric label="来源不同步" value={metrics.stale_sources ?? 0} /><Metric label="失败任务" value={metrics.failed_jobs ?? 0} /><Metric label="开放质量问题" value={metrics.open_lint_issues ?? 0} /><Metric label="连接器异常/滞后" value={(metrics.failed_connectors ?? 0) + (metrics.stale_connectors ?? 0)} /></div></section>
+    <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="flex flex-wrap items-center justify-between gap-4"><div><div className="flex items-center gap-3"><div className={clsx('grid h-16 w-16 place-items-center rounded-2xl text-2xl font-semibold', health?.status === 'critical' ? 'bg-red-500/10 text-red-500' : health?.status === 'attention' ? 'bg-amber-500/10 text-amber-500' : 'bg-emerald-500/10 text-emerald-500')}>{health?.score ?? '—'}</div><div><h2 className="font-semibold">治理健康分</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">综合复审、有效期、质量问题、员工反馈与知识冲突</p></div></div></div><div className="flex gap-2"><button onClick={() => void onReconcile()} disabled={working} className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2 text-xs disabled:opacity-40"><ScanLine size={14} />扫描到期复审</button><button onClick={() => void onLint()} disabled={working} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-40">{working ? <Loader2 size={14} className="animate-spin" /> : <Activity size={14} />}执行质量检查</button></div></div><div className="mt-5 grid gap-3 sm:grid-cols-4 xl:grid-cols-7"><Metric label="已发布来源" value={metrics.published_sources ?? 0} /><Metric label="到期复审" value={metrics.due_reviews ?? 0} /><Metric label="复审阻塞" value={metrics.blocked_reviews ?? 0} /><Metric label="已过期来源" value={metrics.expired_sources ?? 0} /><Metric label="来源不同步" value={metrics.stale_sources ?? 0} /><Metric label="失败任务" value={metrics.failed_jobs ?? 0} /><Metric label="开放质量问题" value={metrics.open_lint_issues ?? 0} /></div></section>
     <div className="grid gap-5 xl:grid-cols-2">
       <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><h2 className="flex items-center gap-2 font-semibold"><MessageSquareWarning size={16} />员工反馈 · {feedback.length}</h2><div className="mt-3 max-h-[520px] space-y-2 overflow-auto">{feedback.map((item) => <article key={item.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3"><div className="flex items-start justify-between gap-2"><div><h3 className="text-sm font-medium">{item.source_title}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{item.feedback_type} · {item.target_type} · {item.created_at ? new Date(item.created_at).toLocaleString() : '—'}</p></div>{['incorrect', 'outdated', 'correction'].includes(item.feedback_type) && <AlertTriangle size={15} className="text-amber-500" />}</div>{item.correction && <p className="mt-2 rounded-lg bg-[var(--surface)] p-2 text-xs leading-5">{item.correction}</p>}<div className="mt-3 flex flex-wrap gap-1.5"><button disabled={working} onClick={() => void onResolveFeedback(item, 'acknowledged')} className="rounded-lg border border-[var(--border)] px-2 py-1 text-[11px]">已确认</button><button disabled={working} onClick={() => void onResolveFeedback(item, 'needs_revision')} className="rounded-lg bg-amber-500/10 px-2 py-1 text-[11px] text-amber-500">需要修订</button><button disabled={working} onClick={() => void onResolveFeedback(item, 'dismissed')} className="rounded-lg px-2 py-1 text-[11px] text-[var(--text-secondary)]">忽略</button></div></article>)}{!feedback.length && <p className="py-10 text-center text-xs text-[var(--text-secondary)]">暂无未处理员工反馈</p>}</div></section>
       <div className="space-y-5"><section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><h2 className="flex items-center gap-2 font-semibold"><AlertTriangle size={16} />质量问题 · {lintIssues.length}</h2><div className="mt-3 max-h-64 space-y-2 overflow-auto">{lintIssues.map((issue) => <article key={issue.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3"><div className="flex items-center justify-between gap-2"><span className="text-sm font-medium">{issue.code}</span><span className={clsx('rounded-full px-2 py-0.5 text-[10px]', issue.severity === 'error' ? 'bg-red-500/10 text-red-500' : 'bg-amber-500/10 text-amber-500')}>{issue.severity}</span></div><p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{issue.message}</p></article>)}{!lintIssues.length && <p className="py-8 text-center text-xs text-[var(--text-secondary)]">暂无开放质量问题</p>}</div></section><section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><h2 className="flex items-center gap-2 font-semibold"><GitBranch size={16} />知识冲突 · {mergeCases.length}</h2><div className="mt-3 max-h-64 space-y-2 overflow-auto">{mergeCases.map((item) => <article key={item.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3"><p className="text-sm font-medium">{item.entity_key}</p><p className="mt-1 text-xs text-[var(--text-secondary)]">{item.conflict_type} · {item.candidate_ids.length} 个候选</p><div className="mt-2 space-y-1.5">{item.candidates.map((candidate, index) => <div key={candidate.id} className="rounded-lg bg-[var(--surface)] p-2"><p className="line-clamp-2 text-xs leading-5">{index + 1}. {candidate.text}</p><p className="mt-1 text-[10px] text-[var(--text-secondary)]">{candidate.source_title} / {candidate.page_title} · {candidate.authority} · {candidate.confidence.toFixed(2)}</p></div>)}</div><div className="mt-2 flex flex-wrap gap-1.5"><button disabled={working || !item.candidates.length} onClick={() => void onMerge(item)} className="rounded-lg bg-[var(--accent)] px-2 py-1 text-[11px] text-[var(--accent-foreground)] disabled:opacity-40">选择并合并</button><button disabled={working} onClick={() => void onKeepSeparate(item)} className="rounded-lg border border-[var(--border)] px-2 py-1 text-[11px]">保持独立</button></div></article>)}{!mergeCases.length && <p className="py-8 text-center text-xs text-[var(--text-secondary)]">暂无待处理知识冲突</p>}</div></section></div>
@@ -558,11 +464,6 @@ function ReviewPanel({ reviews, canReview, working, onDecision }: { reviews: Kno
   if (!canReview) return <Empty text="当前账号在所选空间没有 reviewer 权限" />
   const reasonLabel: Record<string, string> = { content_change: '内容变更', scheduled_recertification: '周期复审', feedback_resolution: '员工反馈触发' }
   return <section className="space-y-3">{reviews.map((review) => <article key={review.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="flex items-start justify-between gap-4"><div><div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold">{review.source_title || '待审核知识版本'}</h2><span className="rounded-full bg-amber-500/10 px-2 py-1 text-[10px] text-amber-500">{reasonLabel[review.review_reason || 'content_change'] || review.review_reason}</span></div><p className="mt-1 text-xs text-[var(--text-secondary)]">版本 v{review.version_number} · {review.source_system || '企业知识'} · {review.classification || 'internal'} · {review.authority || 'contextual'}</p><p className="mt-3 text-sm text-[var(--text-secondary)]">页面 {String(review.diff_summary.pages ?? 0)} · 事实 {String(review.diff_summary.claims ?? 0)} · 关系 {String(review.diff_summary.relations ?? 0)} · 复审日期 {review.review_due_at ? new Date(review.review_due_at).toLocaleDateString() : '—'}</p><p className="mt-2 font-mono text-[10px] text-[var(--text-secondary)]">Source {review.source_id} · Version {review.source_version_id}</p></div><ShieldCheck className="text-amber-500" /></div><div className="mt-4 flex justify-end gap-2"><button onClick={() => void onDecision(review, 'reject')} disabled={working} className="inline-flex items-center gap-1 rounded-xl border border-red-500/30 px-3 py-2 text-sm text-red-500"><X size={14} />驳回</button><button onClick={() => void onDecision(review, 'approve')} disabled={working} className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-2 text-sm text-white"><Check size={14} />审核并发布</button></div></article>)}{!reviews.length && <Empty text="没有待审核知识版本" />}</section>
-}
-
-function ConnectorPanel({ selectedSpace, connectors, runs, items, expandedRunId, working, name, type, onName, onType, onCreate, onSyncDingTalk, onToggle, onRetry }: { selectedSpace: KnowledgeSpaceItem | null; connectors: EnterpriseKnowledgeConnectorItem[]; runs: KnowledgeSyncRunItem[]; items: Record<string, KnowledgeSyncItem[]>; expandedRunId: string | null; working: boolean; name: string; type: string; onName: (value: string) => void; onType: (value: string) => void; onCreate: () => Promise<void>; onSyncDingTalk: (connector: EnterpriseKnowledgeConnectorItem) => Promise<void>; onToggle: (run: KnowledgeSyncRunItem) => Promise<void>; onRetry: (run: KnowledgeSyncRunItem) => Promise<void> }) {
-  if (!selectedSpace) return <Empty text="请选择知识空间后管理连接器" />
-  return <div className="space-y-5"><section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex flex-wrap gap-2"><input value={name} onChange={(event) => onName(event.target.value)} placeholder="连接器名称" className="min-w-52 flex-1 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm" /><select value={type} onChange={(event) => onType(event.target.value)} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"><option value="push">通用 Push</option><option value="confluence">Confluence</option><option value="sharepoint">SharePoint</option><option value="dingtalk">钉钉</option><option value="git">Git</option></select><button onClick={() => void onCreate()} disabled={working || !name.trim() || selectedSpace.role !== 'admin'} className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm text-[var(--accent-foreground)] disabled:opacity-40">创建连接器</button></div>{type === 'dingtalk' && <p className="mt-2 text-xs text-[var(--text-secondary)]">钉钉连接器会把文档和群聊送入当前知识空间，把部门和成员关系同步到企业目录；首次启用前需由运维配置 DWS 只读 Profile。</p>}{selectedSpace.role !== 'admin' && <p className="mt-2 text-xs text-amber-500">只有空间 admin 可以创建连接器。</p>}</section><section className="grid gap-3 md:grid-cols-2">{connectors.map((connector) => <article key={connector.id} className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="flex items-center justify-between"><h3 className="font-medium">{connector.name}</h3><Status value={connector.status} /></div><p className="mt-2 text-xs text-[var(--text-secondary)]">{connector.connector_type} · Cursor {connector.sync_cursor || '—'}</p>{connector.last_error && <p className="mt-2 text-xs text-red-500">{connector.last_error}</p>}{connector.connector_type === 'dingtalk' && <button onClick={() => void onSyncDingTalk(connector)} disabled={working || selectedSpace.role !== 'admin'} className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-40"><RefreshCw size={13} />同步文档、群聊与组织架构</button>}</article>)}{!connectors.length && <Empty text="该空间暂无连接器" />}</section><section className="space-y-2">{runs.map((run) => <article key={run.id} className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]"><button onClick={() => void onToggle(run)} className="flex w-full items-center gap-3 p-4 text-left"><Status value={run.status} /><span className="min-w-0 flex-1 truncate text-sm">{run.connector_name}</span><span className="text-xs text-[var(--text-secondary)]">成功 {run.stats.succeeded || 0} / 失败 {run.stats.failed || 0}</span><ChevronRight size={15} className={clsx('transition-transform', expandedRunId === run.id && 'rotate-90')} /></button>{expandedRunId === run.id && <div className="border-t border-[var(--border)] p-4"><div className="space-y-2">{(items[run.id] || []).map((item) => <div key={item.id} className="rounded-xl bg-[var(--bg)] p-3 text-xs"><div className="flex justify-between gap-2"><span className="truncate font-medium">{item.title || item.external_id}</span><span>{item.status} · 尝试 {item.attempts}</span></div>{item.error && <p className="mt-2 text-red-500">{item.error}</p>}</div>)}</div>{run.status === 'failed' && <button onClick={() => void onRetry(run)} disabled={working} className="mt-3 rounded-xl bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)]">重试失败项</button>}</div>}</article>)}{!runs.length && <Empty text="暂无同步运行记录" />}</section></div>
 }
 
 function AccessPanel({ selectedSpace, canAdmin, members, subjectType, subjectId, role, working, onSubjectType, onSubjectId, onRole, onGrant, onRevoke }: { selectedSpace: KnowledgeSpaceItem | null; canAdmin: boolean; members: KnowledgeSpaceMemberItem[]; subjectType: KnowledgeSpaceMemberItem['subject_type']; subjectId: string; role: KnowledgeSpaceMemberItem['role']; working: boolean; onSubjectType: (value: KnowledgeSpaceMemberItem['subject_type']) => void; onSubjectId: (value: string) => void; onRole: (value: KnowledgeSpaceMemberItem['role']) => void; onGrant: () => Promise<void>; onRevoke: (member: KnowledgeSpaceMemberItem) => Promise<void> }) {

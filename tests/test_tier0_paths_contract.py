@@ -5,18 +5,13 @@ from __future__ import annotations
 from kernel.agent_runtime.manifest import get_manifest, reload_manifest
 
 
-def test_manifest_resolve_web_aliases():
+def test_manifest_does_not_resolve_removed_web_aliases():
     reload_manifest()
     m = get_manifest()
-    cap, reg = m.resolve_capability_alias("web")
-    assert cap == "web_search"
-    assert reg == "web_intelligence"
-    cap, reg = m.resolve_capability_alias("web.search")
-    assert cap == "web_search"
-    assert reg in {"web_intelligence", "web"}
-    cap2, reg2 = m.resolve_capability_alias("web_intelligence")
-    assert cap2 == "web_search"
-    assert reg2 == "web_intelligence"
+    for alias in ("web", "web.search", "web_intelligence"):
+        capability_type, registry_name = m.resolve_capability_alias(alias)
+        assert capability_type == alias
+        assert registry_name == alias.replace(".", "_")
 
 
 def test_manifest_resolve_data_query():
@@ -41,7 +36,7 @@ def test_tier0_governance_envelope_fields():
     assert meta["tier0_fast_path"] is True
     assert meta["capability_type"] == "data_query"
     assert meta["registry_agent"] == "data"
-    assert meta["manifest_version"].startswith("3.")
+    assert meta["manifest_version"].startswith("4.")
     assert "semantic_observability" in meta
 
 

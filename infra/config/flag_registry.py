@@ -95,20 +95,10 @@ KERNEL_FLAG_REGISTRY: tuple[FlagSpec, ...] = (
         exit_criteria="核心事实表 RLS 与跨租户负向测试全部进入发布门禁",
         remove_by="0.3.0",
     ),
-    FlagSpec(
-        "web_fetch_enabled",
-        False,
-        "experimental",
-        "security",
-        "0.1.0",
-        "network-egress",
-        exit_criteria="独立网络出口、域名白名单、凭据隔离和配额全部落地",
-        remove_by="0.3.0",
-    ),
 )
 
 
-# 企业协议上线控制与 Agent 能力组合分开治理，避免扩大运行时 Flag 面。
+# 企业身份上线控制与 Agent 能力组合分开治理，避免扩大运行时 Flag 面。
 ENTERPRISE_CONTROL_REGISTRY: tuple[FlagSpec, ...] = (
     FlagSpec(
         "identity_oidc_enabled",
@@ -118,36 +108,6 @@ ENTERPRISE_CONTROL_REGISTRY: tuple[FlagSpec, ...] = (
         "0.1.0",
         "authentication",
         exit_criteria="完成两个受支持 IdP 的 JWKS、撤销和故障切换互操作认证",
-        remove_by="0.3.0",
-    ),
-    FlagSpec(
-        "mcp_client_enabled",
-        False,
-        "experimental",
-        "runtime",
-        "0.1.0",
-        "interoperability",
-        exit_criteria="工具 allowlist、审批和幂等账本互操作矩阵全部通过",
-        remove_by="0.3.0",
-    ),
-    FlagSpec(
-        "mcp_server_enabled",
-        False,
-        "experimental",
-        "runtime",
-        "0.1.0",
-        "interoperability",
-        exit_criteria="MCP 兼容矩阵和 durable Responses 适配连续两个版本稳定",
-        remove_by="0.3.0",
-    ),
-    FlagSpec(
-        "a2a_protocol_enabled",
-        False,
-        "experimental",
-        "runtime",
-        "0.1.0",
-        "interoperability",
-        exit_criteria="服务身份、租户绑定、防重放与端到端互操作测试全部通过",
         remove_by="0.3.0",
     ),
 )

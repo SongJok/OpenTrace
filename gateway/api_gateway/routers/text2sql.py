@@ -28,7 +28,6 @@ from text2sql.adapters.opentrace.executor import OpenTraceQueryExecutor
 from text2sql.adapters.opentrace.generator import OpenTraceSQLGenerator
 from text2sql.adapters.opentrace.repository import OpenTraceRunRepository
 from text2sql.contracts import DataScope, ExecutionMode, QueryRequest, deterministic_run_id
-from text2sql.mcp import mcp_tools
 from text2sql.service import Text2SQLService
 
 
@@ -270,22 +269,6 @@ async def execute_text2sql_query(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _payload(run)
-
-
-@router.get("/text2sql/capabilities")
-async def text2sql_capabilities(
-    current_user: User = Depends(get_current_user),
-) -> dict[str, Any]:
-    return {
-        "name": "opentrace-text2sql",
-        "version": "1.0",
-        "tools": mcp_tools(),
-        "execution": {
-            "read_only": True,
-            "requires_explicit_confirmation": True,
-            "schema_revalidation_before_execute": True,
-        },
-    }
 
 
 @router.post("/text2sql/semantic-assets")

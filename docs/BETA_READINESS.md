@@ -7,9 +7,8 @@ OpenTrace 产品主路径自 2026-08-08 起进入 **受控企业 Beta**。Beta �
 个人记忆、任务、Skills、设置，以及管理员治理页面。它表示代码和运维合同可以支持受控租户
 试点，不等同于无条件生产承诺或 GA。
 
-旧 Cognitive Runtime 继续保持 compatibility/experimental；MCP、A2A 等默认关闭的互操作能力
-不在 Beta 支持范围内。GA 仍要求长期 SLO、容量压测、备份恢复演练、安全评审、跨版本升级与
-至少一个季度的试点运行数据。
+旧 Cognitive Runtime 继续保持 compatibility/experimental，不进入产品支持面。GA 仍要求长期
+SLO、容量压测、备份恢复演练、安全评审、跨版本升级与至少一个季度的试点运行数据。
 
 ## Beta 不变量
 

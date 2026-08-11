@@ -1804,7 +1804,6 @@ class AgentLoop:
     def _available_tool_specs(payload: dict[str, Any]) -> list[ToolSpec]:
         """返回产品允许的能力目录；企业大脑由上下文注入，不作为工具暴露。"""
         allowed_capabilities = {"data", "rag"}
-        import tools  # noqa: F401
         from agents.bootstrap import is_builtin_agent_enabled
         from kernel.runtime.capability import capability_registry
 

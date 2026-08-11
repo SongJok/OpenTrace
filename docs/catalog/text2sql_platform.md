@@ -23,7 +23,6 @@ OpenTrace 的 Text2SQL 主路径现在由独立的 `text2sql/` 领域包提供�
 | POST | `/api/v1/text2sql/queries` | 研究、规划、生成 SQL；`mode=execute_and_answer` 仍需 `confirmed=true`，可通过 `Idempotency-Key` 安全重试 |
 | GET | `/api/v1/text2sql/queries/{run_id}?data_source_id=...&project_id=...` | 读取带完整 Scope 的查询运行记录 |
 | POST | `/api/v1/text2sql/queries/{run_id}/execute?data_source_id=...&project_id=...` | 重新校验 Schema 后执行选定候选 |
-| GET | `/api/v1/text2sql/capabilities` | 查询技能和 MCP 工具清单 |
 | POST | `/api/v1/text2sql/semantic-assets` | 创建业务过程、数据质量、实体和维度草案 |
 | POST | `/api/v1/text2sql/semantic-assets/{id}/publish` | 管理员发布治理资产 |
 | POST | `/api/v1/text2sql/evaluation-cases` | 保存冻结数据快照上的 Golden Case |
@@ -50,17 +49,6 @@ OpenTrace 的 Text2SQL 主路径现在由独立的 `text2sql/` 领域包提供�
 - 执行前重新收集证据；Schema 指纹变化时阻止旧候选执行。
 - 查询创建支持 `Idempotency-Key`；同一完整 Scope 和 key 返回同一运行记录，复用到不同问题会返回冲突。
 - 结果报告 `returned_rows`、`total_rows`、`truncated` 和 `snapshot_id`，截断结果不能被描述为完整结果。
-
-## MCP
-
-现有 MCP Server 的 `tools/list` 会发布：
-
-- `text2sql.query`
-- `text2sql.catalog`
-- `text2sql.feedback`
-
-这些工具只声明能力，实际调用仍经过 DataScope、数据源权限、SQLGuard、ExecutionPolicy 和 `text2sql_runs` 审计记录。
-其中 `text2sql.feedback` 也必须提交 `data_source_id`，服务端会先按租户、工作区和数据源范围验证对应运行记录。
 
 ## 数据治理资产
 

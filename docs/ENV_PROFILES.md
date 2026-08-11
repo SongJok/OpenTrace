@@ -84,10 +84,10 @@ Worker 与 in-process dispatch 在 `kernel_agent_runtime_v3_enabled=true` 时走
 
 | `CAPABILITY_PROFILE` | 能力集合 |
 |---|---|
-| `core` | tool / skills / rules |
-| `data` | core + DataAgent |
-| `knowledge` | core + RAG |
-| `data_knowledge` | data + knowledge + web_intelligence + vision（默认） |
+| `core` | 仅 Manager 模型问答 |
+| `data` | DataAgent / Text2SQL |
+| `knowledge` | RAG |
+| `data_knowledge` | DataAgent / Text2SQL + RAG（默认） |
 
 旧 `KERNEL_AGENT_*_ENABLED` 字段只为滚动升级和紧急熔断保留，不再作为推荐配置面。实验例外见 `docs/FEATURE_FLAG_REGISTRY.md`。
 
@@ -99,8 +99,5 @@ Worker 与 in-process dispatch 在 `kernel_agent_runtime_v3_enabled=true` 时走
 | `ENTERPRISE_TENANT_RLS_ENABLED` | false | 灰度 true | true（非 owner 应用角色） |
 | `WORKER_ROLE` | `all` | 按四类能力池拆分 | 按四类能力池拆分并独立 HPA |
 | `IDENTITY_OIDC_ENABLED` | false | 企业 IdP 验证 | 企业 IdP + 撤销/轮换演练 |
-| MCP/A2A | false | allowlist 灰度 | 通过互操作矩阵后按租户开启 |
-
-钉钉连接器默认关闭，并在没有只读挂载的 DWS 二进制或有效认证时保持失败关闭。staging 应使用专用测试组织与只读 Profile 验证文档、群聊、部门分页和 ACL；production 必须使用企业服务身份、版本固定的只读二进制挂载、独立 Secret 挂载和同步审计，禁止复用开发者个人 Profile。
 
 受管环境使用对象存储、KMS/Vault 和独立数据库角色；Compose 仅用于开发，不代表生产高可用拓扑。

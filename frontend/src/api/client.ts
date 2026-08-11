@@ -402,8 +402,6 @@ export interface KnowledgeGovernanceHealth {
     open_lint_errors?: number
     unresolved_feedback?: number
     open_merge_cases?: number
-    failed_connectors?: number
-    stale_connectors?: number
   }
 }
 
@@ -445,53 +443,6 @@ export interface KnowledgeSpaceMemberItem {
   subject_id: string
   role: 'viewer' | 'contributor' | 'reviewer' | 'publisher' | 'admin'
   expires_at?: string | null
-}
-
-export interface EnterpriseKnowledgeConnectorItem {
-  id: string
-  space_id: string
-  name: string
-  connector_type: string
-  status: string
-  sync_cursor?: string | null
-  last_sync_at?: string | null
-  last_error?: string | null
-}
-
-export interface KnowledgeSyncRunItem {
-  id: string
-  connector_id: string
-  connector_name: string
-  status: 'pending' | 'running' | 'succeeded' | 'failed'
-  cursor_before?: string | null
-  cursor_after?: string | null
-  stats: {
-    queued?: number
-    running?: number
-    succeeded?: number
-    failed?: number
-    created?: number
-    updated?: number
-    unchanged?: number
-    deleted?: number
-  }
-  error?: string | null
-  started_at?: string | null
-  completed_at?: string | null
-}
-
-export interface KnowledgeSyncItem {
-  id: string
-  external_id: string
-  title: string
-  deleted: boolean
-  status: 'pending' | 'running' | 'succeeded' | 'failed'
-  attempts: number
-  document_id?: string | null
-  source_id?: string | null
-  error?: string | null
-  started_at?: string | null
-  completed_at?: string | null
 }
 
 export interface KnowledgeReviewItem {
@@ -612,54 +563,6 @@ export async function apiGrantKnowledgeSpaceMember(token: string, spaceId: strin
 export async function apiRevokeKnowledgeSpaceMember(token: string, spaceId: string, memberId: string): Promise<void> {
   const res = await apiFetch(`/knowledge/spaces/${encodeURIComponent(spaceId)}/members/${encodeURIComponent(memberId)}`, { method: 'DELETE', headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '撤销知识空间授权失败'))
-}
-
-export async function apiListEnterpriseKnowledgeConnectors(token: string, spaceId?: string): Promise<EnterpriseKnowledgeConnectorItem[]> {
-  const query = spaceId ? `?space_id=${encodeURIComponent(spaceId)}` : ''
-  const res = await apiFetch(`/knowledge/connectors${query}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取知识连接器失败'))
-  return (await res.json()).items ?? []
-}
-
-export async function apiCreateEnterpriseKnowledgeConnector(token: string, payload: Record<string, unknown>): Promise<{ id: string; status: string }> {
-  const res = await apiFetch('/knowledge/connectors', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
-  if (!res.ok) throw new Error(await readApiError(res, '创建知识连接器失败'))
-  return res.json()
-}
-
-export async function apiSyncDingTalkKnowledgeConnector(token: string, connectorId: string): Promise<{ queued: number; documents: number; chats: number; departments: number; memberships: number }> {
-  const res = await apiFetch(`/knowledge/connectors/${encodeURIComponent(connectorId)}/sync-dingtalk`, {
-    method: 'POST',
-    headers: authHeaders(token),
-    body: JSON.stringify({ include_documents: true, include_chats: true, include_directory: true }),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '同步钉钉企业数据失败'))
-  return res.json()
-}
-
-export async function apiListKnowledgeSyncRuns(token: string, connectorId?: string, spaceId?: string): Promise<KnowledgeSyncRunItem[]> {
-  const params = new URLSearchParams()
-  if (connectorId) params.set('connector_id', connectorId)
-  if (spaceId) params.set('space_id', spaceId)
-  const query = params.size ? `?${params.toString()}` : ''
-  const res = await apiFetch(`/knowledge/sync-runs${query}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取连接器同步记录失败'))
-  return (await res.json()).items ?? []
-}
-
-export async function apiListKnowledgeSyncRunItems(token: string, runId: string): Promise<KnowledgeSyncItem[]> {
-  const res = await apiFetch(`/knowledge/sync-runs/${encodeURIComponent(runId)}/items`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取同步明细失败'))
-  return (await res.json()).items ?? []
-}
-
-export async function apiRetryKnowledgeSyncRun(token: string, runId: string): Promise<{ run_id: string; requeued: number; status: string }> {
-  const res = await apiFetch(`/knowledge/sync-runs/${encodeURIComponent(runId)}/retry`, {
-    method: 'POST',
-    headers: authHeaders(token),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '重试同步失败项失败'))
-  return res.json()
 }
 
 export async function apiListKnowledgeSpaceSources(token: string, spaceId: string): Promise<EnterpriseKnowledgeSourceItem[]> {

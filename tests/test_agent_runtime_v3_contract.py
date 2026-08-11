@@ -21,11 +21,10 @@ from kernel.runtime.objects import Evidence, Provenance
 def test_manifest_version_and_tier_lists():
     reload_manifest()
     m = get_manifest()
-    assert m.version.startswith("3.")
+    assert m.version.startswith("4.")
     assert set(m.bootstrap_agent_types) == {"data", "rag"}
     assert "web" not in m.bootstrap_agent_types
-    web_ent = m.get("web")
-    assert web_ent is not None and web_ent.bootstrap is False
+    assert m.get("web") is None
     tier2 = set(m.tier2_node_keys())
     assert "data_intent" in tier2
     assert "data_verification" in tier2
@@ -50,14 +49,6 @@ def test_removed_capabilities_are_not_in_worker_or_bus():
     assert set(m.bus_eligible_agent_types()) == {"data", "rag"}
 
 
-def test_manifest_capability_alias_web_search():
-    reload_manifest()
-    m = get_manifest()
-    assert m.registry_name_for_capability_type("web_search") in ("web_intelligence", "web")
-    cap, reg = m.resolve_capability_alias("web_search")
-    assert cap == "web_search"
-
-
 def test_instantiate_builtin_matches_manifest():
     reload_manifest()
     agents = instantiate_builtin_agents()
@@ -67,7 +58,7 @@ def test_instantiate_builtin_matches_manifest():
 def test_sync_manifest_populates_capability_contracts():
     reload_manifest()
     summary = sync_manifest_to_runtime(force=True)
-    assert summary["contracts_synced"] >= 3
+    assert summary["contracts_synced"] >= 2
     from kernel.capability_runtime.contract import get_capability_contract
 
     c = get_capability_contract("data_query")
@@ -277,4 +268,4 @@ def test_manifest_yaml_parseable():
     )
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert "entries" in data
-    assert len(data["entries"]) >= 15
+    assert len(data["entries"]) >= 13

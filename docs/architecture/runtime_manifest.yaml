@@ -61,10 +61,6 @@ enterprise_knowledge:
   api_routes:
     - {method: GET, path: /api/v1/knowledge/spaces}
     - {method: POST, path: /api/v1/knowledge/search}
-    - {method: POST, path: "/api/v1/knowledge/connectors/{connector_id}/push"}
-    - {method: GET, path: /api/v1/knowledge/sync-runs}
-    - {method: GET, path: "/api/v1/knowledge/sync-runs/{run_id}/items"}
-    - {method: POST, path: "/api/v1/knowledge/sync-runs/{run_id}/retry"}
     - {method: POST, path: "/api/v1/knowledge/reviews/{review_id}/decision"}
   models_module: infra.storage.models
   required_models:
@@ -72,14 +68,10 @@ enterprise_knowledge:
     - KnowledgeSpaceMember
     - KnowledgePrincipalMembership
     - KnowledgeSpaceProject
-    - KnowledgeConnector
-    - KnowledgeSyncRun
-    - KnowledgeSyncItem
     - KnowledgeSourcePermission
     - KnowledgeReviewTask
   authorization: knowledge.access:accessible_source_predicate
   publication: knowledge.lifecycle:publish_source_version
-  sync_worker: knowledge.sync:process_pending_sync_items
   source_of_truth: PostgreSQL
   projection_only: Obsidian Vault
 

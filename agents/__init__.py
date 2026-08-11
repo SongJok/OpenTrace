@@ -1,8 +1,7 @@
 from agents.base import AgentResult, BaseAgent, TaskMessage
 from agents.data_agent import DataAgent
-from agents.registry import AgentRegistry
 from agents.rag_agent import RagAgent
-from agents.web_agent import WebAgent
+from agents.registry import AgentRegistry
 
 __all__ = [
     "AgentResult",
@@ -11,5 +10,4 @@ __all__ = [
     "DataAgent",
     "AgentRegistry",
     "RagAgent",
-    "WebAgent",
 ]

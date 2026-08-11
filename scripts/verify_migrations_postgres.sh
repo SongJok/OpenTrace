@@ -220,8 +220,4 @@ echo "== enterprise knowledge ACL and publication lifecycle =="
 ENTERPRISE_KNOWLEDGE_TEST_DATABASE_URL="$MIGRATION_TEST_DATABASE_URL" \
   "$PYTHON_BIN" scripts/verify_enterprise_knowledge_postgres.py
 
-echo "== durable knowledge connector sync queue =="
-ENTERPRISE_KNOWLEDGE_TEST_DATABASE_URL="$MIGRATION_TEST_DATABASE_URL" \
-  "$PYTHON_BIN" scripts/verify_durable_knowledge_sync_postgres.py
-
 echo "OK: real PostgreSQL migration verification passed"

@@ -49,9 +49,6 @@ def is_builtin_agent_enabled(agent_type: str) -> bool:
     setting_name = {
         "data": "kernel_agent_data_enabled",
         "rag": "kernel_agent_rag_enabled",
-        "web_intelligence": "kernel_agent_web_enabled",
-        "tool": "kernel_agent_tool_enabled",
-        "vision": "kernel_agent_vision_enabled",
     }.get(agent_type)
     return setting_name is None or bool(getattr(settings, setting_name, True))
 

@@ -8,7 +8,6 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -40,11 +39,11 @@ from infra.storage.sql_asset_models import SQLAsset as SQLAsset
 from infra.storage.sql_asset_models import SQLAssetSource as SQLAssetSource
 from infra.storage.sql_asset_models import SQLQueryCandidate as SQLQueryCandidate
 from infra.storage.sql_asset_models import SQLQueryDraft as SQLQueryDraft
+from infra.storage.text2sql_models import Text2SQLEvaluationCase as Text2SQLEvaluationCase
+from infra.storage.text2sql_models import Text2SQLFeedback as Text2SQLFeedback
 from infra.storage.text2sql_models import Text2SQLRunEvent as Text2SQLRunEvent
 from infra.storage.text2sql_models import Text2SQLRunRecord as Text2SQLRunRecord
 from infra.storage.text2sql_models import Text2SQLSemanticAsset as Text2SQLSemanticAsset
-from infra.storage.text2sql_models import Text2SQLEvaluationCase as Text2SQLEvaluationCase
-from infra.storage.text2sql_models import Text2SQLFeedback as Text2SQLFeedback
 
 
 def _uuid() -> str:
@@ -638,78 +637,6 @@ class EnterpriseDirectorySyncRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class EnterpriseWorkbenchTemplate(Base):
-    """按企业目录主体投影员工场景顺序的组织工作台模板。"""
-
-    __tablename__ = "enterprise_workbench_templates"
-    __table_args__ = (
-        Index(
-            "ix_enterprise_workbench_templates_scope_status",
-            "tenant_id",
-            "workspace_id",
-            "status",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    name: Mapped[str] = mapped_column(String(120), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    audience_type: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="principals", index=True
-    )
-    scenario_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100, index=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="inactive", index=True)
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    created_by: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
-    )
-    updated_by: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-
-class EnterpriseWorkbenchTemplateTarget(Base):
-    """组织工作台模板与部门、岗位或用户组的作用范围。"""
-
-    __tablename__ = "enterprise_workbench_template_targets"
-    __table_args__ = (
-        UniqueConstraint(
-            "template_id",
-            "principal_id",
-            name="uq_enterprise_workbench_template_target",
-        ),
-        Index(
-            "ix_enterprise_workbench_template_targets_scope",
-            "tenant_id",
-            "workspace_id",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    template_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("enterprise_workbench_templates.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    principal_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("enterprise_directory_principals.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
 class EnterpriseCognitiveEntity(Base):
     """公司或部门的一等认知实体，负责绑定目录主体与治理知识空间。"""
 
@@ -976,134 +903,11 @@ class KnowledgeSpaceProject(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class KnowledgeConnector(Base):
-    """企业知识源连接器状态；凭据只保存外部 credential 引用。"""
-
-    __tablename__ = "knowledge_connectors"
-    __table_args__ = (UniqueConstraint("space_id", "name", name="uq_knowledge_connector_name"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    space_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("knowledge_spaces.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    tenant_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    workspace_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    owner_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    name: Mapped[str] = mapped_column(String(128), nullable=False)
-    connector_type: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="push", index=True
-    )
-    base_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
-    credential_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    sync_cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sync_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=900)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active", index=True)
-    connector_config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-
-class KnowledgeSyncRun(Base):
-    __tablename__ = "knowledge_sync_runs"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    connector_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("knowledge_connectors.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    tenant_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    workspace_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
-    cursor_before: Mapped[str | None] = mapped_column(Text, nullable=True)
-    cursor_after: Mapped[str | None] = mapped_column(Text, nullable=True)
-    stats: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
-class KnowledgeSyncItem(Base):
-    """连接器增量 Snapshot 的持久化执行项，由 Worker 可恢复领取。"""
-
-    __tablename__ = "knowledge_sync_items"
-    __table_args__ = (
-        UniqueConstraint("run_id", "external_id", name="uq_knowledge_sync_item_external"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    run_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("knowledge_sync_runs.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    connector_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("knowledge_connectors.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    tenant_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    workspace_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    external_id: Mapped[str] = mapped_column(String(512), nullable=False)
-    document_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    content_type: Mapped[str] = mapped_column(String(20), nullable=False, default="text")
-    content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    authority: Mapped[str] = mapped_column(String(32), nullable=False, default="external")
-    classification: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    effective_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    source_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    acl_snapshot: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    locked_by: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-
 class KnowledgeSource(Base):
     __tablename__ = "knowledge_sources"
     __table_args__ = (
         UniqueConstraint(
             "tenant_id", "workspace_id", "document_id", name="uq_knowledge_source_document_scope"
-        ),
-        UniqueConstraint(
-            "tenant_id",
-            "workspace_id",
-            "connector_id",
-            "external_ref",
-            name="uq_knowledge_source_connector_ref",
         ),
     )
 
@@ -1120,12 +924,6 @@ class KnowledgeSource(Base):
     space_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("knowledge_spaces.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    connector_id: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey("knowledge_connectors.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -1969,86 +1767,6 @@ class GoalCheckpoint(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class CalendarEvent(Base):
-    """用户个人日历事件；重复事件按 RFC5545 规则在查询时展开。"""
-
-    __tablename__ = "calendar_events"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    workspace_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    location: Mapped[str] = mapped_column(String(512), nullable=False, default="")
-    event_type: Mapped[str] = mapped_column(String(32), nullable=False, default="event")
-    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
-    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default=DEFAULT_TIMEZONE)
-    all_day: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    recurrence_rule: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    reminder_minutes: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=lambda: [15])
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="confirmed", index=True)
-    source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
-    source_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-
-class CalendarEventRevision(Base):
-    """日历事件不可变更的修订账本；当前状态仍以 CalendarEvent 为准。"""
-
-    __tablename__ = "calendar_event_revisions"
-    __table_args__ = (UniqueConstraint("event_id", "revision", name="uq_calendar_event_revision"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    event_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("calendar_events.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    action: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
-    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    changed_fields: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
-    source_response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
-class CalendarReminderDelivery(Base):
-    """日历提醒投递账本，防止 Worker 重启或并发轮询造成重复通知。"""
-
-    __tablename__ = "calendar_reminder_deliveries"
-    __table_args__ = (
-        UniqueConstraint(
-            "event_id",
-            "occurrence_start",
-            "reminder_minutes",
-            name="uq_calendar_reminder_delivery",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    event_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("calendar_events.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    occurrence_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    reminder_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
-    delivered_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-
 class MemoryCandidate(Base):
     __tablename__ = "memory_candidates"
 
@@ -2180,67 +1898,6 @@ class TaskNotification(Base):
     body: Mapped[str] = mapped_column(Text, nullable=True)
     read: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
-class AlertRule(Base):
-    """Project-scoped deterministic condition evaluated from a governed data query."""
-
-    __tablename__ = "alert_rules"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    workspace_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    data_source_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    question: Mapped[str] = mapped_column(Text, nullable=False)
-    metric_column: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    aggregation: Mapped[str] = mapped_column(String(20), nullable=False, default="first")
-    operator: Mapped[str] = mapped_column(String(24), nullable=False, default="gt")
-    threshold: Mapped[float] = mapped_column(Float, nullable=False)
-    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="warning")
-    rrule: Mapped[str] = mapped_column(String(512), nullable=False)
-    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default=DEFAULT_TIMEZONE)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", index=True)
-    cooldown_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=3600)
-    last_value: Mapped[float | None] = mapped_column(Float, nullable=True)
-    last_state: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_triggered_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    next_run_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-
-class AlertEvent(Base):
-    __tablename__ = "alert_events"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    rule_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    state: Mapped[str] = mapped_column(String(20), nullable=False, default="triggered", index=True)
-    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="warning", index=True)
-    value: Mapped[float | None] = mapped_column(Float, nullable=True)
-    threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
-    summary: Mapped[str] = mapped_column(Text, nullable=False)
-    evidence: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    acknowledged_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True
-    )
 
 
 class SkillCatalogEntry(Base):
@@ -2502,34 +2159,6 @@ class DataSourceSchema(Base):
     last_analyzed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
-class ConnectorCredential(Base):
-    __tablename__ = "connector_credentials"
-    __table_args__ = (
-        UniqueConstraint(
-            "user_id",
-            "tenant_id",
-            "workspace_id",
-            "provider",
-            name="uq_connector_credential_scope_provider",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
-    provider: Mapped[str] = mapped_column(String(64), nullable=False)
-    account_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    credential_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
-    expires_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

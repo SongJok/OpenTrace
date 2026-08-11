@@ -26,7 +26,6 @@ QUALITY_PATHS=(
   knowledge/trace.py
   knowledge/compiler.py
   knowledge/jobs.py
-  knowledge/sync.py
   services/document_ingestion.py
   services/rag_query_planning.py
   services/enterprise_directory.py
@@ -35,18 +34,15 @@ QUALITY_PATHS=(
   alembic/versions/r0002_durable_knowledge_sync_queue.py
   alembic/versions/r0003_enterprise_directory_and_operations.py
   scripts/verify_enterprise_knowledge_postgres.py
-  scripts/verify_durable_knowledge_sync_postgres.py
   tests/test_enterprise_knowledge_base.py
   tests/test_p0_engineering_baseline.py
   evals
-  kernel/interoperability
   infra/reliability
   infra/observability/tracer.py
   infra/security/identity.py
   infra/storage/object_store.py
   services/data_governance.py
   gateway/api_gateway/routers/data_governance.py
-  gateway/api_gateway/routers/interoperability.py
   alembic/versions/r0004_enterprise_runtime_governance.py
   scripts/check_enterprise_boundaries.py
   scripts/run_enterprise_evals.py
@@ -60,7 +56,6 @@ QUALITY_PATHS=(
   tests/test_enterprise_governance_contract.py
   tests/test_enterprise_object_storage_contract.py
   tests/test_enterprise_identity_contract.py
-  tests/test_enterprise_protocol_server_contract.py
   tests/test_enterprise_refactoring_contract.py
   tests/test_enterprise_worker_metrics_contract.py
   tests/test_enterprise_trace_contract.py
@@ -74,17 +69,16 @@ backend_gate() {
     infra/config agents/bootstrap.py \
     gateway/api_gateway/routers/knowledge_enterprise.py \
     knowledge/access.py knowledge/lifecycle.py knowledge/query.py knowledge/trace.py \
-    knowledge/compiler.py knowledge/jobs.py knowledge/sync.py \
+    knowledge/compiler.py knowledge/jobs.py \
     services/document_ingestion.py services/rag_query_planning.py \
     services/enterprise_directory.py \
     gateway/api_gateway/routers/enterprise_admin.py \
     scripts/check_architecture_manifest.py scripts/verify_enterprise_knowledge_postgres.py \
-    scripts/verify_durable_knowledge_sync_postgres.py \
     scripts/check_migration_policy.py scripts/create_migration.py scripts/freeze_migration.py \
-    evals kernel/interoperability infra/reliability infra/security/identity.py \
+    evals infra/reliability infra/security/identity.py \
     infra/storage/object_store.py services/data_governance.py \
     gateway/api_gateway/routers/data_governance.py \
-    gateway/api_gateway/routers/interoperability.py scripts/check_enterprise_boundaries.py \
+    scripts/check_enterprise_boundaries.py \
     scripts/run_enterprise_evals.py scripts/load_responses.py \
     scripts/migrate_attachment_objects.py scripts/verify_tenant_rls_postgres.py
 

@@ -98,6 +98,18 @@ class TestAgentRuntimeV3Alignment:
         assert "web" not in m.bootstrap_agent_types
         assert "rules" not in m.bootstrap_agent_types
 
+    def test_online_processes_do_not_bootstrap_legacy_tools_or_web_agent(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        agents_package = (root / "agents/__init__.py").read_text(encoding="utf-8")
+        worker = (root / "agents/worker.py").read_text(encoding="utf-8")
+        runner = (root / "kernel/agent_loop/runner.py").read_text(encoding="utf-8")
+
+        assert "WebAgent" not in agents_package
+        assert "import tools" not in worker
+        assert "import tools" not in runner
+
     def test_agents_package_no_gateway_imports(self):
         from pathlib import Path
 

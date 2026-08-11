@@ -8,11 +8,10 @@
 | 提问页与 Responses 持久化运行时 | **Beta** | 继续提升真实提问完成率、恢复语义和成本基线 |
 | Agent Loop 与持久化审批 | **Beta** | 扩大 Golden Dataset、Trace Grading 和副作用 reconciliation 演练规模 |
 | DataAgent / Text2SQL | **Beta** | 扩大脱敏评测集、复杂方言覆盖和生产查询延迟基线 |
-| RAG 与知识发布 | **Beta** | 建立更长周期的引用准确率、生产规模召回和连接器恢复数据 |
+| RAG 与知识发布 | **Beta** | 建立更长周期的引用准确率、生产规模召回和治理质量数据 |
 | Memory / Task | **Beta** | 完善长期一致性、权限边界和生产运维基线 |
 | Agent Bus 与专家 Agent | **Beta internal** | 完成独立 Worker Pool、背压、DLQ 运维和容量压测 |
 | 旧 Cognitive Runtime | **compatibility / experimental** | 不进入当前产品主路径；仅维护兼容合约 |
-| MCP / A2A | **未对外支持** | 完成真实协议、授权、审批、隔离与互操作测试 |
 
 ## 成熟度定义
 

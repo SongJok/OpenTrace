@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from infra.storage.models import (
     KnowledgeClaim,
     KnowledgeCompilationJob,
-    KnowledgeConnector,
     KnowledgeFeedback,
     KnowledgeLintIssue,
     KnowledgeMergeCase,
@@ -44,30 +43,6 @@ ALLOWED_FEEDBACK_TYPES = {
 ALLOWED_RESOLUTIONS = {"acknowledged", "needs_revision", "corrected", "dismissed"}
 ACTIONABLE_FEEDBACK_TYPES = {"unhelpful", "incorrect", "outdated", "correction", "dislike"}
 AUTO_APPLIED_FEEDBACK_TYPES = {"helpful", "like"}
-
-
-def connector_sync_is_stale(
-    *,
-    connector_type: str,
-    status: str,
-    sync_interval_seconds: int,
-    last_sync_at: datetime | None,
-    created_at: datetime | None,
-    now: datetime,
-) -> bool:
-    """仅轮询型连接器需要按同步周期检查滞后；Push 无事件不代表异常。"""
-
-    if status != "active" or connector_type == "push":
-        return False
-
-    def aware(value: datetime | None) -> datetime | None:
-        if value is None or value.tzinfo is not None:
-            return value
-        return value.replace(tzinfo=UTC)
-
-    threshold = now - timedelta(seconds=max(120, sync_interval_seconds * 2))
-    last_activity = aware(last_sync_at) or aware(created_at)
-    return last_activity is not None and last_activity < threshold
 
 
 @dataclass(frozen=True, slots=True)
@@ -651,30 +626,6 @@ async def knowledge_governance_health(
         actionable_only=True,
         limit=200,
     )
-    connectors = list(
-        (
-            await db.execute(
-                select(KnowledgeConnector).where(
-                    KnowledgeConnector.tenant_id == tenant_id,
-                    KnowledgeConnector.workspace_id == workspace_id,
-                    KnowledgeConnector.space_id.in_(allowed_spaces),
-                )
-            )
-        ).scalars()
-    )
-
-    stale_connectors = sum(
-        connector_sync_is_stale(
-            connector_type=connector.connector_type,
-            status=connector.status,
-            sync_interval_seconds=connector.sync_interval_seconds,
-            last_sync_at=connector.last_sync_at,
-            created_at=connector.created_at,
-            now=now,
-        )
-        for connector in connectors
-    )
-
     metrics = {
         "sources": len(sources),
         "published_sources": sum(source.status == "published" for source in sources),
@@ -700,10 +651,6 @@ async def knowledge_governance_health(
         "open_lint_errors": sum(issue.severity == "error" for issue in lint_issues),
         "unresolved_feedback": len(feedback_items),
         "open_merge_cases": len(scoped_merge_case_ids),
-        "failed_connectors": sum(
-            connector.status == "failed" or bool(connector.last_error) for connector in connectors
-        ),
-        "stale_connectors": stale_connectors,
     }
     penalty = (
         metrics["due_reviews"] * 5
@@ -716,8 +663,6 @@ async def knowledge_governance_health(
         + metrics["open_lint_errors"] * 6
         + metrics["unresolved_feedback"] * 4
         + metrics["open_merge_cases"] * 6
-        + metrics["failed_connectors"] * 8
-        + metrics["stale_connectors"] * 4
     )
     score = max(0, 100 - min(100, penalty))
     status = "healthy" if score >= 85 else "attention" if score >= 60 else "critical"

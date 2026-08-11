@@ -29,7 +29,6 @@ from gateway.api_gateway.routers import (
     enterprise_context,
     feedback,
     health,
-    interoperability,
     knowledge,
     knowledge_enterprise,
     memories,
@@ -185,7 +184,6 @@ app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
 app.include_router(data_governance.router, prefix="/api/v1", tags=["data-governance"])
 app.include_router(chat.router, prefix="/api/v1", tags=["chat"])
 app.include_router(responses.router, prefix="/api/v2", tags=["responses"])
-app.include_router(interoperability.router, prefix="/api/v2", tags=["interoperability"])
 app.include_router(response_aux.router, prefix="/api/v2", tags=["response-resources"])
 app.include_router(agent_resources.router, prefix="/api/v2", tags=["agent-resources"])
 app.include_router(company_brain.router, prefix="/api/v2", tags=["company-brain"])

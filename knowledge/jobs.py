@@ -11,7 +11,6 @@ from typing import Any
 
 from sqlalchemy import select, update
 
-from infra.config.settings import settings
 from infra.observability.logger import get_logger
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import (
@@ -304,13 +303,8 @@ async def knowledge_job_loop() -> None:
                 await reconcile_ready_documents()
                 await reconcile_due_reviews()
                 next_reconcile = loop.time() + reconcile_interval
-            from knowledge.sync import process_pending_sync_items
-
-            sync_processed = await process_pending_sync_items(
-                limit=max(1, int(settings.knowledge_sync_batch_size))
-            )
             compile_processed = await process_pending_compile_jobs()
-            if not sync_processed and not compile_processed:
+            if not compile_processed:
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             raise

@@ -1,6 +1,6 @@
 # Agent Topology Manifest — single source of truth for capability/agent topology.
 # Version bumps require contract test updates (test_agent_runtime_v3_contract.py).
-version: "3.2.0"
+version: "4.0.0"
 
 runtimes:
   tier0_kernel:
@@ -39,106 +39,6 @@ entries:
       risk_tier: low
       max_latency_ms: 60000
       dependencies: []
-
-  web:
-    runtime: tier1
-    owner_runtime: tier1_executive
-    capability_type: web_search
-    registry_name: web
-    bootstrap: false
-    worker: false
-    bus_eligible: false
-    contract:
-      risk_tier: medium
-      max_latency_ms: 45000
-      dependencies: []
-    topology:
-      superseded_by: web_intelligence
-    notes: Legacy Serper path; dispatch resolves to web_intelligence when preferred
-
-  web_intelligence:
-    runtime: tier1
-    owner_runtime: tier1_executive
-    capability_type: web_search
-    registry_name: web_intelligence
-    bootstrap: false
-    worker: false
-    bus_eligible: false
-    contract:
-      risk_tier: medium
-      max_latency_ms: 60000
-      dependencies: []
-    topology:
-      preferred_over: web
-
-  tool:
-    runtime: tier1
-    owner_runtime: tier1_executive
-    capability_type: tool
-    registry_name: tool
-    bootstrap: false
-    worker: false
-    bus_eligible: false
-    contract:
-      risk_tier: low
-      max_latency_ms: 30000
-      dependencies: []
-
-  vision:
-    runtime: tier1
-    owner_runtime: tier1_executive
-    capability_type: vision_analysis
-    registry_name: vision
-    bootstrap: false
-    worker: false
-    bus_eligible: false
-    contract:
-      risk_tier: medium
-      max_latency_ms: 90000
-      dependencies: []
-    notes: Multimodal image/chart analysis; params image_urls / image_data
-
-  skills:
-    runtime: tier1
-    owner_runtime: tier1_executive
-    capability_type: skill_execution
-    registry_name: skills
-    bootstrap: false
-    worker: false
-    bus_eligible: false
-    contract:
-      risk_tier: low
-      max_latency_ms: 60000
-      dependencies: []
-    notes: Installed marketplace skills; not data_agent_v2 skills_engine
-
-  rules:
-    runtime: tier1
-    owner_runtime: tier1_executive
-    capability_type: policy_rules
-    registry_name: rules
-    bootstrap: false
-    worker: false
-    bus_eligible: false
-    contract:
-      risk_tier: low
-      max_latency_ms: 30000
-      dependencies: []
-    notes: Keyword + LLM rule interpretation; aligns with governance policy_runtime
-
-  data_intelligence:
-    runtime: tier1
-    owner_runtime: tier1_data
-    capability_type: data_query
-    registry_name: data
-    bootstrap: false
-    worker: false
-    bus_eligible: false
-    contract:
-      risk_tier: medium
-      max_latency_ms: 180000
-      dependencies: []
-    notes: External capability_type for dispatch; executes via data agent + V2 supervisor
 
   # ── Tier-2 Data V2 DAG nodes (manifest only; not CapabilityRegistry agents) ──
   data_knowledge:
@@ -237,8 +137,6 @@ topology_edges:
   - from: data_query
     to: fusion
   - from: document_retrieval
-    to: fusion
-  - from: web_search
     to: fusion
 
 bootstrap_agent_types:

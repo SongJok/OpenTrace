@@ -15,7 +15,6 @@ from text2sql.contracts import (
     RunState,
     deterministic_run_id,
 )
-from text2sql.mcp import mcp_tools
 from text2sql.policy import ExecutionPolicy
 from text2sql.research import ResearchPlanner
 from text2sql.service import Text2SQLService
@@ -158,15 +157,6 @@ def test_source_policy_can_block_execution() -> None:
     )
     assert decision.allowed is False
     assert decision.risk_level == "blocked"
-
-
-def test_feedback_mcp_tool_requires_data_source_scope() -> None:
-    feedback = next(tool for tool in mcp_tools() if tool["name"] == "text2sql.feedback")
-    assert set(feedback["inputSchema"]["required"]) == {
-        "run_id",
-        "data_source_id",
-        "verdict",
-    }
 
 
 def test_idempotency_run_id_is_stable_inside_scope() -> None:

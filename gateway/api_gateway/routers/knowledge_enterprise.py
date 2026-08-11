@@ -1,29 +1,25 @@
-"""企业知识库空间、权限、连接器同步和发布治理 API。"""
+"""企业知识库空间、权限和发布治理 API。"""
 
 from __future__ import annotations
 
-import hashlib
 import re
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.api_gateway.routers.admin import get_current_admin_user
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.audit.logger import write_audit_log
-from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
 from infra.security.identity import is_enterprise_admin
 from infra.security.resource_scope import normalized_tenant_scope
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
-    KnowledgeConnector,
     KnowledgePage,
     KnowledgePrincipalMembership,
     KnowledgeReviewTask,
@@ -32,8 +28,6 @@ from infra.storage.models import (
     KnowledgeSpace,
     KnowledgeSpaceMember,
     KnowledgeSpaceProject,
-    KnowledgeSyncItem,
-    KnowledgeSyncRun,
     Project,
     User,
 )
@@ -44,7 +38,6 @@ from knowledge.access import (
     resolve_access_context,
     role_allows,
 )
-from knowledge.compiler import content_hash
 from knowledge.lifecycle import (
     publish_source_version,
     reject_source_version,
@@ -52,9 +45,6 @@ from knowledge.lifecycle import (
     withdraw_source,
 )
 from knowledge.query import search_knowledge
-from knowledge.sync import retry_sync_run
-from services.dingtalk_workspace import DingTalkWorkspaceClient, DingTalkWorkspaceError
-from services.enterprise_directory import sync_enterprise_directory
 
 router = APIRouter()
 
@@ -101,52 +91,6 @@ class PrincipalMembershipUpsert(BaseModel):
     effective_from: datetime | None = None
     effective_to: datetime | None = None
     metadata: dict = Field(default_factory=dict)
-
-
-class ConnectorCreate(BaseModel):
-    space_id: str
-    name: str = Field(min_length=1, max_length=128)
-    connector_type: Literal["push", "sharepoint", "confluence", "dingtalk", "git"] = "push"
-    base_url: HttpUrl | None = None
-    credential_ref: str | None = Field(default=None, max_length=255)
-    sync_interval_seconds: int = Field(default=900, ge=60, le=86400)
-    config: dict = Field(default_factory=dict)
-
-
-class SourceAclEntry(BaseModel):
-    subject_type: SubjectType
-    subject_id: str = Field(min_length=1, max_length=128)
-    permission: Literal["view", "edit", "admin"] = "view"
-    inherited: bool = False
-    external_ref: str | None = Field(default=None, max_length=512)
-    expires_at: datetime | None = None
-
-
-class ConnectorSnapshot(BaseModel):
-    external_id: str = Field(min_length=1, max_length=512)
-    title: str = Field(min_length=1, max_length=255)
-    content: str = Field(default="", max_length=2_000_000)
-    content_type: str = Field(default="text", max_length=20)
-    deleted: bool = False
-    authority: str = Field(default="external", max_length=32)
-    classification: Classification | None = None
-    effective_from: datetime | None = None
-    effective_to: datetime | None = None
-    metadata: dict = Field(default_factory=dict)
-    acl: list[SourceAclEntry] = Field(default_factory=list, max_length=1000)
-
-
-class ConnectorPushRequest(BaseModel):
-    cursor: str | None = None
-    snapshots: list[ConnectorSnapshot] = Field(min_length=1, max_length=200)
-
-
-class DingTalkConnectorSyncRequest(BaseModel):
-    include_documents: bool = True
-    include_chats: bool = True
-    include_directory: bool = True
-    limit: int = Field(default=20, ge=1, le=50)
-    chat_since_days: int = Field(default=30, ge=1, le=365)
 
 
 class KnowledgeSearchRequest(BaseModel):
@@ -671,449 +615,6 @@ async def attach_space_project(
         payload={"project_id": project_id},
     )
     return {"attached": True, "space_id": space_id, "project_id": project_id}
-
-
-@router.get("/knowledge/connectors")
-async def list_connectors(
-    request: Request,
-    space_id: str | None = None,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    tenant_id, workspace_id = _scope(request, current_user)
-    context = await resolve_access_context(
-        db, user=current_user, tenant_id=tenant_id, workspace_id=workspace_id
-    )
-    admin_space_ids = [
-        item for item, role in context.space_roles.items() if role_allows(role, "admin")
-    ]
-    stmt = select(KnowledgeConnector).where(
-        KnowledgeConnector.tenant_id == tenant_id,
-        KnowledgeConnector.workspace_id == workspace_id,
-        KnowledgeConnector.space_id.in_(admin_space_ids) if admin_space_ids else False,
-    )
-    if space_id:
-        stmt = stmt.where(KnowledgeConnector.space_id == space_id)
-    rows = list((await db.execute(stmt.order_by(KnowledgeConnector.name))).scalars())
-    return {
-        "items": [
-            {
-                "id": row.id,
-                "space_id": row.space_id,
-                "name": row.name,
-                "connector_type": row.connector_type,
-                "status": row.status,
-                "sync_cursor": row.sync_cursor,
-                "last_sync_at": row.last_sync_at.isoformat() if row.last_sync_at else None,
-                "last_error": row.last_error,
-            }
-            for row in rows
-        ]
-    }
-
-
-@router.post("/knowledge/connectors")
-async def create_connector(
-    payload: ConnectorCreate,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    _, tenant_id, workspace_id = await _space_or_error(
-        db, request=request, user=current_user, space_id=payload.space_id, role="admin"
-    )
-    row = KnowledgeConnector(
-        id=str(uuid.uuid4()),
-        space_id=payload.space_id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        owner_id=current_user.id,
-        name=payload.name,
-        connector_type=payload.connector_type,
-        base_url=str(payload.base_url) if payload.base_url else None,
-        credential_ref=payload.credential_ref,
-        sync_interval_seconds=payload.sync_interval_seconds,
-        connector_config=payload.config,
-    )
-    db.add(row)
-    await db.commit()
-    await write_audit_log(
-        user_id=current_user.id,
-        action="knowledge_connector.create",
-        resource_type="knowledge_connector",
-        resource_id=row.id,
-        payload={"space_id": row.space_id, "connector_type": row.connector_type},
-    )
-    return {"id": row.id, "status": row.status}
-
-
-@router.post("/knowledge/connectors/{connector_id}/push", status_code=202)
-async def push_connector_snapshots(
-    connector_id: str,
-    payload: ConnectorPushRequest,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """持久化增量 Snapshot；实际摄入、ACL 和编译仅由 Worker 执行。"""
-    tenant_id, workspace_id = _scope(request, current_user)
-    connector = await db.scalar(
-        select(KnowledgeConnector).where(
-            KnowledgeConnector.id == connector_id,
-            KnowledgeConnector.tenant_id == tenant_id,
-            KnowledgeConnector.workspace_id == workspace_id,
-        )
-    )
-    if connector is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Connector not found")
-    await _space_or_error(
-        db, request=request, user=current_user, space_id=connector.space_id, role="admin"
-    )
-    batch_material = "\n".join(
-        [
-            str(payload.cursor or ""),
-            *(
-                f"{item.external_id}:{content_hash(item.content)}:{int(item.deleted)}"
-                for item in payload.snapshots
-            ),
-        ]
-    )
-    batch_hash = hashlib.sha256(batch_material.encode("utf-8")).hexdigest()
-    recent_runs = list(
-        (
-            await db.execute(
-                select(KnowledgeSyncRun)
-                .where(KnowledgeSyncRun.connector_id == connector.id)
-                .order_by(KnowledgeSyncRun.started_at.desc())
-                .limit(20)
-            )
-        ).scalars()
-    )
-    duplicate = next(
-        (
-            row
-            for row in recent_runs
-            if (row.stats or {}).get("batch_hash") == batch_hash
-            and row.status in {"pending", "running", "succeeded"}
-        ),
-        None,
-    )
-    if duplicate is not None:
-        return {
-            "accepted": True,
-            "deduplicated": True,
-            "run_id": duplicate.id,
-            "status": duplicate.status,
-            "queued": int((duplicate.stats or {}).get("queued", 0)),
-        }
-
-    run = KnowledgeSyncRun(
-        id=str(uuid.uuid4()),
-        connector_id=connector.id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        status="pending",
-        cursor_before=connector.sync_cursor,
-        cursor_after=payload.cursor,
-        stats={"batch_hash": batch_hash, "queued": len(payload.snapshots)},
-    )
-    db.add(run)
-    await db.flush()
-    for snapshot in payload.snapshots:
-        db.add(
-            KnowledgeSyncItem(
-                id=str(uuid.uuid4()),
-                run_id=run.id,
-                connector_id=connector.id,
-                tenant_id=tenant_id,
-                workspace_id=workspace_id,
-                external_id=snapshot.external_id,
-                title=snapshot.title,
-                content=snapshot.content,
-                content_type=snapshot.content_type,
-                content_hash=content_hash(snapshot.content),
-                deleted=snapshot.deleted,
-                authority=snapshot.authority,
-                classification=snapshot.classification,
-                effective_from=snapshot.effective_from,
-                effective_to=snapshot.effective_to,
-                source_metadata=snapshot.metadata,
-                acl_snapshot=[item.model_dump(mode="json") for item in snapshot.acl],
-                status="pending",
-            )
-        )
-    await db.commit()
-    await write_audit_log(
-        user_id=current_user.id,
-        action="knowledge_connector.sync.queued",
-        resource_type="knowledge_connector",
-        resource_id=connector.id,
-        payload={"run_id": run.id, "queued": len(payload.snapshots)},
-    )
-    return {
-        "accepted": True,
-        "deduplicated": False,
-        "run_id": run.id,
-        "status": run.status,
-        "queued": len(payload.snapshots),
-    }
-
-
-@router.post("/knowledge/connectors/{connector_id}/sync-dingtalk", status_code=202)
-async def sync_dingtalk_connector(
-    connector_id: str,
-    payload: DingTalkConnectorSyncRequest,
-    request: Request,
-    current_user: User = Depends(get_current_admin_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """读取钉钉文档、群聊和组织目录，并进入知识与目录治理链。"""
-    tenant_id, workspace_id = _scope(request, current_user)
-    connector = await db.scalar(
-        select(KnowledgeConnector).where(
-            KnowledgeConnector.id == connector_id,
-            KnowledgeConnector.tenant_id == tenant_id,
-            KnowledgeConnector.workspace_id == workspace_id,
-        )
-    )
-    if connector is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Connector not found")
-    if connector.connector_type != "dingtalk":
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="该连接器不是钉钉连接器")
-    await _space_or_error(
-        db, request=request, user=current_user, space_id=connector.space_id, role="admin"
-    )
-    config = dict(connector.connector_config or {})
-    try:
-        client = DingTalkWorkspaceClient(
-            binary=settings.dingtalk_dws_binary,
-            profile=settings.dingtalk_dws_profile,
-            timeout_seconds=settings.dingtalk_dws_timeout_seconds,
-        )
-        bundle = await client.collect(
-            include_documents=payload.include_documents,
-            include_chats=payload.include_chats,
-            include_directory=payload.include_directory,
-            workspace=str(config.get("workspace") or ""),
-            folder=str(config.get("folder") or ""),
-            root_department_id=str(config.get("root_department_id") or "1"),
-            chat_since_days=payload.chat_since_days,
-            limit=payload.limit,
-            max_departments=int(config.get("max_departments") or 500),
-        )
-    except (DingTalkWorkspaceError, ValueError) as exc:
-        connector.status = "error"
-        connector.last_error = str(exc)[:2000]
-        await db.commit()
-        raise AppException(
-            ErrorCodes.PARAM_INVALID.code,
-            message=f"钉钉同步失败：{exc}",
-        ) from exc
-
-    directory_run_id = None
-    if payload.include_directory:
-        directory_run = await sync_enterprise_directory(
-            db,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            actor=current_user,
-            provider="dingtalk",
-            cursor=bundle.cursor,
-            authoritative=bool(config.get("directory_authoritative", False)),
-            principals=bundle.principals,
-            memberships=bundle.memberships,
-        )
-        directory_run_id = directory_run.id
-
-    queued_result: dict = {
-        "accepted": True,
-        "deduplicated": False,
-        "run_id": None,
-        "status": "succeeded",
-        "queued": 0,
-    }
-    if bundle.knowledge_items:
-        snapshots = []
-        default_acl: object = config.get("default_acl")
-        configured_acl: list[Any] = default_acl if isinstance(default_acl, list) else []
-        for item in bundle.knowledge_items:
-            item_acl: object = item.acl
-            raw_acl: list[Any] = item_acl if isinstance(item_acl, list) else configured_acl
-            snapshots.append(
-                ConnectorSnapshot(
-                    external_id=item.external_id,
-                    title=item.title,
-                    content=item.content,
-                    content_type="text",
-                    authority="external",
-                    classification=("confidential" if item.source_type == "chat" else None),
-                    metadata={**item.metadata, "dingtalk_source_type": item.source_type},
-                    acl=[SourceAclEntry.model_validate(entry) for entry in raw_acl],
-                )
-            )
-        queued_result = await push_connector_snapshots(
-            connector_id,
-            ConnectorPushRequest(cursor=bundle.cursor, snapshots=snapshots),
-            request,
-            current_user,
-            db,
-        )
-    else:
-        connector.status = "active"
-        connector.last_error = None
-        connector.sync_cursor = bundle.cursor
-        connector.last_sync_at = datetime.now().astimezone()
-        await db.commit()
-    return {
-        **queued_result,
-        "directory_run_id": directory_run_id,
-        "documents": sum(1 for item in bundle.knowledge_items if item.source_type == "document"),
-        "chats": sum(1 for item in bundle.knowledge_items if item.source_type == "chat"),
-        "departments": len(bundle.principals),
-        "memberships": len(bundle.memberships),
-    }
-
-
-@router.get("/knowledge/sync-runs")
-async def list_sync_runs(
-    request: Request,
-    connector_id: str | None = None,
-    space_id: str | None = None,
-    limit: int = 50,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    tenant_id, workspace_id = _scope(request, current_user)
-    context = await resolve_access_context(
-        db, user=current_user, tenant_id=tenant_id, workspace_id=workspace_id
-    )
-    admin_space_ids = [
-        item for item, role in context.space_roles.items() if role_allows(role, "admin")
-    ]
-    stmt = (
-        select(KnowledgeSyncRun, KnowledgeConnector)
-        .join(KnowledgeConnector, KnowledgeSyncRun.connector_id == KnowledgeConnector.id)
-        .where(
-            KnowledgeSyncRun.tenant_id == tenant_id,
-            KnowledgeSyncRun.workspace_id == workspace_id,
-            KnowledgeConnector.space_id.in_(admin_space_ids) if admin_space_ids else False,
-        )
-    )
-    if connector_id:
-        stmt = stmt.where(KnowledgeSyncRun.connector_id == connector_id)
-    if space_id:
-        stmt = stmt.where(KnowledgeConnector.space_id == space_id)
-    rows = (
-        await db.execute(
-            stmt.order_by(KnowledgeSyncRun.started_at.desc()).limit(max(1, min(limit, 200)))
-        )
-    ).all()
-    return {
-        "items": [
-            {
-                "id": run.id,
-                "connector_id": run.connector_id,
-                "connector_name": connector.name,
-                "status": run.status,
-                "cursor_before": run.cursor_before,
-                "cursor_after": run.cursor_after,
-                "stats": run.stats,
-                "error": run.error,
-                "started_at": run.started_at.isoformat() if run.started_at else None,
-                "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-            }
-            for run, connector in rows
-        ]
-    }
-
-
-@router.get("/knowledge/sync-runs/{run_id}/items")
-async def list_sync_run_items(
-    run_id: str,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    tenant_id, workspace_id = _scope(request, current_user)
-    run = await db.scalar(
-        select(KnowledgeSyncRun).where(
-            KnowledgeSyncRun.id == run_id,
-            KnowledgeSyncRun.tenant_id == tenant_id,
-            KnowledgeSyncRun.workspace_id == workspace_id,
-        )
-    )
-    if run is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Sync run not found")
-    connector = await db.get(KnowledgeConnector, run.connector_id)
-    if connector is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Connector not found")
-    await _space_or_error(
-        db, request=request, user=current_user, space_id=connector.space_id, role="admin"
-    )
-    rows = list(
-        (
-            await db.execute(
-                select(KnowledgeSyncItem)
-                .where(KnowledgeSyncItem.run_id == run_id)
-                .order_by(KnowledgeSyncItem.created_at)
-            )
-        ).scalars()
-    )
-    return {
-        "items": [
-            {
-                "id": item.id,
-                "external_id": item.external_id,
-                "title": item.title,
-                "deleted": item.deleted,
-                "status": item.status,
-                "attempts": item.attempts,
-                "document_id": item.document_id,
-                "source_id": item.source_id,
-                "error": item.error,
-                "started_at": item.started_at.isoformat() if item.started_at else None,
-                "completed_at": item.completed_at.isoformat() if item.completed_at else None,
-            }
-            for item in rows
-        ]
-    }
-
-
-@router.post("/knowledge/sync-runs/{run_id}/retry")
-async def retry_knowledge_sync_run(
-    run_id: str,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    tenant_id, workspace_id = _scope(request, current_user)
-    run = await db.scalar(
-        select(KnowledgeSyncRun).where(
-            KnowledgeSyncRun.id == run_id,
-            KnowledgeSyncRun.tenant_id == tenant_id,
-            KnowledgeSyncRun.workspace_id == workspace_id,
-        )
-    )
-    if run is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Sync run not found")
-    connector = await db.get(KnowledgeConnector, run.connector_id)
-    if connector is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Connector not found")
-    await _space_or_error(
-        db, request=request, user=current_user, space_id=connector.space_id, role="admin"
-    )
-    try:
-        result = await retry_sync_run(run_id)
-    except ValueError as exc:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
-    await write_audit_log(
-        user_id=current_user.id,
-        action="knowledge_connector.sync.retry",
-        resource_type="knowledge_connector",
-        resource_id=connector.id,
-        payload={"run_id": run_id, "requeued": result["requeued"]},
-    )
-    return result
 
 
 @router.post("/knowledge/reviews/reconcile-due")

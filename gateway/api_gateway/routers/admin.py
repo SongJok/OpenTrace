@@ -60,7 +60,6 @@ from memory.constitution import (
     preview_memory_constitution_impact,
     quarantine_noncompliant_memories,
 )
-from tools.registry.registry import registry
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -515,12 +514,6 @@ async def reset_user_password(
     await db.commit()
     logger.info("User password reset", user_id=user.id, by=current_user.email)
     return {"message": "用户密码已重置"}
-
-
-@router.get("/admin/tools")
-async def list_tools(current_user: User = Depends(get_current_admin_user)) -> dict:
-    """List all registered tools."""
-    return {"tools": registry.list_all()}
 
 
 @router.post("/admin/learning/cycle")

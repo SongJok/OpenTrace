@@ -5,17 +5,15 @@
 ## 目标主链
 
 ```text
-企业文档/知识系统/代码仓库/业务系统
-  → KnowledgeConnector（游标、凭据引用、同步状态）
-  → KnowledgeSyncRun + KnowledgeSyncItem（API 仅持久化，HTTP 202）
-  → Sync Worker 行锁领取、文档摄入、Source/ACL 落库
+我的资料投稿
+  → Document + KnowledgeSource / SourceVersion
   → durable compile job
   → Page / Claim / Relation
   → Lint / ACL / 有效期 / 密级 / 版本差异
   → Review Task
   → Active Published Version
   → 企业知识搜索 / RAG / Project / Agent
-  → 反馈、复审、撤回和再次同步
+  → 反馈、复审、撤回和重新投稿
 ```
 
 ## 产品与控制面分工
@@ -23,8 +21,8 @@
 | 产品面 | 用户 | 职责 |
 |---|---|---|
 | 我的资料 `/documents` | 全体员工 | 原始文件、个人/Project 检索资料，以及向知识空间投稿的唯一上传入口 |
-| 企业知识库 `/knowledge-base` | 全体员工 | 搜索、浏览空间、查看已发布资产和来源状态、发起知识投稿 |
-| 知识治理中心 `/knowledge` | Owner/Steward/Reviewer | 编排规则、关系图、任务、审核、连接器、同步、质量和空间授权 |
+| 企业知识库 `/knowledge-base` | 管理员 | 搜索、浏览空间、查看已发布资产和来源状态、发起知识投稿 |
+| 知识库质量中心 `/knowledge` | 管理员 | 编排策略、关系图、任务、审核、质量和空间授权 |
 | Responses/RAG | Agent | 在统一权限范围内检索 Page、Claim、Relation 和原文证据 |
 
 产品层必须保持以下边界：
@@ -32,7 +30,7 @@
 - `Document` 是原始内容事实，不等于已发布企业知识；
 - `KnowledgeSource` 是稳定治理身份，更新文件应生成新 Source Version；
 - `KnowledgePage/Claim/Relation` 是派生资产，不能脱离 Source Version 成为第二套事实；
-- 员工端不直接操作编译 Job、Connector Cursor、Review 决策或空间 ACL；
+- 员工端不直接操作编译 Job、Review 决策或空间 ACL；
 - 企业知识版本只能通过 Review Task 决策发布，兼容 Page Publish API 仅用于非空间个人知识；
 - 已进入企业知识生命周期的 Document 不能物理删除，必须先撤回 Source 并保留审计链。
 
@@ -46,23 +44,15 @@
 
 密级为 `public → internal → confidential → restricted`。查询在召回前过滤密级、租户、工作区、空间、来源 ACL、有效期和撤回状态；Session 热证据也必须重新授权。
 
-## 来源与同步
+## 来源与编排
 
-连接器只保存 `credential_ref`，不把密钥写入知识表。同步协议支持：
+企业知识的唯一交互式摄入入口是“我的资料”。用户选择目标知识空间投稿后，系统保留原始
+`Document`，创建稳定的 `KnowledgeSource` 和新的 Source Version，再由持久化编译任务生成
+Page、Claim 与 Relation。API 请求内不执行分块、Embedding 或编译；后台 Worker 负责领取任务，
+失败任务可回收并保留可追溯状态。
 
-- 增量 cursor；
-- 内容哈希去重；
-- 来源 ACL 快照；
-- 修改生成新 Document/Source Version；
-- 删除转为 withdraw/tombstone，不直接让旧索引继续可见；
-- 同步 Run 记录 queued/running/succeeded/failed 和 created/updated/unchanged/deleted；
-- API 请求内不执行分块、Embedding 或编译，只返回 `202 Accepted`；
-- Worker 使用 `FOR UPDATE SKIP LOCKED` 领取同步项，失联项可回收，耗尽尝试次数后终止为 failed；
-- 同一连接器按 Run 顺序推进，前置失败批次会阻塞后续批次，避免 cursor 回退或跨增量漏数；
-- 只有整批 Snapshot 成功才推进 cursor，失败项可在治理端查看错误并显式重试；
-- `batch_hash` 在状态聚合时保留，用于 pending/running/succeeded 批次幂等去重。
-
-当前提供通用 Push 接口作为 SharePoint、Confluence、钉钉、Git 等连接器的稳定落点。具体连接器只负责把外部增量事件规范化为 Snapshot，不得直接写 KnowledgePage。治理端可查看 Run 与 Item 状态、展开错误明细，并对失败项重新入队。
+修改资料会生成新 Source Version，撤回则归档活动版本和派生资产，不能让旧索引继续可见。
+质量中心只提供编排策略、审核、质量检查、复审、合并和空间授权，不再提供外部连接器或同步运行面板。
 
 ## 发布与复审
 

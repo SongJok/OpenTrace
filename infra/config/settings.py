@@ -256,20 +256,9 @@ class AppSettings(BaseSettings):
     web_fetch_timeout_seconds: float = 10.0
     web_fetch_max_redirects: int = 3
     web_fetch_max_response_bytes: int = 1_000_000
-    connector_allowed_redirect_origins: str = "http://localhost:14108,http://127.0.0.1:14108"
-    connector_oauth_state_ttl_seconds: int = 600
     # Disabled by default to prevent authenticated users from turning model
     # endpoint configuration into access to loopback/private network services.
     dynamic_llm_allow_private_base_urls: bool = False
-    github_connector_client_id: str = ""
-    github_connector_client_secret: str = ""
-    slack_connector_client_id: str = ""
-    slack_connector_client_secret: str = ""
-    confluence_connector_client_id: str = ""
-    confluence_connector_client_secret: str = ""
-    dingtalk_dws_binary: str = ""
-    dingtalk_dws_profile: str = ""
-    dingtalk_dws_timeout_seconds: int = 30
 
     # Weather
     weather_api_key: str = ""
@@ -279,10 +268,10 @@ class AppSettings(BaseSettings):
     # 这些字段保留用于滚动升级和紧急熔断，不再作为推荐组合公开。
     kernel_agent_enabled: bool = True
     kernel_agent_data_enabled: bool = True
-    kernel_agent_tool_enabled: bool = True
-    kernel_agent_web_enabled: bool = True
+    kernel_agent_tool_enabled: bool = False
+    kernel_agent_web_enabled: bool = False
     kernel_agent_rag_enabled: bool = True
-    kernel_agent_vision_enabled: bool = True
+    kernel_agent_vision_enabled: bool = False
     # True: vision execute fails fast without image_urls/image_data (recommended for production).
     kernel_vision_require_images: bool = True
     kernel_agent_timeout_sec: int = 30
@@ -441,8 +430,6 @@ class AppSettings(BaseSettings):
     response_worker_tenant_concurrency: int = 2
     worker_role: Literal["all", "responses", "agents", "knowledge", "scheduler"] = "all"
     worker_metrics_port: int = 9464
-    alert_scheduler_poll_seconds: int = 10
-    alert_scheduler_retry_seconds: int = 60
     # When True, tenant daily turn/cost quotas use Redis counters (multi-replica safe)
     enterprise_quota_redis_enabled: bool = False
     enterprise_usage_redis_enabled: bool = False
@@ -461,12 +448,6 @@ class AppSettings(BaseSettings):
     identity_oidc_audience: str = ""
     identity_oidc_jwks_url: str = ""
     identity_oidc_algorithms: str = "RS256,ES256"
-
-    # 互操作协议默认关闭；启用后仍必须复用现有 ACL、审批与工具幂等账本。
-    mcp_client_enabled: bool = False
-    mcp_server_enabled: bool = False
-    a2a_protocol_enabled: bool = False
-    a2a_service_secret: str = ""
 
     # Cognition lexicon
     cognition_lexicon_json: str = ""
@@ -521,7 +502,7 @@ class AppSettings(BaseSettings):
     skillhub_github_timeout_seconds: float = 20.0
     skillhub_github_raw_fallback_enabled: bool = True
     rag_min_evidence_score: float = 0.65
-    rag_auto_fallback_to_web: bool = True
+    rag_auto_fallback_to_web: bool = False
     rag_rerank_enabled: bool = True
     rag_claim_anchor_enabled: bool = True
     rag_evidence_cluster_enabled: bool = True
@@ -535,9 +516,6 @@ class AppSettings(BaseSettings):
     knowledge_max_relation_hops: int = 2
     knowledge_query_candidate_budget: int = 60
     knowledge_stale_after_days: int = 30
-    knowledge_sync_batch_size: int = 4
-    knowledge_sync_reclaim_minutes: int = 10
-    knowledge_sync_max_attempts: int = 3
     llmwiki_enabled: bool = True
     llmwiki_model: str = "qwen3.5-27b"
     llmwiki_top_k: int = 3
@@ -701,14 +679,6 @@ class AppSettings(BaseSettings):
             if item.strip()
         ]
 
-    @property
-    def connector_redirect_origin_list(self) -> list[str]:
-        return [
-            item.strip().lower().rstrip("/")
-            for item in self.connector_allowed_redirect_origins.split(",")
-            if item.strip()
-        ]
-
 
 class Settings(
     AppSettings,
@@ -821,7 +791,7 @@ class Settings(
         self.skills_subprocess_execution_enabled = False
         return self
 
-    @field_validator("cors_allowed_origins", "connector_allowed_redirect_origins")
+    @field_validator("cors_allowed_origins")
     @classmethod
     def _validate_cors_origins(cls, value: str) -> str:
         origins = [item.strip() for item in str(value or "").split(",") if item.strip()]
@@ -852,10 +822,6 @@ class Settings(
         if self.web_fetch_enabled and not self.web_fetch_domain_list:
             raise ValueError(
                 f"{self.app_env} requires WEB_FETCH_ALLOWED_DOMAINS when web fetch is enabled"
-            )
-        if self.a2a_protocol_enabled and len(self.a2a_service_secret) < 32:
-            raise ValueError(
-                "A2A_PROTOCOL_ENABLED requires A2A_SERVICE_SECRET of at least 32 chars"
             )
         if self.identity_oidc_enabled:
             oidc_required = {

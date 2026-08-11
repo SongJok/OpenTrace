@@ -18,9 +18,6 @@ from infra.message_bus.agent_bus import AgentMessageBus
 
 class AgentWorker:
     def __init__(self) -> None:
-        import tools  # noqa: F401  # register function tools in this worker process
-        from tools.builtin_tools import analytics_tools as _analytics_tools  # noqa: F401
-
         self.bus = AgentMessageBus(namespace=str(settings.kernel_agent_bus_namespace))
 
         register_builtin_agents(force=True)

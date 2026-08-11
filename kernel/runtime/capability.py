@@ -42,7 +42,7 @@ class Capability:
     pairs_with: list[str] = field(default_factory=list)
     requires: list[str] = field(default_factory=list)
     latency_tier: str = "medium"  # low | medium | high
-    cost_tier: str = "medium"     # low | medium | high
+    cost_tier: str = "medium"  # low | medium | high
 
 
 class CapabilityRegistry:
@@ -128,16 +128,6 @@ class CapabilityRegistry:
     def get(self, name: str) -> Capability | None:
         return self._capabilities.get(name)
 
-    def _web_intelligence_enabled(self) -> bool:
-        try:
-            from infra.config.settings import settings
-
-            if not bool(getattr(settings, "kernel_web_intelligence_preferred", True)):
-                return False
-        except Exception as exc:
-            logger.warning("web_intelligence_setting_read_skipped", error=str(exc))
-        return self.has_agent("web_intelligence")
-
     def resolve_capability_type(self, name: str) -> str:
         """Map registry name / agent_type to canonical capability_type (manifest SSOT)."""
         try:
@@ -155,9 +145,6 @@ class CapabilityRegistry:
         aliases = {
             "data": "data_query",
             "rag": "document_retrieval",
-            "web": "web_search",
-            "web_intelligence": "web_search",
-            "web_intel": "web_search",
         }
         return aliases.get(key, key)
 
@@ -169,25 +156,18 @@ class CapabilityRegistry:
             _cap, reg = get_manifest().resolve_capability_alias(agent_type)
             if reg and self.has_agent(reg):
                 return reg
-            if reg == "web_intelligence" and not self.has_agent(reg) and self.has_agent("web"):
-                return "web"
         except Exception as exc:
-            logger.warning("manifest_execution_agent_resolve_skipped", agent_type=agent_type, error=str(exc))
+            logger.warning(
+                "manifest_execution_agent_resolve_skipped", agent_type=agent_type, error=str(exc)
+            )
         key = (agent_type or "").lower()
         if self.has_agent(key):
             return key
         fallbacks = {
             "data_query": "data",
             "document_retrieval": "rag",
-            "web_search": "web_intelligence" if self._web_intelligence_enabled() else "web",
-            "vision_analysis": "vision",
-            "skill_execution": "skills",
-            "policy_rules": "rules",
             "data": "data",
             "rag": "rag",
-            "vision": "vision",
-            "skills": "skills",
-            "rules": "rules",
         }
         alt = fallbacks.get(key)
         if alt and self.has_agent(alt):
@@ -259,9 +239,7 @@ class CapabilityRegistry:
 
             tf = sum(doc_tokens.count(t) for t in tokens)
             name_bonus = 3.0 if any(t in cap.name.lower() for t in tokens) else 0.0
-            tag_bonus = sum(
-                1.5 for tag in cap.tags if any(t in tag.lower() for t in tokens)
-            )
+            tag_bonus = sum(1.5 for tag in cap.tags if any(t in tag.lower() for t in tokens))
             raw_score = tf + name_bonus + tag_bonus
 
             if raw_score > 0:

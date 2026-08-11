@@ -1,14 +1,11 @@
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from gateway.api_gateway.main import app
 from gateway.api_gateway.routers.knowledge_enterprise import (
-    ConnectorPushRequest,
     KnowledgeSearchRequest,
     KnowledgeSpaceCreate,
 )
 from infra.storage.models import (
-    KnowledgeConnector,
     KnowledgePrincipalMembership,
     KnowledgeReviewTask,
     KnowledgeSource,
@@ -16,8 +13,6 @@ from infra.storage.models import (
     KnowledgeSpace,
     KnowledgeSpaceMember,
     KnowledgeSpaceProject,
-    KnowledgeSyncItem,
-    KnowledgeSyncRun,
 )
 from knowledge.access import (
     CLASSIFICATION_RANK,
@@ -33,7 +28,7 @@ from services.rag_query_planning import build_rag_query_plan, normalize_rag_evid
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_enterprise_knowledge_models_cover_space_acl_sync_and_review() -> None:
+def test_enterprise_knowledge_models_cover_space_acl_and_review() -> None:
     assert KnowledgeSpace.__tablename__ == "knowledge_spaces"
     assert {"space_type", "visibility", "publish_policy", "review_cycle_days"}.issubset(
         set(KnowledgeSpace.__table__.columns.keys())
@@ -45,22 +40,7 @@ def test_enterprise_knowledge_models_cover_space_acl_sync_and_review() -> None:
         set(KnowledgePrincipalMembership.__table__.columns.keys())
     )
     assert KnowledgeSpaceProject.__tablename__ == "knowledge_space_projects"
-    assert {"connector_type", "credential_ref", "sync_cursor", "last_sync_at"}.issubset(
-        set(KnowledgeConnector.__table__.columns.keys())
-    )
-    assert KnowledgeSyncRun.__tablename__ == "knowledge_sync_runs"
-    assert KnowledgeSyncItem.__tablename__ == "knowledge_sync_items"
-    assert {
-        "run_id",
-        "connector_id",
-        "external_id",
-        "content_hash",
-        "acl_snapshot",
-        "status",
-        "attempts",
-        "locked_by",
-    }.issubset(set(KnowledgeSyncItem.__table__.columns.keys()))
-    assert {"space_id", "connector_id", "classification", "effective_to", "deleted_at"}.issubset(
+    assert {"space_id", "classification", "effective_to", "deleted_at"}.issubset(
         set(KnowledgeSource.__table__.columns.keys())
     )
     assert KnowledgeSourcePermission.__tablename__ == "knowledge_source_permissions"
@@ -113,11 +93,6 @@ def test_enterprise_knowledge_openapi_exposes_employee_and_governance_surfaces()
         "/api/v1/knowledge/spaces/{space_id}/members": {"get", "post"},
         "/api/v1/knowledge/spaces/{space_id}/sources": {"get"},
         "/api/v1/knowledge/spaces/{space_id}/assets": {"get"},
-        "/api/v1/knowledge/connectors": {"get", "post"},
-        "/api/v1/knowledge/connectors/{connector_id}/push": {"post"},
-        "/api/v1/knowledge/sync-runs": {"get"},
-        "/api/v1/knowledge/sync-runs/{run_id}/items": {"get"},
-        "/api/v1/knowledge/sync-runs/{run_id}/retry": {"post"},
         "/api/v1/knowledge/reviews": {"get"},
         "/api/v1/knowledge/reviews/{review_id}/decision": {"post"},
         "/api/v1/knowledge/search": {"post"},
@@ -125,38 +100,22 @@ def test_enterprise_knowledge_openapi_exposes_employee_and_governance_surfaces()
     for path, methods in expected.items():
         assert methods.issubset(paths[path])
 
-    push_operation = paths["/api/v1/knowledge/connectors/{connector_id}/push"]["post"]
-    assert "202" in push_operation["responses"]
+    removed_paths = {
+        "/api/v1/knowledge/connectors",
+        "/api/v1/knowledge/connectors/{connector_id}/push",
+        "/api/v1/knowledge/sync-runs",
+        "/api/v1/knowledge/sync-runs/{run_id}/items",
+        "/api/v1/knowledge/sync-runs/{run_id}/retry",
+    }
+    assert removed_paths.isdisjoint(paths)
 
 
-def test_space_and_connector_requests_enforce_enterprise_limits() -> None:
+def test_space_and_search_requests_enforce_enterprise_limits() -> None:
     search = KnowledgeSearchRequest(query="报销制度", space_id="space-a")
     assert search.space_id == "space-a"
     space = KnowledgeSpaceCreate(name="公司制度", space_type="company")
     assert space.publish_policy == "review"
     assert space.default_classification == "internal"
-    push = ConnectorPushRequest.model_validate(
-        {
-            "cursor": "delta-2",
-            "snapshots": [
-                {
-                    "external_id": "policy-1",
-                    "title": "报销制度",
-                    "content": "差旅报销需要直属主管审批。",
-                    "classification": "internal",
-                    "acl": [
-                        {
-                            "subject_type": "department",
-                            "subject_id": "finance",
-                            "permission": "view",
-                        }
-                    ],
-                }
-            ],
-        }
-    )
-    assert push.cursor == "delta-2"
-    assert push.snapshots[0].acl[0].subject_type == "department"
 
 
 def test_rag_evidence_keeps_enterprise_governance_context() -> None:
@@ -183,7 +142,7 @@ def test_rag_evidence_keeps_enterprise_governance_context() -> None:
             "score": 0.8,
             "space_id": "space-1",
             "classification": "internal",
-            "source_system": "sharepoint",
+            "source_system": "manual_upload",
             "sync_status": "current",
             "effective_from": "2026-07-01T00:00:00+00:00",
             "review_due_at": "2027-01-01T00:00:00+00:00",
@@ -192,7 +151,7 @@ def test_rag_evidence_keeps_enterprise_governance_context() -> None:
     )
     assert evidence["space_id"] == "space-1"
     assert evidence["classification"] == "internal"
-    assert evidence["source_system"] == "sharepoint"
+    assert evidence["source_system"] == "manual_upload"
     assert evidence["sync_status"] == "current"
 
 
@@ -204,8 +163,6 @@ def test_governed_migration_and_local_alembic_template_are_present() -> None:
         "knowledge_spaces",
         "knowledge_space_members",
         "knowledge_principal_memberships",
-        "knowledge_connectors",
-        "knowledge_sync_runs",
         "knowledge_source_permissions",
         "knowledge_review_tasks",
     ):
@@ -226,37 +183,16 @@ def test_frontend_separates_employee_knowledge_base_from_governance_console() ->
     assert "apiListEnterpriseKnowledgeConnectors" not in employee_page
     assert "投稿资料" in employee_page and "/documents?space_id=" in employee_page
     assert "知识库质量中心" in governance_page
-    assert "审核队列" in governance_page and "连接器与同步" in governance_page
-    assert "空间访问控制" in governance_page and "重试失败项" in governance_page
+    assert "审核队列" in governance_page and "质量与反馈" in governance_page
+    assert "空间访问控制" in governance_page and "连接器与同步" not in governance_page
     assert "我的资料" in documents_page and "投稿企业知识库" in documents_page
     assert 'path="/knowledge-base"' in app
     assert "企业知识库" in sidebar and "知识库质量中心" in sidebar
     assert "role === 'admin'" in sidebar
     assert "apiSearchEnterpriseKnowledge" in client
-    assert "apiListKnowledgeSyncRuns" in client
-    assert "apiRetryKnowledgeSyncRun" in client
+    assert "apiListKnowledgeSyncRuns" not in client
+    assert "apiRetryKnowledgeSyncRun" not in client
     assert "knowledge_space_id" in client
-
-
-def test_durable_sync_worker_is_wired_before_compilation() -> None:
-    jobs = (ROOT / "knowledge/jobs.py").read_text()
-    sync = (ROOT / "knowledge/sync.py").read_text()
-    assert "process_pending_sync_items" in jobs
-    assert jobs.index("process_pending_sync_items") < jobs.index("process_pending_compile_jobs()")
-    assert ".with_for_update(skip_locked=True)" in sync
-    assert "await enqueue_document_compile(document.id)" in sync
-    assert 'if key == "batch_hash"' in sync
-    assert "blocking_earlier_run" in sync
-    assert "knowledge_sync_worker_lease_expired" in sync
-
-
-def test_durable_sync_migration_is_additive_and_reversible() -> None:
-    migration = (ROOT / "alembic/versions/r0002_durable_knowledge_sync_queue.py").read_text()
-    assert 'revision = "r0002_durable_knowledge_sync_queue"' in migration
-    assert 'down_revision = "r0001_enterprise_knowledge_base"' in migration
-    assert '"knowledge_sync_items"' in migration
-    assert "op.create_table(" in migration
-    assert 'op.drop_table("knowledge_sync_items")' in migration
 
 
 def test_knowledge_lint_uses_merge_case_id_and_compiler_rolls_back_failed_session() -> None:
@@ -342,37 +278,6 @@ def test_withdrawal_cannot_be_reversed_by_reconciliation_or_inflight_compile() -
     assert "await db.refresh(source, with_for_update=True)" in lifecycle
     assert 'KnowledgeCompilationJob.status.in_(["pending", "running"])' in lifecycle
     assert '"reason": "source_withdrawn"' in lifecycle
-
-
-def test_push_connector_is_not_marked_stale_without_periodic_events() -> None:
-    from knowledge.governance import connector_sync_is_stale
-
-    now = datetime(2026, 7, 27, 8, 0, tzinfo=UTC)
-    old_activity = now - timedelta(hours=2)
-    assert not connector_sync_is_stale(
-        connector_type="push",
-        status="active",
-        sync_interval_seconds=900,
-        last_sync_at=old_activity,
-        created_at=old_activity,
-        now=now,
-    )
-    assert connector_sync_is_stale(
-        connector_type="confluence",
-        status="active",
-        sync_interval_seconds=900,
-        last_sync_at=old_activity,
-        created_at=old_activity,
-        now=now,
-    )
-    assert not connector_sync_is_stale(
-        connector_type="confluence",
-        status="failed",
-        sync_interval_seconds=900,
-        last_sync_at=old_activity,
-        created_at=old_activity,
-        now=now,
-    )
 
 
 def test_governance_health_counts_merge_case_lint_in_the_same_space_scope() -> None:

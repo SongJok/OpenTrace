@@ -27,11 +27,12 @@ def test_employee_surface_excludes_governance_operations() -> None:
     for operation in (
         "apiListKnowledgeReviews",
         "apiDecideKnowledgeReview",
-        "apiListEnterpriseKnowledgeConnectors",
         "apiGrantKnowledgeSpaceMember",
     ):
         assert operation not in employee
         assert operation in governance
+    assert "apiListEnterpriseKnowledgeConnectors" not in employee
+    assert "apiListEnterpriseKnowledgeConnectors" not in governance
 
 
 def test_governance_uses_review_task_as_enterprise_publish_entry() -> None:
@@ -95,3 +96,5 @@ def test_enterprise_search_feedback_and_quality_workbench_are_space_scoped() -> 
     assert "扫描到期复审" in governance
     assert "选择并合并" in governance
     assert "apiUploadDocument" not in governance
+    assert "apiListKnowledgeSyncRuns" not in client
+    assert "apiRetryKnowledgeSyncRun" not in client

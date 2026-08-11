@@ -91,11 +91,6 @@ const zh = {
     branchConversationFailed: '创建分支会话失败',
     bindSessionSkillsFailed: '绑定会话技能失败',
     getSessionSkillsFailed: '获取会话技能失败',
-    listConnectorsFailed: '获取连接器列表失败',
-    connectorAuthorizeFailed: '获取连接器授权地址失败',
-    connectorCallbackFailed: '连接器回调失败',
-    connectorResourcesFailed: '获取连接器资源失败',
-    connectorSyncFailed: '连接器同步失败',
     listSkillsFailed: '获取技能列表失败',
     installSkillFailed: '安装技能失败',
     uninstallSkillFailed: '卸载技能失败',
@@ -118,8 +113,6 @@ const zh = {
     cancelTaskFailed: '取消任务失败',
     listNotificationsFailed: '获取通知列表失败',
     markNotificationReadFailed: '标记通知已读失败',
-    listAuditLogsFailed: '获取审计日志失败',
-    exportAuditLogsFailed: '导出审计日志失败',
   },
 }
 

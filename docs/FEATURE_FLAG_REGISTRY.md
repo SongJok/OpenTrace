@@ -6,10 +6,10 @@
 
 | Profile | 内置 Agent | 用途 |
 |---|---|---|
-| `core` | tool / skills / rules | 最小 Responses 工具执行 |
-| `data` | core + data | DataAgent / Text2SQL |
-| `knowledge` | core + rag | 企业知识问答 |
-| `data_knowledge` | data + knowledge + web_intelligence + vision | 默认完整产品闭环 |
+| `core` | 无专家 Agent | 仅 Manager 模型问答 |
+| `data` | data | DataAgent / Text2SQL |
+| `knowledge` | rag | 企业知识 RAG |
+| `data_knowledge` | data + rag | 默认提问闭环 |
 
 ## 公开高影响开关（自动生成）
 
@@ -22,16 +22,12 @@
 | `kernel_agent_learning_auto_apply` | false | experimental | agent-quality | 0.1.0 | 连续两个 Beta 发布中通过回放评测且无越权策略写入 | 0.3.0 | learning | kernel_capability_intelligence_enabled |
 | `data_agent_v2_fallback_to_v1` | false | deprecated | data-agent | 0.1.0 | — | — | data | — |
 | `enterprise_tenant_rls_enabled` | false | experimental | security | 0.1.0 | 核心事实表 RLS 与跨租户负向测试全部进入发布门禁 | 0.3.0 | tenant-isolation | — |
-| `web_fetch_enabled` | false | experimental | security | 0.1.0 | 独立网络出口、域名白名单、凭据隔离和配额全部落地 | 0.3.0 | network-egress | — |
 
-## 企业协议上线控制（自动生成）
+## 企业身份上线控制（自动生成）
 
 | Control | 默认 | 阶段 | Owner | 引入版本 | 退出条件 | 最晚删除版本 | 影响面 |
 |---|---:|---|---|---|---|---|---|
 | `identity_oidc_enabled` | false | experimental | security | 0.1.0 | 完成两个受支持 IdP 的 JWKS、撤销和故障切换互操作认证 | 0.3.0 | authentication |
-| `mcp_client_enabled` | false | experimental | runtime | 0.1.0 | 工具 allowlist、审批和幂等账本互操作矩阵全部通过 | 0.3.0 | interoperability |
-| `mcp_server_enabled` | false | experimental | runtime | 0.1.0 | MCP 兼容矩阵和 durable Responses 适配连续两个版本稳定 | 0.3.0 | interoperability |
-| `a2a_protocol_enabled` | false | experimental | runtime | 0.1.0 | 服务身份、租户绑定、防重放与端到端互操作测试全部通过 | 0.3.0 | interoperability |
 
 ## 治理规则
 
@@ -55,5 +51,3 @@
 这些数值控制不是能力开关。表目录 API 固定采用有界分页响应，不能通过提高同步预算改回一次性
 返回完整 Schema；生产调整预算前必须先验证 API 内存、目标数据库元数据查询和 PostgreSQL
 `DataSourceSchema` 体积。
-
-钉钉企业数据接入不是运行时 Feature Flag；它以 `DINGTALK_DWS_BINARY` 和有效只读认证是否可用作为显式部署门禁。未配置时同步请求失败关闭，不会回退到模拟数据或绕过企业知识/目录治理链。
