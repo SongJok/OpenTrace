@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from text2sql.contracts import LogicalQueryPlan
+from data_agent.contracts import LogicalQueryPlan
 
 
 @dataclass(frozen=True)

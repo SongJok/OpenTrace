@@ -452,19 +452,71 @@ class AppSettings(BaseSettings):
     # Cognition lexicon
     cognition_lexicon_json: str = ""
 
-    # Text2SQL / Databases
+    # DataAgent / Databases
     data_secret_key: str = ""
     docker_host_alias: str = "host.docker.internal"
-    text2sql_enabled: bool = True
-    text2sql_max_retry: int = 2
-    text2sql_default_limit: int = 100
-    text2sql_max_result_rows: int = 500
-    text2sql_statement_timeout_ms: int = 15000
-    text2sql_join_inference_enabled: bool = True
-    text2sql_max_join_depth: int = 3
-    text2sql_generation_max_tokens: int = Field(default=1600, ge=400, le=8192)
-    text2sql_schema_hint_max_chars: int = Field(default=16000, ge=4000, le=100000)
-    # Schema 元数据同步使用独立预算，不能复用 Text2SQL 的 500 行结果保护器。
+    data_agent_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("DATA_AGENT_ENABLED", "TEXT2SQL_ENABLED"),
+    )
+    data_agent_max_retry: int = Field(
+        default=2,
+        validation_alias=AliasChoices("DATA_AGENT_MAX_RETRY", "TEXT2SQL_MAX_RETRY"),
+    )
+    data_agent_default_limit: int = Field(
+        default=100,
+        validation_alias=AliasChoices("DATA_AGENT_DEFAULT_LIMIT", "TEXT2SQL_DEFAULT_LIMIT"),
+    )
+    data_agent_max_result_rows: int = Field(
+        default=500,
+        validation_alias=AliasChoices("DATA_AGENT_MAX_RESULT_ROWS", "TEXT2SQL_MAX_RESULT_ROWS"),
+    )
+    data_agent_statement_timeout_ms: int = Field(
+        default=15000,
+        validation_alias=AliasChoices(
+            "DATA_AGENT_STATEMENT_TIMEOUT_MS", "TEXT2SQL_STATEMENT_TIMEOUT_MS"
+        ),
+    )
+    data_agent_join_inference_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "DATA_AGENT_JOIN_INFERENCE_ENABLED", "TEXT2SQL_JOIN_INFERENCE_ENABLED"
+        ),
+    )
+    data_agent_max_join_depth: int = Field(
+        default=3,
+        validation_alias=AliasChoices("DATA_AGENT_MAX_JOIN_DEPTH", "TEXT2SQL_MAX_JOIN_DEPTH"),
+    )
+    data_agent_generation_max_tokens: int = Field(
+        default=1600,
+        ge=400,
+        le=8192,
+        validation_alias=AliasChoices(
+            "DATA_AGENT_GENERATION_MAX_TOKENS", "TEXT2SQL_GENERATION_MAX_TOKENS"
+        ),
+    )
+    data_agent_schema_hint_max_chars: int = Field(
+        default=16000,
+        ge=4000,
+        le=100000,
+        validation_alias=AliasChoices(
+            "DATA_AGENT_SCHEMA_HINT_MAX_CHARS", "TEXT2SQL_SCHEMA_HINT_MAX_CHARS"
+        ),
+    )
+    data_agent_profile_enabled: bool = True
+    data_agent_profile_sample_rows: int = Field(default=1000, ge=50, le=10000)
+    data_agent_profile_max_tables: int = Field(default=50, ge=1, le=1000)
+    data_agent_profile_max_columns_per_table: int = Field(default=100, ge=1, le=1000)
+    data_agent_profile_top_values: int = Field(default=20, ge=1, le=100)
+    data_agent_profile_statement_timeout_ms: int = Field(default=30000, ge=1000, le=300000)
+    data_agent_profile_ttl_hours: int = Field(default=24, ge=1, le=720)
+    data_agent_preflight_required: bool = True
+    data_agent_preflight_timeout_ms: int = Field(default=15000, ge=1000, le=120000)
+    data_agent_preflight_max_estimated_rows: int = Field(default=10000000, ge=1000, le=10000000000)
+    data_agent_preflight_max_estimated_bytes: int = Field(
+        default=1073741824, ge=1048576, le=1099511627776
+    )
+    # Schema 元数据同步使用独立预算，不能复用 DataAgent 的 500 行结果保护器。
     database_schema_sync_page_size: int = Field(default=2000, ge=100, le=10000)
     database_schema_sync_max_tables: int = Field(default=100000, ge=1000, le=1000000)
     database_schema_sync_max_columns: int = Field(

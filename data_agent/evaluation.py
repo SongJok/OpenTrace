@@ -1,4 +1,4 @@
-"""冻结结果上的 Text2SQL 评测工具。"""
+"""冻结结果上的 DataAgent 评测工具。"""
 
 from __future__ import annotations
 

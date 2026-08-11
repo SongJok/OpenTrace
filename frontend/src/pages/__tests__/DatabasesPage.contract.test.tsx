@@ -11,7 +11,7 @@ describe('DatabasesPage contract', () => {
     expect(source).toContain('保存并测试连接')
   })
 
-  it('keeps Text2SQL generation separate from candidate execution', async () => {
+  it('keeps DataAgent generation separate from candidate execution', async () => {
     const page = await import('../DatabasesPage')
     const source = page.default.toString()
 

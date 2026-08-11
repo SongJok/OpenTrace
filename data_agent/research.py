@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from text2sql.contracts import EvidenceType, ResearchPlan, ResearchStep
+from data_agent.contracts import EvidenceType, ResearchPlan, ResearchStep
 
 
 class ResearchPlanner:
@@ -15,9 +15,13 @@ class ResearchPlanner:
     """
 
     _metric_terms = re.compile(
-        r"收入|销售|金额|数量|人数|占比|率|均值|平均|总计|gmv|revenue|count|sum|avg", re.I
+        r"收入|流水|销售|金额|数量|人数|用户数|订单数|占比|率|均值|平均|总计|"
+        r"gmv|revenue|count|sum|avg",
+        re.I,
     )
     _process_terms = re.compile(r"流程|状态|支付|退款|发货|注册|转化|留存|生命周期|原因|为什么")
+    _policy_terms = re.compile(r"政策|规则|活动|奖励|结算|退款|为什么|原因|变更")
+    _report_terms = re.compile(r"报表|日报|周报|月报|经营看板|dashboard|bi", re.I)
     _time_terms = re.compile(
         r"今天|昨日|本周|本月|今年|去年|最近|过去|趋势|同比|环比|日|周|月|季度|年", re.I
     )
@@ -43,6 +47,12 @@ class ResearchPlanner:
                     source=EvidenceType.METRIC, reason="问题包含聚合或业务指标词", max_items=30
                 )
             )
+            steps.append(
+                ResearchStep(
+                    source=EvidenceType.BUSINESS_RULE,
+                    reason="指标必须同时读取固有过滤、排除条件和口径变更规则",
+                )
+            )
         if self._time_terms.search(text):
             steps.append(
                 ResearchStep(
@@ -63,6 +73,28 @@ class ResearchPlanner:
                     required=False,
                 )
             )
+            steps.append(
+                ResearchStep(
+                    source=EvidenceType.BUSINESS_RULE,
+                    reason="读取业务状态、排除条件和指标计算规则",
+                )
+            )
+        if self._policy_terms.search(text):
+            steps.append(
+                ResearchStep(
+                    source=EvidenceType.POLICY,
+                    reason="问题涉及政策、活动或业务规则变化",
+                    required=False,
+                )
+            )
+        if self._report_terms.search(text):
+            steps.append(
+                ResearchStep(
+                    source=EvidenceType.REPORT,
+                    reason="BI 报表是已确认事实和指标口径的重要证据",
+                    required=False,
+                )
+            )
         if self._skill_terms.search(text):
             steps.append(
                 ResearchStep(
@@ -75,6 +107,20 @@ class ResearchPlanner:
             ResearchStep(
                 source=EvidenceType.SQL_ASSET,
                 reason="检索同一数据源的已验证历史查询作为参考",
+                required=False,
+            )
+        )
+        steps.append(
+            ResearchStep(
+                source=EvidenceType.LINEAGE,
+                reason="选择经过加工和治理的可信表，避免误用原始明细层",
+                required=False,
+            )
+        )
+        steps.append(
+            ResearchStep(
+                source=EvidenceType.EXECUTION_MEMORY,
+                reason="复用相同作用域内已验证的历史计划和结果校验经验",
                 required=False,
             )
         )

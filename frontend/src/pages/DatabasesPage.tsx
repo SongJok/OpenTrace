@@ -105,6 +105,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     draft_status?: string
     candidates?: SQLQueryCandidateItem[]
     query_plan?: Record<string, unknown>
+    execution_summary?: Record<string, any>
   } | null>(null)
   const [querySessionId, setQuerySessionId] = useState<string | null>(null)
   const [sessionContext, setSessionContext] = useState<Record<string, any> | null>(null)
@@ -137,7 +138,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const [editingMetric, setEditingMetric] = useState<{ name: string; expression: string }>({ name: '', expression: '' })
   const [editingTimeMacro, setEditingTimeMacro] = useState<{ keyword: string; column: string; days: number }>({ keyword: '', column: '', days: 7 })
 
-  // DataAgent V2 knowledge asset state
+  // DataAgent 治理资产状态
   const [metricsList, setMetricsList] = useState<any[]>([])
   const [relationshipsList, setRelationshipsList] = useState<any[]>([])
   const [skillsList, setSkillsList] = useState<any[]>([])
@@ -279,7 +280,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
         time_macros: x?.time_macros || [],
       }))
       .catch(() => setSemanticConfig({ dimensions: {}, metrics: {}, time_macros: [] }))
-    // Load DataAgent V2 knowledge assets
+    // 加载 DataAgent 治理资产
     apiFetch(`/api/v1/metrics?data_source_id=${selected.id}`, token).then((x) => setMetricsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setMetricsList([]))
     apiFetch(`/api/v1/table-relationships?data_source_id=${selected.id}`, token).then((x) => setRelationshipsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setRelationshipsList([]))
     apiFetch(`/api/v1/analytical-skills`, token).then((x) => setSkillsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setSkillsList([]))
@@ -622,6 +623,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
       draft_status: out.draft?.status,
       candidates: out.candidates || out.draft?.candidates || [],
       query_plan: out.query_plan || out.draft?.query_plan,
+      execution_summary: out.draft?.execution_summary || {},
     })
   }
 
@@ -637,14 +639,18 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
       })
       const candidates = draft.candidates || []
       const completed = candidates.find((item) => item.execution_status === 'completed')
+      const executionAnswer = typeof draft.execution_summary?.answer === 'string'
+        ? draft.execution_summary.answer
+        : null
       setQueryOutput((previous) => previous ? {
         ...previous,
-        answer: draft.status === 'completed' ? 'SQL 执行完成。' : 'SQL 执行结束，部分候选执行失败。',
+        answer: executionAnswer || (draft.status === 'completed' ? 'SQL 执行完成。' : 'SQL 执行结束，部分候选执行失败。'),
         summary: `${candidates.filter((item) => item.execution_status === 'completed').length} 条 SQL 执行成功`,
         sql: completed?.sql || previous.sql,
         rows: completed?.rows || [],
         draft_status: draft.status,
         candidates,
+        execution_summary: draft.execution_summary || {},
       } : previous)
     } catch (error: any) {
       alert(error?.message || '执行 SQL 草案失败')
@@ -664,6 +670,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
         rows: completed?.rows || previous.rows,
         draft_status: draft.status,
         candidates: draft.candidates || [],
+        execution_summary: draft.execution_summary || {},
       } : previous)
     } catch (error: any) {
       alert(error?.message || '刷新 SQL 草案失败')
@@ -1467,6 +1474,18 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                                 </div>
                               </div>
                               <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded border border-[var(--border)] bg-black/20 p-2 text-xs">{candidate.sql}</pre>
+                              {candidate.validation_report?.preflight && Object.keys(candidate.validation_report.preflight).length ? (
+                                <details className="mt-2 rounded border border-[var(--border)] p-2">
+                                  <summary className="cursor-pointer text-[11px] font-medium">执行前 EXPLAIN 预检</summary>
+                                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-[10px] text-[var(--text-secondary)]">{JSON.stringify(candidate.validation_report.preflight, null, 2)}</pre>
+                                </details>
+                              ) : null}
+                              {candidate.validation_report?.result_validation && Object.keys(candidate.validation_report.result_validation).length ? (
+                                <details className="mt-2 rounded border border-[var(--border)] p-2">
+                                  <summary className="cursor-pointer text-[11px] font-medium">结果完整性与质量校验</summary>
+                                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-[10px] text-[var(--text-secondary)]">{JSON.stringify(candidate.validation_report.result_validation, null, 2)}</pre>
+                                </details>
+                              ) : null}
                               {candidate.error_message ? <div className="mt-2 text-xs text-red-400">{candidate.error_message}</div> : null}
                               {candidate.execution_status === 'completed' ? (
                                 <div className="mt-2 text-xs text-emerald-500">
@@ -1746,7 +1765,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                       <h3 className="text-sm font-semibold inline-flex items-center gap-1.5"><Zap size={14} /> 语义层配置</h3>
                       <button onClick={() => void handleAutoExtractSemantic()} className="px-2 py-1 rounded bg-[var(--accent-dim)] text-[var(--accent)] text-xs inline-flex items-center gap-1"><Zap size={12} /> 自动提取</button>
                     </div>
-                    <p className="text-xs text-[var(--text-secondary)]">配置业务术语到数据库字段的映射，提升 Text2SQL 准确度。</p>
+                    <p className="text-xs text-[var(--text-secondary)]">配置业务术语到数据库字段的映射，提升 DataAgent 准确度。</p>
 
                     {/* Dimensions */}
                     <div className="space-y-2">

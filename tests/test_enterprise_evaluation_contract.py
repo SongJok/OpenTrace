@@ -12,7 +12,7 @@ def test_enterprise_golden_datasets_are_non_empty_and_uniquely_identified():
     for name in (
         "agent_loop",
         "rag",
-        "text2sql",
+        "data_agent",
         "memory",
     ):
         cases = load_dataset(ROOT / "evals" / "datasets" / f"{name}.jsonl")

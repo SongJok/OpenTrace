@@ -1,4 +1,4 @@
-"""独立 Text2SQL 平台的 OpenTrace 适配 API。"""
+"""独立 DataAgent 平台的 OpenTrace 适配 API。"""
 
 from __future__ import annotations
 
@@ -8,38 +8,41 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from data_agent.adapters.opentrace.answer import OpenTraceAnswerSynthesizer
+from data_agent.adapters.opentrace.evidence import OpenTraceEvidenceProvider
+from data_agent.adapters.opentrace.executor import OpenTraceQueryExecutor
+from data_agent.adapters.opentrace.generator import OpenTraceSQLGenerator
+from data_agent.adapters.opentrace.repository import OpenTraceRunRepository
+from data_agent.contracts import DataScope, ExecutionMode, QueryRequest, deterministic_run_id
+from data_agent.evaluation import ResultComparator
+from data_agent.profiling import DataProfiler, serialize_profile
+from data_agent.service import DataAgentService
 from gateway.api_gateway.resource_scope import get_accessible_data_source
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.config.settings import settings
+from infra.storage.data_agent_models import (
+    DataAgentEvaluationCase,
+    DataAgentFeedback,
+    DataAgentProfile,
+    DataAgentSemanticAsset,
+)
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import Project, User
-from infra.storage.text2sql_models import (
-    Text2SQLEvaluationCase,
-    Text2SQLFeedback,
-    Text2SQLSemanticAsset,
-)
-from text2sql.adapters.opentrace.answer import OpenTraceAnswerSynthesizer
-from text2sql.adapters.opentrace.evidence import OpenTraceEvidenceProvider
-from text2sql.adapters.opentrace.executor import OpenTraceQueryExecutor
-from text2sql.adapters.opentrace.generator import OpenTraceSQLGenerator
-from text2sql.adapters.opentrace.repository import OpenTraceRunRepository
-from text2sql.contracts import DataScope, ExecutionMode, QueryRequest, deterministic_run_id
-from text2sql.service import Text2SQLService
 
 
 def _ensure_enabled() -> None:
-    if not settings.text2sql_enabled:
-        raise HTTPException(status_code=404, detail="Text2SQL 未启用")
+    if not settings.data_agent_enabled:
+        raise HTTPException(status_code=404, detail="DataAgent 未启用")
 
 
 router = APIRouter(dependencies=[Depends(_ensure_enabled)])
 
 
-class Text2SQLQueryRequest(BaseModel):
+class DataAgentQueryRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=8192)
     data_source_id: str = Field(..., min_length=1, max_length=128)
     mode: str = Field(default="sql_only", pattern="^(sql_only|execute_and_answer)$")
@@ -49,10 +52,13 @@ class Text2SQLQueryRequest(BaseModel):
     max_rows: int = Field(default=100, ge=1, le=10000)
     requested_tables: list[str] = Field(default_factory=list, max_length=100)
     requested_output: str | None = Field(default=None, max_length=1000)
+    timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
+    as_of: datetime | None = None
+    minimum_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
     project_id: str | None = Field(default=None, max_length=128)
 
 
-class Text2SQLExecuteRequest(BaseModel):
+class DataAgentExecuteRequest(BaseModel):
     candidate_id: str | None = Field(default=None, max_length=64)
     confirmed: bool = True
 
@@ -60,13 +66,21 @@ class Text2SQLExecuteRequest(BaseModel):
 class SemanticAssetCreateRequest(BaseModel):
     data_source_id: str = Field(..., min_length=1, max_length=128)
     asset_type: str = Field(
-        ..., pattern="^(business_process|data_quality|entity|dimension|source_policy)$"
+        ...,
+        pattern=(
+            "^(business_process|business_rule|policy|report|lineage|data_quality|entity|"
+            "dimension|source_policy)$"
+        ),
     )
     asset_key: str = Field(..., min_length=1, max_length=255)
     title: str = Field(..., min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=8000)
     definition: dict[str, Any] = Field(default_factory=dict)
     source_refs: list[str] = Field(default_factory=list, max_length=50)
+    business_domain: str | None = Field(default=None, max_length=128)
+    owner: str | None = Field(default=None, max_length=255)
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
     project_id: str | None = Field(default=None, max_length=128)
 
 
@@ -88,6 +102,16 @@ class FeedbackRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ProfileRefreshRequest(BaseModel):
+    data_source_id: str = Field(..., min_length=1, max_length=128)
+    tables: list[str] = Field(default_factory=list, max_length=1000)
+
+
+class EvaluationRunRequest(BaseModel):
+    execute: bool = False
+    max_rows: int = Field(default=500, ge=1, le=10000)
+
+
 def _scope(
     request: Request, user: User, data_source_id: str, project_id: str | None = None
 ) -> DataScope:
@@ -101,8 +125,8 @@ def _scope(
     )
 
 
-def _service(db: AsyncSession, source: Any) -> Text2SQLService:
-    return Text2SQLService(
+def _service(db: AsyncSession, source: Any) -> DataAgentService:
+    return DataAgentService(
         evidence_provider=OpenTraceEvidenceProvider(db, source),
         sql_generator=OpenTraceSQLGenerator(),
         query_executor=OpenTraceQueryExecutor(source),
@@ -158,17 +182,26 @@ async def _validate_project_scope(
 
 
 def _validate_max_rows(max_rows: int) -> None:
-    if max_rows > settings.text2sql_max_result_rows:
+    if max_rows > settings.data_agent_max_result_rows:
         raise HTTPException(
             status_code=422,
-            detail=f"max_rows 不能超过平台上限 {settings.text2sql_max_result_rows}",
+            detail=f"max_rows 不能超过平台上限 {settings.data_agent_max_result_rows}",
         )
 
 
-@router.post("/text2sql/queries")
-async def create_text2sql_query(
+def _validate_effective_interval(valid_from: datetime | None, valid_to: datetime | None) -> None:
+    if valid_from is None or valid_to is None:
+        return
+    start = valid_from if valid_from.tzinfo is not None else valid_from.replace(tzinfo=UTC)
+    end = valid_to if valid_to.tzinfo is not None else valid_to.replace(tzinfo=UTC)
+    if end <= start:
+        raise HTTPException(status_code=422, detail="valid_to 必须晚于 valid_from")
+
+
+@router.post("/data-agent/queries")
+async def create_data_agent_query(
     request: Request,
-    payload: Text2SQLQueryRequest,
+    payload: DataAgentQueryRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -199,6 +232,9 @@ async def create_text2sql_query(
         max_rows=payload.max_rows,
         requested_tables=payload.requested_tables,
         requested_output=payload.requested_output,
+        timezone=payload.timezone,
+        as_of=payload.as_of,
+        minimum_confidence=payload.minimum_confidence,
         idempotency_key=normalized_idempotency_key,
     )
     if normalized_idempotency_key:
@@ -211,8 +247,8 @@ async def create_text2sql_query(
     return _payload(run)
 
 
-@router.get("/text2sql/queries/{run_id}")
-async def get_text2sql_query(
+@router.get("/data-agent/queries/{run_id}")
+async def get_data_agent_query(
     request: Request,
     run_id: str,
     data_source_id: str,
@@ -234,15 +270,15 @@ async def get_text2sql_query(
         raise HTTPException(status_code=404, detail="data source not found")
     run = await OpenTraceRunRepository(db).get(run_id, scope)
     if run is None:
-        raise HTTPException(status_code=404, detail="text2sql run not found")
+        raise HTTPException(status_code=404, detail="DataAgent run not found")
     return _payload(run)
 
 
-@router.post("/text2sql/queries/{run_id}/execute")
-async def execute_text2sql_query(
+@router.post("/data-agent/queries/{run_id}/execute")
+async def execute_data_agent_query(
     request: Request,
     run_id: str,
-    payload: Text2SQLExecuteRequest,
+    payload: DataAgentExecuteRequest,
     data_source_id: str,
     project_id: str | None = Query(default=None, max_length=128),
     current_user: User = Depends(get_current_user),
@@ -271,7 +307,7 @@ async def execute_text2sql_query(
     return _payload(run)
 
 
-@router.post("/text2sql/semantic-assets")
+@router.post("/data-agent/semantic-assets")
 async def create_semantic_asset(
     request: Request,
     payload: SemanticAssetCreateRequest,
@@ -280,7 +316,17 @@ async def create_semantic_asset(
 ) -> dict[str, Any]:
     scope, _ = await _source_for_scope(request, current_user, db, payload.data_source_id, "edit")
     await _validate_project_scope(db, scope=scope, project_id=payload.project_id)
-    asset = Text2SQLSemanticAsset(
+    _validate_effective_interval(payload.valid_from, payload.valid_to)
+    latest_version = await db.scalar(
+        select(func.max(DataAgentSemanticAsset.version)).where(
+            DataAgentSemanticAsset.tenant_id == scope.tenant_id,
+            DataAgentSemanticAsset.workspace_id == scope.workspace_id,
+            DataAgentSemanticAsset.data_source_id == payload.data_source_id,
+            DataAgentSemanticAsset.asset_type == payload.asset_type,
+            DataAgentSemanticAsset.asset_key == payload.asset_key,
+        )
+    )
+    asset = DataAgentSemanticAsset(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
         tenant_id=scope.tenant_id,
@@ -289,10 +335,15 @@ async def create_semantic_asset(
         data_source_id=payload.data_source_id,
         asset_type=payload.asset_type,
         asset_key=payload.asset_key,
+        version=int(latest_version or 0) + 1,
         title=payload.title,
         description=payload.description,
         definition_json=payload.definition,
         source_refs=payload.source_refs,
+        business_domain=payload.business_domain,
+        owner=payload.owner,
+        valid_from=payload.valid_from,
+        valid_to=payload.valid_to,
         authority="contextual",
         status="draft",
     )
@@ -302,7 +353,7 @@ async def create_semantic_asset(
     return {"asset": _semantic_asset_payload(asset)}
 
 
-@router.get("/text2sql/semantic-assets")
+@router.get("/data-agent/semantic-assets")
 async def list_semantic_assets(
     request: Request,
     data_source_id: str = Query(..., min_length=1),
@@ -324,28 +375,28 @@ async def list_semantic_assets(
     )
     if source is None:
         raise HTTPException(status_code=404, detail="data source not found")
-    statement = select(Text2SQLSemanticAsset).where(
-        Text2SQLSemanticAsset.tenant_id == scope.tenant_id,
-        Text2SQLSemanticAsset.workspace_id == scope.workspace_id,
-        Text2SQLSemanticAsset.data_source_id == data_source_id,
+    statement = select(DataAgentSemanticAsset).where(
+        DataAgentSemanticAsset.tenant_id == scope.tenant_id,
+        DataAgentSemanticAsset.workspace_id == scope.workspace_id,
+        DataAgentSemanticAsset.data_source_id == data_source_id,
         or_(
-            Text2SQLSemanticAsset.project_id.is_(None),
-            Text2SQLSemanticAsset.project_id == scope.project_id,
+            DataAgentSemanticAsset.project_id.is_(None),
+            DataAgentSemanticAsset.project_id == scope.project_id,
         ),
     )
     if asset_type:
-        statement = statement.where(Text2SQLSemanticAsset.asset_type == asset_type)
+        statement = statement.where(DataAgentSemanticAsset.asset_type == asset_type)
     if status:
-        statement = statement.where(Text2SQLSemanticAsset.status == status)
+        statement = statement.where(DataAgentSemanticAsset.status == status)
     rows = list(
-        (await db.execute(statement.order_by(Text2SQLSemanticAsset.updated_at.desc()).limit(200)))
+        (await db.execute(statement.order_by(DataAgentSemanticAsset.updated_at.desc()).limit(200)))
         .scalars()
         .all()
     )
     return {"items": [_semantic_asset_payload(row) for row in rows], "total": len(rows)}
 
 
-@router.post("/text2sql/semantic-assets/{asset_id}/publish")
+@router.post("/data-agent/semantic-assets/{asset_id}/publish")
 async def publish_semantic_asset(
     request: Request,
     asset_id: str,
@@ -353,14 +404,14 @@ async def publish_semantic_asset(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     asset = await db.scalar(
-        select(Text2SQLSemanticAsset).where(
-            Text2SQLSemanticAsset.id == asset_id,
-            Text2SQLSemanticAsset.tenant_id
+        select(DataAgentSemanticAsset).where(
+            DataAgentSemanticAsset.id == asset_id,
+            DataAgentSemanticAsset.tenant_id
             == str(
                 build_tenant_metadata(request, user_id=current_user.id).get("tenant_id")
                 or "default"
             ),
-            Text2SQLSemanticAsset.workspace_id
+            DataAgentSemanticAsset.workspace_id
             == str(
                 build_tenant_metadata(request, user_id=current_user.id).get("workspace_id")
                 or "default"
@@ -374,6 +425,9 @@ async def publish_semantic_asset(
         raise HTTPException(
             status_code=403, detail="only an administrator can publish semantic assets"
         )
+    if asset.status != "draft":
+        raise HTTPException(status_code=409, detail="只有草稿治理资产可以发布")
+    _validate_effective_interval(asset.valid_from, asset.valid_to)
     asset.status = "published"
     asset.authority = "governed"
     asset.approved_by = current_user.id
@@ -383,7 +437,7 @@ async def publish_semantic_asset(
     return {"asset": _semantic_asset_payload(asset)}
 
 
-@router.post("/text2sql/evaluation-cases")
+@router.post("/data-agent/evaluation-cases")
 async def create_evaluation_case(
     request: Request,
     payload: EvaluationCaseCreateRequest,
@@ -391,7 +445,7 @@ async def create_evaluation_case(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     scope, _ = await _source_for_scope(request, current_user, db, payload.data_source_id, "edit")
-    case = Text2SQLEvaluationCase(
+    case = DataAgentEvaluationCase(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
         tenant_id=scope.tenant_id,
@@ -411,8 +465,8 @@ async def create_evaluation_case(
     return {"case": _evaluation_case_payload(case)}
 
 
-@router.post("/text2sql/queries/{run_id}/feedback")
-async def submit_text2sql_feedback(
+@router.post("/data-agent/queries/{run_id}/feedback")
+async def submit_data_agent_feedback(
     request: Request,
     run_id: str,
     data_source_id: str,
@@ -435,8 +489,8 @@ async def submit_text2sql_feedback(
         raise HTTPException(status_code=404, detail="data source not found")
     run = await OpenTraceRunRepository(db).get(run_id, scope)
     if run is None:
-        raise HTTPException(status_code=404, detail="text2sql run not found")
-    feedback = Text2SQLFeedback(
+        raise HTTPException(status_code=404, detail="DataAgent run not found")
+    feedback = DataAgentFeedback(
         id=str(uuid.uuid4()),
         run_id=run_id,
         user_id=current_user.id,
@@ -453,7 +507,7 @@ async def submit_text2sql_feedback(
     return {"feedback_id": feedback.id, "stored": True, "promoted": False}
 
 
-def _semantic_asset_payload(asset: Text2SQLSemanticAsset) -> dict[str, Any]:
+def _semantic_asset_payload(asset: DataAgentSemanticAsset) -> dict[str, Any]:
     return {
         "id": asset.id,
         "data_source_id": asset.data_source_id,
@@ -467,12 +521,123 @@ def _semantic_asset_payload(asset: Text2SQLSemanticAsset) -> dict[str, Any]:
         "description": asset.description,
         "definition": asset.definition_json or {},
         "source_refs": asset.source_refs or [],
+        "business_domain": asset.business_domain,
+        "owner": asset.owner,
+        "valid_from": asset.valid_from,
+        "valid_to": asset.valid_to,
         "approved_by": asset.approved_by,
         "approved_at": asset.approved_at,
     }
 
 
-def _evaluation_case_payload(case: Text2SQLEvaluationCase) -> dict[str, Any]:
+@router.post("/data-agent/profiles/refresh")
+async def refresh_data_profiles(
+    request: Request,
+    payload: ProfileRefreshRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    if not settings.data_agent_profile_enabled:
+        raise HTTPException(status_code=404, detail="DataAgent 数据画像未启用")
+    scope, source = await _source_for_scope(
+        request, current_user, db, payload.data_source_id, "query"
+    )
+    profiles = await DataProfiler(db, source).refresh(
+        user_id=current_user.id,
+        tenant_id=scope.tenant_id,
+        workspace_id=scope.workspace_id,
+        requested_tables=payload.tables or None,
+    )
+    await db.commit()
+    return {
+        "data_source_id": payload.data_source_id,
+        "profile_count": len(profiles),
+        "failed_count": sum(1 for profile in profiles if profile.status == "failed"),
+        "items": [serialize_profile(profile) for profile in profiles],
+    }
+
+
+@router.get("/data-agent/profiles")
+async def list_data_profiles(
+    request: Request,
+    data_source_id: str = Query(..., min_length=1),
+    table_name: str | None = Query(default=None, max_length=255),
+    status: str = Query(default="current", max_length=20),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    scope, _ = await _source_for_scope(request, current_user, db, data_source_id, "query")
+    statement = select(DataAgentProfile).where(
+        DataAgentProfile.user_id == scope.user_id,
+        DataAgentProfile.tenant_id == scope.tenant_id,
+        DataAgentProfile.workspace_id == scope.workspace_id,
+        DataAgentProfile.data_source_id == data_source_id,
+    )
+    if table_name:
+        statement = statement.where(DataAgentProfile.table_name == table_name)
+    if status:
+        statement = statement.where(DataAgentProfile.status == status)
+    rows = list(
+        (await db.execute(statement.order_by(DataAgentProfile.profiled_at.desc()).limit(5000)))
+        .scalars()
+        .all()
+    )
+    return {"items": [serialize_profile(row) for row in rows], "total": len(rows)}
+
+
+@router.post("/data-agent/evaluation-cases/{case_id}/evaluate")
+async def evaluate_case(
+    request: Request,
+    case_id: str,
+    payload: EvaluationRunRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant = build_tenant_metadata(request, user_id=current_user.id)
+    case = await db.scalar(
+        select(DataAgentEvaluationCase).where(
+            DataAgentEvaluationCase.id == case_id,
+            DataAgentEvaluationCase.user_id == current_user.id,
+            DataAgentEvaluationCase.tenant_id == str(tenant.get("tenant_id") or "default"),
+            DataAgentEvaluationCase.workspace_id == str(tenant.get("workspace_id") or "default"),
+        )
+    )
+    if case is None:
+        raise HTTPException(status_code=404, detail="evaluation case not found")
+    scope, source = await _source_for_scope(
+        request, current_user, db, case.data_source_id, "query" if payload.execute else "view"
+    )
+    run = await _service(db, source).create(
+        QueryRequest(
+            question=case.question,
+            scope=scope,
+            mode=ExecutionMode.SQL_ONLY,
+            candidate_count=3,
+            max_rows=payload.max_rows,
+        )
+    )
+    if payload.execute and run.selected_candidate_id:
+        run = await _service(db, source).execute(
+            run.id,
+            scope,
+            candidate_id=run.selected_candidate_id,
+            confirmed=True,
+        )
+    selected = run.selected_candidate()
+    result_comparison = None
+    if payload.execute and run.result is not None and case.expected_result:
+        result_comparison = ResultComparator().compare(case.expected_result, run.result.rows)
+    return {
+        "case": _evaluation_case_payload(case),
+        "run": _payload(run),
+        "sql_available": bool(selected and selected.sql),
+        "result_comparison": (
+            result_comparison.__dict__ if result_comparison is not None else None
+        ),
+    }
+
+
+def _evaluation_case_payload(case: DataAgentEvaluationCase) -> dict[str, Any]:
     return {
         "id": case.id,
         "data_source_id": case.data_source_id,

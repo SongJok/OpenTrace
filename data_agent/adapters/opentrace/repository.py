@@ -1,4 +1,4 @@
-"""Text2SQL Run 的 OpenTrace ORM 持久化适配器。"""
+"""DataAgent Run 的 OpenTrace ORM 持久化适配器。"""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from infra.storage.text2sql_models import Text2SQLRunEvent, Text2SQLRunRecord
-from text2sql.contracts import DataScope, QueryRun, RunState
+from data_agent.contracts import DataScope, QueryRun, RunState
+from infra.storage.data_agent_models import DataAgentRunEvent, DataAgentRunRecord
 
 
 class OpenTraceRunRepository:
@@ -17,17 +17,17 @@ class OpenTraceRunRepository:
     @staticmethod
     def _scope_filter(statement, scope: DataScope):
         scoped = statement.where(
-            Text2SQLRunRecord.user_id == scope.user_id,
-            Text2SQLRunRecord.tenant_id == scope.tenant_id,
-            Text2SQLRunRecord.workspace_id == scope.workspace_id,
-            Text2SQLRunRecord.data_source_id == scope.data_source_id,
+            DataAgentRunRecord.user_id == scope.user_id,
+            DataAgentRunRecord.tenant_id == scope.tenant_id,
+            DataAgentRunRecord.workspace_id == scope.workspace_id,
+            DataAgentRunRecord.data_source_id == scope.data_source_id,
         )
         if scope.project_id is None:
-            return scoped.where(Text2SQLRunRecord.project_id.is_(None))
-        return scoped.where(Text2SQLRunRecord.project_id == scope.project_id)
+            return scoped.where(DataAgentRunRecord.project_id.is_(None))
+        return scoped.where(DataAgentRunRecord.project_id == scope.project_id)
 
     @staticmethod
-    def _record_to_run(record: Text2SQLRunRecord) -> QueryRun:
+    def _record_to_run(record: DataAgentRunRecord) -> QueryRun:
         return QueryRun.model_validate(
             {
                 "id": record.id,
@@ -39,7 +39,9 @@ class OpenTraceRunRepository:
                 "candidates": record.candidates_json or [],
                 "selected_candidate_id": record.selected_candidate_id,
                 "policy": record.policy_json or None,
+                "preflight": record.preflight_json or None,
                 "result": record.result_json or None,
+                "result_validation": record.result_validation_json or None,
                 "answer": record.answer,
                 "warnings": record.warnings_json or [],
                 "trace": record.trace_json or [],
@@ -54,8 +56,8 @@ class OpenTraceRunRepository:
         if not events:
             return
         current = await self.db.scalar(
-            select(func.max(Text2SQLRunEvent.sequence_number)).where(
-                Text2SQLRunEvent.run_id == run.id
+            select(func.max(DataAgentRunEvent.sequence_number)).where(
+                DataAgentRunEvent.run_id == run.id
             )
         )
         sequence = int(current or 0)
@@ -64,7 +66,7 @@ class OpenTraceRunRepository:
             payload = dict(event) if isinstance(event, dict) else {"value": str(event)}
             event_type = str(payload.pop("stage", "trace"))
             self.db.add(
-                Text2SQLRunEvent(
+                DataAgentRunEvent(
                     run_id=run.id,
                     sequence_number=sequence,
                     event_type=event_type,
@@ -73,7 +75,7 @@ class OpenTraceRunRepository:
             )
 
     @staticmethod
-    def _apply(run: QueryRun, record: Text2SQLRunRecord) -> None:
+    def _apply(run: QueryRun, record: DataAgentRunRecord) -> None:
         payload = run.model_dump(mode="json")
         record.question = run.request.question
         record.mode = run.request.mode.value
@@ -85,7 +87,9 @@ class OpenTraceRunRepository:
         record.candidates_json = payload.get("candidates") or []
         record.selected_candidate_id = run.selected_candidate_id
         record.policy_json = payload.get("policy") or {}
+        record.preflight_json = payload.get("preflight") or {}
         record.result_json = payload.get("result") or {}
+        record.result_validation_json = payload.get("result_validation") or {}
         record.answer = run.answer
         record.warnings_json = run.warnings
         record.trace_json = run.trace
@@ -94,7 +98,7 @@ class OpenTraceRunRepository:
         record.completed_at = run.completed_at
 
     async def save(self, run: QueryRun) -> QueryRun:
-        record = Text2SQLRunRecord(
+        record = DataAgentRunRecord(
             id=run.id,
             user_id=run.request.scope.user_id,
             tenant_id=run.request.scope.tenant_id,
@@ -117,7 +121,7 @@ class OpenTraceRunRepository:
 
     async def get(self, run_id: str, scope: DataScope) -> QueryRun | None:
         statement = self._scope_filter(
-            select(Text2SQLRunRecord).where(Text2SQLRunRecord.id == run_id), scope
+            select(DataAgentRunRecord).where(DataAgentRunRecord.id == run_id), scope
         )
         record = await self.db.scalar(statement)
         return self._record_to_run(record) if record else None
@@ -125,11 +129,11 @@ class OpenTraceRunRepository:
     async def update(self, run: QueryRun) -> QueryRun:
         record = await self.db.scalar(
             self._scope_filter(
-                select(Text2SQLRunRecord).where(Text2SQLRunRecord.id == run.id), run.request.scope
+                select(DataAgentRunRecord).where(DataAgentRunRecord.id == run.id), run.request.scope
             )
         )
         if record is None:
-            raise LookupError("text2sql_run_not_found")
+            raise LookupError("data_agent_run_not_found")
         previous_count = len(record.trace_json or [])
         self._apply(run, record)
         await self.db.flush()
@@ -138,19 +142,19 @@ class OpenTraceRunRepository:
 
     async def claim_execution(self, run_id: str, scope: DataScope) -> bool:
         statement = (
-            update(Text2SQLRunRecord)
+            update(DataAgentRunRecord)
             .where(
-                Text2SQLRunRecord.id == run_id,
-                Text2SQLRunRecord.user_id == scope.user_id,
-                Text2SQLRunRecord.tenant_id == scope.tenant_id,
-                Text2SQLRunRecord.workspace_id == scope.workspace_id,
-                Text2SQLRunRecord.data_source_id == scope.data_source_id,
+                DataAgentRunRecord.id == run_id,
+                DataAgentRunRecord.user_id == scope.user_id,
+                DataAgentRunRecord.tenant_id == scope.tenant_id,
+                DataAgentRunRecord.workspace_id == scope.workspace_id,
+                DataAgentRunRecord.data_source_id == scope.data_source_id,
                 (
-                    Text2SQLRunRecord.project_id.is_(None)
+                    DataAgentRunRecord.project_id.is_(None)
                     if scope.project_id is None
-                    else Text2SQLRunRecord.project_id == scope.project_id
+                    else DataAgentRunRecord.project_id == scope.project_id
                 ),
-                Text2SQLRunRecord.state.in_(
+                DataAgentRunRecord.state.in_(
                     [RunState.READY.value, RunState.BLOCKED.value, RunState.FAILED.value]
                 ),
             )

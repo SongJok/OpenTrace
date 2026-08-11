@@ -30,7 +30,7 @@ class SQLPlanner:
     ) -> PlannedSQL:
         dialect_name = dialect.name if dialect else "generic"
         prompt = (
-            "You are a senior Text2SQL planner. Generate a single safe SQL query. "
+            "You are a senior DataAgent planner. Generate a single safe SQL query. "
             "Only output SQL. Use SELECT/WITH only and include LIMIT. "
             "If the user asks about multiple entities/tables, infer JOIN paths from the schema hint. "
             f"Target dialect: {dialect_name}."
@@ -76,7 +76,7 @@ class SQLPlanner:
 
         templates = [
             (
-                "You are a senior Text2SQL planner. Generate a safe, efficient SQL query. "
+                "You are a senior DataAgent planner. Generate a safe, efficient SQL query. "
                 "Only output SQL. Use SELECT/WITH only and include LIMIT. "
                 f"Target dialect: {dialect_name}.{fragment_hint}"
             ),

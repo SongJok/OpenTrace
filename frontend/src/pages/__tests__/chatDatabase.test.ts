@@ -9,7 +9,7 @@ describe('chatDatabase helpers', () => {
     expect(isDatabaseQuestion('帮我写一段 Python 代码')).toBe(false)
   })
 
-  it('delegates table count and table list questions to backend text2sql', () => {
+  it('delegates table count and table list questions to backend data_agent', () => {
     expect(inferDatabaseQuerySpec('test_db库下有几张表', [{ name: 'orders' }])).toEqual({ sql: '', limit: 10 })
     expect(inferDatabaseQuerySpec('test_db下面有哪些表', [{ name: 'orders' }])).toEqual({ sql: '', limit: 10 })
   })

@@ -3,7 +3,7 @@ import unittest
 from kernel.data_cognition.sql_validator import SQLValidationError, SQLValidator
 
 
-class Text2SQLValidatorContractTests(unittest.TestCase):
+class DataAgentValidatorContractTests(unittest.TestCase):
     def setUp(self):
         self.v = SQLValidator(default_limit=50)
 

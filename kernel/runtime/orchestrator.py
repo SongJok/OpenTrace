@@ -275,7 +275,7 @@ class UnifiedOrchestrator:
         except Exception as exc:
             logger.debug("orchestrator_format_agents_skipped", error=str(exc))
 
-        return """- **data**: 结构化数据查询（Text2SQL）
+        return """- **data**: 结构化数据查询（DataAgent）
 - **rag**: 内部文档 + 记忆检索
 - **web**: 联网搜索实时信息
 - **tool**: 工具调用（时间、天气、计算器等）
@@ -732,7 +732,7 @@ class CognitivePlanner:
         except Exception as exc:
             logger.debug("orchestrator_v2_format_agents_skipped", error=str(exc))
 
-        return """- **data**: 结构化数据查询（Text2SQL）→ capability: data.query
+        return """- **data**: 结构化数据查询（DataAgent）→ capability: data.query
 - **rag**: 内部文档 + 记忆检索 → capability: rag.retrieve
 - **web**: 联网搜索实时信息 → capability: web.search
 - **tool**: 工具调用（时间、天气、计算器）→ capability: tool.*

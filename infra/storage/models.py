@@ -34,16 +34,17 @@ from sqlalchemy.sql import func
 
 from infra.config.constants import DEFAULT_TIMEZONE
 from infra.config.settings import settings
+from infra.storage.data_agent_models import DataAgentEvaluationCase as DataAgentEvaluationCase
+from infra.storage.data_agent_models import DataAgentFeedback as DataAgentFeedback
+from infra.storage.data_agent_models import DataAgentProfile as DataAgentProfile
+from infra.storage.data_agent_models import DataAgentRunEvent as DataAgentRunEvent
+from infra.storage.data_agent_models import DataAgentRunRecord as DataAgentRunRecord
+from infra.storage.data_agent_models import DataAgentSemanticAsset as DataAgentSemanticAsset
 from infra.storage.database import Base
 from infra.storage.sql_asset_models import SQLAsset as SQLAsset
 from infra.storage.sql_asset_models import SQLAssetSource as SQLAssetSource
 from infra.storage.sql_asset_models import SQLQueryCandidate as SQLQueryCandidate
 from infra.storage.sql_asset_models import SQLQueryDraft as SQLQueryDraft
-from infra.storage.text2sql_models import Text2SQLEvaluationCase as Text2SQLEvaluationCase
-from infra.storage.text2sql_models import Text2SQLFeedback as Text2SQLFeedback
-from infra.storage.text2sql_models import Text2SQLRunEvent as Text2SQLRunEvent
-from infra.storage.text2sql_models import Text2SQLRunRecord as Text2SQLRunRecord
-from infra.storage.text2sql_models import Text2SQLSemanticAsset as Text2SQLSemanticAsset
 
 
 def _uuid() -> str:
@@ -2201,6 +2202,11 @@ class MetricDefinition(Base):
     underlying_columns: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     agg_function: Mapped[str | None] = mapped_column(String(50), nullable=True)
     business_definition: Mapped[str | None] = mapped_column(Text, nullable=True)
+    required_filters: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    time_field: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    grain: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    business_domain: Mapped[str | None] = mapped_column(String(128), nullable=True)
     unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
     category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     tags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
@@ -2209,6 +2215,8 @@ class MetricDefinition(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

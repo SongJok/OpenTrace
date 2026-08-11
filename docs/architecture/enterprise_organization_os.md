@@ -15,7 +15,7 @@ flowchart LR
   C --> B[企业大脑上下文]
   C --> L[Manager Agent Loop]
   L --> R[RAG / 已发布知识]
-  L --> D[DataAgent / Text2SQL]
+  L --> D[DataAgent / DataAgent]
   R --> PG
   D --> PG
   PG --> S[SSE 事件流]
@@ -27,7 +27,7 @@ flowchart LR
 |---|---|---|
 | 企业大脑 | 公司、部门、术语和组织语境 | ContextAssembler 注入，不作为工具 |
 | RAG | 从有权限的已发布知识检索证据 | `rag` Agent |
-| Text2SQL | 在授权数据源上生成、校验和执行只读 SQL | `data` Agent |
+| DataAgent | 在授权数据源上生成、校验和执行只读 SQL | `data` Agent |
 
 Agent topology manifest、bootstrap、Worker 和 AgentLoop 必须保持同一集合：`data`、`rag`。
 任何未列入集合的旧能力都不得被注册、投递或暴露给规划器。

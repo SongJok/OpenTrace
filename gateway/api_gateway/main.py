@@ -22,6 +22,7 @@ from gateway.api_gateway.routers import (
     company_brain,
     conversations,
     data,
+    data_agent,
     data_governance,
     databases,
     documents,
@@ -44,7 +45,6 @@ from gateway.api_gateway.routers import (
     sql_assets,
     table_relationships,
     tasks,
-    text2sql,
     ui_settings,
 )
 from infra.config.settings import settings
@@ -203,7 +203,7 @@ app.include_router(tasks.router, prefix="/api/v1", tags=["tasks"])
 app.include_router(skills.router, prefix="/api/v1", tags=["skills"])
 app.include_router(ui_settings.router, prefix="/api/v1", tags=["ui_settings"])
 app.include_router(data.router, prefix="/api/v1", tags=["data"])
-app.include_router(text2sql.router, prefix="/api/v1", tags=["text2sql"])
+app.include_router(data_agent.router, prefix="/api/v1", tags=["data-agent"])
 app.include_router(databases.router, prefix="/api/v1", tags=["databases"])
 app.include_router(schema_annotations.router, prefix="/api/v1", tags=["schema-annotations"])
 app.include_router(sql_assets.router, prefix="/api/v1", tags=["sql-assets"])

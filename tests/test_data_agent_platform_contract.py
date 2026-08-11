@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from text2sql.compiler import SQLGuard
-from text2sql.contracts import (
+from data_agent.compiler import SQLGuard
+from data_agent.contracts import (
     Authority,
     DataScope,
     EvidenceBundle,
@@ -15,9 +15,9 @@ from text2sql.contracts import (
     RunState,
     deterministic_run_id,
 )
-from text2sql.policy import ExecutionPolicy
-from text2sql.research import ResearchPlanner
-from text2sql.service import Text2SQLService
+from data_agent.policy import ExecutionPolicy
+from data_agent.research import ResearchPlanner
+from data_agent.service import DataAgentService
 
 
 def _scope() -> DataScope:
@@ -74,7 +74,7 @@ def test_research_planner_selects_process_and_analysis_sources() -> None:
 
 def test_sql_guard_rejects_write_and_foreign_table() -> None:
     request = QueryRequest(question="查询用户", scope=_scope())
-    from text2sql.contracts import LogicalQueryPlan
+    from data_agent.contracts import LogicalQueryPlan
 
     plan = LogicalQueryPlan(question=request.question, required_tables=["users"])
     guard = SQLGuard()
@@ -90,7 +90,7 @@ def test_sql_guard_rejects_write_and_foreign_table() -> None:
 
 def test_sql_guard_rejects_unqualified_unknown_column() -> None:
     request = QueryRequest(question="查询用户", scope=_scope())
-    from text2sql.contracts import LogicalQueryPlan
+    from data_agent.contracts import LogicalQueryPlan
 
     report = SQLGuard().validate(
         "SELECT secret_value FROM users",
@@ -103,7 +103,7 @@ def test_sql_guard_rejects_unqualified_unknown_column() -> None:
 
 def test_sql_guard_blocks_unverified_join_even_without_catalog_relationships() -> None:
     request = QueryRequest(question="查询用户订单", scope=_scope())
-    from text2sql.contracts import LogicalQueryPlan
+    from data_agent.contracts import LogicalQueryPlan
 
     report = SQLGuard().validate(
         "SELECT u.id, o.amount FROM users u JOIN orders o ON u.id = o.user_id",
@@ -116,7 +116,7 @@ def test_sql_guard_blocks_unverified_join_even_without_catalog_relationships() -
 
 def test_sql_guard_resolves_aliases_for_verified_join() -> None:
     request = QueryRequest(question="查询用户订单", scope=_scope())
-    from text2sql.contracts import LogicalQueryPlan
+    from data_agent.contracts import LogicalQueryPlan
 
     report = SQLGuard().validate(
         "SELECT u.id, o.amount FROM users u JOIN orders o ON u.id = o.user_id",
@@ -134,7 +134,7 @@ def test_source_policy_can_block_execution() -> None:
         mode=ExecutionMode.EXECUTE_AND_ANSWER,
         confirmed=True,
     )
-    from text2sql.contracts import LogicalQueryPlan
+    from data_agent.contracts import LogicalQueryPlan
 
     evidence = _evidence()
     evidence.items.append(
@@ -173,7 +173,7 @@ def test_idempotency_run_id_is_stable_inside_scope() -> None:
 
 def test_sql_guard_adds_limit_and_marks_completeness() -> None:
     request = QueryRequest(question="查询用户", scope=_scope(), max_rows=20)
-    from text2sql.contracts import LogicalQueryPlan
+    from data_agent.contracts import LogicalQueryPlan
 
     report = SQLGuard().validate(
         "SELECT id, name FROM users",
@@ -210,6 +210,11 @@ class _Generator:
         return ["SELECT id, name FROM users"]
 
 
+class _NonSensitiveGenerator:
+    async def generate(self, request, plan, evidence):
+        return ["SELECT id FROM users"]
+
+
 class _Executor:
     def __init__(self) -> None:
         self.calls = 0
@@ -225,7 +230,7 @@ class _Executor:
 async def test_service_requires_confirmation_and_executes_after_confirmation() -> None:
     provider = _Provider()
     executor = _Executor()
-    service = Text2SQLService(
+    service = DataAgentService(
         evidence_provider=provider,
         sql_generator=_Generator(),
         query_executor=executor,
@@ -252,7 +257,7 @@ async def test_service_requires_confirmation_and_executes_after_confirmation() -
 @pytest.mark.asyncio
 async def test_service_reuses_idempotent_run() -> None:
     provider = _Provider()
-    service = Text2SQLService(
+    service = DataAgentService(
         evidence_provider=provider,
         sql_generator=_Generator(),
         query_executor=_Executor(),
@@ -270,7 +275,7 @@ async def test_service_reuses_idempotent_run() -> None:
 @pytest.mark.asyncio
 async def test_service_blocks_execution_when_schema_changes() -> None:
     provider = _Provider()
-    service = Text2SQLService(
+    service = DataAgentService(
         evidence_provider=provider,
         sql_generator=_Generator(),
         query_executor=_Executor(),
@@ -287,7 +292,7 @@ async def test_service_blocks_execution_when_schema_changes() -> None:
 @pytest.mark.asyncio
 async def test_service_rechecks_latest_sensitive_evidence_before_execution() -> None:
     provider = _Provider()
-    service = Text2SQLService(
+    service = DataAgentService(
         evidence_provider=provider,
         sql_generator=_Generator(),
         query_executor=_Executor(),
@@ -299,3 +304,22 @@ async def test_service_rechecks_latest_sensitive_evidence_before_execution() -> 
     blocked = await service.execute(run.id, _scope(), confirmed=True)
     assert blocked.state == RunState.BLOCKED
     assert any("高风险查询需要额外审批" in warning for warning in blocked.warnings)
+
+
+@pytest.mark.asyncio
+async def test_unreferenced_sensitive_column_does_not_block_safe_query() -> None:
+    provider = _Provider()
+    provider.sensitive = True
+    executor = _Executor()
+    service = DataAgentService(
+        evidence_provider=provider,
+        sql_generator=_NonSensitiveGenerator(),
+        query_executor=executor,
+    )
+    run = await service.create(
+        QueryRequest(question="查询用户编号", scope=_scope(), mode=ExecutionMode.SQL_ONLY)
+    )
+    completed = await service.execute(run.id, _scope(), confirmed=True)
+
+    assert completed.state == RunState.COMPLETED
+    assert executor.calls == 1

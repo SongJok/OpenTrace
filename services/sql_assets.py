@@ -36,8 +36,6 @@ from infra.storage.models import (
     SQLQueryDraft,
     TableRelationship,
 )
-from kernel.data_cognition.sql_dialect import detect_sql_dialect
-from kernel.data_cognition.sql_planner import SQLPlanner
 from kernel.data_cognition.sql_validator import SQLValidationError, SQLValidator
 
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
@@ -2510,6 +2508,8 @@ async def generate_sql_query_draft(
     output_mode: str = "sql_only",
     clarification_context: str | None = None,
 ) -> tuple[SQLQueryDraft, list[SQLQueryCandidate]]:
+    """将 DataAgent 治理运行投影为现有确认执行草案。"""
+
     if group_type not in {"alternative", "batch"}:
         raise ValidationException("group_type 仅支持 alternative 或 batch")
     if output_mode not in {"sql_only", "execute_and_answer"}:
@@ -2522,162 +2522,81 @@ async def generate_sql_query_draft(
         workspace_id=workspace_id,
         data_source_id=data_source.id,
     )
-    inspection = await load_schema_inspection(db, data_source.id)
-    dialect = detect_sql_dialect(data_source.source_type).name
-    sensitive = await _sensitive_columns(db, data_source.id)
-    fingerprint = schema_fingerprint(inspection.schema_payload, sensitive)
-    assets = await retrieve_sql_assets(
-        db,
+
+    from data_agent.adapters.opentrace.evidence import OpenTraceEvidenceProvider
+    from data_agent.adapters.opentrace.generator import OpenTraceSQLGenerator
+    from data_agent.adapters.opentrace.repository import OpenTraceRunRepository
+    from data_agent.contracts import CandidateSQL, DataScope, ExecutionMode, QueryRequest, RunState
+    from data_agent.service import DataAgentService
+
+    class _SuppliedSQLGenerator:
+        async def generate(self, request, logical_plan, evidence):
+            statements = _split_sql_statements(
+                str(supplied_sql or ""), dialect=str(evidence.dialect or "mysql")
+            )
+            return [CandidateSQL(sql=statement, source="user_supplied") for statement in statements]
+
+    scope = DataScope(
+        user_id=user_id,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
         data_source_id=data_source.id,
-        question=question,
-        dialect=dialect,
         project_id=project_id,
-        include_draft_reference=True,
-        available_tables=list(inspection.column_map) or inspection.table_names,
     )
-    governed_metrics = list(
-        (
-            await db.execute(
-                select(MetricDefinition)
-                .where(
-                    MetricDefinition.data_source_id == data_source.id,
-                    MetricDefinition.status == "published",
-                )
-                .limit(300)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    query_plan = build_query_plan(
-        question,
-        assets,
-        clarification_context=clarification_context,
-        governed_metrics=governed_metrics,
-    )
-    from services.data_knowledge_context import build_data_knowledge_context
-
-    knowledge_context = await build_data_knowledge_context(
-        db,
-        data_source_id=data_source.id,
+    request = QueryRequest(
         question=question,
-        assets=assets,
-        max_chars=settings.responses_data_knowledge_context_max_chars,
+        scope=scope,
+        mode=ExecutionMode(output_mode),
+        confirmed=False,
+        clarification_context=clarification_context,
+        candidate_count=MAX_DRAFT_CANDIDATES,
+        max_rows=settings.data_agent_max_result_rows,
+        idempotency_key=f"response:{response_id}" if response_id else None,
     )
-    asset_context = "\n\n".join(
-        "\n".join(
-            part
-            for part in (
-                f"资产 {index + 1}（{asset.title}，状态={asset.status}/{asset.quality_status}）",
-                f"业务说明：{asset.description}" if asset.description else "",
-                (
-                    "结构化知识：" + json.dumps(asset.knowledge_metadata, ensure_ascii=False)
-                    if asset.knowledge_metadata
-                    else ""
-                ),
-                asset.normalized_sql,
-            )
-            if part
-        )
-        for index, asset in enumerate(assets[:3])
+    service = DataAgentService(
+        evidence_provider=OpenTraceEvidenceProvider(db, data_source),
+        sql_generator=(
+            _SuppliedSQLGenerator()
+            if supplied_sql and supplied_sql.strip()
+            else OpenTraceSQLGenerator()
+        ),
+        repository=OpenTraceRunRepository(db),
     )
-    grounded_question = question
-    if clarification_context:
-        grounded_question += f"\n用户补充口径：{clarification_context}"
-    grounded_question += "\n\n结构化查询计划：" + json.dumps(query_plan, ensure_ascii=False)
-    if knowledge_context.prompt:
-        grounded_question += "\n\n" + knowledge_context.prompt
-    if asset_context:
-        grounded_question += (
-            "\n以下是同一数据源内通过当前 Schema 范围校验的 SQL 历史资产。它们是业务口径参考，"
-            "可能尚未发布，禁止直接执行原文；仅复用与问题相关的表、JOIN 和指标逻辑，"
-            "不要照搬不匹配的过滤值：\n" + asset_context
+    run = await service.create(request)
+
+    existing = await db.scalar(
+        select(SQLQueryDraft).where(
+            SQLQueryDraft.data_agent_run_id == run.id,
+            SQLQueryDraft.user_id == user_id,
+            SQLQueryDraft.tenant_id == tenant_id,
+            SQLQueryDraft.workspace_id == workspace_id,
         )
-    if query_plan["needs_clarification"] and not (supplied_sql and supplied_sql.strip()):
-        clarification = {
-            "question_text": query_plan["clarification_question"],
-            "missing_entities": query_plan["missing_entities"],
-            "suggested_options": [],
-        }
-        draft = SQLQueryDraft(
-            id=str(uuid.uuid4()),
+    )
+    if existing is not None:
+        return await load_scoped_draft(
+            db,
+            draft_id=existing.id,
             user_id=user_id,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
-            project_id=project_id,
-            conversation_id=conversation_id,
-            response_id=response_id,
-            data_source_id=data_source.id,
-            question=question,
-            group_type=group_type,
-            status="needs_clarification",
-            output_mode=output_mode,
-            query_plan=query_plan,
-            clarification=clarification,
-            dialect=dialect,
-            schema_fingerprint=fingerprint,
-            expires_at=datetime.now(UTC) + timedelta(hours=24),
         )
-        db.add(draft)
-        await db.commit()
-        return draft, []
 
-    raw_candidates: list[str]
-    if supplied_sql and supplied_sql.strip():
-        raw_candidates = [supplied_sql]
-    else:
-        planned = await SQLPlanner().generate_candidates(
-            grounded_question,
-            schema_hint=build_relevant_schema_hint(
-                inspection.schema_payload,
-                preferred_tables=query_plan["required_tables"],
-                question=grounded_question,
-                max_chars=settings.text2sql_schema_hint_max_chars,
-            ),
-            dialect=detect_sql_dialect(data_source.source_type),
-            n=3,
-            max_tokens=settings.text2sql_generation_max_tokens,
-        )
-        raw_candidates = [candidate.sql for candidate in planned]
-
-    validated: list[tuple[str, dict[str, Any], list[str], list[str]]] = []
-    errors: list[str] = []
-    seen: set[str] = set()
-    expanded_candidates: list[str] = []
-    for raw_sql in raw_candidates:
-        expanded_candidates.extend(_split_sql_statements(raw_sql, dialect=dialect))
-    for raw_sql in expanded_candidates[:MAX_DRAFT_CANDIDATES]:
-        try:
-            item = _validated_candidate(
-                raw_sql,
-                dialect=dialect,
-                table_columns=inspection.column_map,
-                sensitive_columns=sensitive,
-            )
-            coverage = _validate_metric_contract_coverage(
-                item[0],
-                dialect=dialect,
-                metric_contracts=query_plan.get("metric_contracts") or [],
-            )
-            if coverage["errors"]:
-                raise SQLValidationError("；".join(coverage["errors"]))
-            item[1]["metric_contract_coverage"] = coverage
-        except (SQLValidationError, ParseError) as exc:
-            errors.append(str(exc))
-            continue
-        sql_hash = _hash_text(item[0])
-        if sql_hash in seen:
-            continue
-        seen.add(sql_hash)
-        validated.append(item)
-    if not validated:
+    if run.state in {RunState.FAILED, RunState.BLOCKED} and not run.candidates:
         raise ValidationException(
-            "未能生成通过安全校验的只读 SQL",
-            details={"candidate_errors": errors[:5]},
+            "DataAgent 未能生成通过治理校验的 SQL",
+            details={"warnings": run.warnings[:10], "trace": run.trace[-5:]},
         )
 
+    plan_payload = run.logical_plan.model_dump(mode="json") if run.logical_plan else {}
+    clarification = (
+        {
+            "question_text": run.logical_plan.clarification_question,
+            "missing_entities": run.logical_plan.missing_information,
+            "suggested_options": [],
+        }
+        if run.state == RunState.NEEDS_CLARIFICATION and run.logical_plan
+        else {}
+    )
     draft = SQLQueryDraft(
         id=str(uuid.uuid4()),
         user_id=user_id,
@@ -2686,45 +2605,61 @@ async def generate_sql_query_draft(
         project_id=project_id,
         conversation_id=conversation_id,
         response_id=response_id,
+        data_agent_run_id=run.id,
         data_source_id=data_source.id,
         question=question,
         group_type=group_type,
-        status="awaiting_confirmation",
+        status=(
+            "needs_clarification"
+            if run.state == RunState.NEEDS_CLARIFICATION
+            else "awaiting_confirmation"
+        ),
         output_mode=output_mode,
-        query_plan=query_plan,
-        clarification={},
-        dialect=dialect,
-        schema_fingerprint=fingerprint,
+        query_plan=plan_payload,
+        clarification=clarification,
+        dialect=str(run.evidence.dialect if run.evidence else data_source.source_type),
+        schema_fingerprint=run.evidence.schema_fingerprint if run.evidence else None,
         expires_at=datetime.now(UTC) + timedelta(hours=24),
     )
     db.add(draft)
     await db.flush()
+
+    evidence_asset_ids = [
+        item.source_id.split(":", 1)[-1]
+        for item in (run.evidence.items if run.evidence else [])
+        if item.type.value == "sql_asset"
+    ]
     candidates: list[SQLQueryCandidate] = []
-    asset_ids = [asset.id for asset in assets]
-    for position, (sql, report, tables, columns) in enumerate(validated, start=1):
+    viable = [candidate for candidate in run.candidates if not candidate.validation.errors]
+    for position, candidate_run in enumerate(viable[:MAX_DRAFT_CANDIDATES], start=1):
         candidate = SQLQueryCandidate(
-            id=str(uuid.uuid4()),
+            id=candidate_run.id,
             draft_id=draft.id,
             position=position,
             title=f"SQL 方案 {position}",
             description=(
-                f"参考 {len(asset_ids)} 条已发布 SQL 资产生成"
-                if asset_ids
-                else "基于当前 Schema 生成"
+                "由治理语义层确定性编译"
+                if candidate_run.source == "semantic_compiler"
+                else "由 DataAgent 在治理证据约束下生成"
             ),
-            sql=sql,
-            sql_hash=_hash_text(sql),
-            asset_ids=asset_ids,
-            tables=tables,
-            columns=columns,
-            assumptions=query_plan["assumptions"],
-            validation_report={
-                **report,
-                "knowledge_context_counts": knowledge_context.counts,
-            },
+            sql=candidate_run.sql,
+            sql_hash=_hash_text(candidate_run.sql),
+            asset_ids=evidence_asset_ids,
+            tables=candidate_run.validation.referenced_tables,
+            columns=candidate_run.validation.referenced_columns,
+            assumptions=[
+                *candidate_run.assumptions,
+                *(run.logical_plan.assumptions if run.logical_plan else []),
+            ],
+            validation_report=candidate_run.validation.model_dump(mode="json"),
         )
         db.add(candidate)
         candidates.append(candidate)
+    if not candidates and run.state != RunState.NEEDS_CLARIFICATION:
+        raise ValidationException(
+            "DataAgent 没有可供确认执行的候选 SQL",
+            details={"warnings": run.warnings[:10]},
+        )
     await db.commit()
     return draft, candidates
 
@@ -2934,6 +2869,78 @@ async def execute_sql_query_draft(
                 raise SQLValidationError("；".join(coverage["errors"]))
         except (SQLValidationError, ParseError) as exc:
             raise ValidationException(f"候选 SQL 重新校验失败：{exc}") from exc
+
+    data_agent_run_id = getattr(draft, "data_agent_run_id", None)
+    if data_agent_run_id and draft.group_type == "alternative" and len(to_execute) == 1:
+        from data_agent.adapters.opentrace.answer import OpenTraceAnswerSynthesizer
+        from data_agent.adapters.opentrace.evidence import OpenTraceEvidenceProvider
+        from data_agent.adapters.opentrace.executor import OpenTraceQueryExecutor
+        from data_agent.adapters.opentrace.generator import OpenTraceSQLGenerator
+        from data_agent.adapters.opentrace.repository import OpenTraceRunRepository
+        from data_agent.contracts import DataScope, RunState
+        from data_agent.service import DataAgentService
+
+        candidate = to_execute[0]
+        draft.status = "executing"
+        draft.execution_started_at = datetime.now(UTC)
+        candidate.selected = True
+        candidate.execution_status = "executing"
+        candidate.error_message = None
+        await db.flush()
+        scope = DataScope(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            data_source_id=draft.data_source_id,
+            project_id=draft.project_id,
+        )
+        run = await DataAgentService(
+            evidence_provider=OpenTraceEvidenceProvider(db, source),
+            sql_generator=OpenTraceSQLGenerator(),
+            query_executor=OpenTraceQueryExecutor(source),
+            answer_synthesizer=OpenTraceAnswerSynthesizer(),
+            repository=OpenTraceRunRepository(db),
+        ).execute(
+            data_agent_run_id,
+            scope,
+            candidate_id=candidate.id,
+            confirmed=True,
+        )
+        candidate.executed_at = datetime.now(UTC)
+        if run.result is not None:
+            candidate.result_rows = run.result.rows
+            candidate.row_count = run.result.total_rows or run.result.returned_rows
+        candidate.validation_report = {
+            **(candidate.validation_report or {}),
+            "preflight": run.preflight.model_dump(mode="json") if run.preflight else {},
+            "result_validation": (
+                run.result_validation.model_dump(mode="json") if run.result_validation else {}
+            ),
+        }
+        if run.state == RunState.COMPLETED:
+            candidate.execution_status = "completed"
+            candidate.error_message = None
+            draft.status = "completed"
+        else:
+            candidate.execution_status = "failed"
+            candidate.error_message = "；".join(run.warnings[-5:]) or "DataAgent 执行未完成"
+            draft.status = "failed"
+        draft.selected_candidate_ids = sorted(
+            set(draft.selected_candidate_ids or []).union({candidate.id})
+        )
+        draft.execution_started_at = None
+        draft.execution_summary = {
+            "data_agent_run_id": run.id,
+            "state": run.state.value,
+            "answer": run.answer,
+            "warnings": run.warnings,
+            "preflight": run.preflight.model_dump(mode="json") if run.preflight else {},
+            "result_validation": (
+                run.result_validation.model_dump(mode="json") if run.result_validation else {}
+            ),
+        }
+        await db.commit()
+        return serialize_draft(draft, candidates)
 
     dsn = DBRouter().build_dsn(
         DBConnectionInfo(

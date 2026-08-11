@@ -9,7 +9,6 @@ from sqlalchemy import select
 from agents.base import AgentResult, BaseAgent, TaskMessage
 from execution.data.database_hosts import format_database_connection_error
 from execution.data.db_router import DBConnectionInfo, DBRouter
-from infra.config.settings import settings
 from infra.metadata.schema_inspector import build_schema_hint, load_schema_inspection
 from infra.security.data_source_secrets import decrypt_data_source_secret
 from infra.security.resource_scope import get_accessible_data_source
@@ -26,78 +25,29 @@ from kernel.data_cognition.sql_reflector import SQLReflector
 from kernel.data_cognition.sql_validator import SQLValidationError, SQLValidator
 from kernel.data_cognition.types import CandidateSQL, SemanticContext
 
-# ── DataAgent V2 包装 ──────────────────────────────────────────────────
+# ── 在线 DataAgent 统一入口 ─────────────────────────────────────────────
 
 
 class DataAgent(BaseAgent):
-    """DataAgent：通过特性开关支持 V2。
-
-    DATA_AGENT_V2_ENABLED=false 时委托 DataAgentV1；
-    开启时委托 DataAgentV2Supervisor；V1 回退仅可选开启。
-    """
+    """DataAgent 在线入口：只生成治理运行和待确认 SQL 草案。"""
 
     def __init__(self) -> None:
         super().__init__("data")
-        self._v1: DataAgentV1 | None = None
-        self._v2_enabled = bool(getattr(settings, "data_agent_v2_enabled", False))
-        self._v2_fallback = bool(getattr(settings, "data_agent_v2_fallback_to_v1", False))
 
     async def execute(self, task: TaskMessage) -> AgentResult:
-        if bool(task.params.get("generation_only", False)):
-            try:
-                return await self._generate_sql_draft(task)
-            except Exception as exc:  # noqa: BLE001 - 统一转为 AgentResult 错误契约
-                return AgentResult(
-                    task_id=task.task_id,
-                    agent_type=self.agent_type,
-                    status="error",
-                    content="",
-                    error=f"SQL 草案生成失败：{exc}",
-                )
-        if not self._v2_enabled:
-            return await self._get_v1().execute(task)
-
         try:
-            from agents.data_agent_v2.supervisor import DataAgentV2Supervisor
-
-            supervisor = DataAgentV2Supervisor()
-            result = await supervisor.execute(task)
-            return result
-        except Exception as exc:
-            from agents.data_agent_v2.types import LowConfidenceError
-
-            if isinstance(exc, LowConfidenceError):
-                try:
-                    from kernel.agent_runtime.data_v2_failure_memory import (
-                        record_data_v2_circuit_breaker_from_exception,
-                    )
-                    from kernel.agent_runtime.learning_hook import record_agent_learning_signal
-
-                    record_data_v2_circuit_breaker_from_exception(
-                        exc, task=task, resolution="v1_fallback" if self._v2_fallback else "error"
-                    )
-                    await record_agent_learning_signal(
-                        agent_type="data",
-                        task_id=task.task_id,
-                        session_id=str(task.session_id or ""),
-                        passed=False,
-                        confidence=float(exc.confidence),
-                        metadata={"failure": "low_confidence_circuit_breaker"},
-                    )
-                except Exception:
-                    pass
-            if self._v2_fallback and isinstance(exc, LowConfidenceError):
-                return await self._get_v1().execute(task)
+            return await self._generate_sql_draft(task)
+        except Exception as exc:  # noqa: BLE001 - 统一转为 AgentResult 错误契约
             return AgentResult(
                 task_id=task.task_id,
                 agent_type=self.agent_type,
                 status="error",
                 content="",
-                error=f"DataAgent V2 failed: {exc}",
+                error=f"DataAgent SQL 草案生成失败：{exc}",
             )
 
     async def _generate_sql_draft(self, task: TaskMessage) -> AgentResult:
-        """交互式问数只生成持久化草案，完全绕开 V1/V2 执行与反思路径。"""
+        """交互式问数生成持久化治理运行及确认执行投影。"""
 
         from infra.security.resource_scope import get_accessible_data_source
         from infra.storage.database import AsyncSessionLocal
@@ -184,13 +134,8 @@ class DataAgent(BaseAgent):
             },
         )
 
-    def _get_v1(self) -> DataAgentV1:
-        if self._v1 is None:
-            self._v1 = DataAgentV1()
-        return self._v1
 
-
-# ── DataAgent V1（原实现，完整保留）──────────────
+# ── 离线兼容流水线（不在在线 DataAgent 主路径）────────────────────────
 
 
 class DataAgentV1(BaseAgent):
@@ -205,7 +150,7 @@ class DataAgentV1(BaseAgent):
         self._sql_builder: SQLBuilder | None = None
         self._query_executor: QueryExecutor | None = None
         # 模式："pipeline"（默认）或 "llm_direct"
-        self._mode = os.getenv("NL2SQL_MODE", "pipeline").lower()
+        self._mode = os.getenv("DATA_AGENT_MODE", "pipeline").lower()
 
     async def execute(self, task: TaskMessage) -> AgentResult:
         start_ts = time.monotonic()
@@ -359,6 +304,8 @@ class DataAgentV1(BaseAgent):
                 reflector=self.reflector,
                 max_retries=2,
             )
+        assert self._query_planner is not None
+        assert self._query_executor is not None
 
         # 步骤 1：检查结构化意图（table_count、table_list、table_schema）
         structured_sql = self._semantic_parser.check_structured_intent(

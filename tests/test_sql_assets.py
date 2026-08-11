@@ -858,7 +858,7 @@ async def test_duplicate_upload_is_serialized_and_scoped_to_global_assets() -> N
 
 
 @pytest.mark.asyncio
-async def test_data_agent_generation_mode_never_enters_v1_or_v2_execution(monkeypatch) -> None:
+async def test_data_agent_online_entry_always_generates_governed_draft(monkeypatch) -> None:
     expected = AgentResult(
         task_id="task-1",
         agent_type="data",
@@ -867,12 +867,6 @@ async def test_data_agent_generation_mode_never_enters_v1_or_v2_execution(monkey
     )
     generate = AsyncMock(return_value=expected)
     monkeypatch.setattr(DataAgent, "_generate_sql_draft", generate)
-    monkeypatch.setattr(
-        DataAgent,
-        "_get_v1",
-        MagicMock(side_effect=AssertionError("generation_only 不得进入 V1 执行路径")),
-    )
-
     result = await DataAgent().execute(
         TaskMessage(
             task_id="task-1",

@@ -191,7 +191,7 @@ class UnderstandingEngine:
 
         # Hardcoded fallback (backward compatible)
         return """## 可用的能力类型
-- data.query: 结构化数据查询（SQL/Text2SQL）
+- data.query: 结构化数据查询（SQL/DataAgent）
 - data.analysis: 数据分析/统计/趋势
 - web.search: 联网搜索实时信息
 - rag.retrieve: 文档/知识库检索

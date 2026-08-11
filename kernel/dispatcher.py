@@ -286,7 +286,7 @@ class Dispatcher:
                 )
             except TimeoutError:
                 # 如果消息总线 worker 不可用，降级为进程内执行
-                # 以避免 RAG/Text2SQL 静默降级为仅 web 回答。
+                # 以避免 RAG/DataAgent 静默降级为仅 web 回答。
                 if bool(getattr(settings, "kernel_agent_bus_require_worker", False)):
                     return AgentResult(
                         task_id=msg.task_id,

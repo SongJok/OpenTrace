@@ -5,12 +5,26 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from data_agent.contracts import (
+    Authority,
+    DataScope,
+    EvidenceBundle,
+    EvidenceItem,
+    EvidenceType,
+    ResearchPlan,
+)
 from infra.metadata.schema_inspector import load_schema_inspection
+from infra.storage.data_agent_models import (
+    DataAgentProfile,
+    DataAgentRunRecord,
+    DataAgentSemanticAsset,
+)
 from infra.storage.models import (
     AnalyticalSkill,
     DataSource,
@@ -20,16 +34,7 @@ from infra.storage.models import (
     SchemaTableMetadata,
     TableRelationship,
 )
-from infra.storage.text2sql_models import Text2SQLSemanticAsset
 from services.sql_assets import retrieve_sql_assets
-from text2sql.contracts import (
-    Authority,
-    DataScope,
-    EvidenceBundle,
-    EvidenceItem,
-    EvidenceType,
-    ResearchPlan,
-)
 
 
 def _tokens(value: str) -> set[str]:
@@ -52,6 +57,44 @@ def _score(question_tokens: set[str], *values: Any) -> int:
     return sum(1 for token in question_tokens if token and token in text)
 
 
+def _authority(value: str | None) -> Authority:
+    try:
+        return Authority(str(value or "contextual"))
+    except ValueError:
+        return Authority.CONTEXTUAL
+
+
+def _active_at(valid_from: Any, valid_to: Any, reference: datetime) -> bool:
+    start = valid_from
+    end = valid_to
+    if start is not None and start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
+    if end is not None and end.tzinfo is None:
+        end = end.replace(tzinfo=UTC)
+    return not ((start and reference < start) or (end and reference >= end))
+
+
+def _numeric_result_summary(result_json: dict[str, Any]) -> dict[str, Any]:
+    rows = result_json.get("rows") or []
+    values: dict[str, list[float]] = {}
+    for row in rows[:100]:
+        if not isinstance(row, dict):
+            continue
+        for key, value in row.items():
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                values.setdefault(str(key), []).append(float(value))
+    return {
+        key: {
+            "min": min(items),
+            "max": max(items),
+            "avg": sum(items) / len(items),
+            "count": len(items),
+        }
+        for key, items in values.items()
+        if items
+    }
+
+
 class OpenTraceEvidenceProvider:
     def __init__(self, db: AsyncSession, data_source: DataSource) -> None:
         self.db = db
@@ -60,6 +103,7 @@ class OpenTraceEvidenceProvider:
     async def collect(self, scope: DataScope, question: str, plan: ResearchPlan) -> EvidenceBundle:
         inspection = await load_schema_inspection(self.db, self.data_source.id)
         dialect = str(self.data_source.source_type or "mysql").lower()
+        reference_time = datetime.now(UTC)
         schema_fingerprint = hashlib.sha256(
             json.dumps(inspection.schema_payload or {}, sort_keys=True, ensure_ascii=False).encode(
                 "utf-8"
@@ -167,6 +211,58 @@ class OpenTraceEvidenceProvider:
                 )
             )
 
+        profile_rows = list(
+            (
+                await self.db.execute(
+                    select(DataAgentProfile)
+                    .where(
+                        DataAgentProfile.user_id == scope.user_id,
+                        DataAgentProfile.tenant_id == scope.tenant_id,
+                        DataAgentProfile.workspace_id == scope.workspace_id,
+                        DataAgentProfile.data_source_id == self.data_source.id,
+                        DataAgentProfile.schema_fingerprint == schema_fingerprint,
+                        DataAgentProfile.status == "current",
+                        or_(
+                            DataAgentProfile.expires_at.is_(None),
+                            DataAgentProfile.expires_at > reference_time,
+                        ),
+                    )
+                    .order_by(DataAgentProfile.profiled_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        latest_profiles: dict[tuple[str, str], DataAgentProfile] = {}
+        for profile_row in profile_rows:
+            latest_profiles.setdefault(
+                (profile_row.table_name, profile_row.column_name), profile_row
+            )
+        for profile_row in latest_profiles.values():
+            if profile_row.profile_type != "column":
+                continue
+            profile_payload = dict(profile_row.profile_json or {})
+            items.append(
+                EvidenceItem(
+                    type=EvidenceType.COLUMN_PROFILE,
+                    source_id=f"data-profile:{profile_row.id}",
+                    source_name="DataAgentProfile",
+                    authority=Authority.LIVE_SYSTEM,
+                    confidence=0.78,
+                    version=profile_row.schema_fingerprint,
+                    scope={"data_source_id": self.data_source.id},
+                    sensitive=bool(profile_payload.get("sensitive")),
+                    payload={
+                        "table": profile_row.table_name,
+                        "column": profile_row.column_name,
+                        "profiled_at": (
+                            profile_row.profiled_at.isoformat() if profile_row.profiled_at else None
+                        ),
+                        **profile_payload,
+                    },
+                )
+            )
+
         question_tokens = _tokens(question)
         metric_rows = list(
             (
@@ -208,15 +304,23 @@ class OpenTraceEvidenceProvider:
                         "underlying_columns": metric_row.underlying_columns or [],
                         "aggregation": metric_row.agg_function,
                         "business_definition": metric_row.business_definition,
-                        "unit": metric_row.unit,
-                        "required_filters": (
+                        "required_filters": metric_row.required_filters
+                        or (
                             (metric_row.business_definition or "")
                             .split(";固有过滤：", 1)[-1]
                             .split(";")
                             if "固有过滤：" in (metric_row.business_definition or "")
                             else []
                         ),
+                        "time_field": metric_row.time_field,
+                        "grain": metric_row.grain,
+                        "owner": metric_row.owner,
+                        "business_domain": metric_row.business_domain,
+                        "unit": metric_row.unit,
+                        "version": metric_row.version,
                     },
+                    valid_from=metric_row.valid_from,
+                    valid_to=metric_row.valid_to,
                 )
             )
 
@@ -329,12 +433,18 @@ class OpenTraceEvidenceProvider:
         if (
             EvidenceType.KNOWLEDGE in requested_types
             or EvidenceType.BUSINESS_PROCESS in requested_types
+            or EvidenceType.BUSINESS_RULE in requested_types
+            or EvidenceType.POLICY in requested_types
+            or EvidenceType.REPORT in requested_types
+            or EvidenceType.LINEAGE in requested_types
             or EvidenceType.DATA_QUALITY in requested_types
             or EvidenceType.SOURCE_POLICY in requested_types
         ):
             if (
                 EvidenceType.KNOWLEDGE in requested_types
                 or EvidenceType.BUSINESS_PROCESS in requested_types
+                or EvidenceType.BUSINESS_RULE in requested_types
+                or EvidenceType.POLICY in requested_types
             ):
                 claims = list(
                     (
@@ -364,7 +474,18 @@ class OpenTraceEvidenceProvider:
                         "business_process",
                         "workflow",
                     }
-                    if is_process and EvidenceType.BUSINESS_PROCESS in requested_types:
+                    claim_type = str(claim_row.claim_type or "").lower()
+                    if (
+                        claim_type in {"rule", "business_rule"}
+                        and EvidenceType.BUSINESS_RULE in requested_types
+                    ):
+                        claim_evidence_type = EvidenceType.BUSINESS_RULE
+                    elif (
+                        claim_type in {"policy", "business_policy"}
+                        and EvidenceType.POLICY in requested_types
+                    ):
+                        claim_evidence_type = EvidenceType.POLICY
+                    elif is_process and EvidenceType.BUSINESS_PROCESS in requested_types:
                         claim_evidence_type = EvidenceType.BUSINESS_PROCESS
                     elif EvidenceType.KNOWLEDGE in requested_types:
                         claim_evidence_type = EvidenceType.KNOWLEDGE
@@ -395,14 +516,14 @@ class OpenTraceEvidenceProvider:
             semantic_assets = list(
                 (
                     await self.db.execute(
-                        select(Text2SQLSemanticAsset).where(
-                            Text2SQLSemanticAsset.tenant_id == scope.tenant_id,
-                            Text2SQLSemanticAsset.workspace_id == scope.workspace_id,
-                            Text2SQLSemanticAsset.data_source_id == self.data_source.id,
-                            Text2SQLSemanticAsset.status == "published",
+                        select(DataAgentSemanticAsset).where(
+                            DataAgentSemanticAsset.tenant_id == scope.tenant_id,
+                            DataAgentSemanticAsset.workspace_id == scope.workspace_id,
+                            DataAgentSemanticAsset.data_source_id == self.data_source.id,
+                            DataAgentSemanticAsset.status == "published",
                             or_(
-                                Text2SQLSemanticAsset.project_id.is_(None),
-                                Text2SQLSemanticAsset.project_id == scope.project_id,
+                                DataAgentSemanticAsset.project_id.is_(None),
+                                DataAgentSemanticAsset.project_id == scope.project_id,
                             ),
                         )
                     )
@@ -412,6 +533,10 @@ class OpenTraceEvidenceProvider:
             )
             asset_types = {
                 "business_process": EvidenceType.BUSINESS_PROCESS,
+                "business_rule": EvidenceType.BUSINESS_RULE,
+                "policy": EvidenceType.POLICY,
+                "report": EvidenceType.REPORT,
+                "lineage": EvidenceType.LINEAGE,
                 "data_quality": EvidenceType.DATA_QUALITY,
                 "entity": EvidenceType.ENTITY,
                 "dimension": EvidenceType.ENTITY,
@@ -421,12 +546,18 @@ class OpenTraceEvidenceProvider:
                 evidence_type = asset_types.get(semantic_asset.asset_type)
                 if evidence_type is None or evidence_type not in requested_types:
                     continue
+                if evidence_type == EvidenceType.SOURCE_POLICY and not _active_at(
+                    semantic_asset.valid_from,
+                    semantic_asset.valid_to,
+                    reference_time,
+                ):
+                    continue
                 items.append(
                     EvidenceItem(
                         type=evidence_type,
                         source_id=f"semantic-asset:{semantic_asset.id}",
-                        source_name="Text2SQLSemanticAsset",
-                        authority=Authority.GOVERNED,
+                        source_name="DataAgentSemanticAsset",
+                        authority=_authority(semantic_asset.authority),
                         confidence=1.0,
                         version=str(semantic_asset.version),
                         scope={
@@ -438,16 +569,162 @@ class OpenTraceEvidenceProvider:
                             "asset_key": semantic_asset.asset_key,
                             "title": semantic_asset.title,
                             "description": semantic_asset.description,
+                            "business_domain": semantic_asset.business_domain,
+                            "owner": semantic_asset.owner,
                             **(semantic_asset.definition_json or {}),
                         },
                         citation=(semantic_asset.source_refs or [None])[0],
+                        valid_from=semantic_asset.valid_from,
+                        valid_to=semantic_asset.valid_to,
                     )
                 )
+
+        if EvidenceType.EXECUTION_MEMORY in requested_types:
+            memory_rows = list(
+                (
+                    await self.db.execute(
+                        select(DataAgentRunRecord)
+                        .where(
+                            DataAgentRunRecord.user_id == scope.user_id,
+                            DataAgentRunRecord.tenant_id == scope.tenant_id,
+                            DataAgentRunRecord.workspace_id == scope.workspace_id,
+                            DataAgentRunRecord.data_source_id == self.data_source.id,
+                            DataAgentRunRecord.state == "completed",
+                            or_(
+                                DataAgentRunRecord.project_id.is_(None),
+                                DataAgentRunRecord.project_id == scope.project_id,
+                            ),
+                        )
+                        .order_by(DataAgentRunRecord.completed_at.desc())
+                        .limit(30)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            memory_rows.sort(
+                key=lambda row: _score(
+                    question_tokens,
+                    row.question,
+                    row.logical_plan_json,
+                ),
+                reverse=True,
+            )
+            for memory_row in memory_rows[:5]:
+                if _score(question_tokens, memory_row.question, memory_row.logical_plan_json) <= 0:
+                    continue
+                items.append(
+                    EvidenceItem(
+                        type=EvidenceType.EXECUTION_MEMORY,
+                        source_id=f"data-agent-run:{memory_row.id}",
+                        source_name="DataAgentRunRecord",
+                        authority=Authority.VERIFIED,
+                        confidence=0.85,
+                        version=memory_row.schema_fingerprint,
+                        scope={
+                            "tenant_id": scope.tenant_id,
+                            "workspace_id": scope.workspace_id,
+                            "data_source_id": self.data_source.id,
+                        },
+                        payload={
+                            "question": memory_row.question,
+                            "logical_plan": memory_row.logical_plan_json or {},
+                            "selected_candidate_id": memory_row.selected_candidate_id,
+                            "result_validation": memory_row.result_validation_json or {},
+                            "numeric_result_summary": _numeric_result_summary(
+                                memory_row.result_json or {}
+                            ),
+                        },
+                        citation=memory_row.id,
+                    )
+                )
+
+        authority_conflicts = self._authority_conflicts(items)
+        semantic_versions = sorted(
+            f"{item.source_id}:{item.version or ''}"
+            for item in items
+            if item.type
+            in {
+                EvidenceType.METRIC,
+                EvidenceType.BUSINESS_RULE,
+                EvidenceType.POLICY,
+                EvidenceType.RELATIONSHIP,
+            }
+        )
+        semantic_version = hashlib.sha256("|".join(semantic_versions).encode("utf-8")).hexdigest()
+        latest_profiled_at = max(
+            (
+                profile.profiled_at
+                for profile in latest_profiles.values()
+                if profile.profiled_at is not None
+            ),
+            default=None,
+        )
         return EvidenceBundle(
             items=items,
             schema_fingerprint=schema_fingerprint,
             dialect=dialect,
             database_name=str(self.data_source.database or ""),
             table_columns=inspection.column_map,
+            semantic_version=semantic_version,
+            data_freshness={
+                "profiled_at": latest_profiled_at.isoformat() if latest_profiled_at else None,
+                "profile_status": "current" if latest_profiled_at else "missing",
+            },
+            authority_conflicts=authority_conflicts,
             collection_warnings=[] if inspection.column_map else ["Schema 快照为空"],
         )
+
+    @staticmethod
+    def _authority_conflicts(items: list[EvidenceItem]) -> list[dict[str, Any]]:
+        grouped: dict[tuple[EvidenceType, str], list[EvidenceItem]] = {}
+        for item in items:
+            if item.type not in {
+                EvidenceType.METRIC,
+                EvidenceType.BUSINESS_RULE,
+                EvidenceType.POLICY,
+                EvidenceType.SOURCE_POLICY,
+            }:
+                continue
+            key = str(
+                item.payload.get("name")
+                or item.payload.get("asset_key")
+                or item.payload.get("title")
+                or item.source_id
+            ).lower()
+            grouped.setdefault((item.type, key), []).append(item)
+        conflicts: list[dict[str, Any]] = []
+        for (item_type, key), values in grouped.items():
+            governed = [
+                item
+                for item in values
+                if item.authority in {Authority.LIVE_SYSTEM, Authority.GOVERNED, Authority.VERIFIED}
+            ]
+            overlapping_conflict = any(
+                json.dumps(left.payload, ensure_ascii=False, sort_keys=True, default=str)
+                != json.dumps(right.payload, ensure_ascii=False, sort_keys=True, default=str)
+                and OpenTraceEvidenceProvider._intervals_overlap(left, right)
+                for index, left in enumerate(governed)
+                for right in governed[index + 1 :]
+            )
+            if overlapping_conflict:
+                conflicts.append(
+                    {
+                        "type": item_type.value,
+                        "key": key,
+                        "source_ids": [item.source_id for item in governed],
+                    }
+                )
+        return conflicts
+
+    @staticmethod
+    def _intervals_overlap(left: EvidenceItem, right: EvidenceItem) -> bool:
+        def normalized(value: datetime | None, fallback: datetime) -> datetime:
+            result = value or fallback
+            return result if result.tzinfo is not None else result.replace(tzinfo=UTC)
+
+        left_start = normalized(left.valid_from, datetime.min.replace(tzinfo=UTC))
+        left_end = normalized(left.valid_to, datetime.max.replace(tzinfo=UTC))
+        right_start = normalized(right.valid_from, datetime.min.replace(tzinfo=UTC))
+        right_end = normalized(right.valid_to, datetime.max.replace(tzinfo=UTC))
+        return left_start < right_end and right_start < left_end

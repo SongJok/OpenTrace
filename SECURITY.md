@@ -25,7 +25,7 @@ status within 14 days. Timelines may vary with severity and reproduction complex
 - Replace all development passwords and configure `APP_SECRET_KEY`, `JWT_SECRET`, and
   `DATA_SECRET_KEY` before staging or production deployment.
 - Enable tenant RLS only together with `TRUSTED_TENANT_HEADER_SECRET` and a trusted proxy.
-- Use read-only database accounts for Text2SQL data sources.
+- Use read-only database accounts for DataAgent data sources.
 - Keep dynamic Skill execution disabled unless an isolated runner is configured.
 - Restrict CORS, connector callback origins, outbound web domains, and exposed ports.
 

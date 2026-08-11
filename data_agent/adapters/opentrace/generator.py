@@ -5,20 +5,26 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from kernel.data_cognition.sql_dialect import detect_sql_dialect
-from kernel.data_cognition.sql_planner import SQLPlanner
-from text2sql.contracts import (
+from data_agent.contracts import (
     CandidateSQL,
     EvidenceBundle,
     EvidenceType,
     LogicalQueryPlan,
     QueryRequest,
 )
+from data_agent.semantic_compiler import DeterministicSQLCompiler
+from kernel.data_cognition.sql_dialect import detect_sql_dialect
+from kernel.data_cognition.sql_planner import SQLPlanner
 
 
 class OpenTraceSQLGenerator:
-    def __init__(self, planner: SQLPlanner | None = None) -> None:
+    def __init__(
+        self,
+        planner: SQLPlanner | None = None,
+        semantic_compiler: DeterministicSQLCompiler | None = None,
+    ) -> None:
         self.planner = planner or SQLPlanner()
+        self.semantic_compiler = semantic_compiler or DeterministicSQLCompiler()
 
     async def generate(
         self,
@@ -26,6 +32,10 @@ class OpenTraceSQLGenerator:
         logical_plan: LogicalQueryPlan,
         evidence: EvidenceBundle,
     ) -> Sequence[CandidateSQL]:
+        deterministic = self.semantic_compiler.compile(request, logical_plan, evidence)
+        remaining = max(0, request.candidate_count - len(deterministic))
+        if remaining == 0:
+            return deterministic
         schema = {
             "database": evidence.database_name,
             "tables": [
@@ -55,6 +65,9 @@ class OpenTraceSQLGenerator:
             grounded_question,
             schema_hint=json.dumps(schema, ensure_ascii=False),
             dialect=detect_sql_dialect(evidence.dialect),
-            n=request.candidate_count,
+            n=remaining,
         )
-        return [CandidateSQL(sql=item.sql, source="model") for item in planned]
+        return [
+            *deterministic,
+            *(CandidateSQL(sql=item.sql, source="model") for item in planned),
+        ]

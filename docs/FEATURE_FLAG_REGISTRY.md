@@ -7,7 +7,7 @@
 | Profile | 内置 Agent | 用途 |
 |---|---|---|
 | `core` | 无专家 Agent | 仅 Manager 模型问答 |
-| `data` | data | DataAgent / Text2SQL |
+| `data` | data | DataAgent |
 | `knowledge` | rag | 企业知识 RAG |
 | `data_knowledge` | data + rag | 默认提问闭环 |
 
@@ -20,7 +20,6 @@
 | `kernel_runtime_replay_enabled` | true | stable | observability | 0.1.0 | — | — | audit-replay | — |
 | `kernel_agent_runtime_v3_strict` | false | stable | agent-runtime | 0.1.0 | — | — | agent-contribution-contract | kernel_agent_runtime_v3_enabled |
 | `kernel_agent_learning_auto_apply` | false | experimental | agent-quality | 0.1.0 | 连续两个 Beta 发布中通过回放评测且无越权策略写入 | 0.3.0 | learning | kernel_capability_intelligence_enabled |
-| `data_agent_v2_fallback_to_v1` | false | deprecated | data-agent | 0.1.0 | — | — | data | — |
 | `enterprise_tenant_rls_enabled` | false | experimental | security | 0.1.0 | 核心事实表 RLS 与跨租户负向测试全部进入发布门禁 | 0.3.0 | tenant-isolation | — |
 
 ## 企业身份上线控制（自动生成）
@@ -44,9 +43,13 @@
 | `DATABASE_SCHEMA_SYNC_MAX_TABLES` | 100000 | 单数据源单次同步的表安全预算，达到后显式标记截断 |
 | `DATABASE_SCHEMA_SYNC_MAX_COLUMNS` | 1000000 | 单数据源单次同步的列安全预算，达到后显式标记截断 |
 | `SCHEMA_ANNOTATION_AUTO_SUGGEST_MAX_ITEMS` | 20000 | 单次同步自动生成的 Schema 业务标注建议安全预算 |
-| `RESPONSES_DATA_KNOWLEDGE_CONTEXT_MAX_CHARS` | 12000 | 在线 Text2SQL 草案可注入的已审核数据知识字符预算 |
-| `TEXT2SQL_GENERATION_MAX_TOKENS` | 1600 | 复杂 CTE/长 SQL 的单候选输出预算 |
-| `TEXT2SQL_SCHEMA_HINT_MAX_CHARS` | 16000 | 查询计划优先排序后可交给 SQL 生成器的 Schema 字符预算 |
+| `RESPONSES_DATA_KNOWLEDGE_CONTEXT_MAX_CHARS` | 12000 | 在线 DataAgent 草案可注入的已审核数据知识字符预算 |
+| `DATA_AGENT_GENERATION_MAX_TOKENS` | 1600 | 复杂 CTE/长 SQL 的单候选输出预算 |
+| `DATA_AGENT_SCHEMA_HINT_MAX_CHARS` | 16000 | 查询计划优先排序后可交给 SQL 生成器的 Schema 字符预算 |
+| `DATA_AGENT_PROFILE_SAMPLE_ROWS` | 1000 | 单表有界真实数据画像的最大样本行数 |
+| `DATA_AGENT_PROFILE_TTL_HOURS` | 24 | 画像进入过期状态前的有效小时数 |
+| `DATA_AGENT_PREFLIGHT_MAX_ESTIMATED_ROWS` | 10000000 | EXPLAIN 预计扫描行数上限 |
+| `DATA_AGENT_PREFLIGHT_MAX_ESTIMATED_BYTES` | 1073741824 | EXPLAIN 预计扫描字节数上限 |
 
 这些数值控制不是能力开关。表目录 API 固定采用有界分页响应，不能通过提高同步预算改回一次性
 返回完整 Schema；生产调整预算前必须先验证 API 内存、目标数据库元数据查询和 PostgreSQL

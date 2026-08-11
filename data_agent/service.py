@@ -1,4 +1,4 @@
-"""Text2SQL 端到端服务编排。
+"""DataAgent 端到端服务编排。
 
 该服务明确分离研究、计划、编译、策略、执行和结果回答状态；执行不会因为客户端
 断开或模型重试而被隐式触发。
@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from text2sql.compiler import CandidateRanker, SQLGuard
-from text2sql.contracts import (
+from data_agent.compiler import CandidateRanker, SQLGuard
+from data_agent.contracts import (
     CandidateSQL,
     DataScope,
+    EvidenceType,
     ExecutionMode,
     QueryRequest,
     QueryRun,
@@ -19,22 +20,24 @@ from text2sql.contracts import (
     deterministic_run_id,
     utc_now,
 )
-from text2sql.policy import ExecutionPolicy
-from text2sql.ports import (
+from data_agent.policy import ExecutionPolicy
+from data_agent.ports import (
     AnswerSynthesizer,
     EvidenceProvider,
     InMemoryRunRepository,
     NullAnswerSynthesizer,
     QueryExecutor,
+    ResultValidatorPort,
     RunRepository,
     SQLGenerator,
 )
-from text2sql.research import ResearchPlanner
-from text2sql.semantics import LogicalPlanner
-from text2sql.skills import SkillRegistry
+from data_agent.research import ResearchPlanner
+from data_agent.result_validation import ResultValidator
+from data_agent.semantics import LogicalPlanner
+from data_agent.skills import SkillRegistry
 
 
-class Text2SQLService:
+class DataAgentService:
     def __init__(
         self,
         *,
@@ -48,6 +51,7 @@ class Text2SQLService:
         skill_registry: SkillRegistry | None = None,
         sql_guard: SQLGuard | None = None,
         execution_policy: ExecutionPolicy | None = None,
+        result_validator: ResultValidatorPort | None = None,
     ) -> None:
         self.evidence_provider = evidence_provider
         self.sql_generator = sql_generator
@@ -59,6 +63,7 @@ class Text2SQLService:
         self.skill_registry = skill_registry or SkillRegistry()
         self.sql_guard = sql_guard or SQLGuard()
         self.execution_policy = execution_policy or ExecutionPolicy()
+        self.result_validator = result_validator or ResultValidator()
 
     async def create(self, request: QueryRequest) -> QueryRun:
         run = QueryRun(id=deterministic_run_id(request), request=request)
@@ -83,6 +88,16 @@ class Text2SQLService:
                     "schema_fingerprint": evidence.schema_fingerprint,
                 }
             )
+            if any(
+                item.type == EvidenceType.SOURCE_POLICY
+                and bool(item.payload.get("blocked") or item.payload.get("deny_sql_generation"))
+                for item in evidence.items
+            ):
+                run.state = RunState.BLOCKED
+                run.warnings.append("数据源治理策略禁止生成 SQL")
+                run.trace.append({"stage": "blocked", "reason": "generation_policy_denied"})
+                save_attempted = True
+                return await self.repository.save(run)
             run.logical_plan = self.logical_planner.plan(request, evidence)
             run.logical_plan = self.skill_registry.enrich(run.logical_plan)
             run.trace.append(
@@ -105,6 +120,7 @@ class Text2SQLService:
                 return await self.repository.save(run)
             raw_candidates = await self.sql_generator.generate(request, run.logical_plan, evidence)
             candidates: list[CandidateSQL] = []
+            seen_sql: set[str] = set()
             for raw in raw_candidates:
                 candidate = raw if isinstance(raw, CandidateSQL) else CandidateSQL(sql=str(raw))
                 candidate.validation = self.sql_guard.validate(
@@ -112,6 +128,10 @@ class Text2SQLService:
                 )
                 if candidate.validation.normalized_sql:
                     candidate.sql = candidate.validation.normalized_sql
+                fingerprint = " ".join(candidate.sql.lower().split())
+                if fingerprint in seen_sql:
+                    continue
+                seen_sql.add(fingerprint)
                 candidates.append(candidate)
             run.candidates = CandidateRanker().rank(candidates, run.logical_plan)
             viable = [item for item in run.candidates if not item.validation.errors]
@@ -185,28 +205,42 @@ class Text2SQLService:
     ) -> QueryRun:
         run = await self.repository.get(run_id, scope)
         if run is None:
-            raise LookupError("text2sql_run_not_found")
+            raise LookupError("data_agent_run_not_found")
         if run.state in {RunState.EXECUTING, RunState.COMPLETED}:
             return run
         if run.evidence is None or run.logical_plan is None:
-            raise ValueError("text2sql_run_is_not_executable")
+            raise ValueError("data_agent_run_is_not_executable")
         candidate = (
             next((item for item in run.candidates if item.id == candidate_id), None)
             if candidate_id
             else run.selected_candidate()
         )
         if candidate is None:
-            raise ValueError("text2sql_candidate_not_found")
+            raise ValueError("data_agent_candidate_not_found")
         if not confirmed:
             run.state = RunState.BLOCKED
             run.warnings.append("执行必须显式确认")
             run.trace.append({"stage": "blocked", "reason": "confirmation_required"})
             return await self.repository.update(run)
-        current_evidence = await self.evidence_provider.collect(
-            scope,
-            run.request.question,
-            run.research_plan or self.research_planner.plan(run.request.question),
-        )
+        try:
+            current_evidence = await self.evidence_provider.collect(
+                scope,
+                run.request.question,
+                run.research_plan or self.research_planner.plan(run.request.question),
+            )
+        except (
+            OSError,
+            PermissionError,
+            RuntimeError,
+            TimeoutError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            run.state = RunState.FAILED
+            run.completed_at = datetime.now(UTC)
+            run.warnings.append(f"执行前证据重检失败：{str(exc)[:2000]}")
+            run.trace.append({"stage": "evidence_refresh_failed", "error": str(exc)[:2000]})
+            return await self.repository.update(run)
         if run.evidence.schema_fingerprint != current_evidence.schema_fingerprint and (
             run.evidence.schema_fingerprint or current_evidence.schema_fingerprint
         ):
@@ -254,12 +288,43 @@ class Text2SQLService:
             run.warnings.append("平台未配置 QueryExecutor，不能执行 SQL")
             run.trace.append({"stage": "blocked", "reason": "executor_unavailable"})
             return await self.repository.update(run)
+        preflight = getattr(self.query_executor, "preflight", None)
+        if callable(preflight):
+            try:
+                run.preflight = await preflight(scope, candidate.sql, evidence=run.evidence)
+            except (
+                OSError,
+                PermissionError,
+                RuntimeError,
+                TimeoutError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                run.state = RunState.FAILED
+                run.completed_at = datetime.now(UTC)
+                run.warnings.append(f"执行前 EXPLAIN 预检失败：{str(exc)[:2000]}")
+                run.trace.append({"stage": "preflight_failed", "error": str(exc)[:2000]})
+                return await self.repository.update(run)
+            candidate.validation.estimated_cost = dict(run.preflight.estimated_cost)
+            run.trace.append(
+                {
+                    "stage": "preflight",
+                    "status": run.preflight.status,
+                    "estimated_rows": run.preflight.estimated_rows,
+                    "estimated_bytes": run.preflight.estimated_bytes,
+                    "issues": [item.model_dump(mode="json") for item in run.preflight.issues],
+                }
+            )
+            if run.preflight.errors:
+                run.state = RunState.BLOCKED
+                run.warnings.extend(item.message for item in run.preflight.errors)
+                return await self.repository.update(run)
         run.selected_candidate_id = candidate.id
         if not await self.repository.claim_execution(run.id, scope):
             latest = await self.repository.get(run.id, scope)
             if latest is not None:
                 return latest
-            raise LookupError("text2sql_run_not_found")
+            raise LookupError("data_agent_run_not_found")
         run.state = RunState.EXECUTING
         run.updated_at = utc_now()
         await self.repository.update(run)
@@ -268,10 +333,27 @@ class Text2SQLService:
                 scope, candidate.sql, max_rows=run.request.max_rows, evidence=run.evidence
             )
             run.result = result
-            run.answer = await self.answer_synthesizer.synthesize(
-                run.request, run.logical_plan, result
+            run.result_validation = self.result_validator.validate(
+                run.logical_plan, result, run.evidence
             )
-            run.state = RunState.COMPLETED
+            run.trace.append(
+                {
+                    "stage": "result_validation",
+                    "status": run.result_validation.status,
+                    "issues": [
+                        item.model_dump(mode="json") for item in run.result_validation.issues
+                    ],
+                }
+            )
+            run.warnings.extend(item.message for item in run.result_validation.issues)
+            if run.result_validation.errors:
+                run.answer = None
+                run.state = RunState.FAILED
+            else:
+                run.answer = await self.answer_synthesizer.synthesize(
+                    run.request, run.logical_plan, result
+                )
+                run.state = RunState.COMPLETED
             run.completed_at = datetime.now(UTC)
             run.trace.append(
                 {
@@ -289,6 +371,7 @@ class Text2SQLService:
             ValueError,
         ) as exc:
             run.state = RunState.FAILED
+            run.completed_at = datetime.now(UTC)
             run.warnings.append(f"SQL 执行失败：{str(exc)[:2000]}")
             run.trace.append({"stage": "execute_failed", "error": str(exc)[:2000]})
         run.updated_at = utc_now()

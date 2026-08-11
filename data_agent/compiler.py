@@ -7,7 +7,7 @@ from typing import Any
 from sqlglot import exp, parse_one
 from sqlglot.errors import ParseError
 
-from text2sql.contracts import (
+from data_agent.contracts import (
     CandidateSQL,
     EvidenceBundle,
     EvidenceType,
@@ -89,6 +89,8 @@ class SQLGuard:
         issues.extend(self._validate_columns(columns, expression, evidence))
         issues.extend(self._validate_metrics(expression, plan))
         issues.extend(self._validate_joins(expression, evidence))
+        issues.extend(self._validate_time(expression, plan))
+        issues.extend(self._validate_aggregation(expression, plan))
         if expression.find(exp.Star):
             issues.append(
                 ValidationIssue(
@@ -370,6 +372,79 @@ class SQLGuard:
                             severity="warning",
                         )
                     )
+        return issues
+
+    @staticmethod
+    def _validate_time(expression: Any, plan: LogicalQueryPlan) -> list[ValidationIssue]:
+        if not plan.time_window:
+            return []
+        lowered = expression.sql().lower()
+        issues: list[ValidationIssue] = []
+        time_fields = {str(metric.time_field or "").lower() for metric in plan.metrics}
+        time_fields.discard("")
+        if len(time_fields) != 1:
+            issues.append(
+                ValidationIssue(
+                    code="time_field_unresolved",
+                    message="逻辑计划没有唯一的治理时间字段",
+                )
+            )
+            return issues
+        time_field = next(iter(time_fields))
+        if time_field not in lowered and time_field.rsplit(".", 1)[-1] not in lowered:
+            issues.append(
+                ValidationIssue(
+                    code="time_field_missing",
+                    message=f"SQL 未使用计划中的统计时间字段：{time_field}",
+                )
+            )
+        for key in ("start", "end", "baseline_start", "baseline_end"):
+            value = str(plan.time_window.get(key) or "")
+            if value and value[:10] not in lowered:
+                issues.append(
+                    ValidationIssue(
+                        code=f"time_{key}_missing",
+                        message=f"SQL 未覆盖已解析的绝对时间边界 {key}={value}",
+                    )
+                )
+        return issues
+
+    @staticmethod
+    def _validate_aggregation(expression: Any, plan: LogicalQueryPlan) -> list[ValidationIssue]:
+        lowered = expression.sql().lower()
+        issues: list[ValidationIssue] = []
+        for metric in plan.metrics:
+            aggregation = str(metric.aggregation or "").strip().lower()
+            formula = str(metric.formula or "").strip().lower()
+            expected = aggregation or next(
+                (name for name in ("count", "sum", "avg", "min", "max") if f"{name}(" in formula),
+                "",
+            )
+            if expected and f"{expected}(" not in lowered:
+                issues.append(
+                    ValidationIssue(
+                        code="metric_aggregation_mismatch",
+                        message=f"指标 {metric.name} 应使用聚合 {expected.upper()}",
+                        evidence_id=metric.source_evidence_id,
+                    )
+                )
+            if "count(distinct" in formula.replace(
+                " ", ""
+            ) and "count(distinct" not in lowered.replace(" ", ""):
+                issues.append(
+                    ValidationIssue(
+                        code="metric_distinct_missing",
+                        message=f"指标 {metric.name} 必须使用 COUNT(DISTINCT ...)",
+                        evidence_id=metric.source_evidence_id,
+                    )
+                )
+        if plan.dimensions and plan.metrics and expression.args.get("group") is None:
+            issues.append(
+                ValidationIssue(
+                    code="group_by_missing",
+                    message="查询包含维度和指标，但 SQL 缺少 GROUP BY",
+                )
+            )
         return issues
 
     @staticmethod

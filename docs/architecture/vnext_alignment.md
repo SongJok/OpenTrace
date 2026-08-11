@@ -36,7 +36,7 @@
 | Strategy / Capability 链 | `kernel/strategy/capability_chain.py` |
 | Cognitive World Model | `kernel/cognition/cognitive_world_model.py` |
 | Evidence / Memory / CI | runtime + `capability_intelligence` |
-| DataAgent V2（项目内） | `agents/data_agent` + settings |
+| DataAgent（统一在线治理链路） | `agents/data_agent.py` + `data_agent/` |
 
 ## 部分实现 🟡
 

@@ -61,6 +61,12 @@ export interface SQLQueryCandidateItem {
   asset_ids: string[]
   tables: string[]
   columns: string[]
+  validation_report?: {
+    status?: string
+    issues?: Array<{ code?: string; message?: string; severity?: string }>
+    preflight?: Record<string, unknown>
+    result_validation?: Record<string, unknown>
+  }
   execution_status: 'pending' | 'executing' | 'completed' | 'failed'
   rows: Array<Record<string, unknown>>
   row_count: number

@@ -10,7 +10,7 @@
 OpenTrace is a self-hosted enterprise AgentOS. Built around an OpenAI-compatible Responses
 API, a recoverable Agent Loop, and durable PostgreSQL events, it gives users one focused
 question experience backed by three capabilities: RAG retrieval, governed enterprise brain
-context, and read-only DataAgent/Text2SQL.
+context, and read-only DataAgent.
 
 > **Project status: Controlled enterprise Beta.** The supported product path is ready for
 > governed tenant pilots and is protected by product-wide Beta gates. This is not GA: production
@@ -32,7 +32,7 @@ context, and read-only DataAgent/Text2SQL.
   organizational context without turning employee chat into company facts.
 - **Focused question workflow:** every question is routed through the same durable Responses
   path. RAG supplies citations, the enterprise brain supplies authorized company context, and
-  DataAgent/Text2SQL supplies validated read-only data answers.
+  DataAgent supplies validated read-only data answers.
 - **Observable, testable, and replaceable:** all model calls pass through the Model Gateway,
   while architecture boundaries, Responses, RAG, DataAgent, approvals, and scheduling are
   protected by contract tests.
@@ -41,7 +41,7 @@ context, and read-only DataAgent/Text2SQL.
 
 Authenticated users land on `/chat`, the question page. The page is the only employee work
 surface: ask a question, optionally select an authorized project/data source, and receive an
-answer with RAG citations, enterprise-brain context, or a read-only Text2SQL result. Supporting
+answer with RAG citations, enterprise-brain context, or a read-only DataAgent result. Supporting
 pages are limited to personal data, databases, memory, tasks, Skills, and settings. Enterprise
 brain, enterprise knowledge, knowledge quality, and permissions are administrator-only pages.
 
@@ -50,7 +50,7 @@ Question page
   `-- IntentPlan -> ContextAssembler -> Manager loop
        |-- Enterprise brain: authorized company context
        |-- RAG: reviewed knowledge with citations
-       `-- Text2SQL: authorized database -> validated read-only SQL -> evidence
+       `-- DataAgent: authorized database -> validated read-only SQL -> evidence
 ```
 
 A typical workflow looks like this:
@@ -59,7 +59,7 @@ A typical workflow looks like this:
    authorized database sources.
 2. A user opens `/chat`, selects an available project or data source when needed, and asks a
    question.
-3. The Manager loop chooses only RAG or DataAgent/Text2SQL capabilities; enterprise-brain
+3. The Manager loop chooses only RAG or DataAgent capabilities; enterprise-brain
    context is injected by the ContextAssembler and is never exposed as a user-callable tool.
 
 ## Core Architecture
@@ -70,7 +70,7 @@ POST /api/v2/responses
   -> Commit PostgreSQL Response / Item / Event / Outbox in one transaction
   -> Worker publishes Redis Streams messages and claims Responses with database leases
   -> IntentPlan -> ContextAssembler -> Manager model/tool loop
-  -> RAG / enterprise-brain context / DataAgent (Text2SQL)
+  -> RAG / enterprise-brain context / DataAgent (DataAgent)
   -> Persist output, events, model calls, and tool ledger in PostgreSQL
   -> Resume SSE by sequence_number
   -> Continue with summaries and memory learning
@@ -87,7 +87,7 @@ return `410 Gone`.
 | Responses | Durable responses, streaming events, retry, cancellation, approval, reconnect, and conversation branches |
 | Agent Loop | IntentPlan, minimum-capability selection, tool loop, expert agents, evidence synthesis, and step limits |
 | Enterprise databases | MySQL, Doris, ClickHouse, and PostgreSQL; connection tests, schemas, semantic mappings, governed SQL assets, and confirmed read-only execution |
-| DataAgent | Text2SQL drafts, asset grounding, stable candidates, metric/entity/time/join reasoning, validation, confirmation, and result interpretation |
+| DataAgent | DataAgent drafts, asset grounding, stable candidates, metric/entity/time/join reasoning, validation, confirmation, and result interpretation |
 | Enterprise Knowledge | Company/department/role/project/personal spaces, source ACL sync, review publishing, validity, classification, governed retrieval, graphs, and citations |
 | Governance | Multi-tenant/workspace boundaries, resource permissions, durable approvals, quotas, and policy interfaces |
 | User support | Personal profile, databases, memory, tasks, Skills, and settings |
@@ -201,7 +201,7 @@ cause staging and production startup to fail fast.
 
 | Type | Driver / protocol | Default port | Notes |
 | --- | --- | ---: | --- |
-| MySQL | `aiomysql` | `3306` | Read-only session settings, schema synchronization, and Text2SQL |
+| MySQL | `aiomysql` | `3306` | Read-only session settings, schema synchronization, and DataAgent |
 | Doris | MySQL protocol / `aiomysql` | `9030` | Doris dialect with a compatible read-only execution strategy |
 | ClickHouse | `clickhouse-sqlalchemy` + `asynch` | `9000` | Schema synchronization through ClickHouse system tables |
 | PostgreSQL | `asyncpg` | `5432` | PostgreSQL dialect and read-only transactions |

@@ -1,12 +1,12 @@
 # OpenTrace 项目摘要
 
 OpenTrace 当前定位为 **面向企业数据与知识的提问系统**。产品主路径整体进入受控企业 Beta，
-覆盖 `/api/v2/responses`、RAG、企业大脑和 DataAgent/Text2SQL；这表示可进入受治理租户
+覆盖 `/api/v2/responses`、RAG、企业大脑和 DataAgent；这表示可进入受治理租户
 试点，不代表 GA。近期工程优先级是提升提问主链的正确性、安全和可交付性。
 
 ## 当前产品闭环
 
-1. 企业数据库问题 → 授权数据源 → 只读 Text2SQL → 校验与证据化答案。
+1. 企业数据库问题 → 授权数据源 → 只读 DataAgent → 校验与证据化答案。
 2. 企业文档 → 编译/审核/发布 → RAG 检索 → 带引用回答。
 3. 企业大脑画像 → ContextAssembler 授权注入 → 更贴合组织语境的回答。
 4. 管理员维护企业知识、质量中心和权限；用户维护资料、数据库、记忆、任务、Skills 和设置。
@@ -34,4 +34,4 @@ OpenTrace 当前定位为 **面向企业数据与知识的提问系统**。产�
 ## 明确不在 P0 扩张的范围
 
 暂停新增 Cognitive Engine、Agent 类型、世界模型和独立功能开关。新需求必须直接服务
-Responses、DataAgent/Text2SQL、RAG 或企业大脑，或提升上述主路径的质量、安全和可交付性。
+Responses、DataAgent、RAG 或企业大脑，或提升上述主路径的质量、安全和可交付性。

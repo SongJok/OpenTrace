@@ -11,15 +11,21 @@ Endpoints:
   POST /api/v1/metrics/{metric_id}/deprecate — deprecate a metric
   GET  /api/v1/metrics/{metric_id}/lineage — get metric lineage graph
 """
+
 from __future__ import annotations
+
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from gateway.api_gateway.resource_scope import (
+    accessible_data_sources_statement,
+    get_accessible_data_source,
+)
 from gateway.api_gateway.routers.auth import get_current_user
-from gateway.api_gateway.resource_scope import accessible_data_sources_statement, get_accessible_data_source
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
@@ -28,15 +34,43 @@ from infra.storage.models import DataSource, MetricDefinition, MetricLineage, Us
 router = APIRouter()
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _validate_effective_interval(valid_from: datetime | None, valid_to: datetime | None) -> None:
+    start = _as_utc(valid_from)
+    end = _as_utc(valid_to)
+    if start is not None and end is not None and end <= start:
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message="valid_to must be later than valid_from",
+        )
+
+
+def _intervals_overlap(
+    left_from: datetime | None,
+    left_to: datetime | None,
+    right_from: datetime | None,
+    right_to: datetime | None,
+) -> bool:
+    minimum = datetime.min.replace(tzinfo=UTC)
+    maximum = datetime.max.replace(tzinfo=UTC)
+    return (_as_utc(left_from) or minimum) < (_as_utc(right_to) or maximum) and (
+        _as_utc(right_from) or minimum
+    ) < (_as_utc(left_to) or maximum)
+
+
 def _scoped_metrics_statement(request: Request, current_user: User):
     tenant_md = build_tenant_metadata(request, user_id=current_user.id)
     accessible_ids = accessible_data_sources_statement(
-        user_id=current_user.id, tenant_metadata=tenant_md, required_permission="view",
+        user_id=current_user.id,
+        tenant_metadata=tenant_md,
+        required_permission="view",
     ).with_only_columns(DataSource.id)
-    return (
-        select(MetricDefinition)
-        .where(MetricDefinition.data_source_id.in_(accessible_ids))
-    )
+    return select(MetricDefinition).where(MetricDefinition.data_source_id.in_(accessible_ids))
 
 
 async def _require_owned_source(
@@ -61,6 +95,7 @@ async def _require_owned_source(
 
 # ── Pydantic Schemas ─────────────────────────────────────────────────
 
+
 class MetricCreateRequest(BaseModel):
     data_source_id: str = Field(..., min_length=1, max_length=36)
     name: str = Field(..., min_length=1, max_length=255)
@@ -69,10 +104,17 @@ class MetricCreateRequest(BaseModel):
     underlying_columns: list[str] = Field(default_factory=list)
     agg_function: str | None = None
     business_definition: str | None = None
+    required_filters: list[str] = Field(default_factory=list)
+    time_field: str | None = Field(default=None, max_length=255)
+    grain: str | None = Field(default=None, max_length=50)
+    owner: str | None = Field(default=None, max_length=255)
+    business_domain: str | None = Field(default=None, max_length=128)
     unit: str | None = None
     category: str | None = None
     tags: list[str] = Field(default_factory=list)
     sensitivity: str = Field(default="public")
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
 
 
 class MetricUpdateRequest(BaseModel):
@@ -82,13 +124,21 @@ class MetricUpdateRequest(BaseModel):
     underlying_columns: list[str] | None = None
     agg_function: str | None = None
     business_definition: str | None = None
+    required_filters: list[str] | None = None
+    time_field: str | None = None
+    grain: str | None = None
+    owner: str | None = None
+    business_domain: str | None = None
     unit: str | None = None
     category: str | None = None
     tags: list[str] | None = None
     sensitivity: str | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
 
 
 # ── Routes ──────────────────────────────────────────────────────────
+
 
 @router.get("/metrics")
 async def list_metrics(
@@ -114,6 +164,7 @@ async def list_metrics(
         conditions.append(MetricDefinition.name.ilike(f"%{search}%"))
 
     from sqlalchemy import and_
+
     query = _scoped_metrics_statement(http_request, current_user)
     if conditions:
         query = query.where(and_(*conditions))
@@ -158,6 +209,13 @@ async def create_metric(
 ) -> dict:
     """Create a new metric definition."""
     await _require_owned_source(db, http_request, current_user, req.data_source_id, "edit")
+    _validate_effective_interval(req.valid_from, req.valid_to)
+    latest_version = await db.scalar(
+        select(func.max(MetricDefinition.version)).where(
+            MetricDefinition.data_source_id == req.data_source_id,
+            MetricDefinition.name == req.name,
+        )
+    )
     metric = MetricDefinition(
         data_source_id=req.data_source_id,
         name=req.name,
@@ -166,12 +224,19 @@ async def create_metric(
         underlying_columns=req.underlying_columns,
         agg_function=req.agg_function,
         business_definition=req.business_definition,
+        required_filters=req.required_filters,
+        time_field=req.time_field,
+        grain=req.grain,
+        owner=req.owner,
+        business_domain=req.business_domain,
         unit=req.unit,
         category=req.category,
         tags=req.tags,
         sensitivity=req.sensitivity,
+        valid_from=req.valid_from,
+        valid_to=req.valid_to,
         status="draft",
-        version=1,
+        version=int(latest_version or 0) + 1,
         created_by=current_user.id,
     )
     db.add(metric)
@@ -200,10 +265,20 @@ async def update_metric(
     await _require_owned_source(db, http_request, current_user, existing.data_source_id, "edit")
 
     update_data = req.dict(exclude_unset=True, exclude_none=True)
+    _validate_effective_interval(
+        update_data.get("valid_from", existing.valid_from),
+        update_data.get("valid_to", existing.valid_to),
+    )
 
     if existing.status == "published" and update_data:
         # Create new draft version instead of mutating published metric
-        new_version = (existing.version or 1) + 1
+        latest_version = await db.scalar(
+            select(func.max(MetricDefinition.version)).where(
+                MetricDefinition.data_source_id == existing.data_source_id,
+                MetricDefinition.name == update_data.get("name", existing.name),
+            )
+        )
+        new_version = int(latest_version or existing.version or 0) + 1
         metric = MetricDefinition(
             data_source_id=existing.data_source_id,
             name=update_data.get("name", existing.name),
@@ -211,11 +286,20 @@ async def update_metric(
             formula=update_data.get("formula", existing.formula),
             underlying_columns=update_data.get("underlying_columns", existing.underlying_columns),
             agg_function=update_data.get("agg_function", existing.agg_function),
-            business_definition=update_data.get("business_definition", existing.business_definition),
+            business_definition=update_data.get(
+                "business_definition", existing.business_definition
+            ),
+            required_filters=update_data.get("required_filters", existing.required_filters),
+            time_field=update_data.get("time_field", existing.time_field),
+            grain=update_data.get("grain", existing.grain),
+            owner=update_data.get("owner", existing.owner),
+            business_domain=update_data.get("business_domain", existing.business_domain),
             unit=update_data.get("unit", existing.unit),
             category=update_data.get("category", existing.category),
             tags=update_data.get("tags", existing.tags),
             sensitivity=update_data.get("sensitivity", existing.sensitivity),
+            valid_from=update_data.get("valid_from", existing.valid_from),
+            valid_to=update_data.get("valid_to", existing.valid_to),
             status="draft",
             version=new_version,
             created_by=current_user.id,
@@ -283,12 +367,50 @@ async def publish_metric(
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="metric not found")
     await _require_owned_source(db, http_request, current_user, metric.data_source_id, "edit")
     if metric.status != "draft":
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="only draft metrics can be published")
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code, message="only draft metrics can be published"
+        )
 
-    from datetime import datetime, timezone
+    _validate_effective_interval(metric.valid_from, metric.valid_to)
+    published = list(
+        (
+            await db.execute(
+                select(MetricDefinition).where(
+                    MetricDefinition.data_source_id == metric.data_source_id,
+                    MetricDefinition.name == metric.name,
+                    MetricDefinition.status == "published",
+                    MetricDefinition.id != metric.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if published and metric.valid_from is None:
+        metric.valid_from = datetime.now(UTC)
+    for previous in published:
+        metric_valid_from = _as_utc(metric.valid_from)
+        if (
+            metric_valid_from is not None
+            and previous.valid_to is None
+            and (_as_utc(previous.valid_from) or datetime.min.replace(tzinfo=UTC))
+            < metric_valid_from
+        ):
+            previous.valid_to = metric.valid_from
+        if _intervals_overlap(
+            previous.valid_from,
+            previous.valid_to,
+            metric.valid_from,
+            metric.valid_to,
+        ):
+            raise AppException(
+                ErrorCodes.PARAM_INVALID.code,
+                message="published metric versions must not have overlapping effective intervals",
+            )
+
     metric.status = "published"
     metric.approved_by = current_user.id
-    metric.approved_at = datetime.now(timezone.utc)
+    metric.approved_at = datetime.now(UTC)
     await db.commit()
     await db.refresh(metric)
     return {"metric": _metric_to_dict(metric)}
@@ -366,6 +488,11 @@ def _metric_to_dict(m: MetricDefinition) -> dict:
         "underlying_columns": m.underlying_columns,
         "agg_function": m.agg_function,
         "business_definition": m.business_definition,
+        "required_filters": m.required_filters,
+        "time_field": m.time_field,
+        "grain": m.grain,
+        "owner": m.owner,
+        "business_domain": m.business_domain,
         "unit": m.unit,
         "category": m.category,
         "tags": m.tags,
@@ -374,6 +501,8 @@ def _metric_to_dict(m: MetricDefinition) -> dict:
         "status": m.status,
         "approved_by": m.approved_by,
         "approved_at": str(m.approved_at) if m.approved_at else None,
+        "valid_from": str(m.valid_from) if m.valid_from else None,
+        "valid_to": str(m.valid_to) if m.valid_to else None,
         "created_by": m.created_by,
         "created_at": str(m.created_at) if m.created_at else None,
         "updated_at": str(m.updated_at) if m.updated_at else None,

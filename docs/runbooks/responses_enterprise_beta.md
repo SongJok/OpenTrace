@@ -2,7 +2,7 @@
 
 ## 范围
 
-Beta 覆盖 `/api/v2/responses` 的持久化创建、Worker 租约执行、RAG 与 DataAgent/Text2SQL、
+Beta 覆盖 `/api/v2/responses` 的持久化创建、Worker 租约执行、RAG 与 DataAgent、
 企业大脑上下文注入、SSE 续传、企业准入和实际 token/成本结算。旧 `/api/v1/chat`、
 `/api/v1/tasks` 和 Cognitive Runtime 不在 Beta 主路径。
 
@@ -26,6 +26,6 @@ ENTERPRISE_EVAL_RESULTS_DIR=/secure/eval-results \
 ## 放量与回滚
 
 1. 先选择单一内部租户，限制每日 turn 与成本配额。
-2. 观察完成率、P95 时延、租约恢复、RAG 引用质量、Text2SQL 校验结果和成本偏差。
+2. 观察完成率、P95 时延、租约恢复、RAG 引用质量、DataAgent 校验结果和成本偏差。
 3. 任何租户隔离、重复副作用或事实丢失问题立即停止放量。
 4. 回滚应用镜像时保留已提交 migration；按 [Responses 切换手册](chatgpt_cutover.md) 恢复 Worker，不删除 Response 或 Outbox。

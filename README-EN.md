@@ -9,7 +9,7 @@
 
 OpenTrace 是一个可自托管的企业 AgentOS。它以 OpenAI 风格的 Responses API、可恢复
 Agent Loop 和 PostgreSQL 持久化事件为核心，让用户专注于一个提问页面，并提供三类能力：
-RAG 检索、受治理的企业大脑上下文，以及只读 DataAgent/Text2SQL。
+RAG 检索、受治理的企业大脑上下文，以及只读 DataAgent。
 
 > **项目状态：受控企业 Beta。** 支持范围内的产品主路径可进入受治理租户试点，但尚未达到
 > GA；真实放量仍需通过主链评测，并完成密钥托管、网络隔离、备份恢复、容量评估和组织级安全审查。
@@ -23,7 +23,7 @@ RAG 检索、受治理的企业大脑上下文，以及只读 DataAgent/Text2SQL
 - **治理默认开启**：租户、工作区、用户和 Project 数据源边界在 API、Agent 与后台任务中
   重复校验；写入和破坏性工具进入持久化审批节点。
 - **聚焦提问工作流**：所有问题都经过同一条持久化 Responses 主链；RAG 提供引用，企业大脑
-  提供授权的公司上下文，DataAgent/Text2SQL 提供经过校验的只读数据答案。
+  提供授权的公司上下文，DataAgent 提供经过校验的只读数据答案。
 - **可观测、可测试、可替换**：模型调用统一经过 Model Gateway；架构边界、Responses、
   RAG、DataAgent、审批和调度行为均有合约测试。
 
@@ -34,14 +34,14 @@ RAG 检索、受治理的企业大脑上下文，以及只读 DataAgent/Text2SQL
   └─ IntentPlan → ContextAssembler → Manager loop
        ├─ 企业大脑：授权的公司上下文
        ├─ RAG：审核发布的知识与引用
-       └─ Text2SQL：授权数据库 → 校验后的只读 SQL → 证据
+       └─ DataAgent：授权数据库 → 校验后的只读 SQL → 证据
 ```
 
 典型使用方式：
 
 1. 管理员配置企业知识、企业大脑画像、权限和可查询的数据库。
 2. 用户进入 `/chat`，按需选择项目或数据源并提出问题。
-3. Manager loop 只选择 RAG 或 DataAgent/Text2SQL；企业大脑由 ContextAssembler 注入，
+3. Manager loop 只选择 RAG 或 DataAgent；企业大脑由 ContextAssembler 注入，
    不作为用户可直接调用的工具暴露。
 
 ## 核心架构
@@ -52,7 +52,7 @@ POST /api/v2/responses
   → PostgreSQL Response / Item / Event / Outbox（同一事务）
   → Worker 投递 Redis Streams，并通过数据库租约领取 Response
   → IntentPlan → ContextAssembler → Manager model/tool loop
-  → RAG / 企业大脑上下文 / DataAgent (Text2SQL)
+  → RAG / 企业大脑上下文 / DataAgent (DataAgent)
   → PostgreSQL 持久化结果、事件、模型调用与工具账本
   → SSE 按 sequence_number 断点续传
   → 摘要与记忆学习
@@ -68,7 +68,7 @@ PostgreSQL 是在线事实来源，Redis 仅承担投递、唤醒和可选镜像
 | Responses | 持久化响应、流式事件、重试、取消、审批、断线恢复、会话分支 |
 | Agent Loop | IntentPlan、最小能力选择、工具循环、专家 Agent、证据合成、步骤上限保护 |
 | 企业数据库 | MySQL、Doris、ClickHouse、PostgreSQL；连接测试、Schema、语义映射、只读 SQL |
-| DataAgent | Text2SQL、指标/实体/时间/Join 推理、校验、反思、结果解释和可视化配置 |
+| DataAgent | DataAgent、指标/实体/时间/Join 推理、校验、反思、结果解释和可视化配置 |
 | 企业知识库 | 公司/部门/岗位/项目/个人空间、来源 ACL 同步、审核发布、有效期、密级、治理检索、关系图和引用 |
 | 治理 | 多租户/工作区边界、资源权限、持久化审批、配额与策略接口 |
 | 用户支持 | 我的资料、数据库、个人记忆、任务、Skills 与设置 |
@@ -175,7 +175,7 @@ API 端口以 `APP_PORT=14100` 为准。`GATEWAY_PORT` 必须保持一致；stag
 
 | 类型 | 驱动/协议 | 默认端口 | 说明 |
 | --- | --- | ---: | --- |
-| MySQL | `aiomysql` | `3306` | 支持只读会话设置、Schema 与 Text2SQL |
+| MySQL | `aiomysql` | `3306` | 支持只读会话设置、Schema 与 DataAgent |
 | Doris | MySQL protocol / `aiomysql` | `9030` | 使用 Doris 方言与兼容的只读执行策略 |
 | ClickHouse | `clickhouse-sqlalchemy` + `asynch` | `9000` | 使用 ClickHouse 系统表同步 Schema |
 | PostgreSQL | `asyncpg` | `5432` | 支持 PostgreSQL 方言与只读事务 |

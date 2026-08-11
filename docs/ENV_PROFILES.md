@@ -33,7 +33,7 @@
 | `enterprise_quota_redis_enabled` | **true**（日额度/成本走 Redis 原子 INCR；多副本一致） |
 | `enterprise_usage_redis_enabled` | **true**（租户用量 HINCRBY 日聚合） |
 | `kernel_agent_learning_auto_apply` | **false**（仅记录 `strategy_shadow`；候选策略经离线评估和审批后再发布） |
-| `data_agent_v2_verification_replan_enabled` | true（校验 fail 有限次重跑 DAG） |
+| `DATA_AGENT_PREFLIGHT_REQUIRED` | **true**（EXPLAIN 失败时禁止执行） |
 | `rag_rrf_fusion_enabled` | true（document/llmwiki/memory 分路 RRF 后再 evidence intelligence） |
 
 Supervisor prepare 会写入 `ctx.metadata["effective_runtime_flags"]`（`infra/config/flag_governance.py` 快照）。
@@ -74,7 +74,7 @@ Worker 与 in-process dispatch 在 `kernel_agent_runtime_v3_enabled=true` 时走
 - `kernel_semantic_cache_enabled`
 - `kernel_capability_intelligence_phase2_enabled`
 - `kernel_runtime_replay_enabled`
-- `data_agent_v2_advanced_analytics_mode=off`
+- `DATA_AGENT_PROFILE_ENABLED=false`（仅限不需要真实数据画像的本地调试）
 
 聊天主路径固定走 Responses Agent Loop；已不存在 V4 回退开关。
 
@@ -85,9 +85,9 @@ Worker 与 in-process dispatch 在 `kernel_agent_runtime_v3_enabled=true` 时走
 | `CAPABILITY_PROFILE` | 能力集合 |
 |---|---|
 | `core` | 仅 Manager 模型问答 |
-| `data` | DataAgent / Text2SQL |
+| `data` | DataAgent |
 | `knowledge` | RAG |
-| `data_knowledge` | DataAgent / Text2SQL + RAG（默认） |
+| `data_knowledge` | DataAgent + RAG（默认） |
 
 旧 `KERNEL_AGENT_*_ENABLED` 字段只为滚动升级和紧急熔断保留，不再作为推荐配置面。实验例外见 `docs/FEATURE_FLAG_REGISTRY.md`。
 

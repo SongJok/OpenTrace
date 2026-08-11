@@ -78,14 +78,6 @@ KERNEL_FLAG_REGISTRY: tuple[FlagSpec, ...] = (
         "0.3.0",
     ),
     FlagSpec(
-        "data_agent_v2_fallback_to_v1",
-        False,
-        "deprecated",
-        "data-agent",
-        "0.1.0",
-        "data",
-    ),
-    FlagSpec(
         "enterprise_tenant_rls_enabled",
         False,
         "experimental",

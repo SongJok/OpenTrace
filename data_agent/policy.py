@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from text2sql.contracts import (
+from data_agent.contracts import (
     EvidenceBundle,
     EvidenceType,
     LogicalQueryPlan,
@@ -28,10 +28,7 @@ class ExecutionPolicy:
                 reasons=["SQL 未通过静态验证"] + [item.message for item in report.errors[:5]],
                 risk_level="blocked",
             )
-        sensitive = any(
-            item.sensitive or item.payload.get("sensitive") or item.payload.get("is_sensitive")
-            for item in evidence.items
-        )
+        sensitive = any(item.code == "sensitive_column" for item in report.issues)
         unverified_join = any(item.code == "unverified_join" for item in report.issues)
         blocking_quality = any(
             item.type == EvidenceType.DATA_QUALITY and bool(item.payload.get("blocking"))

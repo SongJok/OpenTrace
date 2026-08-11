@@ -7,7 +7,7 @@
 | Responses 持久化运行时 | **Beta** | 企业准入、恢复、审批、结算和发布门禁已闭环；GA 仍需生产 SLO、容量和备份恢复长期基线 |
 | 提问页与 Responses 持久化运行时 | **Beta** | 继续提升真实提问完成率、恢复语义和成本基线 |
 | Agent Loop 与持久化审批 | **Beta** | 扩大 Golden Dataset、Trace Grading 和副作用 reconciliation 演练规模 |
-| DataAgent / Text2SQL | **Beta** | 扩大脱敏评测集、复杂方言覆盖和生产查询延迟基线 |
+| DataAgent / DataAgent | **Beta** | 扩大脱敏评测集、复杂方言覆盖和生产查询延迟基线 |
 | RAG 与知识发布 | **Beta** | 建立更长周期的引用准确率、生产规模召回和治理质量数据 |
 | Memory / Task | **Beta** | 完善长期一致性、权限边界和生产运维基线 |
 | Agent Bus 与专家 Agent | **Beta internal** | 完成独立 Worker Pool、背压、DLQ 运维和容量压测 |

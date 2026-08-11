@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## 项目与当前主路径
 
-OpenTrace 是一个以 Responses API 和可恢复 Agent Loop 为核心的企业提问系统，在线能力收敛为 RAG、企业大脑上下文和 DataAgent/Text2SQL，并保留资料、数据库、记忆、任务、Skills、设置及管理员治理页面。后端使用 Python 3.11、FastAPI、PostgreSQL/pgvector、Redis；前端使用 React、TypeScript 和 Vite。默认部署方式是 Docker Compose。
+OpenTrace 是一个以 Responses API 和可恢复 Agent Loop 为核心的企业提问系统，在线能力收敛为 RAG、企业大脑上下文和 DataAgent，并保留资料、数据库、记忆、任务、Skills、设置及管理员治理页面。后端使用 Python 3.11、FastAPI、PostgreSQL/pgvector、Redis；前端使用 React、TypeScript 和 Vite。默认部署方式是 Docker Compose。
 
 当前在线对话主路径不是旧的 `CognitiveKernel → CognitiveSupervisor → RuntimeGateway`，而是：
 
@@ -159,7 +159,7 @@ bash scripts/verify_migration_idempotent.sh
 ### 专项能力
 
 - RAG 主实现位于 `agents/rag_agent.py`、`knowledge/`、`plugins/document_retrieval.py` 和 `services/rag_query_planning.py`。RagAgent 负责返回证据与 citation，不负责生成最终答案；最终回答由 Manager loop 合成。
-- DataAgent 入口是 `agents/data_agent.py`，V2 由 `agents/data_agent_v2/supervisor.py` 及其 DAG 子代理执行。SQL 必须绑定授权的 `data_source_id`，只读并经过方言归一化、校验、执行后检查；V1 fallback 只能由配置显式开启。
+- DataAgent 在线入口是 `agents/data_agent.py`，统一创建持久化治理运行和待确认 SQL 草案；`data_agent/` 负责证据研究、逻辑计划、确定性编译、模型候选、静态校验、EXPLAIN 预检、只读执行和结果验证。`agents/data_agent_v2/` 仅保留为离线兼容与架构合约组件，不得接回在线主路径。
 - `memory/` 和 Responses 侧的 `MemoryLearner` 分工不同：前者提供记忆基础设施，后者在 Response 完成后提取候选并写入当前租户/工作区范围。
 - `frontend/src/api/client.ts` 实现 `/api/v2/responses` 请求、SSE 事件解析、续传、审批和 retry；修改事件协议时同时更新前端 contract tests。
 

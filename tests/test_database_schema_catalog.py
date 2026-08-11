@@ -33,7 +33,7 @@ class _PagedMetadataExecutor:
 
 
 @pytest.mark.asyncio
-async def test_schema_metadata_fetches_all_rows_beyond_text2sql_500_limit() -> None:
+async def test_schema_metadata_fetches_all_rows_beyond_data_agent_500_limit() -> None:
     source_rows = [{"table_name": f"table_{index:04d}"} for index in range(1250)]
     executor = _PagedMetadataExecutor(source_rows)
 

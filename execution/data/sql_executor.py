@@ -105,8 +105,8 @@ def _make_json_safe(val: Any) -> Any:
 
 class SQLExecutor:
     def __init__(self, *, max_rows: int | None = None, timeout_ms: int | None = None) -> None:
-        self.max_rows = max(1, int(max_rows or settings.text2sql_max_result_rows))
-        self.timeout_ms = max(1, int(timeout_ms or settings.text2sql_statement_timeout_ms))
+        self.max_rows = max(1, int(max_rows or settings.data_agent_max_result_rows))
+        self.timeout_ms = max(1, int(timeout_ms or settings.data_agent_statement_timeout_ms))
 
     def _validated_sql(self, sql: str) -> str:
         return SQLValidator(
@@ -163,6 +163,40 @@ class SQLExecutor:
                 source_type=source_type,
                 allow_metadata_tables=allow_metadata_tables,
             )
+        return await self._run_validated_on_dsn(dsn, safe_sql, source_type=source_type)
+
+    async def explain_on_dsn(
+        self,
+        dsn: str,
+        sql: str,
+        *,
+        source_type: str | None = None,
+        table_columns: dict[str, list[str]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """对已通过只读校验和表范围校验的 SQL 执行数据库原生 EXPLAIN。"""
+
+        safe_sql = self._validated_sql(sql)
+        if table_columns is not None:
+            validate_sql_table_scope(
+                safe_sql,
+                table_columns=table_columns,
+                source_type=source_type,
+            )
+        source = str(source_type or "").strip().lower()
+        prefix = "EXPLAIN ESTIMATE" if source == "clickhouse" else "EXPLAIN"
+        return await self._run_validated_on_dsn(
+            dsn,
+            f"{prefix} {safe_sql}",
+            source_type=source_type,
+        )
+
+    async def _run_validated_on_dsn(
+        self,
+        dsn: str,
+        safe_sql: str,
+        *,
+        source_type: str | None = None,
+    ) -> list[dict[str, Any]]:
         if dsn.startswith(("clickhouse+http://", "clickhouse+https://")):
             return await self._run_clickhouse_http_on_dsn(dsn, safe_sql)
         runtime_dsn = self._runtime_dsn(dsn)

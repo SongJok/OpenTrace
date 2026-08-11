@@ -1,11 +1,11 @@
-"""Text2SQL 核心依赖的端口定义。"""
+"""DataAgent 核心依赖的端口定义。"""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Protocol
 
-from text2sql.contracts import (
+from data_agent.contracts import (
     CandidateSQL,
     DataScope,
     EvidenceBundle,
@@ -14,6 +14,7 @@ from text2sql.contracts import (
     QueryRequest,
     QueryRun,
     ResearchPlan,
+    ResultValidationReport,
     RunState,
 )
 
@@ -42,6 +43,15 @@ class QueryExecutor(Protocol):
         max_rows: int,
         evidence: EvidenceBundle,
     ) -> ExecutionResult: ...
+
+
+class ResultValidatorPort(Protocol):
+    def validate(
+        self,
+        plan: LogicalQueryPlan,
+        result: ExecutionResult,
+        evidence: EvidenceBundle,
+    ) -> ResultValidationReport: ...
 
 
 class AnswerSynthesizer(Protocol):

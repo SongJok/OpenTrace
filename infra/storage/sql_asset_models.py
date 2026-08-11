@@ -171,6 +171,9 @@ class SQLQueryDraft(Base):
     project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    data_agent_run_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("data_agent_runs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     data_source_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True
     )

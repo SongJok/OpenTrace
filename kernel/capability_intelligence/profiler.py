@@ -61,7 +61,7 @@ def _bigram_score_cjk(query: str, text: str) -> float:
 
 _SEED_DATA: dict[str, dict] = {
     "data.query": {
-        "description": "结构化数据查询（SQL/Text2SQL），查询关系型数据库中的业务数据",
+        "description": "结构化数据查询（SQL/DataAgent），查询关系型数据库中的业务数据",
         "strengths": ["历史数据分析", "多维度对比", "聚合统计", "多表关联查询", "精确数值计算"],
         "weaknesses": ["无法获取实时数据", "无法搜索非结构化文本", "依赖已绑定的数据源", "复杂分析需要多步查询"],
         "ideal_queries": ["今年Q3销售额最高的10个产品", "按地区和月份统计用户增长趋势", "对比华东和华南的毛利"],

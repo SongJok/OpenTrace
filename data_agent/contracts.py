@@ -1,4 +1,4 @@
-"""Text2SQL 平台的稳定领域契约。
+"""DataAgent 平台的稳定领域契约。
 
 模型输出、工具返回和数据库执行结果都必须先落入这些结构化契约，再进入下一阶段。
 任何阶段都不能通过自由文本隐式传递安全边界或业务口径。
@@ -45,8 +45,13 @@ class EvidenceType(str, Enum):
     RELATIONSHIP = "relationship"
     SQL_ASSET = "sql_asset"
     BUSINESS_PROCESS = "business_process"
+    BUSINESS_RULE = "business_rule"
+    POLICY = "policy"
+    REPORT = "report"
+    LINEAGE = "lineage"
     KNOWLEDGE = "knowledge"
     DATA_QUALITY = "data_quality"
+    EXECUTION_MEMORY = "execution_memory"
     SKILL = "skill"
     SOURCE_POLICY = "source_policy"
 
@@ -89,6 +94,9 @@ class QueryRequest(ContractModel):
     confirmed: bool = False
     requested_tables: list[str] = Field(default_factory=list, max_length=100)
     requested_output: str | None = Field(default=None, max_length=1000)
+    timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
+    as_of: datetime | None = None
+    minimum_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
     idempotency_key: str | None = Field(default=None, max_length=255)
 
 
@@ -148,6 +156,7 @@ class EvidenceBundle(ContractModel):
     database_name: str = ""
     table_columns: dict[str, list[str]] = Field(default_factory=dict)
     data_freshness: dict[str, Any] = Field(default_factory=dict)
+    authority_conflicts: list[dict[str, Any]] = Field(default_factory=list)
     collection_warnings: list[str] = Field(default_factory=list)
 
     def of_type(self, item_type: EvidenceType) -> list[EvidenceItem]:
@@ -171,7 +180,13 @@ class MetricSpec(ContractModel):
     underlying_columns: list[str] = Field(default_factory=list)
     required_filters: list[str] = Field(default_factory=list)
     grain: str | None = None
+    time_field: str | None = None
     unit: str | None = None
+    owner: str | None = None
+    business_domain: str | None = None
+    version: int | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
     source_evidence_id: str | None = None
 
 
@@ -213,6 +228,11 @@ class LogicalQueryPlan(ContractModel):
     joins: list[JoinSpec] = Field(default_factory=list)
     filters: list[FilterSpec] = Field(default_factory=list)
     time_window: dict[str, Any] = Field(default_factory=dict)
+    business_scenario: str = "general"
+    grain: list[str] = Field(default_factory=list)
+    comparison: str | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
+    authority_conflicts: list[dict[str, Any]] = Field(default_factory=list)
     output_shape: str = "table"
     assumptions: list[str] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)
@@ -270,6 +290,30 @@ class ExecutionResult(ContractModel):
     snapshot_id: str | None = None
 
 
+class PreflightReport(ContractModel):
+    status: str = Field(default="pass", pattern="^(pass|warn|fail)$")
+    estimated_rows: int | None = None
+    estimated_bytes: int | None = None
+    estimated_cost: dict[str, Any] = Field(default_factory=dict)
+    issues: list[ValidationIssue] = Field(default_factory=list)
+    explain_rows: list[dict[str, Any]] = Field(default_factory=list)
+
+    @property
+    def errors(self) -> list[ValidationIssue]:
+        return [issue for issue in self.issues if issue.severity == "error"]
+
+
+class ResultValidationReport(ContractModel):
+    status: str = Field(default="pass", pattern="^(pass|warn|fail)$")
+    issues: list[ValidationIssue] = Field(default_factory=list)
+    checks: dict[str, Any] = Field(default_factory=dict)
+    baseline: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def errors(self) -> list[ValidationIssue]:
+        return [issue for issue in self.issues if issue.severity == "error"]
+
+
 class PolicyDecision(ContractModel):
     allowed: bool = False
     requires_confirmation: bool = True
@@ -287,7 +331,9 @@ class QueryRun(ContractModel):
     candidates: list[CandidateSQL] = Field(default_factory=list)
     selected_candidate_id: str | None = None
     policy: PolicyDecision | None = None
+    preflight: PreflightReport | None = None
     result: ExecutionResult | None = None
+    result_validation: ResultValidationReport | None = None
     answer: str | None = None
     warnings: list[str] = Field(default_factory=list)
     trace: list[dict[str, Any]] = Field(default_factory=list)

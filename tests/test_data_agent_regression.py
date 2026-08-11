@@ -44,8 +44,8 @@ def _make_db_mock():
     return db
 
 
-class Text2SqlRegressionTests(unittest.TestCase):
-    def test_data_query_uses_schema_payload_for_text2sql(self):
+class DataAgentRegressionTests(unittest.TestCase):
+    def test_data_query_uses_schema_payload_for_data_agent(self):
         from gateway.api_gateway.routers.data import DataQueryRequest, data_query
         from infra.storage.models import User
 
@@ -79,8 +79,8 @@ class Text2SqlRegressionTests(unittest.TestCase):
                 patch("gateway.api_gateway.routers.data.serialize_draft") as serialize_draft,
             ):
                 settings_mock.return_value = Mock(
-                    text2sql_default_limit=100,
-                    text2sql_max_retry=0,
+                    data_agent_default_limit=100,
+                    data_agent_max_retry=0,
                     data_agent_v2_enabled=False,
                 )
                 planner = AsyncMock()
@@ -165,8 +165,8 @@ class Text2SqlRegressionTests(unittest.TestCase):
                 patch("gateway.api_gateway.routers.data.serialize_draft") as serialize_draft,
             ):
                 settings_mock.return_value = Mock(
-                    text2sql_default_limit=100,
-                    text2sql_max_retry=0,
+                    data_agent_default_limit=100,
+                    data_agent_max_retry=0,
                     data_agent_v2_enabled=False,
                 )
                 planner = AsyncMock()
@@ -220,7 +220,7 @@ class Text2SqlRegressionTests(unittest.TestCase):
         should understand the intent via semantic parsing and produce valid SQL
         deterministically — no planner.plan() call required."""
         from agents.base import TaskMessage
-        from agents.data_agent import DataAgent
+        from agents.data_agent import DataAgentV1
         from infra.storage.models import DataSource, DataSourceSchema
         from kernel.data_cognition.logical_plan import LogicalPlan, Projection
 
@@ -252,7 +252,6 @@ class Text2SqlRegressionTests(unittest.TestCase):
             ]
 
             with (
-                patch("agents.data_agent.settings.data_agent_v2_enabled", False),
                 patch("agents.data_agent.AsyncSessionLocal") as session_mock,
                 patch("agents.data_agent.decrypt_data_source_secret", return_value="secret"),
                 patch("agents.data_agent.DBRouter") as router_cls,
@@ -309,7 +308,7 @@ class Text2SqlRegressionTests(unittest.TestCase):
                 )
                 qe_cls.return_value = query_executor
 
-                result = await DataAgent().execute(task)
+                result = await DataAgentV1().execute(task)
                 return result, semantic_parser, query_planner
 
         result, semantic_parser, query_planner = asyncio.run(_run())

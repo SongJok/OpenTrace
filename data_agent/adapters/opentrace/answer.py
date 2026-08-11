@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 
+from data_agent.contracts import ExecutionResult, LogicalQueryPlan, QueryRequest
+from data_agent.ports import NullAnswerSynthesizer
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, get_model_gateway
-from text2sql.contracts import ExecutionResult, LogicalQueryPlan, QueryRequest
-from text2sql.ports import NullAnswerSynthesizer
 
 
 class OpenTraceAnswerSynthesizer(NullAnswerSynthesizer):
