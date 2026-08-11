@@ -1741,8 +1741,6 @@ export async function apiChatStream(
               ? 'required'
               : 'auto',
             ...(Array.isArray(payload?.enabled_skills) ? { enabled_skills: payload.enabled_skills } : {}),
-            project_id: typeof payload?.project_id === 'string' ? payload.project_id : undefined,
-            data_source_ids: Array.isArray(payload?.data_source_ids) ? payload.data_source_ids : [],
             assistant_profile_id: typeof payload?.assistant_profile_id === 'string' ? payload.assistant_profile_id : undefined,
             attachment_ids: Array.isArray(payload?.attachment_ids) ? payload.attachment_ids : [],
             timezone: typeof payload?.timezone === 'string' ? payload.timezone : DEFAULT_TIMEZONE,

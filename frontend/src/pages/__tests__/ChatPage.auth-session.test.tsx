@@ -8,8 +8,6 @@ import ChatPage from '../ChatPage'
 
 const api = vi.hoisted(() => ({
   assistantProfiles: vi.fn(),
-  projects: vi.fn(),
-  databases: vi.fn(),
   modelSettings: vi.fn(),
   selectModel: vi.fn(),
 }))
@@ -19,8 +17,6 @@ vi.mock('../../api/client', async (importOriginal) => {
   return {
     ...actual,
     apiListAssistantProfiles: api.assistantProfiles,
-    apiListProjects: api.projects,
-    apiListDatabases: api.databases,
   }
 })
 
@@ -61,13 +57,9 @@ describe('ChatPage 认证会话隔离', () => {
     useChatPreferences.getState().resetUserState()
   })
 
-  it('旧账号资源请求晚到时不会恢复旧助手角色、Project 或数据源', async () => {
+  it('旧账号资源请求晚到时不会恢复旧助手角色或聊天资源选择', async () => {
     const oldProfiles = deferred<any[]>()
-    const oldProjects = deferred<any[]>()
-    const oldDatabases = deferred<any[]>()
     api.assistantProfiles.mockImplementation((token: string) => token === 'old-token' ? oldProfiles.promise : Promise.resolve([]))
-    api.projects.mockImplementation((token: string) => token === 'old-token' ? oldProjects.promise : Promise.resolve([]))
-    api.databases.mockImplementation((token: string) => token === 'old-token' ? oldDatabases.promise : Promise.resolve([]))
     api.modelSettings.mockResolvedValue({
       active_selection: { source: 'free', model: 'test-model', custom_model_id: null },
       scope: { tenant_id: 'tenant', workspace_id: 'workspace' },
@@ -97,19 +89,12 @@ describe('ChatPage 认证会话隔离', () => {
       id: 'old-profile', name: '旧账号角色', personality: 'none', instructions: '',
       default_model_profile: 'auto', built_in: false, is_default: true,
     }])
-    oldProjects.resolve([{
-      id: 'old-project', name: '旧账号项目', description: '', instructions: '',
-      memory_mode: 'default', data_source_ids: ['old-source'],
-    }])
-    oldDatabases.resolve([{ id: 'old-source', name: '旧账号数据源', type: 'postgresql', status: 'active' }])
-
     await waitFor(() => expect(api.assistantProfiles).toHaveBeenCalledWith('new-token'))
     expect(useChatPreferences.getState().assistantProfileId).toBeNull()
     expect(useChatPreferences.getState().projectId).toBeNull()
-    expect(useChatPreferences.getState().dataSourceId).toBeNull()
     expect(screen.queryByText('旧账号角色')).not.toBeInTheDocument()
-    expect(screen.queryByText('旧账号项目')).not.toBeInTheDocument()
-    expect(screen.queryByText(/旧账号数据源/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Project')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('企业数据源')).not.toBeInTheDocument()
   })
 
   it('模型选择与推理模式使用独立入口并分别保存状态', async () => {
@@ -123,8 +108,6 @@ describe('ChatPage 认证会话隔离', () => {
       ],
     }
     api.assistantProfiles.mockResolvedValue([])
-    api.projects.mockResolvedValue([])
-    api.databases.mockResolvedValue([])
     api.modelSettings.mockResolvedValue(initialSettings)
     api.selectModel.mockResolvedValue({
       ...initialSettings,

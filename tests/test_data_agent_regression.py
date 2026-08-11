@@ -86,7 +86,7 @@ class DataAgentRegressionTests(unittest.TestCase):
                     data_agent_max_retry=0,
                     data_agent_v2_enabled=False,
                 )
-                resolver_cls.return_value.resolve = AsyncMock(
+                resolver = resolver_cls.return_value.resolve = AsyncMock(
                     return_value=DataSourceDecision(
                         status="selected",
                         question="test_db库下有几张表",
@@ -133,13 +133,17 @@ class DataAgentRegressionTests(unittest.TestCase):
                     current_user=current_user,
                     db=db,
                 )
-                return resp, planner, exec_cls
+                return resp, planner, exec_cls, resolver, generate_draft
 
-        resp, planner, executor_cls = asyncio.run(_run())
+        resp, planner, executor_cls, resolver, generate_draft = asyncio.run(_run())
         self.assertEqual(resp["data_source_id"], "ds1")
         self.assertEqual(resp["rows"], [])
         self.assertFalse(resp["executed"])
         self.assertIn("等待确认执行", resp["summary"])
+        self.assertIsNone(resolver.await_args.kwargs["project_id"])
+        self.assertIsNone(resolver.await_args.kwargs["explicit_id"])
+        self.assertIsNone(resolver.await_args.kwargs["candidate_ids"])
+        self.assertIsNone(generate_draft.await_args.kwargs["project_id"])
         planner.plan.assert_not_called()
         executor_cls.assert_not_called()
 

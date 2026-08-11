@@ -2861,7 +2861,7 @@ class AgentLoop:
         project_id = str(extension.get("project_id") or "").strip() or None
         hydrated["tenant_id"] = response.tenant_id
         hydrated["workspace_id"] = response.workspace_id
-        if project_id:
+        if agent_name == "rag" and project_id:
             hydrated["project_id"] = project_id
 
         if agent_name not in {"data", "rag"}:
@@ -2939,10 +2939,15 @@ class AgentLoop:
                     or memory_policy.get("project_only") is True
                 )
                 return hydrated, None
-            explicit_ids = [
-                str(item) for item in extension.get("data_source_ids") or [] if str(item)
-            ]
-            requested_id = str(hydrated.get("data_source_id") or "").strip()
+            # 在线问数只接受服务端可信选源结果，兼容字段和模型参数都不能收窄或强制数据源。
+            for untrusted_key in (
+                "project_id",
+                "data_source_id",
+                "data_source_ids",
+                "data_source_name",
+                "source_decision",
+            ):
+                hydrated.pop(untrusted_key, None)
             from data_agent.adapters.opentrace.source_resolution import OpenTraceSourceResolver
 
             try:
@@ -2951,12 +2956,12 @@ class AgentLoop:
                     user_id=response.user_id,
                     tenant_id=response.tenant_id,
                     workspace_id=response.workspace_id,
-                    project_id=project_id,
-                    explicit_id=requested_id or None,
-                    candidate_ids=explicit_ids or None,
+                    project_id=None,
+                    explicit_id=None,
+                    candidate_ids=None,
                 )
             except PermissionError as exc:
-                return hydrated, {"error": str(exc), "project_id": project_id}
+                return hydrated, {"error": str(exc)}
             if source_decision.status != "selected" or not source_decision.selected_data_source_id:
                 return hydrated, {
                     "error": "data_source_selection_required",

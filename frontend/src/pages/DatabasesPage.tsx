@@ -576,7 +576,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
         const test = await apiTestDatabaseConnection(token, id)
         if (test.ok) {
           const sync = await apiSyncDatabaseSchema(token, id)
-          alert(sync.metadata_warning || '保存成功，连接测试通过并已同步 Schema，可直接绑定 Project 使用')
+          alert(sync.metadata_warning || '保存成功，连接测试通过并已同步 Schema，已进入企业可信数据目录供自动选源')
         } else {
           alert(`保存成功，但连接失败：${test.error || 'unknown'}`)
         }
@@ -919,7 +919,6 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
             {items.map((x) => (
               <div key={x.id} className={`rounded border p-2 text-xs cursor-pointer ${selected?.id === x.id ? 'border-[var(--accent)]' : 'border-[var(--border)]'}`} onClick={() => {
                 setSelected(x)
-                localStorage.setItem('opentrace:selected_data_source', JSON.stringify({ id: x.id, name: x.name }))
               }}>
                 <div className="flex items-center justify-between">
                   <div className="font-medium">{x.name}</div>

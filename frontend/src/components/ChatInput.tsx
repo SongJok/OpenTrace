@@ -29,8 +29,6 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
   const activeResponseId = useChatStore((state) => state.activeResponseId)
   const executionProfile = useChatPreferences((state) => state.executionProfile)
   const assistantProfileId = useChatPreferences((state) => state.assistantProfileId)
-  const projectId = useChatPreferences((state) => state.projectId)
-  const dataSourceId = useChatPreferences((state) => state.dataSourceId)
   const prefillText = useChatPreferences((state) => state.prefillText)
   const consumePrefill = useChatPreferences((state) => state.consumePrefill)
   const regenerate = useChatCommands((state) => state.regenerate)
@@ -138,8 +136,6 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
       {
         retry_response_id: retryResponseId,
         assistant_profile_id: assistantProfileId ?? undefined,
-        project_id: projectId ?? undefined,
-        data_source_ids: dataSourceId ? [dataSourceId] : [],
         attachment_ids: attachmentIds,
         timezone: DEFAULT_TIMEZONE,
       },
@@ -304,7 +300,6 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
             <button type="button" onClick={() => fileInputRef.current?.click()} disabled={attachments.length >= 10 || streaming} aria-label="添加附件" title="添加图片、音视频或文件" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--border)] hover:bg-[var(--surface-hover)] disabled:opacity-40"><Paperclip size={15} /></button>
             <span className="hidden truncate sm:inline">
               {executionProfile === 'deep' ? '深度思考' : executionProfile === 'fast' ? '快速' : '自动'}
-              {projectId ? ' · Project 上下文' : ''}
               {assistantProfileId ? ' · 个性化角色' : ''}
             </span>
           </div>

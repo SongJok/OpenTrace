@@ -29,6 +29,7 @@ from infra.security.data_source_secrets import (
     decrypt_data_source_secret,
     encrypt_data_source_secret,
 )
+from infra.security.identity import is_enterprise_admin
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
     DataQueryLog,
@@ -45,6 +46,14 @@ router = APIRouter()
 SUPPORTED_SOURCE_TYPES = {"mysql", "clickhouse", "doris", "postgres"}
 SCHEMA_CATALOG_DEFAULT_PAGE_SIZE = 100
 SCHEMA_CATALOG_MAX_PAGE_SIZE = 200
+
+
+def _require_database_admin(current_user: User) -> None:
+    if not is_enterprise_admin(current_user):
+        raise AppException(
+            ErrorCodes.PERMISSION_DENIED.code,
+            message="只有管理员可以新增企业数据库",
+        )
 
 
 async def _owned_data_source(
@@ -393,6 +402,7 @@ async def create_database(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    _require_database_admin(current_user)
     host = _validate_database_host(req.host)
     database = _validate_database_name(req.source_type, req.database)
     tenant_md = build_tenant_metadata(http_request, user_id=current_user.id)

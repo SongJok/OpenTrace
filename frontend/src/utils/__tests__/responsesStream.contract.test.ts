@@ -225,7 +225,7 @@ describe('Responses API stream compatibility', () => {
     expect(finals).toEqual([])
   })
 
-  it('sends the governed Project and enterprise data-source scope', async () => {
+  it('does not allow the chat client to bind a Project or enterprise data source', async () => {
     let body: any
     vi.stubGlobal('fetch', vi.fn().mockImplementation((_url, init) => {
       body = JSON.parse(String(init?.body || '{}'))
@@ -240,8 +240,8 @@ describe('Responses API stream compatibility', () => {
       data_source_ids: ['doris-1'],
     })
 
-    expect(body.opentrace.project_id).toBe('project-1')
-    expect(body.opentrace.data_source_ids).toEqual(['doris-1'])
+    expect(body.opentrace).not.toHaveProperty('project_id')
+    expect(body.opentrace).not.toHaveProperty('data_source_ids')
     expect(body.opentrace.knowledge_mode).toBe('auto')
   })
 

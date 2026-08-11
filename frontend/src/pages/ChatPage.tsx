@@ -4,7 +4,7 @@ import Sidebar from '../components/Sidebar'
 import MessageList, { type MessageListHandle } from '../components/MessageList'
 import ChatInput from '../components/ChatInput'
 import WelcomeScreen from '../components/WelcomeScreen'
-import { apiCreateConversationShare, apiDeleteConversation, apiListAssistantProfiles, apiListConversations, apiListDatabases, apiListProjects, apiUpdateConversation, type AssistantProfileItem, type DataSourceItem, type ProjectItem } from '../api/client'
+import { apiCreateConversationShare, apiDeleteConversation, apiListAssistantProfiles, apiListConversations, apiUpdateConversation, type AssistantProfileItem } from '../api/client'
 import { apiGetModelSettings, apiSelectModelSettings, withSelectedModel, type ModelSource, type UserModelSettings } from '../api/modelSettings'
 import { getAuthSessionSnapshot, isAuthSessionCurrent, useAuthStore } from '../store/auth'
 import { useChatStore } from '../store/chat'
@@ -60,12 +60,6 @@ export default function ChatPage() {
   const assistantProfileId = useChatPreferences((state) => state.assistantProfileId)
   const setAssistantProfileId = useChatPreferences((state) => state.setAssistantProfileId)
   const [assistantProfiles, setAssistantProfiles] = useState<AssistantProfileItem[]>([])
-  const projectId = useChatPreferences((state) => state.projectId)
-  const setProjectId = useChatPreferences((state) => state.setProjectId)
-  const dataSourceId = useChatPreferences((state) => state.dataSourceId)
-  const setDataSourceId = useChatPreferences((state) => state.setDataSourceId)
-  const [projects, setProjects] = useState<ProjectItem[]>([])
-  const [dataSources, setDataSources] = useState<DataSourceItem[]>([])
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [modelSettings, setModelSettings] = useState<UserModelSettings | null>(null)
   const [modelSettingsSaving, setModelSettingsSaving] = useState(false)
@@ -137,58 +131,9 @@ export default function ChatPage() {
     return () => { cancelled = true }
   }, [token])
 
-  useEffect(() => {
-    const authSession = getAuthSessionSnapshot()
-    setProjects([])
-    void apiListProjects(token).then((items) => {
-      if (isAuthSessionCurrent(authSession)) setProjects(items)
-    }).catch(() => {
-      if (isAuthSessionCurrent(authSession)) setProjects([])
-    })
-  }, [token])
-
-  useEffect(() => {
-    const authSession = getAuthSessionSnapshot()
-    setDataSources([])
-    void apiListDatabases(token).then((items) => {
-      if (!isAuthSessionCurrent(authSession)) return
-      const active = items.filter((item) => !item.status || item.status === 'active')
-      setDataSources(active)
-      if (dataSourceId && active.some((item) => item.id === dataSourceId)) return
-      try {
-        const saved = JSON.parse(localStorage.getItem('opentrace:selected_data_source') || 'null')
-        setDataSourceId(active.some((item) => item.id === saved?.id) ? String(saved.id) : null)
-      } catch {
-        setDataSourceId(null)
-      }
-    }).catch(() => {
-      if (isAuthSessionCurrent(authSession)) setDataSources([])
-    })
-  }, [token])
-
-  const selectedProject = projects.find((item) => item.id === projectId)
   const activeModel = modelSettings?.active_selection.model || '默认模型'
   const availableFreeModels = modelSettings?.free.has_api_key ? modelSettings.free.models : []
   const availableCustomModels = modelSettings?.custom_models.filter((item) => item.has_api_key) ?? []
-  const availableDataSources = selectedProject
-    ? dataSources.filter((item) => selectedProject.data_source_ids.includes(item.id))
-    : dataSources
-
-  useEffect(() => {
-    if (dataSourceId && !availableDataSources.some((item) => item.id === dataSourceId)) {
-      setDataSourceId(availableDataSources.length === 1 ? availableDataSources[0].id : null)
-    } else if (!dataSourceId && availableDataSources.length === 1 && selectedProject) {
-      setDataSourceId(availableDataSources[0].id)
-    }
-  }, [projectId, projects, dataSources])
-
-  const selectProject = (nextProjectId: string | null) => {
-    setProjectId(nextProjectId)
-    const project = projects.find((item) => item.id === nextProjectId)
-    const bound = project ? dataSources.filter((item) => project.data_source_ids.includes(item.id)) : dataSources
-    if (dataSourceId && bound.some((item) => item.id === dataSourceId)) return
-    setDataSourceId(bound.length === 1 ? bound[0].id : null)
-  }
 
   const refreshConversations = async () => {
     const authSession = getAuthSessionSnapshot()
@@ -323,8 +268,6 @@ export default function ChatPage() {
               </div>
               </div>
               <div className="flex items-center gap-1.5">
-                <select aria-label="Project" value={projectId ?? ''} onChange={(event) => selectProject(event.target.value || null)} className="hidden max-w-36 rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text-secondary)] sm:block"><option value="">无 Project</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-                <select aria-label="企业数据源" value={dataSourceId ?? ''} onChange={(event) => setDataSourceId(event.target.value || null)} className="hidden max-w-40 rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text-secondary)] lg:block"><option value="">自动数据源</option>{availableDataSources.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.type}</option>)}</select>
                 <select aria-label="助手角色" value={assistantProfileId ?? ''} onChange={(event) => setAssistantProfileId(event.target.value || null)} className="hidden rounded-lg border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs text-[var(--text-secondary)] sm:block">
                   {assistantProfiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                 </select>

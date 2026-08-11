@@ -5,7 +5,7 @@ OpenTrace 的 DataAgent 主路径现在由独立的 `data_agent/` 领域包提�
 ## 主流程
 
 ```text
-问题 + DataScope
+普通用户业务问题 + 服务端授权 Scope
   -> TrustedSourceSelector 选择被认证指标、语义、血缘和可信经验支持的数据源
   -> ResearchPlanner 选择证据类型
   -> EvidenceProvider 读取 Schema、数据源策略、指标、关系、SQL 资产、流程、知识、技能和数据质量
@@ -18,6 +18,11 @@ OpenTrace 的 DataAgent 主路径现在由独立的 `data_agent/` 领域包提�
   -> 返回带 R1/E1 引用的答案、验证元数据和完整轨迹
   -> 合格执行进入 observed，重复成功后晋升 trusted 经验
 ```
+
+聊天入口不再暴露 Project 或数据源选择。Responses 与旧 `/data/query` 的兼容字段可以在滚动升级
+期间被接收，但不会参与 DataAgent 选源；模型也不能通过 `data_source_id` 强制指定数据库。候选集
+始终由服务端按当前用户、租户、工作区、`query` 权限和数据源状态构造。只有管理员或超级管理员
+可以新增数据库。证据不足或候选分数接近时必须澄清业务场景，不允许以手工选择代替可信来源判定。
 
 ## API
 

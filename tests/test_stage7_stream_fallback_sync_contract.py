@@ -11,7 +11,8 @@ class Stage7StreamFallbackSyncContractTests(unittest.TestCase):
         self.assertIn("await apiChatStream(", txt)
         self.assertIn("executionProfile", txt)
         self.assertIn("assistant_profile_id", txt)
-        self.assertIn("project_id", txt)
+        self.assertNotIn("project_id", txt)
+        self.assertNotIn("data_source_ids", txt)
         self.assertIn("setLastAssistantAnnotations", txt)
         self.assertNotIn("apiChatSync", txt)
 

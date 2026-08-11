@@ -7,7 +7,7 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
 
 平台优先保证口径、粒度、时间、权限和结果完整性正确，允许单次请求更慢。每次查询必须：
 
-1. 在授权的租户、工作区、Project 和数据源范围内研究证据；
+1. 在授权的租户、工作区和数据源范围内研究证据；普通用户不能手工绑定数据源；
 2. 用认证指标、业务语义、报表、血缘和可信执行经验选择数据源；
 3. 明确业务场景、指标定义、统计粒度、时间字段、时间区间、维度和固有过滤；
 4. 证据不足、版本冲突或 JOIN 未验证时先澄清，不猜测执行；
@@ -19,7 +19,7 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
 ## 统一在线链路
 
 ```text
-/api/v2/responses 或数据库 Query 页面
+/api/v2/responses 或管理员数据库 Query 页面
   -> TrustedSourceSelector 依据企业证据选择可信数据源，歧义时澄清
   -> services.sql_assets.generate_sql_query_draft
   -> DataAgentRun 持久化事实源
@@ -42,6 +42,18 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
 
 `agents/data_agent.py` 只进入上述治理草案链路。`agents/data_agent_v2/` 和
 `DataAgentV1` 只保留为离线兼容及架构合约组件，不属于在线产品能力。
+
+## 数据源管理与在线选源边界
+
+- 只有管理员或超级管理员可以新增企业数据库；普通用户不能通过 API 绕过前端限制。
+- 数据库管理页保留管理员治理、连接测试、Schema 同步和指定数据库调试能力。
+- 普通用户在聊天中只提交业务问题，不再选择 Project 或数据源。
+- `/api/v2/responses` 和 `/api/v1/data/query` 的旧 `project_id`、`data_source_id`、
+  `data_source_ids` 仅用于滚动升级兼容，DataAgent 在线执行会忽略这些值，也会清除模型参数中的
+  同名来源提示。
+- 服务端只在当前租户、工作区内，从用户具备 `query` 权限且状态正常的数据源中自动评分选择。
+  证据不足、策略阻断或候选接近时返回澄清及候选证据，不允许退回手工下拉框绕过治理。
+- Project 仍可用于知识治理、文档编排和离线 DataAgent 管理 API，但不再限制聊天问数的可信选源。
 
 ## 数据来源与权威顺序
 
@@ -189,7 +201,7 @@ PostgreSQL 是事实来源。草案状态不能代替 DataAgentRun 的证据、�
 | POST | `/api/v1/data-agent/evaluation-cases/{id}/evaluate` | 运行 SQL/结果回归 |
 | POST | `/api/v1/data-agent/queries/{run_id}/feedback` | 保存结构化反馈 |
 
-`/api/v2/responses`、`/api/v1/data/query` 和数据库 Query 页面都通过
+`/api/v2/responses`、`/api/v1/data/query` 和管理员数据库 Query 页面都通过
 `services.sql_assets.generate_sql_query_draft()` 进入同一治理运行。
 
 ## 配置

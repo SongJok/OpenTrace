@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from data_agent.contracts import DataSourceDecision
 from infra.security.identity import is_enterprise_admin
 from infra.security.resource_scope import (
     accessible_document_predicate,
@@ -205,6 +206,71 @@ async def test_agent_param_hydration_rejects_cross_scope_conversation(monkeypatc
     )
 
     assert error == {"error": "conversation_scope_mismatch"}
+
+
+@pytest.mark.asyncio
+async def test_data_agent_ignores_client_and_model_source_selection(monkeypatch) -> None:
+    from data_agent.adapters.opentrace.source_resolution import OpenTraceSourceResolver
+    from infra.storage import database
+
+    session = SimpleNamespace(is_temporary=False, assistant_profile_id=None)
+
+    class ScopeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def scalar(self, _statement):
+            return session
+
+    captured: dict[str, object] = {}
+
+    async def resolve(_self, **kwargs):
+        captured.update(kwargs)
+        return DataSourceDecision(
+            status="selected",
+            question=str(kwargs["question"]),
+            selected_data_source_id="trusted-source",
+            selected_data_source_name="认证交易数仓",
+            confidence=0.96,
+            reason="命中认证指标与已验证 Schema",
+        )
+
+    monkeypatch.setattr(database, "AsyncSessionLocal", ScopeSession)
+    monkeypatch.setattr(OpenTraceSourceResolver, "resolve", resolve)
+    response = _response(
+        request_payload={
+            "input": "查询付费用户数",
+            "opentrace": {
+                "project_id": "client-project",
+                "data_source_ids": ["client-source"],
+            },
+        }
+    )
+
+    params, error = await AgentLoop._hydrate_agent_params(
+        response=response,
+        agent_name="data",
+        params={
+            "project_id": "model-project",
+            "data_source_id": "model-source",
+            "data_source_name": "模型指定库",
+            "source_decision": {"status": "selected"},
+        },
+        query="查询付费用户数",
+    )
+
+    assert error is None
+    assert captured["project_id"] is None
+    assert captured["explicit_id"] is None
+    assert captured["candidate_ids"] is None
+    assert params["data_source_id"] == "trusted-source"
+    assert params["data_source_name"] == "认证交易数仓"
+    assert params["source_decision"]["selected_data_source_id"] == "trusted-source"
+    assert "project_id" not in params
+    assert params["generation_only"] is True
 
 
 @pytest.mark.asyncio
