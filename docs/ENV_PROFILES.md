@@ -34,6 +34,8 @@
 | `enterprise_usage_redis_enabled` | **true**（租户用量 HINCRBY 日聚合） |
 | `kernel_agent_learning_auto_apply` | **false**（仅记录 `strategy_shadow`；候选策略经离线评估和审批后再发布） |
 | `DATA_AGENT_PREFLIGHT_REQUIRED` | **true**（EXPLAIN 失败时禁止执行） |
+| `DATA_AGENT_SOURCE_RESOLUTION_ENABLED` | **true**（多数据源证据不足时必须澄清） |
+| `DATA_AGENT_LEARNING_ENABLED` | **true**（仅记录完整验证通过的受控执行经验） |
 | `rag_rrf_fusion_enabled` | true（document/llmwiki/memory 分路 RRF 后再 evidence intelligence） |
 
 Supervisor prepare 会写入 `ctx.metadata["effective_runtime_flags"]`（`infra/config/flag_governance.py` 快照）。

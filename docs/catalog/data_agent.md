@@ -8,16 +8,19 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
 平台优先保证口径、粒度、时间、权限和结果完整性正确，允许单次请求更慢。每次查询必须：
 
 1. 在授权的租户、工作区、Project 和数据源范围内研究证据；
-2. 明确业务场景、指标定义、统计粒度、时间字段、时间区间、维度和固有过滤；
-3. 证据不足、版本冲突或 JOIN 未验证时先澄清，不猜测执行；
-4. 生成可审计的逻辑计划和候选 SQL；
-5. 通过静态校验、Schema 重检、数据库 EXPLAIN 和只读执行门禁；
-6. 校验空结果、截断、异常值、数据质量和历史基线后再生成答案。
+2. 用认证指标、业务语义、报表、血缘和可信执行经验选择数据源；
+3. 明确业务场景、指标定义、统计粒度、时间字段、时间区间、维度和固有过滤；
+4. 证据不足、版本冲突或 JOIN 未验证时先澄清，不猜测执行；
+5. 生成可审计的逻辑计划和候选 SQL；
+6. 通过静态校验、Schema/语义版本重检、数据库 EXPLAIN 和只读执行门禁；
+7. 校验空结果、截断、异常值、数据质量和历史基线后再生成带引用答案；
+8. 只把完整通过的非空真实执行记录为受控经验，重复成功后才允许复用。
 
 ## 统一在线链路
 
 ```text
 /api/v2/responses 或数据库 Query 页面
+  -> TrustedSourceSelector 依据企业证据选择可信数据源，歧义时澄清
   -> services.sql_assets.generate_sql_query_draft
   -> DataAgentRun 持久化事实源
   -> ResearchPlanner 选择证据
@@ -32,7 +35,9 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
   -> 数据库 EXPLAIN 成本预检
   -> 只读执行
   -> ResultValidator 校验完整性、质量和历史基线
+  -> AnswerEvidenceBuilder 生成 R1/E1... 白名单证据包
   -> 答案、证据、预检、结果校验和事件轨迹持久化
+  -> ExecutionLearningEngine 记录 observed，重复成功后晋升 trusted
 ```
 
 `agents/data_agent.py` 只进入上述治理草案链路。`agents/data_agent_v2/` 和
@@ -51,7 +56,7 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
 | 已发布历史 SQL 资产 | 需求、指标、结构模式和已验证过滤参考 | 不复制固定日期、ID 或已过期物理结构 |
 | 业务规则、政策、流程、报表和血缘资产 | 解释业务场景、排除条件、可信表和口径变化 | 必须带版本、有效期、Owner 和引用 |
 | 企业知识 Claims 与分析 Skills | 业务实现逻辑和分析方法 | 只能补充计划，不能绕过 SQLGuard |
-| 同 Scope 历史执行记忆 | 结果基线、计划和失败经验 | 只用于异常提示，不直接复用旧 SQL 执行 |
+| 同 Scope 执行经验 | 结果基线、计划和 SQL 结构经验 | observed 仅作验证上下文；只有 trusted 可影响排序和选源，永不直接执行旧 SQL |
 
 ### 建议继续引入的数据来源
 
@@ -96,6 +101,10 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
 - 固有过滤和排除条件；
 - 版本、有效起止时间和发布状态。
 
+发布操作即指标认证：只有管理员可以将完整草案发布为 `certified`。旧的已发布指标迁移为
+`verified`，可以作为兼容证据，但不会冒充管理员认证。认证指标必须带非空证据引用；质量契约
+可声明空值率、正数约束和阻断策略，并在结果验证阶段实际执行。
+
 同一统计周期存在重叠且内容冲突的已治理指标或规则时，逻辑计划进入
 `needs_clarification`。历史查询按绝对时间选择当时有效的版本，而不是总取最新版本。
 
@@ -131,6 +140,25 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
 
 阻断级结果校验失败时不生成业务答案，避免把已知不可靠结果包装成确定事实。
 
+答案必须同时返回机器可读 `answer_citations` 与 `answer_metadata`。`R1` 永远指向本次只读
+执行结果，`E1...` 指向指标、规则、关系、血缘、报表或质量证据。模型输出中的未知标签会被
+白名单清除；没有 `R1` 的答案会被自动补上结果引用。
+
+## 受控执行学习
+
+执行成功不等于立即学会。经验只有同时满足以下条件才进入 `observed`：
+
+- Schema 指纹和语义版本均存在且执行前未漂移；
+- 指标来自公司认证或已验证的指标契约，不存在权威冲突；
+- SQL 静态校验无错误和治理警告；
+- 数据库 EXPLAIN 状态为 `pass`；
+- 真实结果非空、未截断，结果质量状态为 `pass`；
+- 逻辑计划达到学习置信度阈值并保留业务证据。
+
+相同完整 Scope、计划模式、Schema 指纹和语义版本重复成功后才晋升 `trusted`。负反馈立即
+将模式标记为 `rejected`；纠正 SQL 只进入待审核记录，不自动改写认证指标、业务规则或物理
+Schema。经验仅对相同 SQL AST 结构提供排序加权，不能绕过编译和执行验证。
+
 ## 持久化事实源
 
 | 模型 | 作用 |
@@ -142,6 +170,7 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
 | `data_agent_evaluation_cases` | Golden Case 和冻结结果 |
 | `data_agent_feedback` | 用户纠错，不自动晋升治理知识 |
 | `sql_query_drafts` | 现有 UI 的确认执行投影，通过 `data_agent_run_id` 关联事实源 |
+| `data_agent_learning_patterns` | 按完整 Scope、Schema 和语义版本隔离的 observed/trusted/rejected 执行经验 |
 
 PostgreSQL 是事实来源。草案状态不能代替 DataAgentRun 的证据、预检和结果校验记录。
 
@@ -150,6 +179,7 @@ PostgreSQL 是事实来源。草案状态不能代替 DataAgentRun 的证据、�
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | POST | `/api/v1/data-agent/queries` | 创建治理运行并生成候选 |
+| POST | `/api/v1/data-agent/source-resolution` | 预览可信数据源评分和歧义判定 |
 | GET | `/api/v1/data-agent/queries/{run_id}` | 读取完整 Scope 内的运行记录 |
 | POST | `/api/v1/data-agent/queries/{run_id}/execute` | 显式确认后执行 |
 | POST/GET | `/api/v1/data-agent/semantic-assets` | 创建或查询治理资产 |
@@ -173,6 +203,12 @@ PostgreSQL 是事实来源。草案状态不能代替 DataAgentRun 的证据、�
 - `DATA_AGENT_SCHEMA_HINT_MAX_CHARS`
 - `DATA_AGENT_PROFILE_*`
 - `DATA_AGENT_PREFLIGHT_*`
+- `DATA_AGENT_SOURCE_RESOLUTION_ENABLED`
+- `DATA_AGENT_SOURCE_MIN_SCORE`
+- `DATA_AGENT_SOURCE_AMBIGUITY_DELTA`
+- `DATA_AGENT_LEARNING_ENABLED`
+- `DATA_AGENT_LEARNING_TRUST_MIN_SUCCESS`
+- `DATA_AGENT_LEARNING_MIN_CONFIDENCE`
 
 旧 `TEXT2SQL_*` 仅作为环境变量兼容别名，不属于新部署推荐配置面。旧
 `DATA_AGENT_V2_*` 只服务离线兼容组件，不控制在线 DataAgent。
@@ -186,7 +222,8 @@ PostgreSQL 是事实来源。草案状态不能代替 DataAgentRun 的证据、�
 - 错误 JOIN、缺少固有过滤、错误时间字段、敏感字段和越权 Scope；
 - 空结果、截断、异常值、EXPLAIN 超预算和执行失败恢复。
 
-发布指标应同时观察：逻辑计划正确率、可执行 SQL 正确率、结果一致率、澄清命中率、
+Golden Case 同时比较计划子集、SQL AST 结构和实际结果，并持久化最近评测、通过次数与失败
+次数。发布指标应同时观察：逻辑计划正确率、可执行 SQL 正确率、结果一致率、澄清命中率、
 越权率、敏感字段误放行率、Schema 漂移阻断率和 P95 延迟。准确率未达标的业务域应保持
 SQL-only 或必须确认模式，不能通过降低校验阈值换取表面成功率。
 

@@ -50,7 +50,9 @@ import {
   type SchemaAnnotationItem,
   type SQLAssetItem,
   type SQLAssetSourceItem,
+  type SQLDataSourceDecisionItem,
   type SQLQueryCandidateItem,
+  type SQLQueryExecutionSummary,
 } from '../api/client'
 
 type TabKey = 'overview' | 'tables' | 'annotations' | 'query' | 'sql_assets' | 'analysis' | 'settings' | 'metrics' | 'relationships' | 'skills'
@@ -105,7 +107,8 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     draft_status?: string
     candidates?: SQLQueryCandidateItem[]
     query_plan?: Record<string, unknown>
-    execution_summary?: Record<string, any>
+    execution_summary?: SQLQueryExecutionSummary
+    source_decision?: SQLDataSourceDecisionItem
   } | null>(null)
   const [querySessionId, setQuerySessionId] = useState<string | null>(null)
   const [sessionContext, setSessionContext] = useState<Record<string, any> | null>(null)
@@ -624,6 +627,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
       candidates: out.candidates || out.draft?.candidates || [],
       query_plan: out.query_plan || out.draft?.query_plan,
       execution_summary: out.draft?.execution_summary || {},
+      source_decision: out.source_decision,
     })
   }
 
@@ -790,6 +794,10 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     if (!queryOutput?.rows?.length) return []
     return Object.keys(queryOutput.rows[0] || {})
   }, [queryOutput])
+  const sourceDecision = queryOutput?.execution_summary?.source_decision || queryOutput?.source_decision
+  const answerCitations = queryOutput?.execution_summary?.answer_citations || []
+  const answerMetadata = queryOutput?.execution_summary?.answer_metadata || {}
+  const learning = queryOutput?.execution_summary?.learning
 
   return (
     <div className="flex flex-col h-screen bg-[var(--bg)] text-[var(--text)]">
@@ -1418,6 +1426,28 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                         </details>
                       ) : null}
 
+                      {sourceDecision ? (
+                        <div className="rounded border border-cyan-500/30 bg-cyan-500/5 p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-xs font-medium text-cyan-400">可信数据源决策</div>
+                            <span className="text-[11px] text-[var(--text-secondary)]">
+                              置信度 {Math.round((sourceDecision.confidence || 0) * 100)}%
+                            </span>
+                          </div>
+                          <div className="mt-1 text-xs">
+                            {sourceDecision.selected_data_source_name || selected?.name || '尚未选择数据源'}
+                          </div>
+                          <div className="mt-1 text-[11px] text-[var(--text-secondary)]">{sourceDecision.reason}</div>
+                          {sourceDecision.candidates?.find((item) => item.data_source_id === sourceDecision.selected_data_source_id)?.reasons?.length ? (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {sourceDecision.candidates.find((item) => item.data_source_id === sourceDecision.selected_data_source_id)!.reasons.map((reason) => (
+                                <span key={reason} className="rounded-full border border-cyan-500/20 px-2 py-0.5 text-[10px] text-cyan-300">{reason}</span>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
                       {/* 1. 草案或执行状态 */}
                       {queryOutput.answer ? (
                         <div className="rounded border border-[var(--border)] p-3 bg-[var(--surface-raised)]">
@@ -1427,6 +1457,41 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                       ) : (
                         <div className="text-xs text-[var(--text-secondary)]">{queryOutput.summary}</div>
                       )}
+
+                      {answerCitations.length ? (
+                        <details className="rounded border border-[var(--border)] p-3" open>
+                          <summary className="cursor-pointer text-xs font-medium">答案证据链</summary>
+                          <div className="mt-2 space-y-2">
+                            {answerCitations.map((citation) => (
+                              <div key={citation.label} className="rounded bg-[var(--surface-raised)] p-2 text-[11px]">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-mono font-semibold text-[var(--accent)]">[{citation.label}]</span>
+                                  <span className="font-medium">{citation.title}</span>
+                                  <span className="text-[var(--text-secondary)]">{citation.authority}{citation.version ? ` · ${citation.version}` : ''}</span>
+                                </div>
+                                {citation.excerpt ? <div className="mt-1 break-words text-[var(--text-secondary)]">{citation.excerpt}</div> : null}
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      ) : null}
+
+                      {learning ? (
+                        <div className={`rounded border p-3 ${learning.status === 'trusted' ? 'border-emerald-500/30 bg-emerald-500/5' : learning.status === 'rejected' || learning.status === 'ineligible' ? 'border-amber-500/30 bg-amber-500/5' : 'border-sky-500/30 bg-sky-500/5'}`}>
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                            <span className="font-medium">受控执行学习：{learning.status}</span>
+                            <span className="text-[var(--text-secondary)]">成功 {learning.success_count} 次 · 失败 {learning.failure_count} 次</span>
+                          </div>
+                          <div className="mt-1 text-[11px] text-[var(--text-secondary)]">{learning.reasons?.join('；')}</div>
+                        </div>
+                      ) : null}
+
+                      {Object.keys(answerMetadata).length ? (
+                        <details className="rounded border border-[var(--border)] p-3">
+                          <summary className="cursor-pointer text-xs font-medium">可验证答案元数据</summary>
+                          <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap text-[10px] text-[var(--text-secondary)]">{JSON.stringify(answerMetadata, null, 2)}</pre>
+                        </details>
+                      ) : null}
 
                       {/* 2. 持久化 SQL 候选 */}
                       {queryOutput.candidates?.length ? (
@@ -1474,6 +1539,11 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                                 </div>
                               </div>
                               <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded border border-[var(--border)] bg-black/20 p-2 text-xs">{candidate.sql}</pre>
+                              {candidate.validation_report?.supporting_memory_ids?.length ? (
+                                <div className="mt-2 text-[11px] text-sky-400">
+                                  已由 {candidate.validation_report.supporting_memory_ids.length} 条可信执行经验支持排序
+                                </div>
+                              ) : null}
                               {candidate.validation_report?.preflight && Object.keys(candidate.validation_report.preflight).length ? (
                                 <details className="mt-2 rounded border border-[var(--border)] p-2">
                                   <summary className="cursor-pointer text-[11px] font-medium">执行前 EXPLAIN 预检</summary>
@@ -1676,7 +1746,20 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                           </div>
                           {m.formula ? <div className="text-xs font-mono text-[var(--text-secondary)]">{m.formula}</div> : null}
                           {m.business_definition ? <p className="text-xs text-[var(--text-secondary)]">{m.business_definition}</p> : null}
-                          {m.unit ? <span className="text-[10px] text-[var(--text-secondary)]">单位: {m.unit}</span> : null}
+                          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-[var(--text-secondary)]">
+                            {m.certification_level ? <span>认证: {m.certification_level}</span> : null}
+                            {m.owner ? <span>Owner: {m.owner}</span> : null}
+                            {m.business_domain ? <span>业务域: {m.business_domain}</span> : null}
+                            {m.grain ? <span>粒度: {m.grain}</span> : null}
+                            {m.unit ? <span>单位: {m.unit}</span> : null}
+                          </div>
+                          {m.evidence_refs?.length ? <div className="text-[10px] text-cyan-400">证据: {m.evidence_refs.join(' · ')}</div> : null}
+                          {m.quality_contract && Object.keys(m.quality_contract).length ? (
+                            <details className="text-[10px] text-[var(--text-secondary)]">
+                              <summary className="cursor-pointer">质量契约</summary>
+                              <pre className="mt-1 whitespace-pre-wrap">{JSON.stringify(m.quality_contract, null, 2)}</pre>
+                            </details>
+                          ) : null}
                         </div>
                       ))}
                     </div>

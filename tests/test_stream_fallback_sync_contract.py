@@ -2,6 +2,8 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
+from data_agent.contracts import DataSourceDecision
+
 
 class StreamFallbackSyncBehaviorTests(unittest.TestCase):
     def test_responses_path_has_no_keyword_database_router(self):
@@ -56,6 +58,7 @@ class StreamFallbackSyncBehaviorTests(unittest.TestCase):
                     new_callable=AsyncMock,
                     return_value=source,
                 ),
+                patch("gateway.api_gateway.routers.data.OpenTraceSourceResolver") as resolver_cls,
                 patch(
                     "gateway.api_gateway.routers.data.generate_sql_query_draft",
                     new_callable=AsyncMock,
@@ -70,6 +73,15 @@ class StreamFallbackSyncBehaviorTests(unittest.TestCase):
                 ),
                 patch("execution.data.sql_executor.SQLExecutor") as executor_cls,
             ):
+                resolver_cls.return_value.resolve = AsyncMock(
+                    return_value=DataSourceDecision(
+                        status="selected",
+                        question="查订单",
+                        selected_data_source_id="ds1",
+                        selected_data_source_name="订单库",
+                        confidence=1.0,
+                    )
+                )
                 response = await data_query(
                     DataQueryRequest(
                         question="查订单",

@@ -87,6 +87,24 @@ KERNEL_FLAG_REGISTRY: tuple[FlagSpec, ...] = (
         exit_criteria="核心事实表 RLS 与跨租户负向测试全部进入发布门禁",
         remove_by="0.3.0",
     ),
+    FlagSpec(
+        "data_agent_source_resolution_enabled",
+        True,
+        "stable",
+        "data-platform",
+        "0.2.0",
+        "data-agent-source-resolution",
+    ),
+    FlagSpec(
+        "data_agent_learning_enabled",
+        True,
+        "experimental",
+        "data-platform",
+        "0.2.0",
+        "data-agent-governed-learning",
+        exit_criteria="核心业务域 Golden Case 连续两个发布周期无错误晋升或跨 Scope 复用",
+        remove_by="0.4.0",
+    ),
 )
 
 

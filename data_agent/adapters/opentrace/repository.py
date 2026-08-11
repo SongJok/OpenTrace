@@ -28,10 +28,13 @@ class OpenTraceRunRepository:
 
     @staticmethod
     def _record_to_run(record: DataAgentRunRecord) -> QueryRun:
+        request_payload = dict(record.request_json or {})
+        if record.source_decision_json and not request_payload.get("source_decision"):
+            request_payload["source_decision"] = record.source_decision_json
         return QueryRun.model_validate(
             {
                 "id": record.id,
-                "request": record.request_json,
+                "request": request_payload,
                 "state": record.state,
                 "research_plan": record.research_plan_json or None,
                 "evidence": record.evidence_json or None,
@@ -43,6 +46,9 @@ class OpenTraceRunRepository:
                 "result": record.result_json or None,
                 "result_validation": record.result_validation_json or None,
                 "answer": record.answer,
+                "answer_citations": record.answer_citations_json or [],
+                "answer_metadata": record.answer_metadata_json or {},
+                "learning": record.learning_json or None,
                 "warnings": record.warnings_json or [],
                 "trace": record.trace_json or [],
                 "created_at": record.created_at,
@@ -91,6 +97,14 @@ class OpenTraceRunRepository:
         record.result_json = payload.get("result") or {}
         record.result_validation_json = payload.get("result_validation") or {}
         record.answer = run.answer
+        record.source_decision_json = (
+            run.request.source_decision.model_dump(mode="json")
+            if run.request.source_decision
+            else {}
+        )
+        record.answer_citations_json = payload.get("answer_citations") or []
+        record.answer_metadata_json = payload.get("answer_metadata") or {}
+        record.learning_json = payload.get("learning") or {}
         record.warnings_json = run.warnings
         record.trace_json = run.trace
         record.schema_fingerprint = run.evidence.schema_fingerprint if run.evidence else None

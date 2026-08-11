@@ -85,8 +85,16 @@ class DataAgent(BaseAgent):
                 group_type=str(task.params.get("group_type") or "alternative"),
                 output_mode=str(task.params.get("output_mode") or "sql_only"),
                 clarification_context=str(task.params.get("clarify_context") or "") or None,
+                source_decision=(
+                    task.params.get("source_decision")
+                    if isinstance(task.params.get("source_decision"), dict)
+                    else None
+                ),
             )
             payload = serialize_draft(draft, candidates)
+            source_decision = task.params.get("source_decision")
+            if isinstance(source_decision, dict):
+                payload["source_decision"] = source_decision
         if draft.status == "needs_clarification":
             question_text = str(payload["clarification"].get("question_text") or "请补充查询口径。")
             return AgentResult(
@@ -101,6 +109,7 @@ class DataAgent(BaseAgent):
                     "clarification": payload["clarification"],
                     "draft_id": draft.id,
                     "draft": payload,
+                    "source_decision": payload.get("source_decision", {}),
                     "executed": False,
                 },
             )
@@ -130,6 +139,7 @@ class DataAgent(BaseAgent):
                 "draft_id": draft.id,
                 "candidates": payload["candidates"],
                 "draft": payload,
+                "source_decision": payload.get("source_decision", {}),
                 "query_plan": payload["query_plan"],
             },
         )

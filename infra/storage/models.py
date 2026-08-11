@@ -36,6 +36,7 @@ from infra.config.constants import DEFAULT_TIMEZONE
 from infra.config.settings import settings
 from infra.storage.data_agent_models import DataAgentEvaluationCase as DataAgentEvaluationCase
 from infra.storage.data_agent_models import DataAgentFeedback as DataAgentFeedback
+from infra.storage.data_agent_models import DataAgentLearningPattern as DataAgentLearningPattern
 from infra.storage.data_agent_models import DataAgentProfile as DataAgentProfile
 from infra.storage.data_agent_models import DataAgentRunEvent as DataAgentRunEvent
 from infra.storage.data_agent_models import DataAgentRunRecord as DataAgentRunRecord
@@ -2211,6 +2212,11 @@ class MetricDefinition(Base):
     category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     tags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     sensitivity: Mapped[str] = mapped_column(String(20), nullable=False, default="public")
+    certification_level: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="draft", index=True
+    )
+    evidence_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    quality_contract: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
     approved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)

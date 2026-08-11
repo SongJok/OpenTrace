@@ -516,6 +516,12 @@ class AppSettings(BaseSettings):
     data_agent_preflight_max_estimated_bytes: int = Field(
         default=1073741824, ge=1048576, le=1099511627776
     )
+    data_agent_source_resolution_enabled: bool = True
+    data_agent_source_min_score: float = Field(default=0.25, ge=0.0, le=1.0)
+    data_agent_source_ambiguity_delta: float = Field(default=0.08, ge=0.0, le=1.0)
+    data_agent_learning_enabled: bool = True
+    data_agent_learning_trust_min_success: int = Field(default=2, ge=1, le=100)
+    data_agent_learning_min_confidence: float = Field(default=0.85, ge=0.0, le=1.0)
     # Schema 元数据同步使用独立预算，不能复用 DataAgent 的 500 行结果保护器。
     database_schema_sync_page_size: int = Field(default=2000, ge=100, le=10000)
     database_schema_sync_max_tables: int = Field(default=100000, ge=1000, le=1000000)

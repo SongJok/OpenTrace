@@ -118,6 +118,12 @@ Schema 同步不得复用 `DATA_AGENT_MAX_RESULT_ROWS=500`：后者只保护业�
 | `DATA_AGENT_PREFLIGHT_TIMEOUT_MS` | `15000` | EXPLAIN 超时预算 |
 | `DATA_AGENT_PREFLIGHT_MAX_ESTIMATED_ROWS` | `10000000` | 预计扫描行数门禁 |
 | `DATA_AGENT_PREFLIGHT_MAX_ESTIMATED_BYTES` | `1073741824` | 预计扫描字节门禁 |
+| `DATA_AGENT_SOURCE_RESOLUTION_ENABLED` | `true` | 多数据源时允许依据认证指标、语义、血缘和 trusted 经验自动选择 |
+| `DATA_AGENT_SOURCE_MIN_SCORE` | `0.25` | 自动选源的最低企业证据评分 |
+| `DATA_AGENT_SOURCE_AMBIGUITY_DELTA` | `0.08` | 前两名评分接近时进入澄清的差值阈值 |
+| `DATA_AGENT_LEARNING_ENABLED` | `true` | 保存受完整 Scope 和版本约束的执行经验；不修改治理资产 |
+| `DATA_AGENT_LEARNING_TRUST_MIN_SUCCESS` | `2` | observed 晋升 trusted 所需成功次数 |
+| `DATA_AGENT_LEARNING_MIN_CONFIDENCE` | `0.85` | 经验记录和晋升所需最低逻辑计划置信度 |
 | `MULTIMODAL_INLINE_MAX_MB` | `7` | Base64 音视频上传上限，编码后保持在 Provider 10MB 限制内 |
 
 每轮实际上下文用量、裁剪数、摘要命中、媒体数量和工具 schema 估算会写入

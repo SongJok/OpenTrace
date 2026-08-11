@@ -15,9 +15,12 @@ from data_agent.adapters.opentrace.answer import OpenTraceAnswerSynthesizer
 from data_agent.adapters.opentrace.evidence import OpenTraceEvidenceProvider
 from data_agent.adapters.opentrace.executor import OpenTraceQueryExecutor
 from data_agent.adapters.opentrace.generator import OpenTraceSQLGenerator
+from data_agent.adapters.opentrace.learning import OpenTraceLearningRepository
 from data_agent.adapters.opentrace.repository import OpenTraceRunRepository
+from data_agent.adapters.opentrace.source_resolution import OpenTraceSourceResolver
 from data_agent.contracts import DataScope, ExecutionMode, QueryRequest, deterministic_run_id
-from data_agent.evaluation import ResultComparator
+from data_agent.evaluation import PlanComparator, ResultComparator
+from data_agent.learning import ExecutionLearningEngine, sql_structure_hash
 from data_agent.profiling import DataProfiler, serialize_profile
 from data_agent.service import DataAgentService
 from gateway.api_gateway.resource_scope import get_accessible_data_source
@@ -44,7 +47,7 @@ router = APIRouter(dependencies=[Depends(_ensure_enabled)])
 
 class DataAgentQueryRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=8192)
-    data_source_id: str = Field(..., min_length=1, max_length=128)
+    data_source_id: str | None = Field(default=None, min_length=1, max_length=128)
     mode: str = Field(default="sql_only", pattern="^(sql_only|execute_and_answer)$")
     confirmed: bool = False
     clarification_context: str | None = Field(default=None, max_length=4000)
@@ -112,6 +115,13 @@ class EvaluationRunRequest(BaseModel):
     max_rows: int = Field(default=500, ge=1, le=10000)
 
 
+class SourceResolutionRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=8192)
+    data_source_id: str | None = Field(default=None, min_length=1, max_length=128)
+    candidate_data_source_ids: list[str] = Field(default_factory=list, max_length=100)
+    project_id: str | None = Field(default=None, max_length=128)
+
+
 def _scope(
     request: Request, user: User, data_source_id: str, project_id: str | None = None
 ) -> DataScope:
@@ -132,6 +142,12 @@ def _service(db: AsyncSession, source: Any) -> DataAgentService:
         query_executor=OpenTraceQueryExecutor(source),
         answer_synthesizer=OpenTraceAnswerSynthesizer(),
         repository=OpenTraceRunRepository(db),
+        learning_repository=(
+            OpenTraceLearningRepository(db) if settings.data_agent_learning_enabled else None
+        ),
+        learning_engine=ExecutionLearningEngine(
+            minimum_confidence=settings.data_agent_learning_min_confidence
+        ),
     )
 
 
@@ -206,14 +222,30 @@ async def create_data_agent_query(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    scope = _scope(request, current_user, payload.data_source_id, payload.project_id)
+    tenant_metadata = build_tenant_metadata(request, user_id=current_user.id)
+    decision = await OpenTraceSourceResolver(db).resolve(
+        question=payload.question,
+        user_id=current_user.id,
+        tenant_id=str(tenant_metadata.get("tenant_id") or "default"),
+        workspace_id=str(tenant_metadata.get("workspace_id") or "default"),
+        project_id=payload.project_id,
+        explicit_id=payload.data_source_id,
+    )
+    if decision.status != "selected" or not decision.selected_data_source_id:
+        return {
+            "state": decision.status,
+            "needs_clarification": decision.status == "needs_clarification",
+            "source_decision": decision.model_dump(mode="json"),
+        }
+    selected_source_id = decision.selected_data_source_id
+    scope = _scope(request, current_user, selected_source_id, payload.project_id)
     await _validate_project_scope(db, scope=scope, project_id=payload.project_id)
     _validate_max_rows(payload.max_rows)
     source = await get_accessible_data_source(
         db,
         user_id=current_user.id,
         tenant_metadata={"tenant_id": scope.tenant_id, "workspace_id": scope.workspace_id},
-        data_source_id=scope.data_source_id,
+        data_source_id=selected_source_id,
         required_permission="query",
         active_only=True,
     )
@@ -236,6 +268,7 @@ async def create_data_agent_query(
         as_of=payload.as_of,
         minimum_confidence=payload.minimum_confidence,
         idempotency_key=normalized_idempotency_key,
+        source_decision=decision,
     )
     if normalized_idempotency_key:
         existing = await OpenTraceRunRepository(db).get(deterministic_run_id(query), scope)
@@ -245,6 +278,26 @@ async def create_data_agent_query(
             return _payload(existing)
     run = await _service(db, source).create(query)
     return _payload(run)
+
+
+@router.post("/data-agent/source-resolution")
+async def resolve_data_agent_source(
+    request: Request,
+    payload: SourceResolutionRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    metadata = build_tenant_metadata(request, user_id=current_user.id)
+    decision = await OpenTraceSourceResolver(db).resolve(
+        question=payload.question,
+        user_id=current_user.id,
+        tenant_id=str(metadata.get("tenant_id") or "default"),
+        workspace_id=str(metadata.get("workspace_id") or "default"),
+        project_id=payload.project_id,
+        explicit_id=payload.data_source_id,
+        candidate_ids=payload.candidate_data_source_ids,
+    )
+    return {"source_decision": decision.model_dump(mode="json")}
 
 
 @router.get("/data-agent/queries/{run_id}")
@@ -503,8 +556,21 @@ async def submit_data_agent_feedback(
         metadata_json=payload.metadata,
     )
     db.add(feedback)
+    learning = None
+    if settings.data_agent_learning_enabled:
+        learning = await OpenTraceLearningRepository(db).record_feedback(
+            run,
+            verdict=payload.verdict,
+            candidate_id=payload.candidate_id,
+            corrected_sql=payload.corrected_sql,
+        )
     await db.commit()
-    return {"feedback_id": feedback.id, "stored": True, "promoted": False}
+    return {
+        "feedback_id": feedback.id,
+        "stored": True,
+        "promoted": bool(learning and learning.status == "trusted"),
+        "learning": learning.model_dump(mode="json") if learning else None,
+    }
 
 
 def _semantic_asset_payload(asset: DataAgentSemanticAsset) -> dict[str, Any]:
@@ -624,16 +690,55 @@ async def evaluate_case(
             confirmed=True,
         )
     selected = run.selected_candidate()
+    plan_comparison = (
+        PlanComparator().compare(
+            case.expected_plan,
+            run.logical_plan.model_dump(mode="json") if run.logical_plan else {},
+        )
+        if case.expected_plan
+        else None
+    )
+    sql_matches = None
+    if case.expected_sql and selected and run.evidence:
+        sql_matches = sql_structure_hash(
+            case.expected_sql, dialect=run.evidence.dialect
+        ) == sql_structure_hash(selected.sql, dialect=run.evidence.dialect)
     result_comparison = None
     if payload.execute and run.result is not None and case.expected_result:
         result_comparison = ResultComparator().compare(case.expected_result, run.result.rows)
+    passed = all(
+        check
+        for check in (
+            plan_comparison.matches if plan_comparison is not None else True,
+            sql_matches if sql_matches is not None else True,
+            result_comparison.exact if result_comparison is not None else True,
+            run.state.value == "completed" if payload.execute else True,
+        )
+    )
+    evaluation = {
+        "passed": passed,
+        "plan_comparison": plan_comparison.__dict__ if plan_comparison else None,
+        "sql_structure_matches": sql_matches,
+        "result_comparison": (
+            result_comparison.__dict__ if result_comparison is not None else None
+        ),
+        "schema_fingerprint": run.evidence.schema_fingerprint if run.evidence else None,
+        "semantic_version": run.evidence.semantic_version if run.evidence else None,
+        "evaluated_at": datetime.now(UTC).isoformat(),
+    }
+    case.last_evaluation_json = evaluation
+    case.last_run_id = run.id
+    case.last_evaluated_at = datetime.now(UTC)
+    if passed:
+        case.pass_count += 1
+    else:
+        case.failure_count += 1
+    await db.commit()
     return {
         "case": _evaluation_case_payload(case),
         "run": _payload(run),
         "sql_available": bool(selected and selected.sql),
-        "result_comparison": (
-            result_comparison.__dict__ if result_comparison is not None else None
-        ),
+        "evaluation": evaluation,
     }
 
 
@@ -648,4 +753,8 @@ def _evaluation_case_payload(case: DataAgentEvaluationCase) -> dict[str, Any]:
         "schema_fingerprint": case.schema_fingerprint,
         "tags": case.tags or [],
         "status": case.status,
+        "last_evaluation": case.last_evaluation_json or {},
+        "pass_count": case.pass_count,
+        "failure_count": case.failure_count,
+        "last_evaluated_at": case.last_evaluated_at,
     }

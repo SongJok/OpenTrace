@@ -2,6 +2,8 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
+from data_agent.contracts import DataSourceDecision
+
 
 def _make_schema_mock():
     schema_row = Mock(spec=["schema_json", "semantic_mappings"])
@@ -72,6 +74,7 @@ class DataAgentRegressionTests(unittest.TestCase):
                 ) as normalize_mock,
                 patch("gateway.api_gateway.routers.data.DBRouter", create=True) as router_cls,
                 patch("gateway.api_gateway.routers.data.SQLExecutor", create=True) as exec_cls,
+                patch("gateway.api_gateway.routers.data.OpenTraceSourceResolver") as resolver_cls,
                 patch(
                     "gateway.api_gateway.routers.data.generate_sql_query_draft",
                     new_callable=AsyncMock,
@@ -82,6 +85,15 @@ class DataAgentRegressionTests(unittest.TestCase):
                     data_agent_default_limit=100,
                     data_agent_max_retry=0,
                     data_agent_v2_enabled=False,
+                )
+                resolver_cls.return_value.resolve = AsyncMock(
+                    return_value=DataSourceDecision(
+                        status="selected",
+                        question="test_db库下有几张表",
+                        selected_data_source_id="ds1",
+                        selected_data_source_name="test_db",
+                        confidence=1.0,
+                    )
                 )
                 planner = AsyncMock()
                 planner.plan.return_value = (
@@ -158,6 +170,7 @@ class DataAgentRegressionTests(unittest.TestCase):
                 ) as normalize_mock,
                 patch("gateway.api_gateway.routers.data.DBRouter", create=True) as router_cls,
                 patch("gateway.api_gateway.routers.data.SQLExecutor", create=True) as exec_cls,
+                patch("gateway.api_gateway.routers.data.OpenTraceSourceResolver") as resolver_cls,
                 patch(
                     "gateway.api_gateway.routers.data.generate_sql_query_draft",
                     new_callable=AsyncMock,
@@ -168,6 +181,15 @@ class DataAgentRegressionTests(unittest.TestCase):
                     data_agent_default_limit=100,
                     data_agent_max_retry=0,
                     data_agent_v2_enabled=False,
+                )
+                resolver_cls.return_value.resolve = AsyncMock(
+                    return_value=DataSourceDecision(
+                        status="selected",
+                        question="test_db下面有哪些表",
+                        selected_data_source_id="ds1",
+                        selected_data_source_name="test_db",
+                        confidence=1.0,
+                    )
                 )
                 planner = AsyncMock()
                 planner.plan.return_value = "SELECT table_name FROM information_schema.tables"

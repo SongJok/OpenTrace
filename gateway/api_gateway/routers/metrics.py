@@ -63,6 +63,24 @@ def _intervals_overlap(
     ) < (_as_utc(left_to) or maximum)
 
 
+def _metric_certification_missing_fields(metric: MetricDefinition) -> list[str]:
+    fields = (
+        ("formula", metric.formula),
+        ("business_definition", metric.business_definition),
+        ("underlying_columns", metric.underlying_columns),
+        ("agg_function", metric.agg_function),
+        ("owner", metric.owner),
+        ("business_domain", metric.business_domain),
+        ("grain", metric.grain),
+        ("evidence_refs", [item for item in metric.evidence_refs or [] if str(item).strip()]),
+    )
+    missing = [name for name, value in fields if not value or not str(value).strip()]
+    grain = str(metric.grain or "").strip().lower()
+    if grain not in {"snapshot", "current", "none"} and not str(metric.time_field or "").strip():
+        missing.append("time_field")
+    return list(dict.fromkeys(missing))
+
+
 def _scoped_metrics_statement(request: Request, current_user: User):
     tenant_md = build_tenant_metadata(request, user_id=current_user.id)
     accessible_ids = accessible_data_sources_statement(
@@ -113,6 +131,8 @@ class MetricCreateRequest(BaseModel):
     category: str | None = None
     tags: list[str] = Field(default_factory=list)
     sensitivity: str = Field(default="public")
+    evidence_refs: list[str] = Field(default_factory=list, max_length=100)
+    quality_contract: dict = Field(default_factory=dict)
     valid_from: datetime | None = None
     valid_to: datetime | None = None
 
@@ -133,6 +153,8 @@ class MetricUpdateRequest(BaseModel):
     category: str | None = None
     tags: list[str] | None = None
     sensitivity: str | None = None
+    evidence_refs: list[str] | None = None
+    quality_contract: dict | None = None
     valid_from: datetime | None = None
     valid_to: datetime | None = None
 
@@ -233,6 +255,8 @@ async def create_metric(
         category=req.category,
         tags=req.tags,
         sensitivity=req.sensitivity,
+        evidence_refs=req.evidence_refs,
+        quality_contract=req.quality_contract,
         valid_from=req.valid_from,
         valid_to=req.valid_to,
         status="draft",
@@ -298,6 +322,8 @@ async def update_metric(
             category=update_data.get("category", existing.category),
             tags=update_data.get("tags", existing.tags),
             sensitivity=update_data.get("sensitivity", existing.sensitivity),
+            evidence_refs=update_data.get("evidence_refs", existing.evidence_refs),
+            quality_contract=update_data.get("quality_contract", existing.quality_contract),
             valid_from=update_data.get("valid_from", existing.valid_from),
             valid_to=update_data.get("valid_to", existing.valid_to),
             status="draft",
@@ -370,6 +396,19 @@ async def publish_metric(
         raise AppException(
             ErrorCodes.PARAM_INVALID.code, message="only draft metrics can be published"
         )
+    if not (current_user.is_superuser or current_user.role == "admin"):
+        raise AppException(
+            ErrorCodes.PERMISSION_DENIED.code,
+            message="only an administrator can certify metric definitions",
+        )
+
+    missing_contract = _metric_certification_missing_fields(metric)
+    if missing_contract:
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message="metric certification contract is incomplete",
+            details={"missing_fields": missing_contract},
+        )
 
     _validate_effective_interval(metric.valid_from, metric.valid_to)
     published = list(
@@ -386,7 +425,7 @@ async def publish_metric(
         .scalars()
         .all()
     )
-    if published and metric.valid_from is None:
+    if metric.valid_from is None:
         metric.valid_from = datetime.now(UTC)
     for previous in published:
         metric_valid_from = _as_utc(metric.valid_from)
@@ -409,6 +448,7 @@ async def publish_metric(
             )
 
     metric.status = "published"
+    metric.certification_level = "certified"
     metric.approved_by = current_user.id
     metric.approved_at = datetime.now(UTC)
     await db.commit()
@@ -435,6 +475,9 @@ async def deprecate_metric(
     await _require_owned_source(db, http_request, current_user, metric.data_source_id, "edit")
 
     metric.status = "deprecated"
+    metric.certification_level = "deprecated"
+    if metric.valid_to is None:
+        metric.valid_to = datetime.now(UTC)
     await db.commit()
     await db.refresh(metric)
     return {"metric": _metric_to_dict(metric)}
@@ -497,6 +540,9 @@ def _metric_to_dict(m: MetricDefinition) -> dict:
         "category": m.category,
         "tags": m.tags,
         "sensitivity": m.sensitivity,
+        "certification_level": m.certification_level,
+        "evidence_refs": m.evidence_refs,
+        "quality_contract": m.quality_contract,
         "version": m.version,
         "status": m.status,
         "approved_by": m.approved_by,

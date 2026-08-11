@@ -84,6 +84,39 @@ class DataScope(ContractModel):
     project_id: str | None = Field(default=None, max_length=128)
 
 
+class DataSourceCandidate(ContractModel):
+    data_source_id: str
+    name: str
+    source_type: str
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    relevance_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    trust_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    blocked: bool = False
+    reasons: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    matched_terms: list[str] = Field(default_factory=list)
+
+
+class DataSourceDecision(ContractModel):
+    status: str = Field(pattern="^(selected|needs_clarification|no_source)$")
+    question: str
+    selected_data_source_id: str | None = None
+    selected_data_source_name: str | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    reason: str = ""
+    candidates: list[DataSourceCandidate] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_selection(self) -> DataSourceDecision:
+        if self.status == "selected" and not self.selected_data_source_id:
+            raise ValueError("selected_data_source_id is required when source is selected")
+        if self.status != "selected" and (
+            self.selected_data_source_id or self.selected_data_source_name
+        ):
+            raise ValueError("unselected source decision cannot carry a selected data source")
+        return self
+
+
 class QueryRequest(ContractModel):
     question: str = Field(..., min_length=1, max_length=8192)
     scope: DataScope
@@ -98,6 +131,17 @@ class QueryRequest(ContractModel):
     as_of: datetime | None = None
     minimum_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
     idempotency_key: str | None = Field(default=None, max_length=255)
+    source_decision: DataSourceDecision | None = None
+
+    @model_validator(mode="after")
+    def validate_source_decision(self) -> QueryRequest:
+        if self.source_decision is None:
+            return self
+        if self.source_decision.status != "selected":
+            raise ValueError("query request requires a selected data source decision")
+        if self.source_decision.selected_data_source_id != self.scope.data_source_id:
+            raise ValueError("source decision does not match query data source scope")
+        return self
 
 
 def deterministic_run_id(request: QueryRequest) -> str:
@@ -276,6 +320,7 @@ class CandidateSQL(ContractModel):
     score: float = 0.0
     validation: ValidationReport = Field(default_factory=ValidationReport)
     assumptions: list[str] = Field(default_factory=list)
+    supporting_memory_ids: list[str] = Field(default_factory=list)
 
 
 class ExecutionResult(ContractModel):
@@ -321,6 +366,30 @@ class PolicyDecision(ContractModel):
     risk_level: str = Field(default="high", pattern="^(low|medium|high|blocked)$")
 
 
+class AnswerCitation(ContractModel):
+    label: str = Field(pattern="^(R|E)[1-9][0-9]*$")
+    evidence_id: str = Field(..., min_length=1, max_length=255)
+    evidence_type: str = Field(..., min_length=1, max_length=64)
+    title: str = Field(..., min_length=1, max_length=500)
+    authority: str = Field(..., min_length=1, max_length=64)
+    version: str | None = None
+    citation: str | None = None
+    reason: str = ""
+    excerpt: str = ""
+
+
+class LearningRecord(ContractModel):
+    pattern_key: str
+    status: str = Field(pattern="^(ineligible|observed|trusted|rejected|stale)$")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    observation_count: int = Field(default=0, ge=0)
+    success_count: int = Field(default=0, ge=0)
+    failure_count: int = Field(default=0, ge=0)
+    reusable: bool = False
+    reasons: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
 class QueryRun(ContractModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     request: QueryRequest
@@ -335,6 +404,9 @@ class QueryRun(ContractModel):
     result: ExecutionResult | None = None
     result_validation: ResultValidationReport | None = None
     answer: str | None = None
+    answer_citations: list[AnswerCitation] = Field(default_factory=list)
+    answer_metadata: dict[str, Any] = Field(default_factory=dict)
+    learning: LearningRecord | None = None
     warnings: list[str] = Field(default_factory=list)
     trace: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utc_now)

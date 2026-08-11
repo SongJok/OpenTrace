@@ -16,6 +16,7 @@ from data_agent.contracts import (
     ValidationIssue,
     ValidationReport,
 )
+from data_agent.learning import plan_pattern_key, sql_structure_hash
 
 
 class SQLCompilationError(ValueError):
@@ -472,12 +473,52 @@ class SQLGuard:
 
 
 class CandidateRanker:
-    def rank(self, candidates: list[CandidateSQL], plan: LogicalQueryPlan) -> list[CandidateSQL]:
+    def rank(
+        self,
+        candidates: list[CandidateSQL],
+        plan: LogicalQueryPlan,
+        evidence: EvidenceBundle | None = None,
+    ) -> list[CandidateSQL]:
+        memory_support: dict[str, tuple[float, list[str]]] = {}
+        if evidence is not None:
+            pattern_key = plan_pattern_key(plan)
+            for item in evidence.of_type(EvidenceType.EXECUTION_MEMORY):
+                payload = item.payload
+                if payload.get("status") != "trusted":
+                    continue
+                if payload.get("pattern_key") != pattern_key:
+                    continue
+                structure = str(payload.get("sql_structure_hash") or "")
+                if not structure:
+                    continue
+                bonus = 2.0
+                current_bonus, ids = memory_support.get(structure, (0.0, []))
+                memory_support[structure] = (
+                    max(current_bonus, bonus),
+                    [*ids, item.source_id],
+                )
         for candidate in candidates:
             report = candidate.validation
             error_penalty = len(report.errors) * 10
             warning_penalty = len(report.issues) * 0.25
-            candidate.score = max(0.0, plan.confidence * 10 - error_penalty - warning_penalty)
+            source_bonus = {
+                "semantic_compiler": 1.5,
+                "user_supplied": 0.5,
+                "model": 0.0,
+            }.get(candidate.source, 0.0)
+            memory_bonus = 0.0
+            if evidence is not None:
+                structure = sql_structure_hash(candidate.sql, dialect=evidence.dialect)
+                memory_bonus, memory_ids = memory_support.get(structure, (0.0, []))
+                candidate.supporting_memory_ids = list(dict.fromkeys(memory_ids))
+            candidate.score = max(
+                0.0,
+                plan.confidence * 10
+                + source_bonus
+                + memory_bonus
+                - error_penalty
+                - warning_penalty,
+            )
         ranked = sorted(candidates, key=lambda item: (-item.score, item.id))
         for index, candidate in enumerate(ranked, start=1):
             candidate.rank = index

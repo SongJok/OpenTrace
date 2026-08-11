@@ -57,3 +57,52 @@ class ResultComparator:
             missing_rows=missing,
             extra_rows=extra,
         )
+
+
+@dataclass(frozen=True)
+class PlanComparison:
+    matches: bool
+    missing_paths: list[str]
+
+
+class PlanComparator:
+    """验证生成计划是否覆盖 Golden Case 规定的业务语义。"""
+
+    def compare(self, expected: dict[str, Any], actual: dict[str, Any]) -> PlanComparison:
+        missing: list[str] = []
+        self._contains(actual, expected, path="$", missing=missing)
+        return PlanComparison(matches=not missing, missing_paths=missing)
+
+    def _contains(
+        self,
+        actual: Any,
+        expected: Any,
+        *,
+        path: str,
+        missing: list[str],
+    ) -> None:
+        if isinstance(expected, dict):
+            if not isinstance(actual, dict):
+                missing.append(path)
+                return
+            for key, value in expected.items():
+                if key not in actual:
+                    missing.append(f"{path}.{key}")
+                    continue
+                self._contains(actual[key], value, path=f"{path}.{key}", missing=missing)
+            return
+        if isinstance(expected, list):
+            if not isinstance(actual, list):
+                missing.append(path)
+                return
+            for index, expected_item in enumerate(expected):
+                if not any(self._matches(actual_item, expected_item) for actual_item in actual):
+                    missing.append(f"{path}[{index}]")
+            return
+        if _normalize(actual) != _normalize(expected):
+            missing.append(path)
+
+    def _matches(self, actual: Any, expected: Any) -> bool:
+        missing: list[str] = []
+        self._contains(actual, expected, path="$", missing=missing)
+        return not missing

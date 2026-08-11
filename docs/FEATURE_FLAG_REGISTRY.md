@@ -21,6 +21,8 @@
 | `kernel_agent_runtime_v3_strict` | false | stable | agent-runtime | 0.1.0 | — | — | agent-contribution-contract | kernel_agent_runtime_v3_enabled |
 | `kernel_agent_learning_auto_apply` | false | experimental | agent-quality | 0.1.0 | 连续两个 Beta 发布中通过回放评测且无越权策略写入 | 0.3.0 | learning | kernel_capability_intelligence_enabled |
 | `enterprise_tenant_rls_enabled` | false | experimental | security | 0.1.0 | 核心事实表 RLS 与跨租户负向测试全部进入发布门禁 | 0.3.0 | tenant-isolation | — |
+| `data_agent_source_resolution_enabled` | true | stable | data-platform | 0.2.0 | — | — | data-agent-source-resolution | — |
+| `data_agent_learning_enabled` | true | experimental | data-platform | 0.2.0 | 核心业务域 Golden Case 连续两个发布周期无错误晋升或跨 Scope 复用 | 0.4.0 | data-agent-governed-learning | — |
 
 ## 企业身份上线控制（自动生成）
 
@@ -50,6 +52,10 @@
 | `DATA_AGENT_PROFILE_TTL_HOURS` | 24 | 画像进入过期状态前的有效小时数 |
 | `DATA_AGENT_PREFLIGHT_MAX_ESTIMATED_ROWS` | 10000000 | EXPLAIN 预计扫描行数上限 |
 | `DATA_AGENT_PREFLIGHT_MAX_ESTIMATED_BYTES` | 1073741824 | EXPLAIN 预计扫描字节数上限 |
+| `DATA_AGENT_SOURCE_MIN_SCORE` | 0.25 | 多数据源自动选择的最低企业证据评分 |
+| `DATA_AGENT_SOURCE_AMBIGUITY_DELTA` | 0.08 | 前两名评分差低于该值时要求用户澄清 |
+| `DATA_AGENT_LEARNING_TRUST_MIN_SUCCESS` | 2 | 执行经验晋升 trusted 前所需成功次数 |
+| `DATA_AGENT_LEARNING_MIN_CONFIDENCE` | 0.85 | 执行经验进入学习和晋升的最低计划置信度 |
 
 这些数值控制不是能力开关。表目录 API 固定采用有界分页响应，不能通过提高同步预算改回一次性
 返回完整 Schema；生产调整预算前必须先验证 API 内存、目标数据库元数据查询和 PostgreSQL

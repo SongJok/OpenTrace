@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from data_agent.answering import AnswerEvidenceBuilder
 from data_agent.compiler import CandidateRanker, SQLGuard
 from data_agent.contracts import (
     CandidateSQL,
@@ -20,11 +21,13 @@ from data_agent.contracts import (
     deterministic_run_id,
     utc_now,
 )
+from data_agent.learning import ExecutionLearningEngine
 from data_agent.policy import ExecutionPolicy
 from data_agent.ports import (
     AnswerSynthesizer,
     EvidenceProvider,
     InMemoryRunRepository,
+    LearningRepository,
     NullAnswerSynthesizer,
     QueryExecutor,
     ResultValidatorPort,
@@ -52,6 +55,9 @@ class DataAgentService:
         sql_guard: SQLGuard | None = None,
         execution_policy: ExecutionPolicy | None = None,
         result_validator: ResultValidatorPort | None = None,
+        learning_repository: LearningRepository | None = None,
+        learning_engine: ExecutionLearningEngine | None = None,
+        answer_evidence_builder: AnswerEvidenceBuilder | None = None,
     ) -> None:
         self.evidence_provider = evidence_provider
         self.sql_generator = sql_generator
@@ -64,12 +70,25 @@ class DataAgentService:
         self.sql_guard = sql_guard or SQLGuard()
         self.execution_policy = execution_policy or ExecutionPolicy()
         self.result_validator = result_validator or ResultValidator()
+        self.learning_repository = learning_repository
+        self.learning_engine = learning_engine or ExecutionLearningEngine()
+        self.answer_evidence_builder = answer_evidence_builder or AnswerEvidenceBuilder()
 
     async def create(self, request: QueryRequest) -> QueryRun:
         run = QueryRun(id=deterministic_run_id(request), request=request)
         persisted = False
         save_attempted = False
         run.research_plan = self.research_planner.plan(request.question)
+        if request.source_decision is not None:
+            run.trace.append(
+                {
+                    "stage": "source_resolution",
+                    "status": request.source_decision.status,
+                    "selected_data_source_id": request.source_decision.selected_data_source_id,
+                    "confidence": request.source_decision.confidence,
+                    "reason": request.source_decision.reason,
+                }
+            )
         run.trace.append(
             {
                 "stage": "research_plan",
@@ -133,7 +152,7 @@ class DataAgentService:
                     continue
                 seen_sql.add(fingerprint)
                 candidates.append(candidate)
-            run.candidates = CandidateRanker().rank(candidates, run.logical_plan)
+            run.candidates = CandidateRanker().rank(candidates, run.logical_plan, evidence)
             viable = [item for item in run.candidates if not item.validation.errors]
             run.trace.append(
                 {
@@ -248,6 +267,13 @@ class DataAgentService:
             run.warnings.append("Schema 已变化，必须重新生成 SQL 后才能执行")
             run.trace.append({"stage": "blocked", "reason": "schema_changed"})
             return await self.repository.update(run)
+        if run.evidence.semantic_version != current_evidence.semantic_version and (
+            run.evidence.semantic_version or current_evidence.semantic_version
+        ):
+            run.state = RunState.BLOCKED
+            run.warnings.append("指标、业务规则或关系版本已变化，必须重新规划后才能执行")
+            run.trace.append({"stage": "blocked", "reason": "semantic_version_changed"})
+            return await self.repository.update(run)
         candidate.validation = self.sql_guard.validate(
             candidate.sql,
             request=run.request,
@@ -350,8 +376,16 @@ class DataAgentService:
                 run.answer = None
                 run.state = RunState.FAILED
             else:
+                run.answer_citations, run.answer_metadata = self.answer_evidence_builder.build(
+                    run, candidate
+                )
                 run.answer = await self.answer_synthesizer.synthesize(
-                    run.request, run.logical_plan, result
+                    run.request,
+                    run.logical_plan,
+                    result,
+                    evidence=run.evidence,
+                    citations=run.answer_citations,
+                    result_validation=run.result_validation,
                 )
                 run.state = RunState.COMPLETED
             run.completed_at = datetime.now(UTC)
@@ -374,5 +408,29 @@ class DataAgentService:
             run.completed_at = datetime.now(UTC)
             run.warnings.append(f"SQL 执行失败：{str(exc)[:2000]}")
             run.trace.append({"stage": "execute_failed", "error": str(exc)[:2000]})
+        run.learning = self.learning_engine.evaluate(run, candidate)
+        if self.learning_repository is not None and run.learning.status != "ineligible":
+            try:
+                run.learning = await self.learning_repository.record_success(
+                    run, candidate, run.learning
+                )
+            except (
+                OSError,
+                RuntimeError,
+                TimeoutError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                run.warnings.append(f"执行成功，但经验学习记录失败：{str(exc)[:500]}")
+                run.trace.append({"stage": "learning_failed", "error": str(exc)[:500]})
+        run.trace.append(
+            {
+                "stage": "learning",
+                "status": run.learning.status,
+                "confidence": run.learning.confidence,
+                "reusable": run.learning.reusable,
+                "reasons": run.learning.reasons,
+            }
+        )
         run.updated_at = utc_now()
         return await self.repository.update(run)

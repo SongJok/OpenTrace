@@ -21,6 +21,7 @@ from data_agent.contracts import (
 )
 from infra.metadata.schema_inspector import load_schema_inspection
 from infra.storage.data_agent_models import (
+    DataAgentLearningPattern,
     DataAgentProfile,
     DataAgentRunRecord,
     DataAgentSemanticAsset,
@@ -288,13 +289,19 @@ class OpenTraceEvidenceProvider:
             reverse=True,
         )
         for metric_row in metric_rows[:50]:
+            certified = bool(
+                metric_row.certification_level == "certified"
+                and metric_row.approved_by
+                and metric_row.owner
+                and metric_row.evidence_refs
+            )
             items.append(
                 EvidenceItem(
                     type=EvidenceType.METRIC,
                     source_id=f"metric:{metric_row.id}",
                     source_name="MetricDefinition",
-                    authority=Authority.GOVERNED,
-                    confidence=1.0,
+                    authority=Authority.GOVERNED if certified else Authority.VERIFIED,
+                    confidence=1.0 if certified else 0.82,
                     version=str(metric_row.version),
                     scope={"data_source_id": self.data_source.id},
                     payload={
@@ -318,11 +325,40 @@ class OpenTraceEvidenceProvider:
                         "business_domain": metric_row.business_domain,
                         "unit": metric_row.unit,
                         "version": metric_row.version,
+                        "certification_level": metric_row.certification_level,
+                        "evidence_refs": metric_row.evidence_refs or [],
+                        "quality_contract": metric_row.quality_contract or {},
                     },
                     valid_from=metric_row.valid_from,
                     valid_to=metric_row.valid_to,
                 )
             )
+            if metric_row.quality_contract:
+                items.append(
+                    EvidenceItem(
+                        type=EvidenceType.DATA_QUALITY,
+                        source_id=f"metric-quality:{metric_row.id}",
+                        source_name="MetricDefinition",
+                        authority=Authority.GOVERNED if certified else Authority.VERIFIED,
+                        confidence=1.0 if certified else 0.82,
+                        version=str(metric_row.version),
+                        scope={"data_source_id": self.data_source.id},
+                        payload={
+                            **(metric_row.quality_contract or {}),
+                            "metric": metric_row.name,
+                        },
+                        citation=next(
+                            (
+                                str(item)
+                                for item in metric_row.evidence_refs or []
+                                if str(item).strip()
+                            ),
+                            None,
+                        ),
+                        valid_from=metric_row.valid_from,
+                        valid_to=metric_row.valid_to,
+                    )
+                )
 
         relationships = list(
             (
@@ -580,6 +616,80 @@ class OpenTraceEvidenceProvider:
                 )
 
         if EvidenceType.EXECUTION_MEMORY in requested_types:
+            current_semantic_version = self._semantic_version(items)
+            learning_rows = list(
+                (
+                    await self.db.execute(
+                        select(DataAgentLearningPattern)
+                        .where(
+                            DataAgentLearningPattern.user_id == scope.user_id,
+                            DataAgentLearningPattern.tenant_id == scope.tenant_id,
+                            DataAgentLearningPattern.workspace_id == scope.workspace_id,
+                            DataAgentLearningPattern.data_source_id == self.data_source.id,
+                            DataAgentLearningPattern.scope_key
+                            == (scope.project_id or "__global__"),
+                            DataAgentLearningPattern.schema_fingerprint == schema_fingerprint,
+                            DataAgentLearningPattern.semantic_version == current_semantic_version,
+                            DataAgentLearningPattern.status.in_(["observed", "trusted"]),
+                        )
+                        .order_by(DataAgentLearningPattern.last_verified_at.desc())
+                        .limit(100)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            learning_rows.sort(
+                key=lambda row: _score(
+                    question_tokens,
+                    row.question_examples,
+                    row.logical_plan_json,
+                ),
+                reverse=True,
+            )
+            for learning_row in learning_rows[:10]:
+                relevance = _score(
+                    question_tokens,
+                    learning_row.question_examples,
+                    learning_row.logical_plan_json,
+                )
+                if relevance <= 0:
+                    continue
+                items.append(
+                    EvidenceItem(
+                        type=EvidenceType.EXECUTION_MEMORY,
+                        source_id=f"learning-pattern:{learning_row.id}",
+                        source_name="DataAgentLearningPattern",
+                        authority=(
+                            Authority.VERIFIED
+                            if learning_row.status == "trusted"
+                            else Authority.CONTEXTUAL
+                        ),
+                        confidence=float(learning_row.confidence or 0.0),
+                        version=learning_row.semantic_version,
+                        scope={
+                            "tenant_id": scope.tenant_id,
+                            "workspace_id": scope.workspace_id,
+                            "data_source_id": self.data_source.id,
+                        },
+                        payload={
+                            "pattern_key": learning_row.pattern_key,
+                            "question_examples": learning_row.question_examples or [],
+                            "logical_plan": learning_row.logical_plan_json or {},
+                            "sql_structure_hash": learning_row.sql_structure_hash,
+                            "status": learning_row.status,
+                            "observation_count": learning_row.observation_count,
+                            "success_count": learning_row.success_count,
+                            "failure_count": learning_row.failure_count,
+                        },
+                        citation=learning_row.last_run_id,
+                    )
+                )
+            memory_scope = (
+                DataAgentRunRecord.project_id.is_(None)
+                if scope.project_id is None
+                else DataAgentRunRecord.project_id == scope.project_id
+            )
             memory_rows = list(
                 (
                     await self.db.execute(
@@ -590,10 +700,9 @@ class OpenTraceEvidenceProvider:
                             DataAgentRunRecord.workspace_id == scope.workspace_id,
                             DataAgentRunRecord.data_source_id == self.data_source.id,
                             DataAgentRunRecord.state == "completed",
-                            or_(
-                                DataAgentRunRecord.project_id.is_(None),
-                                DataAgentRunRecord.project_id == scope.project_id,
-                            ),
+                            DataAgentRunRecord.schema_fingerprint == schema_fingerprint,
+                            DataAgentRunRecord.semantic_version == current_semantic_version,
+                            memory_scope,
                         )
                         .order_by(DataAgentRunRecord.completed_at.desc())
                         .limit(30)
@@ -611,6 +720,15 @@ class OpenTraceEvidenceProvider:
                 reverse=True,
             )
             for memory_row in memory_rows[:5]:
+                learning_status = str((memory_row.learning_json or {}).get("status") or "")
+                result_payload = dict(memory_row.result_json or {})
+                if (
+                    learning_status not in {"observed", "trusted"}
+                    or (memory_row.result_validation_json or {}).get("status") != "pass"
+                    or not result_payload.get("rows")
+                    or bool(result_payload.get("truncated"))
+                ):
+                    continue
                 if _score(question_tokens, memory_row.question, memory_row.logical_plan_json) <= 0:
                     continue
                 items.append(
@@ -640,18 +758,7 @@ class OpenTraceEvidenceProvider:
                 )
 
         authority_conflicts = self._authority_conflicts(items)
-        semantic_versions = sorted(
-            f"{item.source_id}:{item.version or ''}"
-            for item in items
-            if item.type
-            in {
-                EvidenceType.METRIC,
-                EvidenceType.BUSINESS_RULE,
-                EvidenceType.POLICY,
-                EvidenceType.RELATIONSHIP,
-            }
-        )
-        semantic_version = hashlib.sha256("|".join(semantic_versions).encode("utf-8")).hexdigest()
+        semantic_version = self._semantic_version(items)
         latest_profiled_at = max(
             (
                 profile.profiled_at
@@ -674,6 +781,49 @@ class OpenTraceEvidenceProvider:
             authority_conflicts=authority_conflicts,
             collection_warnings=[] if inspection.column_map else ["Schema 快照为空"],
         )
+
+    @staticmethod
+    def _semantic_version(items: list[EvidenceItem]) -> str:
+        semantic_types = {
+            EvidenceType.METRIC,
+            EvidenceType.ENTITY,
+            EvidenceType.RELATIONSHIP,
+            EvidenceType.BUSINESS_PROCESS,
+            EvidenceType.BUSINESS_RULE,
+            EvidenceType.POLICY,
+            EvidenceType.REPORT,
+            EvidenceType.LINEAGE,
+            EvidenceType.KNOWLEDGE,
+            EvidenceType.DATA_QUALITY,
+            EvidenceType.SKILL,
+            EvidenceType.SOURCE_POLICY,
+        }
+        semantic_versions = []
+        for item in items:
+            if item.type not in semantic_types:
+                continue
+            payload_hash = hashlib.sha256(
+                json.dumps(
+                    item.payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            semantic_versions.append(
+                ":".join(
+                    (
+                        item.type.value,
+                        item.source_id,
+                        item.authority.value,
+                        item.version or "",
+                        payload_hash,
+                    )
+                )
+            )
+        semantic_versions.sort()
+        return hashlib.sha256("|".join(semantic_versions).encode("utf-8")).hexdigest()
 
     @staticmethod
     def _authority_conflicts(items: list[EvidenceItem]) -> list[dict[str, Any]]:

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from data_agent.adapters.opentrace.source_resolution import OpenTraceSourceResolver
 from gateway.api_gateway.resource_scope import get_accessible_data_source
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
@@ -20,7 +21,7 @@ router = APIRouter()
 
 class DataQueryRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=8192)
-    data_source_id: str
+    data_source_id: str | None = None
     # 保留旧客户端字段用于请求兼容，但公开入口始终只生成草案。
     dry_run: bool = False
     sql: str | None = None
@@ -42,7 +43,7 @@ async def data_query(
     req: DataQueryRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    http_request: Request = None,
+    http_request: Request = None,  # type: ignore[assignment]
 ) -> dict:
     """公开问数入口只生成持久化 SQL 草案，不接受客户端绕过确认。"""
 
@@ -51,11 +52,33 @@ async def data_query(
         if http_request is not None
         else {"tenant_id": "default", "workspace_id": "default"}
     )
+    decision = await OpenTraceSourceResolver(db).resolve(
+        question=req.question,
+        user_id=current_user.id,
+        tenant_id=str(tenant_md.get("tenant_id") or "default"),
+        workspace_id=str(tenant_md.get("workspace_id") or "default"),
+        project_id=req.project_id,
+        explicit_id=req.data_source_id,
+    )
+    if decision.status != "selected" or not decision.selected_data_source_id:
+        return {
+            "data_source_id": None,
+            "answer": decision.reason,
+            "summary": "需要确认可信数据源后再规划查询",
+            "sql": "",
+            "rows": [],
+            "confidence": decision.confidence,
+            "mode": "source_clarification",
+            "needs_clarification": True,
+            "source_decision": decision.model_dump(mode="json"),
+            "executed": False,
+        }
+    selected_source_id = decision.selected_data_source_id
     source = await get_accessible_data_source(
         db,
         user_id=current_user.id,
         tenant_metadata=tenant_md,
-        data_source_id=req.data_source_id,
+        data_source_id=selected_source_id,
         required_permission="query",
         active_only=True,
     )
@@ -74,12 +97,13 @@ async def data_query(
         group_type=req.group_type,
         output_mode=req.output_mode,
         clarification_context=req.clarify_context,
+        source_decision=decision,
     )
     payload = serialize_draft(draft, candidates)
     if draft.status == "needs_clarification":
         question_text = str(payload["clarification"].get("question_text") or "请补充查询口径")
         return {
-            "data_source_id": req.data_source_id,
+            "data_source_id": selected_source_id,
             "answer": question_text,
             "summary": "需要补充业务口径后再生成 SQL",
             "sql": "",
@@ -91,10 +115,11 @@ async def data_query(
             "candidates": [],
             "needs_clarification": True,
             "clarification": payload["clarification"],
+            "source_decision": decision.model_dump(mode="json"),
             "executed": False,
         }
     return {
-        "data_source_id": req.data_source_id,
+        "data_source_id": selected_source_id,
         "answer": "SQL 草案已生成，尚未执行。请选择具体方案或执行全部方案。",
         "summary": f"已生成 {len(candidates)} 条只读 SQL 候选，等待确认执行",
         "sql": candidates[0].sql if candidates else "",
@@ -106,6 +131,7 @@ async def data_query(
         "candidates": payload["candidates"],
         "executed": False,
         "query_plan": payload.get("query_plan", {}),
+        "source_decision": decision.model_dump(mode="json"),
     }
 
 

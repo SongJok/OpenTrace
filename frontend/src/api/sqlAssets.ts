@@ -51,6 +51,69 @@ export interface SQLAssetSourceItem {
   created_at?: string
 }
 
+export interface SQLDataSourceCandidateItem {
+  data_source_id: string
+  name: string
+  source_type: string
+  score: number
+  relevance_score: number
+  trust_score: number
+  blocked: boolean
+  reasons: string[]
+  evidence_ids: string[]
+  matched_terms: string[]
+}
+
+export interface SQLDataSourceDecisionItem {
+  status: 'selected' | 'needs_clarification' | 'no_source'
+  question: string
+  selected_data_source_id?: string | null
+  selected_data_source_name?: string | null
+  confidence: number
+  reason: string
+  candidates: SQLDataSourceCandidateItem[]
+}
+
+export interface SQLAnswerCitationItem {
+  label: string
+  evidence_id: string
+  evidence_type: string
+  title: string
+  authority: string
+  version?: string | null
+  citation?: string | null
+  reason: string
+  excerpt: string
+}
+
+export interface SQLLearningRecordItem {
+  pattern_key: string
+  status: 'ineligible' | 'observed' | 'trusted' | 'rejected' | 'stale'
+  confidence: number
+  observation_count: number
+  success_count: number
+  failure_count: number
+  reusable: boolean
+  reasons: string[]
+  evidence_ids: string[]
+}
+
+export interface SQLQueryExecutionSummary {
+  data_agent_run_id?: string
+  state?: string
+  answer?: string | null
+  answer_citations?: SQLAnswerCitationItem[]
+  answer_metadata?: Record<string, unknown>
+  learning?: SQLLearningRecordItem
+  source_decision?: SQLDataSourceDecisionItem
+  warnings?: string[]
+  preflight?: Record<string, unknown>
+  result_validation?: Record<string, unknown>
+  requested?: number
+  succeeded?: number
+  failed?: number
+}
+
 export interface SQLQueryCandidateItem {
   id: string
   position: number
@@ -66,6 +129,7 @@ export interface SQLQueryCandidateItem {
     issues?: Array<{ code?: string; message?: string; severity?: string }>
     preflight?: Record<string, unknown>
     result_validation?: Record<string, unknown>
+    supporting_memory_ids?: string[]
   }
   execution_status: 'pending' | 'executing' | 'completed' | 'failed'
   rows: Array<Record<string, unknown>>
@@ -80,7 +144,7 @@ export interface SQLQueryDraftItem {
   status: string
   group_type: 'alternative' | 'batch'
   candidates: SQLQueryCandidateItem[]
-  execution_summary?: Record<string, unknown>
+  execution_summary?: SQLQueryExecutionSummary
   output_mode: 'sql_only' | 'execute_and_answer'
   query_plan: Record<string, unknown>
   needs_clarification: boolean

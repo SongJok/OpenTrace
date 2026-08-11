@@ -6,14 +6,17 @@ OpenTrace 的 DataAgent 主路径现在由独立的 `data_agent/` 领域包提�
 
 ```text
 问题 + DataScope
+  -> TrustedSourceSelector 选择被认证指标、语义、血缘和可信经验支持的数据源
   -> ResearchPlanner 选择证据类型
   -> EvidenceProvider 读取 Schema、数据源策略、指标、关系、SQL 资产、流程、知识、技能和数据质量
   -> LogicalPlanner 生成 LogicalQueryPlan
   -> SQLGenerator 生成 1-N 个候选
   -> SQLGuard AST / 表列范围 / 指标覆盖 / JOIN / 敏感字段校验
   -> ExecutionPolicy 决定 SQL-only、澄清、确认或阻止
-  -> 重新校验 Schema、执行数据库 EXPLAIN 后只读执行
-  -> 返回 SQL、结果、截断状态、答案、证据和完整轨迹
+  -> 重新校验 Schema 与语义版本、执行数据库 EXPLAIN 后只读执行
+  -> ResultValidator 验证非空、完整性、质量和历史基线
+  -> 返回带 R1/E1 引用的答案、验证元数据和完整轨迹
+  -> 合格执行进入 observed，重复成功后晋升 trusted 经验
 ```
 
 ## API
@@ -21,6 +24,7 @@ OpenTrace 的 DataAgent 主路径现在由独立的 `data_agent/` 领域包提�
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | POST | `/api/v1/data-agent/queries` | 研究、规划、生成 SQL；`mode=execute_and_answer` 仍需 `confirmed=true`，可通过 `Idempotency-Key` 安全重试 |
+| POST | `/api/v1/data-agent/source-resolution` | 返回可信数据源评分；证据不足或评分接近时要求澄清 |
 | GET | `/api/v1/data-agent/queries/{run_id}?data_source_id=...&project_id=...` | 读取带完整 Scope 的查询运行记录 |
 | POST | `/api/v1/data-agent/queries/{run_id}/execute?data_source_id=...&project_id=...` | 重新校验 Schema 后执行选定候选 |
 | POST/GET | `/api/v1/data-agent/semantic-assets` | 创建或查询业务规则、政策、报表、血缘、质量和实体草案 |
@@ -62,6 +66,11 @@ OpenTrace 的 DataAgent 主路径现在由独立的 `data_agent/` 领域包提�
 - `data_agent_run_events`：阶段化审计事件；
 - `data_agent_feedback`：用户纠错和结果反馈；
 - `data_agent_profiles`：有界真实样本生成的表级和字段级画像。
+- `data_agent_learning_patterns`：只保存完整验证通过的执行模式，按用户、租户、工作区、Project、Schema 和语义版本隔离。
+
+指标发布由管理员完成，并要求公式、底层字段、聚合、业务定义、Owner、业务域、粒度、时间
+字段和证据引用完整。答案引用使用白名单校验；执行经验不会修改指标与业务规则，只能在同一
+语义计划下为相同 SQL 结构提供排序支持。
 
 历史 `r0020`、`r0021` 保持冻结；`r0022_unify_data_agent_platform` 将持久化表统一迁移到
 `data_agent_*` 命名并补充画像、预检、结果验证和草案关联字段。

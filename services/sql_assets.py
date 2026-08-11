@@ -8,7 +8,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +37,9 @@ from infra.storage.models import (
     TableRelationship,
 )
 from kernel.data_cognition.sql_validator import SQLValidationError, SQLValidator
+
+if TYPE_CHECKING:
+    from data_agent.contracts import DataSourceDecision
 
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 MAX_BATCH_UPLOAD_FILES = 100
@@ -2507,6 +2510,7 @@ async def generate_sql_query_draft(
     group_type: str = "alternative",
     output_mode: str = "sql_only",
     clarification_context: str | None = None,
+    source_decision: DataSourceDecision | dict[str, Any] | None = None,
 ) -> tuple[SQLQueryDraft, list[SQLQueryCandidate]]:
     """将 DataAgent 治理运行投影为现有确认执行草案。"""
 
@@ -2526,7 +2530,14 @@ async def generate_sql_query_draft(
     from data_agent.adapters.opentrace.evidence import OpenTraceEvidenceProvider
     from data_agent.adapters.opentrace.generator import OpenTraceSQLGenerator
     from data_agent.adapters.opentrace.repository import OpenTraceRunRepository
-    from data_agent.contracts import CandidateSQL, DataScope, ExecutionMode, QueryRequest, RunState
+    from data_agent.contracts import (
+        CandidateSQL,
+        DataScope,
+        DataSourceDecision,
+        ExecutionMode,
+        QueryRequest,
+        RunState,
+    )
     from data_agent.service import DataAgentService
 
     class _SuppliedSQLGenerator:
@@ -2543,6 +2554,11 @@ async def generate_sql_query_draft(
         data_source_id=data_source.id,
         project_id=project_id,
     )
+    normalized_source_decision = (
+        DataSourceDecision.model_validate(source_decision)
+        if isinstance(source_decision, dict)
+        else source_decision
+    )
     request = QueryRequest(
         question=question,
         scope=scope,
@@ -2552,6 +2568,7 @@ async def generate_sql_query_draft(
         candidate_count=MAX_DRAFT_CANDIDATES,
         max_rows=settings.data_agent_max_result_rows,
         idempotency_key=f"response:{response_id}" if response_id else None,
+        source_decision=normalized_source_decision,
     )
     service = DataAgentService(
         evidence_provider=OpenTraceEvidenceProvider(db, data_source),
@@ -2653,6 +2670,7 @@ async def generate_sql_query_draft(
             ],
             validation_report=candidate_run.validation.model_dump(mode="json"),
         )
+        candidate.validation_report["supporting_memory_ids"] = candidate_run.supporting_memory_ids
         db.add(candidate)
         candidates.append(candidate)
     if not candidates and run.state != RunState.NEEDS_CLARIFICATION:
@@ -2876,8 +2894,10 @@ async def execute_sql_query_draft(
         from data_agent.adapters.opentrace.evidence import OpenTraceEvidenceProvider
         from data_agent.adapters.opentrace.executor import OpenTraceQueryExecutor
         from data_agent.adapters.opentrace.generator import OpenTraceSQLGenerator
+        from data_agent.adapters.opentrace.learning import OpenTraceLearningRepository
         from data_agent.adapters.opentrace.repository import OpenTraceRunRepository
         from data_agent.contracts import DataScope, RunState
+        from data_agent.learning import ExecutionLearningEngine
         from data_agent.service import DataAgentService
 
         candidate = to_execute[0]
@@ -2900,6 +2920,12 @@ async def execute_sql_query_draft(
             query_executor=OpenTraceQueryExecutor(source),
             answer_synthesizer=OpenTraceAnswerSynthesizer(),
             repository=OpenTraceRunRepository(db),
+            learning_repository=(
+                OpenTraceLearningRepository(db) if settings.data_agent_learning_enabled else None
+            ),
+            learning_engine=ExecutionLearningEngine(
+                minimum_confidence=settings.data_agent_learning_min_confidence
+            ),
         ).execute(
             data_agent_run_id,
             scope,
@@ -2933,6 +2959,14 @@ async def execute_sql_query_draft(
             "data_agent_run_id": run.id,
             "state": run.state.value,
             "answer": run.answer,
+            "answer_citations": [item.model_dump(mode="json") for item in run.answer_citations],
+            "answer_metadata": run.answer_metadata,
+            "learning": run.learning.model_dump(mode="json") if run.learning else {},
+            "source_decision": (
+                run.request.source_decision.model_dump(mode="json")
+                if run.request.source_decision
+                else {}
+            ),
             "warnings": run.warnings,
             "preflight": run.preflight.model_dump(mode="json") if run.preflight else {},
             "result_validation": (

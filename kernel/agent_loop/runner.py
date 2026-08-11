@@ -2772,6 +2772,7 @@ class AgentLoop:
                     response=response,
                     agent_name=spec.name,
                     params=agent_params,
+                    query=str(arguments.get("query") or ""),
                 )
                 if scope_error is not None:
                     return {"status": "failed", **scope_error}
@@ -2845,16 +2846,13 @@ class AgentLoop:
         response: ResponseRecord,
         agent_name: str,
         params: dict[str, Any],
+        query: str = "",
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Resolve trusted scope server-side; never trust model-supplied ids."""
-        from infra.security.resource_scope import (
-            accessible_data_sources_statement,
-            load_scoped_conversation,
-        )
+        from infra.security.resource_scope import load_scoped_conversation
         from infra.storage.database import AsyncSessionLocal
         from infra.storage.models import (
             AssistantProfile,
-            DataSource,
             Project,
         )
 
@@ -2945,65 +2943,39 @@ class AgentLoop:
                 str(item) for item in extension.get("data_source_ids") or [] if str(item)
             ]
             requested_id = str(hydrated.get("data_source_id") or "").strip()
-            project_source_ids: list[str] = []
-            if project_id:
-                project = await scope_db.scalar(
-                    select(Project).where(
-                        Project.id == project_id,
-                        Project.user_id == response.user_id,
-                        Project.tenant_id == response.tenant_id,
-                        Project.workspace_id == response.workspace_id,
-                        Project.archived_at.is_(None),
-                    )
-                )
-                if project is None:
-                    return hydrated, {"error": "project_not_found", "project_id": project_id}
-                project_source_ids = [
-                    str(item) for item in project.data_source_ids or [] if str(item)
-                ]
+            from data_agent.adapters.opentrace.source_resolution import OpenTraceSourceResolver
 
-            stmt = accessible_data_sources_statement(
-                user_id=response.user_id,
-                tenant_metadata={
-                    "tenant_id": response.tenant_id,
-                    "workspace_id": response.workspace_id,
-                },
-                required_permission="query",
-                active_only=True,
-            )
-            if project_id and explicit_ids:
-                outside_project = sorted(set(explicit_ids) - set(project_source_ids))
-                if outside_project:
-                    return hydrated, {
-                        "error": "project_data_source_not_authorized",
-                        "data_source_ids": outside_project,
-                    }
-            allowlist = explicit_ids or project_source_ids
-            if allowlist:
-                stmt = stmt.where(DataSource.id.in_(allowlist))
-            sources = list((await scope_db.execute(stmt.order_by(DataSource.name))).scalars().all())
-            by_id = {item.id: item for item in sources}
-            if requested_id:
-                if requested_id not in by_id:
-                    return hydrated, {
-                        "error": "data_source_not_authorized",
-                        "data_source_id": requested_id,
-                    }
-                selected = by_id[requested_id]
-            elif len(sources) == 1:
-                selected = sources[0]
-            elif not sources:
-                return hydrated, {"error": "no_authorized_data_source"}
-            else:
+            try:
+                source_decision = await OpenTraceSourceResolver(scope_db).resolve(
+                    question=query,
+                    user_id=response.user_id,
+                    tenant_id=response.tenant_id,
+                    workspace_id=response.workspace_id,
+                    project_id=project_id,
+                    explicit_id=requested_id or None,
+                    candidate_ids=explicit_ids or None,
+                )
+            except PermissionError as exc:
+                return hydrated, {"error": str(exc), "project_id": project_id}
+            if source_decision.status != "selected" or not source_decision.selected_data_source_id:
                 return hydrated, {
                     "error": "data_source_selection_required",
+                    "reason": source_decision.reason,
+                    "source_decision": source_decision.model_dump(mode="json"),
                     "candidates": [
-                        {"id": item.id, "name": item.name, "type": item.source_type}
-                        for item in sources
+                        {
+                            "id": item.data_source_id,
+                            "name": item.name,
+                            "type": item.source_type,
+                            "score": item.score,
+                            "reasons": item.reasons,
+                        }
+                        for item in source_decision.candidates
                     ],
                 }
-            hydrated["data_source_id"] = selected.id
-            hydrated["data_source_name"] = selected.name
+            hydrated["data_source_id"] = source_decision.selected_data_source_id
+            hydrated["data_source_name"] = source_decision.selected_data_source_name
+            hydrated["source_decision"] = source_decision.model_dump(mode="json")
             # 交互式 Responses 问数只能生成草案；后台报告和预警走各自显式受信执行入口。
             hydrated["generation_only"] = True
             hydrated["conversation_id"] = response.conversation_id
