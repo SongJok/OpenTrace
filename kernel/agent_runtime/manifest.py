@@ -93,7 +93,7 @@ class AgentTopologyManifest:
 
         if raw in {"web", "web.search", "web_search", "web_intel"}:
             wi = self.get("web_intelligence")
-            if wi and wi.bootstrap:
+            if wi:
                 return (wi.capability_type, wi.registry_name or wi.key)
             web = self.get("web")
             if web:
@@ -104,7 +104,7 @@ class AgentTopologyManifest:
             if ent.key == "web":
                 pref = self.preferred_web_registry_name()
                 pref_ent = self.get(pref)
-                if pref_ent and pref_ent.bootstrap:
+                if pref_ent:
                     return (pref_ent.capability_type, pref_ent.registry_name or pref_ent.key)
             return (ent.capability_type, ent.registry_name or ent.key)
 
@@ -120,7 +120,7 @@ class AgentTopologyManifest:
         if raw in {"web", "web.search"}:
             wi = self.get("web_intelligence")
             web = self.get("web")
-            if wi and wi.bootstrap:
+            if wi:
                 return (wi.capability_type, wi.registry_name or wi.key)
             if web:
                 return (web.capability_type, web.registry_name or web.key)
@@ -132,9 +132,9 @@ class AgentTopologyManifest:
         return (raw, raw.replace(".", "_"))
 
     def preferred_web_registry_name(self) -> str:
-        """web_intelligence preferred over legacy web when both are bootstrapped."""
+        """Keep the legacy web alias canonical without enabling web execution."""
         wi = self.get("web_intelligence")
-        if wi and wi.bootstrap:
+        if wi:
             return wi.registry_name or wi.key
         web = self.get("web")
         return (web.registry_name or web.key) if web else "web"

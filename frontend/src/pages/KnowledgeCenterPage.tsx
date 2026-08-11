@@ -467,7 +467,7 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
     <div className="min-h-full bg-[var(--bg)] text-[var(--text)]">
       <header className="sticky top-0 z-10 flex flex-wrap items-center gap-3 border-b border-[var(--border)] bg-[var(--bg)]/95 px-6 py-4 backdrop-blur">
         <button onClick={onBack} className="rounded-lg p-2 hover:bg-[var(--surface)]"><ChevronLeft size={18} /></button>
-        <div className="min-w-52 flex-1"><h1 className="text-lg font-semibold">知识治理中心</h1><p className="text-xs text-[var(--text-secondary)]">编排、审核、连接器、质量与访问控制的内部控制面</p></div>
+        <div className="min-w-52 flex-1"><h1 className="text-lg font-semibold">知识库质量中心</h1><p className="text-xs text-[var(--text-secondary)]">编排、审核、连接器、质量与访问控制的管理员控制面</p></div>
         <select value={selectedProjectId || ''} onChange={(event) => setSelectedProjectId(event.target.value || null)} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><option value="">工作区默认</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
         <select value={selectedSpaceId} onChange={(event) => setSelectedSpaceId(event.target.value)} className="max-w-56 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><option value="">我的非空间知识</option>{spaces.map((space) => <option key={space.id} value={space.id}>{space.name} · {space.role}</option>)}</select>
         <button onClick={() => { void loadPipeline(); void loadGovernance(); void loadQuality() }} className="rounded-xl border border-[var(--border)] p-2" title="刷新"><RefreshCw size={15} /></button>

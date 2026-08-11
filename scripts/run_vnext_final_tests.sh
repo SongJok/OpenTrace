@@ -39,8 +39,6 @@ python -m pytest \
   tests/test_data_agent_v2_dag_builder_contract.py \
   tests/test_agent_runtime_v3_contract.py \
   tests/test_agent_runtime_v3_strict_contract.py \
-  tests/test_agent_bus_eligibility_contract.py \
-  tests/test_all_agent_bus_routing_contract.py \
   tests/test_agents_import_boundaries.py \
   tests/test_data_intelligence_runtime_v3_contract.py \
   tests/test_p0_cognitive_platform_contract.py \

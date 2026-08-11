@@ -1405,49 +1405,6 @@ export async function apiResolveResponseApproval(
   return result
 }
 
-export interface EnterpriseOperationsOverview {
-  generated_at: string
-  scope: { tenant_id: string; workspace_id: string }
-  health: {
-    score: number
-    status: 'healthy' | 'attention' | 'critical'
-    dimensions: { reliability: number; governance: number; knowledge: number; adoption: number }
-  }
-  adoption: { active_users_30d: number; active_goals: number; completed_goals: number; scheduled_tasks: number; active_alerts: number }
-  responses: {
-    total_24h: number
-    completed_24h: number
-    failed_24h: number
-    requires_action_24h: number
-    active_24h: number
-    success_rate: number
-    pending_approvals: number
-    model_calls_24h: number
-    prompt_tokens_24h: number
-    completion_tokens_24h: number
-    avg_latency_ms: number
-    p95_latency_ms: number
-  }
-  assets: {
-    data_sources: number
-    active_data_sources: number
-    knowledge_spaces: number
-    knowledge_sources: number
-    published_knowledge: number
-    due_reviews: number
-    stale_knowledge: number
-    pending_reviews: number
-    unresolved_feedback: number
-    cognitive_entities: number
-    published_cognition: number
-    due_cognitive_reviews: number
-  }
-  directory: { principals: number; memberships: number; last_sync?: DirectorySyncRunItem | null }
-  alerts: { unacknowledged: number; critical: number }
-  model_usage: Array<{ model: string; calls: number; prompt_tokens: number; completion_tokens: number; avg_latency_ms: number }>
-  risks: Array<{ code: string; severity: string; count: number; title: string; route: string }>
-}
-
 export interface DirectoryPrincipalItem {
   id: string
   principal_type: 'department' | 'group' | 'role'
@@ -1510,50 +1467,6 @@ export interface DirectorySyncPayload {
   }>
 }
 
-export interface WorkbenchTemplateScenarioItem {
-  id: string
-  category: string
-  title: string
-  description: string
-}
-
-export interface WorkbenchTemplateItem {
-  id: string
-  name: string
-  description: string
-  audience_type: 'all' | 'principals'
-  principal_ids: string[]
-  principals: Array<{
-    id: string
-    principal_type: 'department' | 'group' | 'role'
-    external_id: string
-    display_name: string
-  }>
-  scenario_ids: string[]
-  priority: number
-  status: 'active' | 'inactive' | 'archived'
-  version: number
-  created_by: string
-  updated_by: string
-  created_at?: string | null
-  updated_at?: string | null
-}
-
-export interface WorkbenchTemplatePayload {
-  name: string
-  description: string
-  audience_type: 'all' | 'principals'
-  principal_ids: string[]
-  scenario_ids: string[]
-  priority: number
-  status: 'active' | 'inactive'
-}
-
-export interface WorkbenchTemplateCollection {
-  items: WorkbenchTemplateItem[]
-  scenario_catalog: WorkbenchTemplateScenarioItem[]
-}
-
 export interface EnterpriseCognitiveVersionItem {
   id: string
   entity_id: string
@@ -1610,12 +1523,6 @@ export interface EnterpriseCognitiveDraftPayload {
   review_due_at?: string | null
 }
 
-export async function apiGetEnterpriseOperations(token: string): Promise<EnterpriseOperationsOverview> {
-  const res = await apiFetch('/admin/enterprise/operations/overview', { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取企业运营中心失败'))
-  return res.json()
-}
-
 export async function apiListDirectoryPrincipals(token: string): Promise<DirectoryPrincipalItem[]> {
   const res = await apiFetch('/admin/enterprise/directory/principals?limit=2000', { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取企业目录失败'))
@@ -1637,31 +1544,6 @@ export async function apiListDirectorySyncRuns(token: string): Promise<Directory
 export async function apiSyncEnterpriseDirectory(token: string, payload: DirectorySyncPayload): Promise<DirectorySyncRunItem> {
   const res = await apiFetch('/admin/enterprise/directory/sync', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
   if (!res.ok) throw new Error(await readApiError(res, '同步企业目录失败'))
-  return res.json()
-}
-
-export async function apiListWorkbenchTemplates(token: string): Promise<WorkbenchTemplateCollection> {
-  const res = await apiFetch('/admin/enterprise/workbench/templates', { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取组织工作台模板失败'))
-  return res.json()
-}
-
-export async function apiCreateWorkbenchTemplate(token: string, payload: WorkbenchTemplatePayload): Promise<WorkbenchTemplateItem> {
-  const res = await apiFetch('/admin/enterprise/workbench/templates', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
-  if (!res.ok) throw new Error(await readApiError(res, '创建组织工作台模板失败'))
-  return res.json()
-}
-
-export async function apiUpdateWorkbenchTemplate(token: string, templateId: string, payload: WorkbenchTemplatePayload & { version: number }): Promise<WorkbenchTemplateItem> {
-  const res = await apiFetch(`/admin/enterprise/workbench/templates/${encodeURIComponent(templateId)}`, { method: 'PUT', headers: authHeaders(token), body: JSON.stringify(payload) })
-  if (!res.ok) throw new Error(await readApiError(res, '更新组织工作台模板失败'))
-  return res.json()
-}
-
-export async function apiArchiveWorkbenchTemplate(token: string, templateId: string, version: number): Promise<WorkbenchTemplateItem> {
-  const query = new URLSearchParams({ version: String(version) })
-  const res = await apiFetch(`/admin/enterprise/workbench/templates/${encodeURIComponent(templateId)}?${query.toString()}`, { method: 'DELETE', headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '归档组织工作台模板失败'))
   return res.json()
 }
 
@@ -1703,214 +1585,6 @@ export async function apiListEnterpriseCognitiveVersions(token: string, entityId
 export async function apiArchiveEnterpriseCognitiveEntity(token: string, entityId: string): Promise<EnterpriseCognitiveEntityItem> {
   const res = await apiFetch(`/admin/enterprise/cognition/entities/${encodeURIComponent(entityId)}/archive`, { method: 'POST', headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '归档企业认知实体失败'))
-  return res.json()
-}
-
-export type WorkbenchPriority = 'p0' | 'p1' | 'p2' | 'p3'
-
-export interface WorkbenchAttentionItem {
-  id: string
-  type: 'approval' | 'alert' | 'response' | 'knowledge' | 'notification' | 'automation' | 'goal' | string
-  severity: 'info' | 'success' | 'warning' | 'critical' | 'error' | string
-  title: string
-  description: string
-  route: string
-  resource_id?: string | null
-  created_at?: string | null
-  due_at?: string | null
-  overdue?: boolean
-  age_minutes?: number
-  priority?: WorkbenchPriority
-  priority_score?: number
-  priority_reason?: string
-}
-
-export interface WorkbenchTimelineItem {
-  id: string
-  type: 'calendar' | 'task' | 'alert' | string
-  title: string
-  description: string
-  status: 'upcoming' | 'in_progress' | 'completed' | 'scheduled' | 'overdue' | string
-  route: string
-  start_at: string
-  end_at?: string | null
-  event_type?: 'event' | 'meeting' | 'focus' | 'reminder' | string
-}
-
-export interface WorkbenchOperatingPulse {
-  timezone: string
-  local_date: string
-  day_start: string
-  day_end: string
-  status: 'clear' | 'attention' | 'critical'
-  headline: string
-  summary: {
-    urgent_items: number
-    calendar_events: number
-    due_automations: number
-    overdue_automations: number
-    stale_goals: number
-    focus_minutes: number
-    meeting_minutes: number
-  }
-  focus_items: WorkbenchAttentionItem[]
-  timeline: WorkbenchTimelineItem[]
-}
-
-export interface WorkbenchActivityItem {
-  id: string
-  type: 'response' | 'goal' | string
-  status: string
-  title: string
-  description: string
-  route: string
-  action: 'approval' | 'monitor' | 'retry' | 'resume' | 'continue' | 'review' | string
-  action_label: string
-  conversation_id?: string | null
-  response_id?: string | null
-  goal_id?: string | null
-  project_id?: string | null
-  project_name?: string | null
-  created_at?: string | null
-}
-
-export type WorkbenchPortfolioStatus = 'critical' | 'attention' | 'active' | 'ready' | 'foundation'
-
-export interface WorkbenchPortfolioNextAction {
-  type: 'alert' | 'approval' | 'response' | 'goal' | 'automation' | 'continue' | 'organize' | 'setup' | 'start' | string
-  label: string
-  title: string
-  description: string
-  route: string
-  created_at?: string | null
-}
-
-export interface WorkbenchPortfolioItem {
-  project_id?: string | null
-  name: string
-  description: string
-  status: WorkbenchPortfolioStatus
-  status_reason: string
-  instructions_ready: boolean
-  data_source_count: number
-  active_work: number
-  active_responses: number
-  active_goals: number
-  pending_approvals: number
-  failed_responses_7d: number
-  unacknowledged_alerts: number
-  active_automations: number
-  delivered_turns_7d: number
-  last_activity_at?: string | null
-  next_action: WorkbenchPortfolioNextAction
-}
-
-export interface WorkbenchPortfolio {
-  window_days: number
-  window_start: string
-  response_candidate_limit?: number | null
-  response_candidates_truncated?: boolean
-  summary: {
-    projects: number
-    critical_projects: number
-    attention_projects: number
-    active_projects: number
-    active_work: number
-    pending_approvals: number
-    unacknowledged_alerts: number
-    delivered_turns_7d: number
-    unassigned_work: number
-  }
-  items: WorkbenchPortfolioItem[]
-}
-
-export interface EnterpriseWorkbenchScenario {
-  id: string
-  category: string
-  title: string
-  description: string
-  status: 'ready' | 'setup_required' | 'active'
-  recommended: boolean
-  organization_recommended: boolean
-  recommendation_reason?: string | null
-  launch_mode: 'chat' | 'goal' | 'skills' | 'report'
-  action_route: string
-  action_label: string
-  starter_prompt: string
-  capabilities: string[]
-  tools: string[]
-  memory_scope: 'conversation' | 'user' | 'project'
-  risk: 'read' | 'mixed' | 'write'
-  approval_policy: 'none' | 'required_before_write' | 'inherited'
-  approval_required: boolean
-  evidence_requirements: string[]
-  deliverables: string[]
-  blockers: Array<{ code: string; title: string; description: string; route: string }>
-}
-
-export interface EnterpriseWorkbenchOverview {
-  generated_at: string
-  scope: { tenant_id: string; workspace_id: string; user_id: string }
-  readiness: {
-    score: number
-    status: 'ready' | 'attention' | 'foundation'
-    dimensions: { context: number; knowledge: number; data: number; automation: number; governance: number }
-    blockers: Array<{ code: string; title: string; description: string; route: string }>
-  }
-  summary: {
-    projects: number
-    active_goals: number
-    running_responses: number
-    pending_approvals: number
-    unread_notifications: number
-    scheduled_tasks: number
-    active_alerts: number
-    unacknowledged_alerts: number
-    accessible_data_sources: number
-    knowledge_spaces: number
-    published_knowledge: number
-    installed_skills: number
-    company_skills: number
-    available_work_scenarios: number
-    active_work_scenarios: number
-    enterprise_cognitive_entities?: number
-    company_context_ready?: boolean
-  }
-  knowledge_health: KnowledgeGovernanceHealth
-  personalization: {
-    applied: boolean
-    templates: Array<{
-      id: string
-      name: string
-      description: string
-      priority: number
-      scenario_ids: string[]
-      matched_principals: string[]
-    }>
-    principals: Array<{
-      id: string
-      principal_type: 'department' | 'group' | 'role'
-      display_name: string
-      inherited: boolean
-    }>
-  }
-  operating_pulse: WorkbenchOperatingPulse
-  portfolio: WorkbenchPortfolio
-  scenarios: EnterpriseWorkbenchScenario[]
-  attention_items: WorkbenchAttentionItem[]
-  recent_activity: WorkbenchActivityItem[]
-}
-
-export async function apiGetEnterpriseWorkbench(
-  token: string,
-  recentLimit = 6,
-  attentionLimit?: number,
-  timezone = DEFAULT_TIMEZONE,
-): Promise<EnterpriseWorkbenchOverview> {
-  const query = new URLSearchParams({ recent_limit: String(recentLimit), timezone })
-  if (attentionLimit !== undefined) query.set('attention_limit', String(attentionLimit))
-  const res = await apiFetchResponses(`/workbench/overview?${query.toString()}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取企业 AI 工作台失败'))
   return res.json()
 }
 
@@ -2009,7 +1683,7 @@ export interface ScheduledTaskItem {
   next_run_at?: string | null
   last_run_at?: string | null
   requires_confirmation: boolean
-  task_type?: 'agent_task' | 'enterprise_report'
+  task_type?: 'agent_task'
   task_config?: Record<string, unknown>
 }
 
@@ -2087,139 +1761,11 @@ export async function apiRunScheduledTask(token: string, taskId: string): Promis
   return res.json()
 }
 
-export type EnterpriseReportType = 'data_insight' | 'monthly_report' | 'management_brief'
-
-export interface EnterpriseReportTemplate {
-  id: EnterpriseReportType
-  title: string
-  description: string
-  default_objective: string
-  default_rrule: string
-  sections: string[]
-  evidence_requirements: string[]
-  knowledge_required: boolean
-}
-
-export interface EnterpriseReportTaskConfig {
-  schema_version: number
-  report_type: EnterpriseReportType
-  objective: string
-  audience: string
-  data_source_ids: string[]
-  data_sources: Array<{ id: string; name: string; type: string }>
-  include_knowledge: boolean
-  sections: string[]
-  evidence_requirements: string[]
-}
-
-export interface EnterpriseReportDataEvidence {
-  data_source_id?: string | null
-  sql: string
-  row_count: number
-  rows: Array<Record<string, unknown>>
-  verification: Record<string, unknown>
-  verification_status: string
-  readonly_sql: boolean
-  metrics: string[]
-  insights?: unknown
-  result_refs: Array<Record<string, unknown>>
-}
-
-export interface EnterpriseReportArtifact {
-  schema_version: number
-  report_type: EnterpriseReportType
-  title: string
-  objective: string
-  audience: string
-  response_id: string
-  status: 'verified' | 'needs_review'
-  generated_at: string
-  content: string
-  data_evidence: EnterpriseReportDataEvidence[]
-  knowledge_citations: Array<Record<string, unknown>>
-  charts: Array<{
-    config: Record<string, unknown>
-    rows: Array<Record<string, unknown>>
-    data_source_id?: string | null
-  }>
-  tool_trace: Array<Record<string, unknown>>
-  verification: {
-    status: 'pass' | 'needs_review'
-    data_verified: boolean
-    readonly_sql: boolean
-    data_source_coverage: { expected: string[]; covered: string[]; missing: string[] }
-    knowledge_verified: boolean
-    chart_verified: boolean
-    missing: string[]
-  }
-}
-
-export interface EnterpriseReportRun {
-  id: string
-  status: string
-  response_id?: string | null
-  scheduled_for?: string | null
-  started_at?: string | null
-  finished_at?: string | null
-  output?: string | null
-  output_metadata?: EnterpriseReportArtifact | Record<string, never>
-  error?: string | null
-}
-
-export interface EnterpriseReportItem {
-  id: string
-  title: string
-  report_type: EnterpriseReportType
-  task_config: EnterpriseReportTaskConfig
-  project_id: string
-  rrule: string
-  timezone: string
-  starts_at?: string | null
-  ends_at?: string | null
-  status: string
-  next_run_at?: string | null
-  last_run_at?: string | null
-  created_at?: string | null
-}
-
-export interface EnterpriseReportDetail extends EnterpriseReportItem {
-  runs: EnterpriseReportRun[]
-}
-
-export async function apiListEnterpriseReportTemplates(token: string): Promise<EnterpriseReportTemplate[]> {
-  const res = await apiFetchResponses('/reports/templates', { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取报告模板失败'))
-  return (await res.json()).items ?? []
-}
-
-export async function apiListEnterpriseReports(token: string): Promise<EnterpriseReportItem[]> {
-  const res = await apiFetchResponses('/reports', { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取企业报告失败'))
-  return (await res.json()).items ?? []
-}
-
-export async function apiCreateEnterpriseReport(
-  token: string,
-  payload: Record<string, unknown>,
-): Promise<EnterpriseReportItem> {
-  const res = await apiFetchResponses('/reports', {
-    method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '创建企业报告失败'))
-  return res.json()
-}
-
-export async function apiGetEnterpriseReport(token: string, reportId: string): Promise<EnterpriseReportDetail> {
-  const res = await apiFetchResponses(`/reports/${encodeURIComponent(reportId)}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取报告运行记录失败'))
-  return res.json()
-}
-
 export interface NotificationItem {
   id: string
   task_id: string
   run_id?: string | null
-  kind: 'scheduled_task' | 'alert' | 'calendar'
+  kind: 'scheduled_task'
   level: 'info' | 'success' | 'warning' | 'error' | string
   title: string
   body?: string | null
@@ -2246,91 +1792,6 @@ export async function apiReadAllNotifications(token: string): Promise<number> {
   })
   if (!res.ok) throw new Error(await readApiError(res, '更新通知失败'))
   return Number((await res.json()).updated || 0)
-}
-
-export interface AlertRuleItem {
-  id: string
-  name: string
-  question: string
-  data_source_id: string
-  project_id?: string | null
-  metric_column?: string | null
-  aggregation: 'first' | 'sum' | 'avg' | 'min' | 'max' | 'count'
-  operator: 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq' | 'change_pct_gt' | 'change_pct_lt'
-  threshold: number
-  severity: 'info' | 'warning' | 'critical'
-  rrule: string
-  timezone: string
-  status: string
-  cooldown_seconds: number
-  last_value?: number | null
-  last_state: string
-  last_error?: string | null
-  last_run_at?: string | null
-  last_triggered_at?: string | null
-  next_run_at?: string | null
-}
-
-export interface AlertEventItem {
-  id: string
-  rule_id: string
-  state: 'triggered' | 'resolved'
-  severity: 'info' | 'warning' | 'critical'
-  value?: number | null
-  threshold?: number | null
-  summary: string
-  evidence: Record<string, unknown>
-  acknowledged_at?: string | null
-  created_at?: string | null
-}
-
-export async function apiListAlertRules(token: string, projectId?: string): Promise<AlertRuleItem[]> {
-  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''
-  const res = await apiFetchResponses(`/alerts/rules${query}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取预警规则失败'))
-  return (await res.json()).items ?? []
-}
-
-export async function apiCreateAlertRule(token: string, payload: Record<string, unknown>): Promise<AlertRuleItem> {
-  const res = await apiFetchResponses('/alerts/rules', {
-    method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '创建预警规则失败'))
-  return res.json()
-}
-
-export async function apiAlertRuleAction(
-  token: string,
-  ruleId: string,
-  action: 'enable' | 'pause' | 'cancel',
-): Promise<AlertRuleItem> {
-  const res = await apiFetchResponses(`/alerts/rules/${encodeURIComponent(ruleId)}/actions/${action}`, {
-    method: 'POST', headers: authHeaders(token),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '更新预警规则失败'))
-  return res.json()
-}
-
-export async function apiTestAlertRule(token: string, ruleId: string): Promise<Record<string, unknown>> {
-  const res = await apiFetchResponses(`/alerts/rules/${encodeURIComponent(ruleId)}/test`, {
-    method: 'POST', headers: authHeaders(token),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '测试预警规则失败'))
-  return res.json()
-}
-
-export async function apiListAlertEvents(token: string, ruleId?: string): Promise<AlertEventItem[]> {
-  const query = ruleId ? `?rule_id=${encodeURIComponent(ruleId)}` : ''
-  const res = await apiFetchResponses(`/alerts/events${query}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取预警事件失败'))
-  return (await res.json()).items ?? []
-}
-
-export async function apiAcknowledgeAlertEvent(token: string, eventId: string): Promise<void> {
-  const res = await apiFetchResponses(`/alerts/events/${encodeURIComponent(eventId)}/acknowledge`, {
-    method: 'POST', headers: authHeaders(token),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '确认预警事件失败'))
 }
 
 export async function apiChatStream(
@@ -2475,27 +1936,6 @@ export async function apiGraphControl(
     body: JSON.stringify({ session_id: sessionId, request_id: requestId, action, node_id: nodeId }),
   })
   if (!res.ok) throw new Error(await readApiError(res, '更新执行图失败'))
-  return res.json()
-}
-
-export async function apiGetSessionSkills(token: string, sessionId: string): Promise<{ enabled_skills: string[]; disabled_skills: string[] }> {
-  const res = await apiFetch(`/skills/session/${encodeURIComponent(sessionId)}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取会话技能失败'))
-  return res.json()
-}
-
-export async function apiSetSessionSkills(
-  token: string,
-  sessionId: string,
-  enabledSkills: string[],
-  disabledSkills: string[],
-): Promise<{ enabled_skills: string[]; disabled_skills: string[] }> {
-  const res = await apiFetch('/skills/session/bind', {
-    method: 'POST',
-    headers: authHeaders(token),
-    body: JSON.stringify({ session_id: sessionId, enabled_skills: enabledSkills, disabled_skills: disabledSkills }),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '保存会话技能失败'))
   return res.json()
 }
 
@@ -2668,7 +2108,7 @@ export { apiGetDatabaseSchema } from './databaseSchema'
 export type { DatabaseSchemaPagination, DatabaseSchemaPayload } from './databaseSchema'
 export async function apiSyncDatabaseSchema(token: string, id: string): Promise<any> { const res = await apiFetch(`/databases/${id}/sync-schema`, { method: 'POST', headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '同步数据库 Schema 失败')); return res.json() }
 export async function apiTestDatabaseConnection(token: string, databaseId: string): Promise<any> { const res = await apiFetch(`/databases/${databaseId}/test-connection`, { method: 'POST', headers: authHeaders(token) }); if (!res.ok) throw new Error('Failed to test database connection'); return res.json() }
-export async function apiGetDatabaseWorkbench(token: string, databaseId: string): Promise<any> { const res = await apiFetch(`/databases/${databaseId}/workbench`, { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取数据工作台失败')); return res.json() }
+export async function apiGetDatabaseHealth(token: string, databaseId: string): Promise<any> { const res = await apiFetch(`/databases/${databaseId}/health`, { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取数据源健康状态失败')); return res.json() }
 export async function apiValidateDatabase(token: string, databaseId: string): Promise<any> { const res = await apiFetch(`/databases/${databaseId}/validate`, { method: 'POST', headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '数据源验证失败')); return res.json() }
 
 export interface ResourcePermissionItem { id: string; subject_user_id: string; subject_email: string; permission: 'view' | 'query' | 'edit' | 'admin'; expires_at?: string | null }
@@ -2709,39 +2149,6 @@ export async function apiSearchDocuments(
   return res.json()
 }
 
-export interface AuditLogItem {
-  id: string
-  action: string
-  created_at: string
-  actor?: string
-  resource_type?: string
-  resource_id?: string
-  payload?: unknown
-}
-
-export async function apiListAuditLogs(token: string, filters?: { action?: string; start?: string; end?: string }): Promise<AuditLogItem[]> {
-  const qs = new URLSearchParams()
-  if (filters?.action) qs.set('action', filters.action)
-  if (filters?.start) qs.set('start', filters.start)
-  if (filters?.end) qs.set('end', filters.end)
-  const suffix = qs.toString() ? `?${qs.toString()}` : ''
-  const res = await apiFetch(`/audit/logs${suffix}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to list audit logs')
-  return res.json()
-}
-
-export async function apiExportAuditLogs(token: string, filters?: { action?: string; start?: string; end?: string; format?: string }): Promise<string> {
-  const qs = new URLSearchParams()
-  if (filters?.action) qs.set('action', filters.action)
-  if (filters?.start) qs.set('start', filters.start)
-  if (filters?.end) qs.set('end', filters.end)
-  if (filters?.format) qs.set('format', filters.format)
-  const suffix = qs.toString() ? `?${qs.toString()}` : ''
-  const res = await apiFetch(`/audit/logs/export${suffix}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to export audit logs')
-  return res.text()
-}
-
 export interface MemoryItem {
   id: string
   title: string
@@ -2756,7 +2163,7 @@ export interface MemoryItem {
   metadata?: Record<string, unknown>
 }
 
-export type PersonalMemoryCategory = 'terminology' | 'response_style' | 'approval_habit' | 'template' | 'calendar' | 'task' | 'profile'
+export type PersonalMemoryCategory = 'terminology' | 'response_style' | 'approval_habit' | 'template' | 'task' | 'profile'
 
 export interface DataSourceItem {
   id: string
@@ -2775,13 +2182,6 @@ export interface DataSourceItem {
   last_schema_sync_at?: string
   synced_at?: string
   updated_at?: string
-}
-
-export interface ConnectorItem {
-  id: string
-  display_name?: string
-  status: string
-  capabilities?: string[]
 }
 
 export interface SkillItem {
@@ -2868,36 +2268,6 @@ export async function apiDistillCompanySkill(token: string, payload: { name: str
   return res.json()
 }
 
-export async function apiListConnectors(token: string): Promise<ConnectorItem[]> {
-  const res = await apiFetch('/connectors', { headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to list connectors')
-  return res.json()
-}
-
-export async function apiConnectorAuthorize(token: string, provider: string, redirectUri: string): Promise<any> {
-  const res = await apiFetch('/connectors/authorize', { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ provider, redirect_uri: redirectUri }) })
-  if (!res.ok) throw new Error('Failed to authorize connector')
-  return res.json()
-}
-
-export async function apiConnectorCallback(token: string, provider: string, code: string, redirectUri: string): Promise<any> {
-  const res = await apiFetch('/connectors/callback', { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ provider, code, redirect_uri: redirectUri }) })
-  if (!res.ok) throw new Error('Failed to complete connector callback')
-  return res.json()
-}
-
-export async function apiConnectorResources(token: string, provider: string): Promise<any> {
-  const res = await apiFetch(`/connectors/${provider}/resources`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to fetch connector resources')
-  return res.json()
-}
-
-export async function apiConnectorSync(token: string, provider: string): Promise<any> {
-  const res = await apiFetch(`/connectors/${provider}/sync`, { method: 'POST', headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to sync connector')
-  return res.json()
-}
-
 export async function apiListSkills(token: string): Promise<SkillItem[]> {
   const res = await apiFetch('/skills', { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取 Skills 失败'))
@@ -2971,96 +2341,6 @@ export async function apiGetUiSettings(token: string): Promise<any> {
 export async function apiPatchUiSettings(token: string, payload: any): Promise<any> {
   const res = await apiFetch('/users/ui-settings', { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload) })
   if (!res.ok) throw new Error('Failed to patch UI settings')
-  return res.json()
-}
-
-// ── Rules API ────────────────────────────────────────────────────────
-export interface RuleItem {
-  id: string
-  name: string
-  trigger: string
-  description: string
-  version: string
-  filename: string
-  data_sources_count: number
-  conditions_count: number
-  outputs_count: number
-}
-
-export interface RuleCondition {
-  id: string
-  data_ref: string
-  expr: string
-}
-
-export interface RuleOutput {
-  label: string
-  when: string[]
-  template: string
-}
-
-export interface RuleDataSource {
-  label: string
-  type: string
-  description?: string
-  sql?: string
-  value?: Record<string, unknown>
-}
-
-export interface RuleFormData {
-  id: string
-  name: string
-  trigger: string
-  description: string
-  version: string
-  data_sources: RuleDataSource[]
-  conditions: RuleCondition[]
-  outputs: RuleOutput[]
-}
-
-export async function apiListRules(token: string): Promise<RuleItem[]> {
-  const res = await apiFetch('/rules', { headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to list rules')
-  return res.json()
-}
-
-export async function apiGetRule(token: string, filename: string): Promise<RuleFormData & { yaml_raw: string; filename: string }> {
-  const res = await apiFetch(`/rules/${encodeURIComponent(filename)}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error('Failed to get rule')
-  return res.json()
-}
-
-export async function apiCreateRule(token: string, payload: RuleFormData): Promise<any> {
-  const res = await apiFetch('/rules', {
-    method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload),
-  })
-  if (!res.ok) throw new Error('Failed to create rule')
-  return res.json()
-}
-
-export async function apiUpdateRule(token: string, filename: string, payload: RuleFormData): Promise<any> {
-  const res = await apiFetch(`/rules/${encodeURIComponent(filename)}`, {
-    method: 'PUT', headers: authHeaders(token), body: JSON.stringify(payload),
-  })
-  if (!res.ok) throw new Error('Failed to update rule')
-  return res.json()
-}
-
-export async function apiDeleteRule(token: string, filename: string): Promise<void> {
-  const res = await apiFetch(`/rules/${encodeURIComponent(filename)}`, {
-    method: 'DELETE', headers: authHeaders(token),
-  })
-  if (!res.ok) throw new Error('Failed to delete rule')
-}
-
-export async function apiGenerateRule(token: string, payload: {
-  id: string; name: string; trigger: string; description: string;
-  dataSourcesCount: number; conditionsCount: number; outputsCount: number;
-}): Promise<{ rule: RuleFormData; yaml_content: string; filename: string }> {
-  const res = await apiFetch('/rules/generate', {
-    method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload),
-  })
-  if (!res.ok) throw new Error('Failed to generate rule')
   return res.json()
 }
 
@@ -3231,92 +2511,4 @@ export async function apiDeleteCustomInstructions(token: string): Promise<{ dele
   })
   if (!res.ok) throw new Error('Failed to delete custom instructions')
   return res.json()
-}
-
-export interface CalendarEventItem {
-  id: string
-  occurrence_id: string
-  title: string
-  description: string
-  location: string
-  event_type: 'event' | 'meeting' | 'focus' | 'reminder'
-  start_at: string
-  end_at: string
-  local_start_at: string
-  local_end_at: string
-  timezone: string
-  view_timezone: string
-  all_day: boolean
-  recurrence_rule?: string | null
-  reminder_minutes: number[]
-  status: string
-  lifecycle_status: 'upcoming' | 'in_progress' | 'completed' | 'recurring' | 'cancelled'
-  source: 'manual' | 'assistant' | string
-  source_response_id?: string | null
-  revision: number
-  cancelled_at?: string | null
-  created_at?: string | null
-  updated_at?: string | null
-}
-
-export interface CalendarEventPayload {
-  title: string
-  description?: string
-  location?: string
-  event_type?: CalendarEventItem['event_type']
-  start_at: string
-  end_at: string
-  timezone: string
-  all_day?: boolean
-  recurrence_rule?: string | null
-  reminder_minutes?: number[]
-}
-
-export async function apiListCalendarEvents(
-  token: string,
-  start: string,
-  end: string,
-  timezone: string,
-  includeCancelled = false,
-): Promise<CalendarEventItem[]> {
-  const query = new URLSearchParams({
-    start,
-    end,
-    timezone,
-    limit: '200',
-    include_cancelled: String(includeCancelled),
-  })
-  const res = await apiFetchResponses(`/calendar/events?${query.toString()}`, { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取日历失败'))
-  return (await res.json()).items ?? []
-}
-
-export async function apiCreateCalendarEvent(
-  token: string,
-  payload: CalendarEventPayload,
-): Promise<CalendarEventItem> {
-  const res = await apiFetchResponses('/calendar/events', {
-    method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '创建日程失败'))
-  return res.json()
-}
-
-export async function apiUpdateCalendarEvent(
-  token: string,
-  eventId: string,
-  payload: Partial<CalendarEventPayload>,
-): Promise<CalendarEventItem> {
-  const res = await apiFetchResponses(`/calendar/events/${encodeURIComponent(eventId)}`, {
-    method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '更新日程失败'))
-  return res.json()
-}
-
-export async function apiCancelCalendarEvent(token: string, eventId: string): Promise<void> {
-  const res = await apiFetchResponses(`/calendar/events/${encodeURIComponent(eventId)}`, {
-    method: 'DELETE', headers: authHeaders(token),
-  })
-  if (!res.ok) throw new Error(await readApiError(res, '取消日程失败'))
 }

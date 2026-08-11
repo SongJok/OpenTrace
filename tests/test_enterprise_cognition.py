@@ -100,7 +100,7 @@ def test_enterprise_context_prompt_is_compact_and_query_adaptive() -> None:
         "vision": "成为最懂客户业务的技术伙伴。",
         "values": ["客户价值优先", "以事实决策"],
         "responsibilities": ["建设平台产品"],
-        "products_services": ["企业 AI 工作台"],
+        "products_services": ["企业提问系统"],
         "operating_principles": ["重要结论必须可追溯"],
         "terminology": {"有效客户": "过去 90 天有付费订单的客户"},
         "key_contacts": ["产品负责人：张三"],
@@ -181,10 +181,10 @@ def test_r0007_migration_and_frontend_governance_surface_are_present() -> None:
     assert "uq_enterprise_cognitive_published_entity" in migration
     assert "enterprise_cognitive_entities" in migration
     assert "enterprise_cognitive_versions" in migration
-    page = (ROOT / "frontend/src/pages/EnterpriseAdminPage.tsx").read_text(encoding="utf-8")
+    page = (ROOT / "frontend/src/pages/CompanyBrainPage.tsx").read_text(encoding="utf-8")
     client = (ROOT / "frontend/src/api/client.ts").read_text(encoding="utf-8")
-    assert "成为企业级的工作台、最懂公司的 AI" in page
-    assert "企业认知" in page
-    assert "apiSaveEnterpriseCognitiveDraft" in page
-    assert "apiPublishEnterpriseCognitiveDraft" in page
-    assert "/admin/enterprise/cognition/entities" in client
+    assert "企业大脑" in page
+    assert "企业大脑" in page
+    assert "apiSaveCompanyBrainDraft" in page
+    assert "apiPublishCompanyBrainDraft" in page
+    assert "/admin/company/brain/draft" in client

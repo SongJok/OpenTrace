@@ -13,7 +13,6 @@ echo "=== Unified Agent Worker Verify ==="
   tests/test_responses_contract.py \
   tests/test_scheduler_v2.py \
   tests/test_agent_bus_e2e_contract.py \
-  tests/test_all_agent_bus_routing_contract.py \
   tests/test_agent_bus_governance_contract.py \
   tests/test_rag_web_fallback_contract.py \
   tests/test_sql_join_planner_contract.py

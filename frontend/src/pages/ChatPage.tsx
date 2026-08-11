@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { BarChart3, Check, ChevronDown, Copy, Cpu, Database, FileWarning, FileText, Menu, Package, User, Share2, MoreHorizontal, Sparkles, type LucideIcon } from 'lucide-react'
+import { BarChart3, BrainCircuit, Check, ChevronDown, Copy, Cpu, Database, FileWarning, Menu, User, Share2, MoreHorizontal, Sparkles, type LucideIcon } from 'lucide-react'
 import Sidebar from '../components/Sidebar'
 import MessageList, { type MessageListHandle } from '../components/MessageList'
 import ChatInput from '../components/ChatInput'
@@ -14,10 +14,9 @@ import { useCompanyStore } from '../store/company'
 import { copyTextToClipboard, formatConversationForCopy } from '../utils/clipboard'
 
 const QUICK_TAGS: Array<{ label: string; prefix: string; icon: LucideIcon }> = [
-  { label: '总结一段文字', prefix: '请总结以下内容：', icon: FileText },
-  { label: '分析数据', prefix: '/data_analysis ', icon: BarChart3 },
-  { label: '搜索知识库', prefix: '/rag ', icon: Database },
-  { label: '编写代码', prefix: '请帮我编写代码：', icon: Package },
+  { label: '企业知识问答', prefix: '/rag ', icon: Database },
+  { label: '企业数据问数', prefix: '/data_analysis ', icon: BarChart3 },
+  { label: '询问企业大脑', prefix: '请基于企业大脑回答：', icon: BrainCircuit },
 ]
 
 function QuickTags() {
@@ -265,10 +264,6 @@ export default function ChatPage() {
             >
               <Menu size={17} />
             </button>
-            <div className="pointer-events-none absolute inset-0">
-              <div className="absolute left-1/2 top-[18%] h-72 w-[34rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,var(--hero-glow-secondary),transparent_72%)] blur-3xl opacity-80" />
-              <div className="absolute left-1/2 top-[48%] h-96 w-[48rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.7),transparent_70%)] blur-3xl opacity-70" />
-            </div>
             <div className="relative mx-auto flex w-full max-w-[960px] -translate-y-4 flex-col items-center">
               <WelcomeScreen />
               <ChatInput variant="welcome" />

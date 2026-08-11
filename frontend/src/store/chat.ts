@@ -89,7 +89,6 @@ export interface Message {
   version_index?: number
   sibling_count?: number
   approvals?: ApprovalRequest[]
-  calendar_action_completed?: boolean
 }
 
 export interface Conversation {
@@ -133,7 +132,6 @@ interface ChatState {
   failAssistantMessage: (conversationId: string, messageId: string, text: string) => void
   restoreAssistantApproval: (conversationId: string, messageId: string) => void
   keepAssistantResponseRunning: (conversationId: string, messageId: string) => void
-  markCalendarActionCompleted: (conversationId: string, messageId: string) => void
   setStreaming: (v: boolean) => void
   setActiveResponseId: (id: string | null) => void
   setMessageResponseId: (conversationId: string, messageId: string, responseId: string) => void
@@ -236,7 +234,6 @@ function asDoneMessage(raw: any): Message {
       : Array.isArray(raw?.metadata?.approvals)
         ? raw.metadata.approvals as ApprovalRequest[]
         : undefined,
-    calendar_action_completed: Boolean(raw?.calendar_action_completed),
   }
 }
 
@@ -511,18 +508,6 @@ export const useChatStore = create<ChatState>()((set, get) => ({
       },
       activeReasoningMessageId: { ...s.activeReasoningMessageId, [conversationId]: messageId },
       streaming: true,
-    })),
-
-  markCalendarActionCompleted: (conversationId, messageId) =>
-    set((s) => ({
-      messages: {
-        ...s.messages,
-        [conversationId]: (s.messages[conversationId] ?? []).map((message) =>
-          message.id === messageId && message.role === 'assistant'
-            ? { ...message, calendar_action_completed: true }
-            : message
-        ),
-      },
     })),
 
   setStreaming: (v) => set({ streaming: v }),

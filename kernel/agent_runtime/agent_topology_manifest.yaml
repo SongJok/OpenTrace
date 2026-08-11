@@ -1,6 +1,6 @@
 # Agent Topology Manifest — single source of truth for capability/agent topology.
 # Version bumps require contract test updates (test_agent_runtime_v3_contract.py).
-version: "3.1.0"
+version: "3.2.0"
 
 runtimes:
   tier0_kernel:
@@ -61,9 +61,9 @@ entries:
     owner_runtime: tier1_executive
     capability_type: web_search
     registry_name: web_intelligence
-    bootstrap: true
-    worker: true
-    bus_eligible: true
+    bootstrap: false
+    worker: false
+    bus_eligible: false
     contract:
       risk_tier: medium
       max_latency_ms: 60000
@@ -76,9 +76,9 @@ entries:
     owner_runtime: tier1_executive
     capability_type: tool
     registry_name: tool
-    bootstrap: true
-    worker: true
-    bus_eligible: true
+    bootstrap: false
+    worker: false
+    bus_eligible: false
     contract:
       risk_tier: low
       max_latency_ms: 30000
@@ -89,9 +89,9 @@ entries:
     owner_runtime: tier1_executive
     capability_type: vision_analysis
     registry_name: vision
-    bootstrap: true
-    worker: true
-    bus_eligible: true
+    bootstrap: false
+    worker: false
+    bus_eligible: false
     contract:
       risk_tier: medium
       max_latency_ms: 90000
@@ -103,9 +103,9 @@ entries:
     owner_runtime: tier1_executive
     capability_type: skill_execution
     registry_name: skills
-    bootstrap: true
-    worker: true
-    bus_eligible: true
+    bootstrap: false
+    worker: false
+    bus_eligible: false
     contract:
       risk_tier: low
       max_latency_ms: 60000
@@ -117,8 +117,8 @@ entries:
     owner_runtime: tier1_executive
     capability_type: policy_rules
     registry_name: rules
-    bootstrap: true
-    worker: true
+    bootstrap: false
+    worker: false
     bus_eligible: false
     contract:
       risk_tier: low
@@ -244,18 +244,7 @@ topology_edges:
 bootstrap_agent_types:
   - data
   - rag
-  - web_intelligence
-  - tool
-  - vision
-  - skills
-  - rules
 
 worker_agent_types:
   - data
   - rag
-  - web_intelligence
-  - tool
-  - vision
-  - skills
-  - rules
-  - rules

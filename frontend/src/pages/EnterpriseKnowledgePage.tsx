@@ -197,7 +197,7 @@ export default function EnterpriseKnowledgePage({ onBack }: { onBack?: () => voi
           <h1 className="text-lg font-semibold">企业知识库</h1>
           <p className="text-xs text-[var(--text-secondary)]">搜索、浏览和贡献经过权限、版本、有效期与发布流程治理的企业知识</p>
         </div>
-        {canGovern && <button onClick={() => navigate('/knowledge')} className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2 text-xs"><ShieldCheck size={14} />知识治理中心</button>}
+        {platformRole === 'admin' && <button onClick={() => navigate('/knowledge')} className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2 text-xs"><ShieldCheck size={14} />知识库质量中心</button>}
       </header>
 
       <div className="grid min-h-[calc(100vh-65px)] lg:grid-cols-[280px_1fr]">

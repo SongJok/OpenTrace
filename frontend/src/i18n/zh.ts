@@ -6,8 +6,6 @@ const zh = {
     documents: '文档',
     memories: '记忆',
     tasks: '任务',
-    audit: '审计',
-    integrations: '集成',
     settings: '设置',
     noConversations: '暂无会话',
     newConversation: '新会话',

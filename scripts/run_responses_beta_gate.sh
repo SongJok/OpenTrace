@@ -28,8 +28,7 @@ python -m pytest -q --tb=short \
   tests/test_tenant_rls_contract.py \
   tests/test_scheduler_v2.py \
   tests/test_agent_resources_runtime.py \
-  tests/test_enterprise_reports.py \
-  tests/test_enterprise_work_scenarios_contract.py
+  tests/test_enterprise_evaluation_contract.py
 bash scripts/check_import_boundaries.sh
 
 HEADS="$(python -m alembic heads | wc -l | tr -d ' ')"
@@ -51,9 +50,7 @@ fi
 (
   cd frontend
   npm run build
-  npm test -- \
-    src/pages/__tests__/ReportsPage.contract.test.tsx \
-    src/pages/__tests__/WorkPage.contract.test.tsx
+  npm test -- src/pages/__tests__/ChatPage.contract.test.tsx
 )
 
 echo "Responses Enterprise Beta gate passed: $MODE"

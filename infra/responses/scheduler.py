@@ -357,11 +357,6 @@ async def queue_task_run(
             "task_run_id": run.id,
             "task_trigger": trigger,
             "enterprise_admission": admission,
-            "enterprise_report": (
-                task_config
-                if getattr(task, "task_type", "agent_task") == "enterprise_report"
-                else None
-            ),
         },
     )
     db.add(response)

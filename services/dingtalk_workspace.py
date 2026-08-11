@@ -55,7 +55,7 @@ def _pick(item: dict[str, Any], *keys: str) -> str:
 
 
 class DingTalkWorkspaceClient:
-    """安全执行只读 dws 命令，并把结果规范化到企业工作台领域模型。"""
+    """安全执行只读 dws 命令，并把结果规范化到企业知识领域模型。"""
 
     def __init__(self, *, binary: str, profile: str = "", timeout_seconds: int = 30) -> None:
         resolved = Path(binary).expanduser()

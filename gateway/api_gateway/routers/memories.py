@@ -47,7 +47,7 @@ class MemoryCreateRequest(BaseModel):
     kind: str = Field(default="fact")
     personal_category: str = Field(
         default="profile",
-        pattern="^(terminology|response_style|approval_habit|template|calendar|task|profile)$",
+        pattern="^(terminology|response_style|approval_habit|template|task|profile)$",
     )
     memory_key: str | None = Field(default=None, max_length=128)
     title: str | None = None

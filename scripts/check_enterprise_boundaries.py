@@ -24,7 +24,11 @@ def tracked_python_files() -> list[Path]:
         ["git", "ls-files", "--others", "--exclude-standard", "*.py"], cwd=ROOT, text=True
     )
     files = set(tracked.splitlines()) | set(untracked.splitlines())
-    return [ROOT / line for line in sorted(files) if line and not line.startswith("tests/")]
+    return [
+        ROOT / line
+        for line in sorted(files)
+        if line and not line.startswith("tests/") and (ROOT / line).exists()
+    ]
 
 
 def legacy_dependents() -> set[str]:

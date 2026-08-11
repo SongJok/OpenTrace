@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import pytest
 import yaml
 
-from agents.base import AgentResult, TaskMessage
+from agents.base import AgentResult
 from agents.bootstrap import expected_builtin_agent_types, instantiate_builtin_agents
-from kernel.agent_runtime.manifest import get_manifest, load_manifest, reload_manifest, validate_manifest_integrity
+from kernel.agent_runtime.manifest import (
+    get_manifest,
+    reload_manifest,
+    validate_manifest_integrity,
+)
 from kernel.agent_runtime.sync import sync_manifest_to_runtime, validate_bootstrap_parity
 from kernel.agent_runtime.tier2_registry import list_tier2_agent_types, tier2_registry
 from kernel.agent_runtime.unified_evidence import normalize_evidence
@@ -17,15 +22,7 @@ def test_manifest_version_and_tier_lists():
     reload_manifest()
     m = get_manifest()
     assert m.version.startswith("3.")
-    assert set(m.bootstrap_agent_types) == {
-        "data",
-        "rag",
-        "web_intelligence",
-        "tool",
-        "vision",
-        "skills",
-        "rules",
-    }
+    assert set(m.bootstrap_agent_types) == {"data", "rag"}
     assert "web" not in m.bootstrap_agent_types
     web_ent = m.get("web")
     assert web_ent is not None and web_ent.bootstrap is False
@@ -46,11 +43,11 @@ def test_manifest_integrity():
     assert validate_manifest_integrity() == []
 
 
-def test_rules_in_worker_list_not_on_bus():
+def test_removed_capabilities_are_not_in_worker_or_bus():
     reload_manifest()
     m = get_manifest()
-    assert "rules" in m.worker_agent_types
-    assert "rules" not in m.bus_eligible_agent_types()
+    assert set(m.worker_agent_types) == {"data", "rag"}
+    assert set(m.bus_eligible_agent_types()) == {"data", "rag"}
 
 
 def test_manifest_capability_alias_web_search():
@@ -137,7 +134,6 @@ def test_contribution_from_agent_result_goal_delta():
 
 def test_world_projection_counterfactual_budget():
     from kernel.agent_runtime.world_projection import (
-        WorldProjectionBundle,
         apply_counterfactual_assumption,
         build_projection_bundle_from_context,
     )
@@ -193,7 +189,9 @@ def test_cognitive_p3_enrichment():
     from kernel.agent_runtime.unified_evidence import normalize_evidence
 
     u = normalize_evidence(
-        AgentResult(task_id="t", agent_type="rag", status="success", content="claim x", confidence=0.8),
+        AgentResult(
+            task_id="t", agent_type="rag", status="success", content="claim x", confidence=0.8
+        ),
         goal_id="g1",
     )
     bundle = enrich_turn_cognitive_runtimes(
@@ -204,9 +202,6 @@ def test_cognitive_p3_enrichment():
     )
     assert bundle.hypotheses
     assert bundle.version == "cognitive_runtime_p3_v1"
-
-
-import pytest
 
 
 @pytest.mark.asyncio
@@ -238,7 +233,11 @@ def test_deprecated_agent_registry_resolves_tier2():
 def test_stream_metadata_merge_from_ctx():
     from kernel.agent_runtime.stream_metadata import merge_agent_runtime_v3_into_metadata
 
-    ctx = type("C", (), {"metadata": {"goal_participation": {"root_goal_id": "g1"}, "agent_runtime_v3": True}})()
+    ctx = type(
+        "C",
+        (),
+        {"metadata": {"goal_participation": {"root_goal_id": "g1"}, "agent_runtime_v3": True}},
+    )()
     out: dict = {}
     merge_agent_runtime_v3_into_metadata(out, ctx=ctx)
     assert out["goal_participation"]["root_goal_id"] == "g1"

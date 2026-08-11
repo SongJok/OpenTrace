@@ -59,7 +59,7 @@ Schema 同步不得复用 `TEXT2SQL_MAX_RESULT_ROWS=500`：后者只保护业务
 | `KNOWLEDGE_SYNC_RECLAIM_MINUTES` | `settings.knowledge_sync_reclaim_minutes` | 同步 Worker 崩溃后的运行项回收阈值 |
 | `KNOWLEDGE_SYNC_MAX_ATTEMPTS` | `settings.knowledge_sync_max_attempts` | 单个 Snapshot 显式重试前的最大尝试次数 |
 
-## Skills 与主动预警
+## Skills
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
@@ -75,8 +75,6 @@ Schema 同步不得复用 `TEXT2SQL_MAX_RESULT_ROWS=500`：后者只保护业务
 | `SKILLS_LOCAL_CREATE_ENABLED` | `false` | 是否允许管理员在平台创建动态 Skill |
 | `SKILLS_SUBPROCESS_EXECUTION_ENABLED` | `false` | 是否允许受限子进程执行 Python Skill |
 | `SKILLS_EXECUTION_TIMEOUT_SECONDS` | `10` | 单次动态 Skill 执行超时（最大 60 秒） |
-| `ALERT_SCHEDULER_POLL_SECONDS` | `10` | Worker 扫描到期预警规则的周期 |
-| `ALERT_SCHEDULER_RETRY_SECONDS` | `60` | 主动预警查询失败后的恢复重试间隔 |
 
 `staging` 与 `production` 会强制关闭动态 Skill 安装、创建、进程内执行和子进程执行。Knowledge Worker 启动时会检测公共 Skill 本地镜像，仅在没有可用 Skill 时立即补齐一次，并按 `SKILLHUB_SYNC_TIMEZONE` 每天 06:30 下载更新到共享本地镜像；API 和 Skills 页面只读取该镜像，不在用户请求中访问 GitHub 或 SkillHub。Docker Compose 会先修复共享卷权限，再启动 API 与 Worker；页面会在首次同步期间自动刷新。公司 Skill 由管理员蒸馏时写入同一共享卷下的租户/工作区隔离目录。生产部署应为 `skills/catalog_mirror` 配置 API/Worker 共享持久卷。
 

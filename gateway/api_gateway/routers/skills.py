@@ -20,7 +20,6 @@ from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
-    ChatSession,
     EnterpriseSkill,
     SkillCatalogEntry,
     User,
@@ -57,16 +56,6 @@ class SkillTestRequest(BaseModel):
 
 class SkillUninstallRequest(BaseModel):
     skill_id: str
-
-
-class SkillSessionBindingRequest(BaseModel):
-    session_id: str
-    enabled_skills: list[str] = Field(default_factory=list)
-    disabled_skills: list[str] = Field(default_factory=list)
-
-
-class SkillSessionQuery(BaseModel):
-    session_id: str
 
 
 class SkillCatalogInstallRequest(BaseModel):
@@ -576,121 +565,3 @@ async def uninstall_skill(
     if not ok:
         raise AppException(ErrorCodes.PARAM_INVALID.code, message="skill not found")
     return {"removed": True, "skill_id": req.skill_id, "user_id": current_user.id}
-
-
-@router.post("/skills/session/bind")
-async def bind_session_skills(
-    req: SkillSessionBindingRequest,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    tenant_id, workspace_id = normalized_tenant_scope(
-        build_tenant_metadata(request, user_id=current_user.id)
-    )
-    result = await db.execute(
-        select(ChatSession).where(
-            ChatSession.id == req.session_id,
-            ChatSession.user_id == current_user.id,
-            ChatSession.tenant_id == tenant_id,
-            ChatSession.workspace_id == workspace_id,
-        )
-    )
-    session = result.scalar_one_or_none()
-    if session is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Session not found")
-    enabled_skills = sorted(set(req.enabled_skills))
-    disabled_skills = sorted(set(req.disabled_skills))
-    account_ids = [item for item in enabled_skills if item.startswith("acct-")]
-    if account_ids:
-        allowed = set(
-            (
-                await db.execute(
-                    select(UserSkillInstallation.installed_skill_id)
-                    .join(
-                        SkillCatalogEntry,
-                        UserSkillInstallation.catalog_skill_id == SkillCatalogEntry.id,
-                    )
-                    .where(
-                        UserSkillInstallation.user_id == current_user.id,
-                        UserSkillInstallation.tenant_id == tenant_id,
-                        UserSkillInstallation.workspace_id == workspace_id,
-                        UserSkillInstallation.status == "installed",
-                        SkillCatalogEntry.status == "active",
-                        UserSkillInstallation.installed_skill_id.in_(account_ids),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        invalid = sorted(set(account_ids) - allowed)
-        if invalid:
-            raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="账户无权启用该 Skill")
-    company_ids = [item for item in enabled_skills if item.startswith("company-")]
-    if company_ids:
-        access = await resolve_access_context(
-            db,
-            user=current_user,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-        )
-        company_skills = list(
-            (
-                await db.execute(
-                    select(EnterpriseSkill).where(
-                        EnterpriseSkill.tenant_id == tenant_id,
-                        EnterpriseSkill.workspace_id == workspace_id,
-                        EnterpriseSkill.status == "published",
-                        EnterpriseSkill.runtime_id.in_(company_ids),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        allowed_company_ids = {
-            skill.runtime_id
-            for skill in company_skills
-            if classification_allows(access.clearance, skill.classification)
-        }
-        if sorted(set(company_ids) - allowed_company_ids):
-            raise AppException(
-                ErrorCodes.PERMISSION_DENIED.code, message="当前企业无权启用该 Skill"
-            )
-    session.enabled_skills = enabled_skills
-    session.disabled_skills = disabled_skills
-    await db.commit()
-    return {
-        "session_id": req.session_id,
-        "enabled_skills": enabled_skills,
-        "disabled_skills": disabled_skills,
-    }
-
-
-@router.get("/skills/session/{session_id}")
-async def get_session_skills(
-    session_id: str,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    tenant_id, workspace_id = normalized_tenant_scope(
-        build_tenant_metadata(request, user_id=current_user.id)
-    )
-    result = await db.execute(
-        select(ChatSession).where(
-            ChatSession.id == session_id,
-            ChatSession.user_id == current_user.id,
-            ChatSession.tenant_id == tenant_id,
-            ChatSession.workspace_id == workspace_id,
-        )
-    )
-    session = result.scalar_one_or_none()
-    if session is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Session not found")
-    return {
-        "session_id": session_id,
-        "enabled_skills": list(session.enabled_skills or []),
-        "disabled_skills": list(session.disabled_skills or []),
-    }

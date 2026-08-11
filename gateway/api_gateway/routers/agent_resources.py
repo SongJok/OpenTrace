@@ -21,9 +21,7 @@ from infra.config.constants import DEFAULT_TIMEZONE
 from infra.errors import AppException, ErrorCodes
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
-    AlertRule,
     AssistantProfile,
-    CalendarEvent,
     ChatSession,
     GoalCheckpoint,
     GoalRun,
@@ -1042,25 +1040,10 @@ def _owned_notification_subjects(
     tenant_id: str,
     workspace_id: str,
 ):
-    return (
-        select(TaskDefinition.id)
-        .where(
-            TaskDefinition.user_id == user_id,
-            TaskDefinition.tenant_id == tenant_id,
-            TaskDefinition.workspace_id == workspace_id,
-        )
-        .union(
-            select(AlertRule.id).where(
-                AlertRule.user_id == user_id,
-                AlertRule.tenant_id == tenant_id,
-                AlertRule.workspace_id == workspace_id,
-            ),
-            select(CalendarEvent.id).where(
-                CalendarEvent.user_id == user_id,
-                CalendarEvent.tenant_id == tenant_id,
-                CalendarEvent.workspace_id == workspace_id,
-            ),
-        )
+    return select(TaskDefinition.id).where(
+        TaskDefinition.user_id == user_id,
+        TaskDefinition.tenant_id == tenant_id,
+        TaskDefinition.workspace_id == workspace_id,
     )
 
 
@@ -1100,32 +1083,6 @@ async def list_notifications(
             TaskNotification.read.is_(False),
         )
     )
-    alert_ids = set(
-        (
-            await db.execute(
-                select(AlertRule.id).where(
-                    AlertRule.user_id == current_user.id,
-                    AlertRule.tenant_id == tenant_id,
-                    AlertRule.workspace_id == workspace_id,
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    calendar_ids = set(
-        (
-            await db.execute(
-                select(CalendarEvent.id).where(
-                    CalendarEvent.user_id == current_user.id,
-                    CalendarEvent.tenant_id == tenant_id,
-                    CalendarEvent.workspace_id == workspace_id,
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
     return {
         "unread_count": int(unread_count or 0),
         "items": [
@@ -1133,11 +1090,7 @@ async def list_notifications(
                 "id": row.id,
                 "task_id": row.task_id,
                 "run_id": row.run_id,
-                "kind": (
-                    "alert"
-                    if row.task_id in alert_ids
-                    else "calendar" if row.task_id in calendar_ids else "scheduled_task"
-                ),
+                "kind": "scheduled_task",
                 "level": row.level,
                 "title": row.title,
                 "body": row.body,

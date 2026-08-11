@@ -50,11 +50,8 @@ echo "▸ 在临时测试容器内执行 unittest..."
   tests/test_memory_api_contract.py \
   tests/test_memory_evolve.py \
   tests/test_tasks_api_contract.py \
-  tests/test_audit_replay_contract.py \
   tests/test_zero_trust_contract.py \
-  tests/test_connectors_sdk.py \
   tests/test_skills_runtime.py \
-  tests/test_skill_session_binding.py \
   tests/test_sandbox_runtime.py \
   tests/test_ui_settings_contract.py \
   tests/test_fusion_critic_flags_contract.py \
@@ -63,7 +60,6 @@ echo "▸ 在临时测试容器内执行 unittest..."
   tests/test_responses_contract.py \
   tests/test_scheduler_v2.py \
   tests/test_time_weather_tools_behavior.py \
-  tests/test_all_agent_bus_routing_contract.py \
   tests/test_agent_bus_governance_contract.py
 
 echo "✅ verify_all_docker 完成"

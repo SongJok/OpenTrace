@@ -206,7 +206,6 @@ async def test_company_brain_profile_lookup_applies_enterprise_scope() -> None:
         ("回答风格要先给结论", "response_style", "preference", "response_style"),
         ("审批操作习惯是先预览再批准", "approval", "workflow", "approval_habit"),
         ("常用周报模板使用三段式", "weekly_template", "workflow", "template"),
-        ("日历里每周一有例会", "calendar", "episodic", "calendar"),
         ("我的待办任务按优先级排序", "task", "workflow", "task"),
     ],
 )

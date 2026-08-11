@@ -8,10 +8,9 @@
 [![Python 3.11–3.12](https://img.shields.io/badge/Python-3.11--3.12-3776AB.svg)](https://www.python.org/)
 
 OpenTrace is a self-hosted enterprise AgentOS. Built around an OpenAI-compatible Responses
-API, a recoverable Agent Loop, and durable PostgreSQL events, it brings enterprise databases,
-knowledge bases, approval governance, proactive alerts, conversations, memory, goals, and
-scheduled tasks into one coherent product workflow. The enterprise AI workbench turns those
-durable capabilities into one actionable employee home.
+API, a recoverable Agent Loop, and durable PostgreSQL events, it gives users one focused
+question experience backed by three capabilities: RAG retrieval, governed enterprise brain
+context, and read-only DataAgent/Text2SQL.
 
 > **Project status: Controlled enterprise Beta.** The supported product path is ready for
 > governed tenant pilots and is protected by product-wide Beta gates. This is not GA: production
@@ -31,41 +30,37 @@ durable capabilities into one actionable employee home.
 - **Governed company understanding:** versioned company and department cognitive profiles bind
   the enterprise directory to governed knowledge spaces, so Responses understand authorized
   organizational context without turning employee chat into company facts.
-- **From data questions to proactive alerts:** DataAgent and Text2SQL generate governed read-only
-  SQL drafts grounded by reviewed SQL assets. Interactive queries execute only after the user
-  selects a persisted candidate; alerts retain their trusted background execution contract.
+- **Focused question workflow:** every question is routed through the same durable Responses
+  path. RAG supplies citations, the enterprise brain supplies authorized company context, and
+  DataAgent/Text2SQL supplies validated read-only data answers.
 - **Observable, testable, and replaceable:** all model calls pass through the Model Gateway,
   while architecture boundaries, Responses, RAG, DataAgent, approvals, and scheduling are
   protected by contract tests.
 
 ## Product Workflow
 
-Authenticated users land on `/work`, the enterprise AI workbench. It aggregates current
-Responses, Goals, approvals, alerts, governed knowledge, and authorized data sources without
-creating a second execution plane. See
-[Enterprise AI workbench architecture](docs/architecture/enterprise_ai_workbench.md).
+Authenticated users land on `/chat`, the question page. The page is the only employee work
+surface: ask a question, optionally select an authorized project/data source, and receive an
+answer with RAG citations, enterprise-brain context, or a read-only Text2SQL result. Supporting
+pages are limited to personal data, databases, memory, tasks, Skills, and settings. Enterprise
+brain, enterprise knowledge, knowledge quality, and permissions are administrator-only pages.
 
 ```text
-Enterprise AI Workbench
-  `-- Today pulse / Project portfolio / attention queue / durable work / capability launchpad
-       `-- Project
-            |-- Enterprise databases: MySQL / Doris / ClickHouse / PostgreSQL
-            |     `-- Connection test -> Schema sync -> Semantic layer -> DataAgent / Text2SQL
-            |-- Enterprise knowledge: Documents -> Compile -> Review/Publish -> RAG citations
-            |-- Approval governance: Tenant/Workspace/Project ACL -> Write approval -> Audit events
-            `-- Proactive alerts: Scheduled query -> Deterministic threshold -> Trigger/Recover -> Evidence
+Question page
+  `-- IntentPlan -> ContextAssembler -> Manager loop
+       |-- Enterprise brain: authorized company context
+       |-- RAG: reviewed knowledge with citations
+       `-- Text2SQL: authorized database -> validated read-only SQL -> evidence
 ```
 
 A typical workflow looks like this:
 
-1. Connect and verify an enterprise data source from the Databases page. OpenTrace synchronizes
-   its schema automatically.
-2. Create a Project, bind the data sources that may be queried, and upload policies, metric
-   definitions, or business documents.
-3. Select the Project and data source in Chat, then ask questions that combine operational data
-   with governed knowledge.
-4. Open `/knowledge-base` to search authorized company knowledge or contribute to a space; use `/knowledge` for compiler and governance operations.
-5. Ask the Agent to create an alert rule. The write operation enters approval first, and the Worker runs it continuously after approval.
+1. An administrator configures enterprise knowledge, company-brain profiles, permissions, and
+   authorized database sources.
+2. A user opens `/chat`, selects an available project or data source when needed, and asks a
+   question.
+3. The Manager loop chooses only RAG or DataAgent/Text2SQL capabilities; enterprise-brain
+   context is injected by the ContextAssembler and is never exposed as a user-callable tool.
 
 ## Core Architecture
 
@@ -75,11 +70,10 @@ POST /api/v2/responses
   -> Commit PostgreSQL Response / Item / Event / Outbox in one transaction
   -> Worker publishes Redis Streams messages and claims Responses with database leases
   -> IntentPlan -> ContextAssembler -> Manager model/tool loop
-  -> Typed tools / expert agents / RAG / DataAgent
-  -> Write or destructive tool -> Durable approval pause point
+  -> RAG / enterprise-brain context / DataAgent (Text2SQL)
   -> Persist output, events, model calls, and tool ledger in PostgreSQL
   -> Resume SSE by sequence_number
-  -> Continue with summaries, memory learning, Goals, Tasks, and Alerts
+  -> Continue with summaries and memory learning
 ```
 
 PostgreSQL is the source of truth for online execution. Redis is used only for delivery, wake-up,
@@ -95,12 +89,12 @@ return `410 Gone`.
 | Enterprise databases | MySQL, Doris, ClickHouse, and PostgreSQL; connection tests, schemas, semantic mappings, governed SQL assets, and confirmed read-only execution |
 | DataAgent | Text2SQL drafts, asset grounding, stable candidates, metric/entity/time/join reasoning, validation, confirmation, and result interpretation |
 | Enterprise Knowledge | Company/department/role/project/personal spaces, source ACL sync, review publishing, validity, classification, governed retrieval, graphs, and citations |
-| Governance | Multi-tenant/workspace boundaries, enterprise directory sync, resource permissions, durable approvals, audit, quotas, and policy interfaces |
-| Automation | Goals, scheduled tasks, proactive data alerts, notifications, retries, and recovery events |
+| Governance | Multi-tenant/workspace boundaries, resource permissions, durable approvals, quotas, and policy interfaces |
+| User support | Personal profile, databases, memory, tasks, Skills, and settings |
 | Memory | Conversation summaries, user and Project memory, memory governance, and feedback learning |
 | Skills and tools | Typed tools, SkillHub, and local Skill management; dynamic execution is disabled by default |
 | Observability | Structured logging, OpenTelemetry, Prometheus, Jaeger, and runtime health endpoints |
-| Frontend | Employee AI workbench and administrator operations center, plus React, TypeScript, and Vite interfaces for chat, data, knowledge, approvals, tasks, and alerts |
+| Frontend | Focused question page plus React, TypeScript, and Vite pages for personal data, databases, memory, tasks, Skills, settings, and administrator governance |
 
 ## Technology Stack
 
@@ -322,7 +316,6 @@ model/            Model Gateway, provider adapters, embeddings, and reranking
 execution/        SQL, DAG, workflow, and sandbox execution
 tools/            Typed tool registry and built-in tools
 skills/           Skill runtime, catalog, and installation policies
-connectors/       Connector registry, SDK, and built-in connectors
 governance/       Constitution, approvals, and governance policies
 frontend/         React and TypeScript user interface
 alembic/          PostgreSQL migrations
@@ -338,8 +331,6 @@ tests/            Unit, integration, and architecture contract tests
 - [Responses enterprise Beta runbook](docs/runbooks/responses_enterprise_beta.md)
 - [Product-wide controlled Beta readiness](docs/BETA_READINESS.md)
 - [Architecture overview](docs/architecture_overview.md)
-- [Enterprise AI workbench](docs/architecture/enterprise_ai_workbench.md)
-- [Enterprise identity and operations](docs/architecture/enterprise_identity_and_operations.md)
 - [Responses cutover and rollback](docs/runbooks/chatgpt_cutover.md)
 - [DataAgent](docs/catalog/data_agent.md)
 - [RAG retrieval](docs/catalog/rag_retrieval.md)

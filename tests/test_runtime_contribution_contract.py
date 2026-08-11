@@ -10,8 +10,8 @@ from kernel.agent_runtime.runtime_contribution import (
     runtime_contribution_from_agent_result,
 )
 from kernel.runtime.cognitive_state.cognitive_state_graph import (
-    apply_contribution_to_graph,
     CognitiveStateGraph,
+    apply_contribution_to_graph,
 )
 from kernel.runtime.objects import Evidence, Provenance
 
@@ -20,7 +20,7 @@ def test_island_agents_in_manifest_and_bootstrap():
     reload_manifest()
     register_builtin_agents(force=True)
     agents = instantiate_builtin_agents()
-    for name in ("vision", "skills", "rules"):
+    for name in ("data", "rag"):
         assert name in agents, name
 
 

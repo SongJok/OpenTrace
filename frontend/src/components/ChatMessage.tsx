@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { CalendarDays, Check, ChevronDown, Copy, FileText, GitBranch, RefreshCw, ThumbsDown, ThumbsUp } from 'lucide-react'
+import { Check, ChevronDown, Copy, FileText, GitBranch, RefreshCw, ThumbsDown, ThumbsUp } from 'lucide-react'
 import type { Message } from '../store/chat'
 import { useChatStore } from '../store/chat'
 import { getAuthSessionSnapshot, isAuthSessionCurrent, useAuthStore } from '../store/auth'
@@ -189,11 +189,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
       isCurrentConversation()
       && useChatStore.getState().activeResponseId === responseId
     )
-    const isCalendarCreation = Boolean(
-      approved && message.approvals?.some((approval) => approval.id === approvalId && approval.tool_name === 'create_calendar_event'),
-    )
     let approvalResolved = false
-    let calendarCreated = false
     setResolvingApproval(approvalId)
     setApprovalError(null)
     try {
@@ -215,13 +211,6 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
         onToolResult: (payload) => {
           if (!isCurrentApproval()) return
           store.updateToolResult(conversationId, payload)
-          if (
-            isCalendarCreation
-            && String(payload?.name || payload?.tool_name || '') === 'create_calendar_event'
-            && ['success', 'completed'].includes(String(payload?.result?.status || payload?.status || '').toLowerCase())
-          ) {
-            calendarCreated = true
-          }
         },
         onApprovalRequired: (approvals) => {
           if (isCurrentApproval()) store.setMessageApprovals(conversationId, messageId, approvals)
@@ -231,7 +220,6 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
           store.finishAssistantMessage(conversationId, messageId, envelope.content || '（空响应）')
           store.setStreaming(false)
           store.setActiveResponseId(null)
-          if (calendarCreated) store.markCalendarActionCompleted(conversationId, messageId)
         },
         onError: (error) => {
           if (isCurrentApproval()) store.failAssistantMessage(conversationId, messageId, error instanceof Error ? error.message : String(error))
@@ -390,11 +378,6 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
                   </div>
                 ))}
               </div>
-            )}
-            {!isUser && message?.calendar_action_completed && !message?.approvals?.length && (
-              <a href="/calendar" className="mt-3 inline-flex items-center gap-2 rounded-lg border border-[var(--border)] px-3 py-2 text-xs text-[var(--accent)] hover:bg-[var(--surface)]">
-                <CalendarDays size={14} />查看我的日历
-              </a>
             )}
             {!isUser && annotations?.[0]?.annotation?.confidence !== undefined && (
               <div className="mt-2 text-xs text-[var(--text-secondary)]">

@@ -2,10 +2,10 @@
 
 ## 结论与范围
 
-OpenTrace 产品主路径自 2026-08-08 起进入 **受控企业 Beta**。Beta 范围包括企业工作台、
-`/api/v2/responses` 持久化执行、Project、DataAgent/Text2SQL、企业知识与 RAG、审批、Goal、
-定时任务、主动预警、记忆、审计和运行时观测。它表示代码和运维合同可以支持受控租户试点，
-不等同于无条件生产承诺或 GA。
+OpenTrace 产品主路径自 2026-08-08 起进入 **受控企业 Beta**。Beta 范围是以 `/chat` 为入口的
+`/api/v2/responses` 持久化执行、企业大脑上下文、企业知识与 RAG、DataAgent/Text2SQL、数据库、
+个人记忆、任务、Skills、设置，以及管理员治理页面。它表示代码和运维合同可以支持受控租户
+试点，不等同于无条件生产承诺或 GA。
 
 旧 Cognitive Runtime 继续保持 compatibility/experimental；MCP、A2A 等默认关闭的互操作能力
 不在 Beta 支持范围内。GA 仍要求长期 SLO、容量压测、备份恢复演练、安全评审、跨版本升级与
@@ -16,7 +16,7 @@ OpenTrace 产品主路径自 2026-08-08 起进入 **受控企业 Beta**。Beta �
 1. 在线命令只进入 `/api/v2/responses`；API 不执行模型和工具。
 2. PostgreSQL 是 Response、事件、审批和工具账本的事实来源，Redis 仅负责投递与唤醒。
 3. 所有资源访问同时限定 user、tenant、workspace，并继续执行 Project 与数据源授权。
-4. 写和破坏性工具必须进入持久化审批；未知副作用结果不得自动重试。
+4. 在线问答仅允许 RAG 与 DataAgent/Text2SQL；企业大脑只作为授权上下文注入，不暴露为工具。
 5. 数据库 Schema 元数据与业务 SQL 结果使用不同预算：同步端分批读取最多 100,000 张表和
    1,000,000 个列记录，页面按 100 张分页并支持搜索与按库筛选，不再被 Text2SQL 的 500 行
    上限静默截断。

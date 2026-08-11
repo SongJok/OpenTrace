@@ -15,15 +15,11 @@ from starlette.exceptions import HTTPException
 from gateway.api_gateway.routers import (
     admin,
     agent_resources,
-    alerts,
     analytical_skills,
-    audit,
     auth,
-    calendar,
     chat,
     cognitive,
     company_brain,
-    connectors,
     conversations,
     data,
     data_governance,
@@ -31,7 +27,6 @@ from gateway.api_gateway.routers import (
     documents,
     enterprise_admin,
     enterprise_context,
-    enterprise_reports,
     feedback,
     health,
     interoperability,
@@ -44,7 +39,6 @@ from gateway.api_gateway.routers import (
     resource_permissions,
     response_aux,
     responses,
-    rules,
     sandbox,
     schema_annotations,
     skills,
@@ -53,7 +47,6 @@ from gateway.api_gateway.routers import (
     tasks,
     text2sql,
     ui_settings,
-    workbench,
 )
 from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
@@ -195,12 +188,8 @@ app.include_router(responses.router, prefix="/api/v2", tags=["responses"])
 app.include_router(interoperability.router, prefix="/api/v2", tags=["interoperability"])
 app.include_router(response_aux.router, prefix="/api/v2", tags=["response-resources"])
 app.include_router(agent_resources.router, prefix="/api/v2", tags=["agent-resources"])
-app.include_router(calendar.router, prefix="/api/v2", tags=["calendar"])
 app.include_router(company_brain.router, prefix="/api/v2", tags=["company-brain"])
-app.include_router(workbench.router, prefix="/api/v2", tags=["enterprise-workbench"])
 app.include_router(enterprise_context.router, prefix="/api/v2", tags=["enterprise-context"])
-app.include_router(enterprise_reports.router, prefix="/api/v2", tags=["enterprise-reports"])
-app.include_router(alerts.router, prefix="/api/v2", tags=["alerts"])
 app.include_router(resource_permissions.router, prefix="/api/v2", tags=["resource-permissions"])
 app.include_router(conversations.router, prefix="/api/v2", tags=["conversations-v2"])
 app.include_router(memories.router, prefix="/api/v2", tags=["memories-v2"])
@@ -213,8 +202,6 @@ app.include_router(knowledge.router, prefix="/api/v1", tags=["knowledge"])
 app.include_router(knowledge_enterprise.router, prefix="/api/v1", tags=["enterprise-knowledge"])
 app.include_router(memories.router, prefix="/api/v1", tags=["memories"])
 app.include_router(tasks.router, prefix="/api/v1", tags=["tasks"])
-app.include_router(audit.router, prefix="/api/v1", tags=["audit"])
-app.include_router(connectors.router, prefix="/api/v1", tags=["connectors"])
 app.include_router(skills.router, prefix="/api/v1", tags=["skills"])
 app.include_router(ui_settings.router, prefix="/api/v1", tags=["ui_settings"])
 app.include_router(data.router, prefix="/api/v1", tags=["data"])
@@ -226,7 +213,6 @@ app.include_router(feedback.router, prefix="/api/v1", tags=["feedback"])
 app.include_router(sandbox.router, prefix="/api/v1", tags=["sandbox"])
 app.include_router(admin.router, prefix="/api/v1", tags=["admin"])
 app.include_router(enterprise_admin.router, prefix="/api/v1", tags=["enterprise-admin"])
-app.include_router(rules.router, prefix="/api/v1", tags=["rules"])
 app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
 app.include_router(table_relationships.router, prefix="/api/v1", tags=["table-relationships"])
 app.include_router(analytical_skills.router, prefix="/api/v1", tags=["analytical-skills"])

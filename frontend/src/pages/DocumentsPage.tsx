@@ -123,7 +123,7 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
       return
     }
     if (target === 'project' && !projectId) {
-      setMessage('请先在对话工作台选择 Project，再上传 Project 资料。')
+      setMessage('请先在提问页选择 Project，再上传 Project 资料。')
       return
     }
     if (target === 'space' && !selectedSpace) {

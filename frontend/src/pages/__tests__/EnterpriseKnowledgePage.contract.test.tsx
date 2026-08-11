@@ -27,7 +27,7 @@ describe('enterprise knowledge base contracts', () => {
     expect(documentsSource).toContain('投稿企业知识库')
     expect(documentsSource).toContain('knowledge_space_id')
 
-    expect(governanceSource).toContain('知识治理中心')
+    expect(governanceSource).toContain('知识库质量中心')
     expect(governanceSource).toContain('审核队列')
     expect(governanceSource).toContain('连接器与同步')
     expect(governanceSource).toContain('空间访问控制')

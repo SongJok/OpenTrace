@@ -34,8 +34,8 @@ class KernelFlowContractTests(unittest.TestCase):
 
     def test_response_resume_uses_persisted_cursor_and_worker_checkpoint(self):
         txt = self._read("gateway/api_gateway/routers/responses.py")
-        self.assertIn('starting_after: int = -1', txt)
-        self.assertIn('ResponseEvent.sequence_number > cursor', txt)
+        self.assertIn("starting_after: int = -1", txt)
+        self.assertIn("ResponseEvent.sequence_number > cursor", txt)
         worker = self._read("infra/responses/worker.py")
         self.assertIn("claim_response", worker)
         self.assertIn("lease_owner", worker)
@@ -78,8 +78,7 @@ class KernelFlowContractTests(unittest.TestCase):
 
         with patch("infra.config.settings.settings.kernel_agent_enabled", False):
             names = {spec.name for spec in AgentLoop._available_tool_specs({})}
-        self.assertTrue({"data", "rag", "web_intelligence", "skills", "rules"}.isdisjoint(names))
-        self.assertIn("calculator", names)
+        self.assertTrue({"data", "rag"}.isdisjoint(names))
 
     def test_analytics_tools_registered_module_importable(self):
         txt = self._read("tools/builtin_tools/analytics_tools.py")
@@ -120,7 +119,7 @@ class KernelFlowContractTests(unittest.TestCase):
         self.assertIn("redis_session_db: int = 10", settings_txt)
         self.assertIn("redis_pubsub_db: int = 15", settings_txt)
         self.assertIn("_normalize_db_index", redis_txt)
-        self.assertIn("config_get(\"databases\")", redis_txt)
+        self.assertIn('config_get("databases")', redis_txt)
 
 
 if __name__ == "__main__":

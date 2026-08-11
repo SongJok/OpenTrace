@@ -13,7 +13,6 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from infra.config.constants import DEFAULT_TIMEZONE
 from infra.config.settings import settings
 from infra.observability.tracer import traced_async
 from infra.storage.models import (
@@ -21,13 +20,6 @@ from infra.storage.models import (
     ResponseItem,
     ResponseRecord,
     ResponseToolExecution,
-)
-from kernel.agent_loop.calendar_planning import (
-    deterministic_calendar_arguments,
-    deterministic_calendar_completion,
-    deterministic_write_call,
-    existing_deterministic_approval,
-    supplement_deterministic_calendar_decision,
 )
 from kernel.agent_loop.context import ContextAssembler
 from kernel.agent_loop.contracts import (
@@ -382,11 +374,6 @@ class AgentLoop:
         available_specs = self._apply_tool_policy(
             self._available_tool_specs(payload), context.tool_policy
         )
-        existing_deterministic_approval = await self._existing_deterministic_approval(
-            db,
-            response=response,
-            tool_specs=available_specs,
-        )
         planning_context = self._planning_context(
             context.messages,
             current_message_count=context.current_message_count,
@@ -396,20 +383,6 @@ class AgentLoop:
             planning_context = "\n".join(
                 part for part in (grounding_context, planning_context) if part
             )
-        calendar_write_arguments = (
-            dict(existing_deterministic_approval.arguments or {})
-            if existing_deterministic_approval is not None
-            else self._deterministic_calendar_arguments(
-                query=query,
-                response=response,
-                extension=extension,
-                tool_specs=available_specs,
-                prior_user_queries=self._recent_user_queries(
-                    context.messages,
-                    current_message_count=context.current_message_count,
-                ),
-            )
-        )
         pending_action = self._pending_action_from_context(
             context.messages,
             available_specs,
@@ -421,11 +394,6 @@ class AgentLoop:
         pinned_names = set(client_tool_names)
         if pending_action and self._is_affirmative_follow_up(query):
             pinned_names.add(str(pending_action["name"]))
-        deterministic_calendar_enabled = bool(
-            calendar_write_arguments and str(payload.get("tool_choice") or "auto") != "none"
-        )
-        if deterministic_calendar_enabled:
-            pinned_names.add("create_calendar_event")
         if rag_routing.required and str(payload.get("tool_choice") or "auto") != "none":
             pinned_names.add("rag")
         discovery_query = rag_routing.query
@@ -475,16 +443,6 @@ class AgentLoop:
             and any(spec.name == "rag" for spec in available_specs)
         ):
             decision = self._apply_required_rag_policy(decision)
-        if deterministic_calendar_enabled:
-            calendar_spec = next(
-                (spec for spec in tool_specs if spec.name == "create_calendar_event"),
-                None,
-            )
-            if calendar_spec is not None:
-                decision = self._supplement_deterministic_calendar_decision(
-                    decision,
-                    spec=calendar_spec,
-                )
         intent = decision.intent
         execution_plan = await self._restore_or_persist_execution_plan(
             db,
@@ -554,112 +512,6 @@ class AgentLoop:
                 "manifest": context.context_manifest,
             },
         )
-        deterministic_write = self._deterministic_write_call(
-            query=query,
-            response=response,
-            extension=extension,
-            tool_specs=tool_specs,
-            pending_action=pending_action,
-            calendar_arguments=calendar_write_arguments,
-            existing_approval=existing_deterministic_approval,
-        )
-        if deterministic_write and str(payload.get("tool_choice") or "auto") != "none":
-            call, spec = deterministic_write
-            call_id = _call_id(call)
-            approval = await db.scalar(
-                select(ResponseApproval).where(
-                    ResponseApproval.response_id == response.id,
-                    ResponseApproval.call_id == call_id,
-                )
-            )
-            if approval is None:
-                item = ResponseItem(
-                    id=f"item_{uuid.uuid4().hex}",
-                    response_id=response.id,
-                    sequence_number=await self._next_item_sequence(db, response.id),
-                    item_type="function_call",
-                    role="assistant",
-                    content=None,
-                    payload={
-                        "call_id": call_id,
-                        "name": spec.name,
-                        "arguments": _redact_sensitive(_tool_args(call)),
-                    },
-                )
-                db.add(item)
-                await emit(
-                    "response.output_item.added",
-                    {
-                        "item_id": item.id,
-                        "item_type": "function_call",
-                        "call_id": call_id,
-                        "name": spec.name,
-                        "deterministic": True,
-                    },
-                )
-                approval = await self._ensure_approval(
-                    db,
-                    response=response,
-                    call=call,
-                    spec=spec,
-                )
-            if approval.status == "pending":
-                step = self._plan_step_for_capability(
-                    execution_plan,
-                    plan_statuses,
-                    spec.name,
-                    recovering=True,
-                )
-                if step:
-                    plan_statuses[step.id] = "requires_action"
-                    await emit(
-                        "opentrace.plan.step.deferred",
-                        {
-                            "step": step.to_dict(),
-                            "status": "requires_action",
-                            "reason": "approval_required",
-                            "deterministic": True,
-                        },
-                    )
-                await self._persist_execution_plan_runtime(
-                    db,
-                    response=response,
-                    statuses=plan_statuses,
-                    replan_count=replan_count,
-                )
-                response.status = "requires_action"
-                await emit(
-                    "response.requires_action",
-                    {
-                        "status": "requires_action",
-                        "approvals": [
-                            {
-                                "id": approval.id,
-                                "call_id": approval.call_id,
-                                "tool_name": approval.tool_name,
-                                "side_effect": approval.side_effect_level,
-                                "arguments": approval.arguments,
-                            }
-                        ],
-                    },
-                )
-                await db.commit()
-                return AgentLoopResult(
-                    status="requires_action",
-                    intent=intent,
-                    metadata={
-                        "model_calls": model_calls,
-                        "model_call_count": len(model_calls),
-                        "memory_ids": context.memory_ids,
-                        "attachment_ids": context.attachment_ids,
-                        "execution_profile": profile.value,
-                        "execution_plan": execution_plan.to_dict(),
-                        "execution_plan_status": dict(plan_statuses),
-                        "execution_plan_replan_count": replan_count,
-                        "context_manifest": context.context_manifest,
-                        "deterministic_write_prepared": spec.name,
-                    },
-                )
         direct_memory_answer = None
         if str(payload.get("tool_choice") or "auto") != "required" and not rag_routing.required:
             direct_memory_answer = self._direct_memory_answer(query, context.recalled_memories)
@@ -753,38 +605,6 @@ class AgentLoop:
                 response=response,
                 statuses=plan_statuses,
                 replan_count=replan_count,
-            )
-        calendar_completion = deterministic_calendar_completion(
-            approval=existing_deterministic_approval,
-            restored_tools=restored_tools,
-        )
-        if calendar_completion:
-            await self._emit_text(emit, calendar_completion)
-            await self._complete_remaining_plan(emit, execution_plan, plan_statuses)
-            await self._persist_execution_plan_runtime(
-                db,
-                response=response,
-                statuses=plan_statuses,
-                replan_count=replan_count,
-            )
-            return AgentLoopResult(
-                status="completed",
-                content=calendar_completion,
-                model="opentrace-calendar-projection",
-                intent=intent,
-                metadata={
-                    "model_calls": model_calls,
-                    "model_call_count": len(model_calls),
-                    "memory_ids": context.memory_ids,
-                    "attachment_ids": context.attachment_ids,
-                    "execution_profile": profile.value,
-                    "execution_plan": execution_plan.to_dict(),
-                    "execution_plan_status": dict(plan_statuses),
-                    "execution_plan_replan_count": replan_count,
-                    "context_manifest": context.context_manifest,
-                    "deterministic_tool_completion": "create_calendar_event",
-                    "calendar_action_completed": True,
-                },
             )
         if execution_plan.steps:
             messages.append(
@@ -1748,12 +1568,6 @@ class AgentLoop:
             and spec_by_name[step.capability].side_effect != SideEffect.READ
         }
 
-    _deterministic_calendar_arguments = staticmethod(deterministic_calendar_arguments)
-    _existing_deterministic_approval = staticmethod(existing_deterministic_approval)
-    _supplement_deterministic_calendar_decision = staticmethod(
-        supplement_deterministic_calendar_decision
-    )
-    _deterministic_write_call = staticmethod(deterministic_write_call)
     _is_affirmative_follow_up = staticmethod(is_affirmative_follow_up)
     _is_contextual_follow_up = staticmethod(is_contextual_follow_up)
     _is_explicit_write_request = staticmethod(is_explicit_write_request)
@@ -1988,15 +1802,22 @@ class AgentLoop:
 
     @staticmethod
     def _available_tool_specs(payload: dict[str, Any]) -> list[ToolSpec]:
-        """Return the planning catalogue; only selected tools reach the manager."""
+        """返回产品允许的能力目录；企业大脑由上下文注入，不作为工具暴露。"""
+        allowed_capabilities = {"data", "rag"}
         import tools  # noqa: F401
         from agents.bootstrap import is_builtin_agent_enabled
         from kernel.runtime.capability import capability_registry
-        from tools.builtin_tools import analytics_tools as _analytics_tools  # noqa: F401
-        from tools.builtin_tools import platform_tools as _platform_tools  # noqa: F401
 
-        by_name = {spec.name: spec for spec in parse_tool_specs(list(payload.get("tools") or []))}
+        by_name = {
+            spec.name: spec
+            for spec in parse_tool_specs(list(payload.get("tools") or []))
+            if spec.name in allowed_capabilities
+        }
         for capability in capability_registry.list_capabilities("tool"):
+            if capability.name not in allowed_capabilities:
+                continue
+            if not is_builtin_agent_enabled(capability.name):
+                continue
             source = capability.tool_spec
             if source is None:
                 continue
@@ -2020,11 +1841,9 @@ class AgentLoop:
                 ),
             )
         for capability in capability_registry.list_capabilities("agent"):
-            if not is_builtin_agent_enabled(capability.name):
+            if capability.name not in allowed_capabilities:
                 continue
-            # 图片附件由 ContextAssembler 直接组装为多模态消息；ToolAgent 的
-            # 能力已由细粒度 typed tools 暴露，避免在主链路中形成重复入口。
-            if capability.name in {"vision", "tool"}:
+            if not is_builtin_agent_enabled(capability.name):
                 continue
             by_name.setdefault(
                 capability.name,
@@ -2045,9 +1864,6 @@ class AgentLoop:
                     side_effect=SideEffect.READ,
                 ),
             )
-        # ``enabled_skills`` contains installed skill ids (for example
-        # ``forecast@1.2.0``), not capability names. Capability exposure is
-        # governed by tools/tool_choice and AssistantProfile.tool_policy.
         return list(by_name.values())
 
     async def _plan_turn(
@@ -2979,34 +2795,6 @@ class AgentLoop:
             if capability is None:
                 return {"status": "failed", "error": "tool_not_registered"}
             tool_arguments = _tool_args(call)
-            if spec.name in {
-                "list_scheduled_tasks",
-                "create_scheduled_task",
-                "list_data_alerts",
-                "create_data_alert",
-                "list_calendar_events",
-                "get_calendar_event_history",
-                "create_calendar_event",
-                "update_calendar_event",
-                "cancel_calendar_event",
-            }:
-                extension = dict((response.request_payload or {}).get("opentrace") or {})
-                scoped_arguments = {
-                    "user_id": response.user_id,
-                    "tenant_id": response.tenant_id,
-                    "workspace_id": response.workspace_id,
-                    "project_id": str(extension.get("project_id") or "") or None,
-                    "conversation_id": response.conversation_id,
-                    "response_id": response.id,
-                }
-                # 更新事件时，客户端视图时区不等于事件时区；只有模型明确传入才修改。
-                if spec.name != "update_calendar_event":
-                    scoped_arguments["timezone"] = str(
-                        extension.get("timezone")
-                        or tool_arguments.get("timezone")
-                        or DEFAULT_TIMEZONE
-                    )
-                tool_arguments.update(scoped_arguments)
             if spec.name == "execute_sql_draft":
                 tool_arguments.update(
                     {
@@ -3069,8 +2857,6 @@ class AgentLoop:
             AssistantProfile,
             DataSource,
             Project,
-            SkillCatalogEntry,
-            UserSkillInstallation,
         )
 
         hydrated = dict(params or {})
@@ -3081,7 +2867,7 @@ class AgentLoop:
         if project_id:
             hydrated["project_id"] = project_id
 
-        if agent_name not in {"data", "skills", "rag"}:
+        if agent_name not in {"data", "rag"}:
             return hydrated, None
 
         async with AsyncSessionLocal() as scope_db:
@@ -3156,58 +2942,6 @@ class AgentLoop:
                     or memory_policy.get("project_only") is True
                 )
                 return hydrated, None
-            if agent_name == "skills":
-                # Session bindings are the canonical, server-owned allowlist.
-                # Clients always used to send ``enabled_skills: []`` which
-                # accidentally shadowed a valid database binding after the
-                # user powered a Skill on. Never let request payloads widen or
-                # clear the trusted session policy.
-                enabled = list(getattr(session, "enabled_skills", None) or [])
-                disabled = set(getattr(session, "disabled_skills", None) or [])
-                candidates = [item for item in enabled if item not in disabled]
-                account_ids = [item for item in candidates if item.startswith("acct-")]
-                company_ids = [item for item in candidates if item.startswith("company-")]
-                allowed_account_ids: set[str] = set()
-                if account_ids:
-                    allowed_account_ids = set(
-                        (
-                            await scope_db.execute(
-                                select(UserSkillInstallation.installed_skill_id)
-                                .join(
-                                    SkillCatalogEntry,
-                                    UserSkillInstallation.catalog_skill_id == SkillCatalogEntry.id,
-                                )
-                                .where(
-                                    UserSkillInstallation.user_id == response.user_id,
-                                    UserSkillInstallation.tenant_id == response.tenant_id,
-                                    UserSkillInstallation.workspace_id == response.workspace_id,
-                                    UserSkillInstallation.status == "installed",
-                                    SkillCatalogEntry.status == "active",
-                                    UserSkillInstallation.installed_skill_id.in_(account_ids),
-                                )
-                            )
-                        )
-                        .scalars()
-                        .all()
-                    )
-                allowed_company_ids: set[str] = set()
-                if company_ids:
-                    company_skills = await ContextAssembler._visible_company_skills(
-                        scope_db,
-                        user_id=response.user_id,
-                        tenant_id=response.tenant_id,
-                        workspace_id=response.workspace_id,
-                        runtime_ids=company_ids,
-                    )
-                    allowed_company_ids = {skill.runtime_id for skill in company_skills}
-                hydrated["enabled_skills"] = [
-                    item
-                    for item in candidates
-                    if (not item.startswith("acct-") or item in allowed_account_ids)
-                    and (not item.startswith("company-") or item in allowed_company_ids)
-                ]
-                return hydrated, None
-
             explicit_ids = [
                 str(item) for item in extension.get("data_source_ids") or [] if str(item)
             ]

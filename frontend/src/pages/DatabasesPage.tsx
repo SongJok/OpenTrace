@@ -28,7 +28,7 @@ import {
   apiGetSemanticConfig,
   apiUpdateSemanticConfig,
   apiAutoExtractSemantic,
-  apiGetDatabaseWorkbench,
+  apiGetDatabaseHealth,
   apiDeleteSQLAssetSource,
   apiExecuteSQLDraft,
   apiGetSQLDraft,
@@ -141,7 +141,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const [metricsList, setMetricsList] = useState<any[]>([])
   const [relationshipsList, setRelationshipsList] = useState<any[]>([])
   const [skillsList, setSkillsList] = useState<any[]>([])
-  const [workbench, setWorkbench] = useState<any>(null)
+  const [databaseHealth, setDatabaseHealth] = useState<any>(null)
   const [validating, setValidating] = useState(false)
   const [permissions, setPermissions] = useState<ResourcePermissionItem[]>([])
   const [subjects, setSubjects] = useState<Array<{ id: string; email: string; display_name?: string }>>([])
@@ -283,7 +283,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     apiFetch(`/api/v1/metrics?data_source_id=${selected.id}`, token).then((x) => setMetricsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setMetricsList([]))
     apiFetch(`/api/v1/table-relationships?data_source_id=${selected.id}`, token).then((x) => setRelationshipsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setRelationshipsList([]))
     apiFetch(`/api/v1/analytical-skills`, token).then((x) => setSkillsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setSkillsList([]))
-    apiGetDatabaseWorkbench(token, selected.id).then(setWorkbench).catch(() => setWorkbench(null))
+    apiGetDatabaseHealth(token, selected.id).then(setDatabaseHealth).catch(() => setDatabaseHealth(null))
     apiListResourcePermissions(token, 'data_source', selected.id).then(setPermissions).catch(() => setPermissions([]))
     apiListPermissionSubjects(token).then(setSubjects).catch(() => setSubjects([]))
     apiListSQLAssets(token, selected.id, { limit: SQL_ASSET_PAGE_SIZE })
@@ -484,10 +484,10 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     await reloadSchemaAnnotations()
   }
 
-  const validateWorkbench = async () => {
+  const validateDatabaseHealth = async () => {
     if (!selected) return
     setValidating(true)
-    try { setWorkbench(await apiValidateDatabase(token, selected.id)); await load() }
+    try { setDatabaseHealth(await apiValidateDatabase(token, selected.id)); await load() }
     catch (e: any) { alert(e?.message || '验证失败') }
     finally { setValidating(false) }
   }
@@ -953,14 +953,14 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
 
               {activeTab === 'overview' ? (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between rounded-xl border border-[var(--border)] p-4"><div><div className="text-xs text-[var(--text-secondary)]">数据工作台健康度</div><div className="mt-1 text-3xl font-semibold">{workbench?.health_score ?? 0}<span className="text-sm text-[var(--text-secondary)]">/100</span></div></div><button disabled={validating} onClick={() => void validateWorkbench()} className="rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-50"><ShieldCheck size={13} className="mr-1 inline" />{validating ? '验证中…' : '执行全链路验证'}</button></div>
+                  <div className="flex items-center justify-between rounded-xl border border-[var(--border)] p-4"><div><div className="text-xs text-[var(--text-secondary)]">数据源健康度</div><div className="mt-1 text-3xl font-semibold">{databaseHealth?.health_score ?? 0}<span className="text-sm text-[var(--text-secondary)]">/100</span></div></div><button disabled={validating} onClick={() => void validateDatabaseHealth()} className="rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-50"><ShieldCheck size={13} className="mr-1 inline" />{validating ? '验证中…' : '执行全链路验证'}</button></div>
                   <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[
-                    ['连接', workbench?.checks?.connection, workbench?.source?.status || 'unknown'],
-                    ['表结构', workbench?.checks?.schema, `${workbench?.schema?.table_count ?? 0} 张表`],
-                    ['依赖关系', workbench?.checks?.relationships, `${workbench?.relationships?.verified ?? 0}/${workbench?.relationships?.total ?? 0} 已验证`],
-                    ['指标资产', workbench?.checks?.metrics, `${workbench?.metrics?.published ?? 0}/${workbench?.metrics?.total ?? 0} 已发布`],
+                    ['连接', databaseHealth?.checks?.connection, databaseHealth?.source?.status || 'unknown'],
+                    ['表结构', databaseHealth?.checks?.schema, `${databaseHealth?.schema?.table_count ?? 0} 张表`],
+                    ['依赖关系', databaseHealth?.checks?.relationships, `${databaseHealth?.relationships?.verified ?? 0}/${databaseHealth?.relationships?.total ?? 0} 已验证`],
+                    ['指标资产', databaseHealth?.checks?.metrics, `${databaseHealth?.metrics?.published ?? 0}/${databaseHealth?.metrics?.total ?? 0} 已发布`],
                   ].map(([label, ok, detail]) => <div key={String(label)} className="rounded-xl border border-[var(--border)] p-3"><div className={`text-xs ${ok ? 'text-emerald-500' : 'text-amber-500'}`}>{ok ? '✓ 正常' : '○ 待完善'}</div><div className="mt-2 text-sm font-medium">{label}</div><div className="mt-1 text-[11px] text-[var(--text-secondary)]">{detail}</div></div>)}</div>
-                  <div className="grid gap-3 md:grid-cols-2"><div className="rounded-xl border border-[var(--border)] p-4"><div className="text-xs font-medium">AI 问数质量</div><div className="mt-3 text-2xl font-semibold">{workbench?.queries?.success_rate == null ? '—' : `${Math.round(workbench.queries.success_rate * 100)}%`}</div><div className="text-[11px] text-[var(--text-secondary)]">累计 {workbench?.queries?.total ?? 0} 次查询</div></div><div className="rounded-xl border border-[var(--border)] p-4"><div className="text-xs font-medium">推荐下一步</div><p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">{!workbench?.checks?.schema ? '先同步 Schema，生成表结构资产。' : !workbench?.checks?.relationships ? '补充并验证表依赖，减少错误 JOIN。' : !workbench?.checks?.metrics ? '发布业务指标口径，提高问数一致性。' : '资产已就绪，可直接从 Query 或主问答发起分析。'}</p></div></div>
+                  <div className="grid gap-3 md:grid-cols-2"><div className="rounded-xl border border-[var(--border)] p-4"><div className="text-xs font-medium">AI 问数质量</div><div className="mt-3 text-2xl font-semibold">{databaseHealth?.queries?.success_rate == null ? '—' : `${Math.round(databaseHealth.queries.success_rate * 100)}%`}</div><div className="text-[11px] text-[var(--text-secondary)]">累计 {databaseHealth?.queries?.total ?? 0} 次查询</div></div><div className="rounded-xl border border-[var(--border)] p-4"><div className="text-xs font-medium">推荐下一步</div><p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">{!databaseHealth?.checks?.schema ? '先同步 Schema，生成表结构资产。' : !databaseHealth?.checks?.relationships ? '补充并验证表依赖，减少错误 JOIN。' : !databaseHealth?.checks?.metrics ? '发布业务指标口径，提高问数一致性。' : '资产已就绪，可直接从 Query 或主问答发起分析。'}</p></div></div>
                 </div>
               ) : null}
 

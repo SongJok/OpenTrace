@@ -33,7 +33,7 @@ async def current_enterprise_context(
         query=query,
     )
     return {
-        "vision": "成为企业级的工作台、最懂公司的 AI",
+        "vision": "成为最懂公司的企业提问系统",
         "scope": {
             "tenant_id": tenant_id,
             "workspace_id": workspace_id,

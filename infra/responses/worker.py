@@ -95,7 +95,6 @@ def _settle_usage(
 ) -> None:
     from services.response_enterprise_runtime import settle_response_usage
 
-    enterprise_report = dict((response.response_metadata or {}).get("enterprise_report") or {})
     response.response_metadata = settle_response_usage(
         response_id=response.id,
         response_metadata=response.response_metadata,
@@ -106,11 +105,7 @@ def _settle_usage(
         workspace_id=response.workspace_id,
         org_id=str((response.response_metadata or {}).get("org_id") or "default"),
         goal_id=response.goal_id,
-        capability_type=(
-            f"enterprise_report:{enterprise_report.get('report_type')}"
-            if enterprise_report
-            else "responses"
-        ),
+        capability_type="responses",
         include_current_attempt=include_current_attempt,
     )
 
@@ -129,24 +124,6 @@ async def _update_task_run(
     if task_run is None:
         return
     task = await db.scalar(select(TaskDefinition).where(TaskDefinition.id == task_run.task_id))
-    if (
-        task is not None
-        and getattr(task, "task_type", "agent_task") == "enterprise_report"
-        and finished
-        and output
-    ):
-        from services.enterprise_reports import build_report_artifact
-
-        artifact = await build_report_artifact(
-            db,
-            task=task,
-            response=response,
-            output=output,
-            response_status=response.status,
-        )
-        task_run.output_metadata = artifact
-        if status == "succeeded" and artifact["verification"]["status"] != "pass":
-            status = "incomplete"
     task_run.status = status
     task_run.output = output
     task_run.error = error

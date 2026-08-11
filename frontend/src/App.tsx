@@ -7,26 +7,18 @@ import { useCompanyStore } from './store/company'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 
-// 登录和注册页保持同步加载，业务页面按路由拆包，避免新用户首访下载整套工作台。
+// 登录和注册页保持同步加载，业务页面按路由拆包，避免新用户首访下载所有管理页面。
 const ChatPage = lazy(() => import('./pages/ChatPage'))
 const DocumentsPage = lazy(() => import('./pages/DocumentsPage'))
 const PermissionsPage = lazy(() => import('./pages/PermissionsPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 const TasksPage = lazy(() => import('./pages/TasksPage'))
-const ReportsPage = lazy(() => import('./pages/ReportsPage'))
-const AuditPage = lazy(() => import('./pages/AuditPage'))
 const MemoryPage = lazy(() => import('./pages/MemoryPage'))
-const IntegrationsPage = lazy(() => import('./pages/IntegrationsPage'))
 const DatabasesPage = lazy(() => import('./pages/DatabasesPage'))
 const SkillsPage = lazy(() => import('./pages/SkillsPage'))
-const RulesPage = lazy(() => import('./pages/RulesPage'))
 const KnowledgeCenterPage = lazy(() => import('./pages/KnowledgeCenterPage'))
 const EnterpriseKnowledgePage = lazy(() => import('./pages/EnterpriseKnowledgePage'))
 const SharedConversationPage = lazy(() => import('./pages/SharedConversationPage'))
-const WorkPage = lazy(() => import('./pages/WorkPage'))
-const AlertsPage = lazy(() => import('./pages/AlertsPage'))
-const EnterpriseAdminPage = lazy(() => import('./pages/EnterpriseAdminPage'))
-const CalendarPage = lazy(() => import('./pages/CalendarPage'))
 const CompanyBrainPage = lazy(() => import('./pages/CompanyBrainPage'))
 
 function RouteLoading() {
@@ -47,6 +39,14 @@ function Protected({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+function AdminProtected({ children }: { children: React.ReactNode }) {
+  const token = useAuthStore((s) => s.token)
+  const role = useAuthStore((s) => s.role)
+  if (!token) return <Navigate to="/login" replace />
+  if (role !== 'admin') return <Navigate to="/chat" replace />
+  return <>{children}</>
+}
+
 function DocumentsRoute() {
   const navigate = useNavigate()
   return <DocumentsPage onBack={() => navigate('/chat')} />
@@ -62,29 +62,9 @@ function TasksRoute() {
   return <TasksPage onBack={() => navigate('/chat')} />
 }
 
-function ReportsRoute() {
-  const navigate = useNavigate()
-  return <ReportsPage onBack={() => navigate('/work')} />
-}
-
-function WorkRoute() {
-  const navigate = useNavigate()
-  return <WorkPage onBack={() => navigate('/chat')} />
-}
-
-function AuditRoute() {
-  const navigate = useNavigate()
-  return <AuditPage onBack={() => navigate('/chat')} />
-}
-
 function MemoryRoute() {
   const navigate = useNavigate()
   return <MemoryPage onBack={() => navigate('/chat')} />
-}
-
-function IntegrationsRoute() {
-  const navigate = useNavigate()
-  return <IntegrationsPage onBack={() => navigate('/chat')} />
 }
 
 function DatabasesRoute() {
@@ -97,11 +77,6 @@ function SkillsRoute() {
   return <SkillsPage onBack={() => navigate('/chat')} />
 }
 
-function RulesRoute() {
-  const navigate = useNavigate()
-  return <RulesPage onBack={() => navigate('/chat')} />
-}
-
 function KnowledgeRoute() {
   const navigate = useNavigate()
   return <KnowledgeCenterPage onBack={() => navigate('/chat')} />
@@ -110,21 +85,6 @@ function KnowledgeRoute() {
 function EnterpriseKnowledgeRoute() {
   const navigate = useNavigate()
   return <EnterpriseKnowledgePage onBack={() => navigate('/chat')} />
-}
-
-function AlertsRoute() {
-  const navigate = useNavigate()
-  return <AlertsPage onBack={() => navigate('/chat')} />
-}
-
-function EnterpriseAdminRoute() {
-  const navigate = useNavigate()
-  return <EnterpriseAdminPage onBack={() => navigate('/work')} />
-}
-
-function CalendarRoute() {
-  const navigate = useNavigate()
-  return <CalendarPage onBack={() => navigate('/chat')} />
 }
 
 function CompanyBrainRoute() {
@@ -161,32 +121,24 @@ export default function App() {
   return (
     <Suspense fallback={<RouteLoading />}>
       <Routes>
-        <Route path="/login" element={token ? <Navigate to="/work" replace /> : <LoginPage />} />
-        <Route path="/register" element={token ? <Navigate to="/work" replace /> : <RegisterPage />} />
+        <Route path="/login" element={token ? <Navigate to="/chat" replace /> : <LoginPage />} />
+        <Route path="/register" element={token ? <Navigate to="/chat" replace /> : <RegisterPage />} />
 
-        <Route path="/" element={<Navigate to="/work" replace />} />
+        <Route path="/" element={<Navigate to="/chat" replace />} />
         <Route path="/chat" element={<Protected><ChatPage /></Protected>} />
         <Route path="/share/:publicId/:token" element={<SharedConversationPage />} />
         <Route path="/documents" element={<Protected><DocumentsRoute /></Protected>} />
         <Route path="/settings" element={<Protected><SettingsRoute /></Protected>} />
         <Route path="/tasks" element={<Protected><TasksRoute /></Protected>} />
-        <Route path="/reports" element={<Protected><ReportsRoute /></Protected>} />
-        <Route path="/calendar" element={<Protected><CalendarRoute /></Protected>} />
-        <Route path="/company-brain" element={<Protected><CompanyBrainRoute /></Protected>} />
-        <Route path="/work" element={<Protected><WorkRoute /></Protected>} />
-        <Route path="/audit" element={<Protected><AuditRoute /></Protected>} />
         <Route path="/memories" element={<Protected><MemoryRoute /></Protected>} />
-        <Route path="/integrations" element={<Protected><IntegrationsRoute /></Protected>} />
         <Route path="/databases" element={<Protected><DatabasesRoute /></Protected>} />
         <Route path="/skills" element={<Protected><SkillsRoute /></Protected>} />
-        <Route path="/rules" element={<Protected><RulesRoute /></Protected>} />
-        <Route path="/knowledge-base" element={<Protected><EnterpriseKnowledgeRoute /></Protected>} />
-        <Route path="/knowledge" element={<Protected><KnowledgeRoute /></Protected>} />
-        <Route path="/alerts" element={<Protected><AlertsRoute /></Protected>} />
-        <Route path="/permissions" element={<Protected><PermissionsPage /></Protected>} />
-        <Route path="/enterprise-admin" element={<Protected><EnterpriseAdminRoute /></Protected>} />
+        <Route path="/company-brain" element={<AdminProtected><CompanyBrainRoute /></AdminProtected>} />
+        <Route path="/knowledge-base" element={<AdminProtected><EnterpriseKnowledgeRoute /></AdminProtected>} />
+        <Route path="/knowledge" element={<AdminProtected><KnowledgeRoute /></AdminProtected>} />
+        <Route path="/permissions" element={<AdminProtected><PermissionsPage /></AdminProtected>} />
 
-        <Route path="*" element={<Navigate to={token ? '/work' : '/login'} replace />} />
+        <Route path="*" element={<Navigate to={token ? '/chat' : '/login'} replace />} />
       </Routes>
     </Suspense>
   )

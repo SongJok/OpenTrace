@@ -209,8 +209,6 @@ class AgentWorker:
 
     async def run_forever(self) -> None:
         consumers = self._bus_consumer_agent_types()
-        from infra.alerts.scheduler import alert_scheduler_loop
-        from infra.calendar.scheduler import calendar_reminder_loop
         from infra.message_bus.subscribers import memory_event_subscriber
         from infra.response_worker import response_job_loop
         from infra.responses.scheduler import scheduler_loop
@@ -229,8 +227,6 @@ class AgentWorker:
             tasks.extend(
                 (
                     scheduler_loop(),
-                    alert_scheduler_loop(),
-                    calendar_reminder_loop(),
                     company_brain_worker_loop(),
                     deletion_job_loop(),
                 )

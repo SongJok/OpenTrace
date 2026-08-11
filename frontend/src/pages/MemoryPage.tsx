@@ -25,7 +25,6 @@ const categoryLabels: Record<PersonalMemoryCategory, string> = {
   response_style: '回复风格偏好',
   approval_habit: '审批/操作习惯',
   template: '常用模板与片段',
-  calendar: '日历',
   task: '任务',
   profile: '个人背景与偏好',
 }

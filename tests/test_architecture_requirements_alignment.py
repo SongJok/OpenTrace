@@ -90,14 +90,13 @@ class TestVNextDefaults:
 class TestAgentRuntimeV3Alignment:
     """Planning §2.7 Phase A/B — manifest, evidence path, import boundaries."""
 
-    def test_manifest_bootstrap_no_legacy_web(self):
+    def test_manifest_bootstrap_is_reduced_to_supported_question_capabilities(self):
         from kernel.agent_runtime.manifest import get_manifest
 
         m = get_manifest()
-        assert "web_intelligence" in m.bootstrap_agent_types
+        assert set(m.bootstrap_agent_types) == {"data", "rag"}
         assert "web" not in m.bootstrap_agent_types
-        rules = m.get("rules")
-        assert rules is not None and rules.bus_eligible is False
+        assert "rules" not in m.bootstrap_agent_types
 
     def test_agents_package_no_gateway_imports(self):
         from pathlib import Path

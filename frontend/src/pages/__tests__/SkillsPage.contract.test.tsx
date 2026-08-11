@@ -17,7 +17,7 @@ describe('SkillsPage marketplace contract', () => {
     expect(source).toContain('热门下载')
     expect(source).toContain('最新发布')
     expect(source).toContain('安全通过')
-    expect(source).toContain('当前会话启用')
+    expect(source).not.toContain('当前会话启用')
   })
 
   it('exposes local mirror governance to administrators', async () => {
@@ -45,17 +45,12 @@ describe('SkillsPage marketplace contract', () => {
     expect(source).toContain('refreshCatalog')
   })
 
-  it('restores a usable conversation so installed Skills can be powered on', async () => {
+  it('keeps Skills management independent from the question workflow', async () => {
     const page = await import('../SkillsPage')
-    const sessions = [
-      { id: 'recent-session', title: '最近会话', turn_count: 1, created_at: '', last_active: '' },
-      { id: 'older-session', title: '历史会话', turn_count: 1, created_at: '', last_active: '' },
-    ]
-    expect(page.resolveSkillSessionId('older-session', null, sessions)).toBe('older-session')
-    expect(page.resolveSkillSessionId(null, 'older-session', sessions)).toBe('older-session')
-    expect(page.resolveSkillSessionId(null, 'missing-session', sessions)).toBe('recent-session')
-    expect(page.resolveSkillSessionId(null, null, [])).toBeNull()
-    expect(page.default.toString()).toContain('目标会话')
+    const source = page.default.toString()
+    expect(source).toContain('管理当前账户已部署的本地能力')
+    expect(source).not.toContain('目标会话')
+    expect(source).not.toContain('apiSetSessionSkills')
   })
 
   it('supports governed file and folder distillation with company publication', async () => {

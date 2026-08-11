@@ -25,12 +25,10 @@ class BuiltinAgent(Protocol):
 _BUILTIN_FACTORIES: dict[str, Callable[[], BuiltinAgent]] = {}
 
 _PROFILE_AGENT_TYPES: dict[str, frozenset[str]] = {
-    "core": frozenset({"tool", "skills", "rules"}),
-    "data": frozenset({"data", "tool", "skills", "rules"}),
-    "knowledge": frozenset({"rag", "tool", "skills", "rules"}),
-    "data_knowledge": frozenset(
-        {"data", "rag", "web_intelligence", "tool", "vision", "skills", "rules"}
-    ),
+    "core": frozenset(),
+    "data": frozenset({"data"}),
+    "knowledge": frozenset({"rag"}),
+    "data_knowledge": frozenset({"data", "rag"}),
 }
 
 
@@ -63,21 +61,11 @@ def _load_factories() -> dict[str, Callable[[], BuiltinAgent]]:
         return _BUILTIN_FACTORIES
     from agents.data_agent import DataAgent
     from agents.rag_agent import RagAgent
-    from agents.rule_engine_agent import RuleEngineAgent
-    from agents.skills_agent import SkillsAgent
-    from agents.tool_agent import ToolAgent
-    from agents.vision_agent import VisionAgent
-    from agents.web_intelligence_agent import WebIntelligenceAgent
 
     _BUILTIN_FACTORIES.update(
         {
             "data": DataAgent,
             "rag": RagAgent,
-            "web_intelligence": WebIntelligenceAgent,
-            "tool": ToolAgent,
-            "vision": VisionAgent,
-            "skills": SkillsAgent,
-            "rules": RuleEngineAgent,
         }
     )
     return _BUILTIN_FACTORIES

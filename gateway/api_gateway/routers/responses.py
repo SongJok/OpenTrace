@@ -937,9 +937,6 @@ async def cancel_response(
             record.lease_expires_at = None
             from services.response_enterprise_runtime import settle_response_usage
 
-            enterprise_report = dict(
-                (record.response_metadata or {}).get("enterprise_report") or {}
-            )
             record.response_metadata = settle_response_usage(
                 response_id=record.id,
                 response_metadata=record.response_metadata,
@@ -950,11 +947,7 @@ async def cancel_response(
                 workspace_id=record.workspace_id,
                 org_id=str((record.response_metadata or {}).get("org_id") or "default"),
                 goal_id=record.goal_id,
-                capability_type=(
-                    f"enterprise_report:{enterprise_report.get('report_type')}"
-                    if enterprise_report
-                    else "responses"
-                ),
+                capability_type="responses",
                 include_current_attempt=False,
             )
             task_run = await db.scalar(select(TaskRun).where(TaskRun.response_id == record.id))

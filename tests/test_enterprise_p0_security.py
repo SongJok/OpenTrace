@@ -126,11 +126,11 @@ def test_resource_statements_include_owner_tenant_and_workspace():
 
 
 def test_control_plane_routes_require_admin_dependency():
-    from gateway.api_gateway.routers import admin, analytical_skills, cognitive, rules, skills
+    from gateway.api_gateway.routers import admin, analytical_skills, cognitive, skills
     from gateway.api_gateway.routers.admin import get_current_admin_user
 
     protected_routes = []
-    for router in (admin.router, analytical_skills.router, cognitive.router, rules.router):
+    for router in (admin.router, analytical_skills.router, cognitive.router):
         protected_routes.extend(route for route in router.routes if isinstance(route, APIRoute))
     protected_routes.extend(
         route

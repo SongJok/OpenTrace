@@ -8,8 +8,8 @@
 [![Python 3.11–3.12](https://img.shields.io/badge/Python-3.11--3.12-3776AB.svg)](https://www.python.org/)
 
 OpenTrace 是一个可自托管的企业 AgentOS。它以 OpenAI 风格的 Responses API、可恢复
-Agent Loop 和 PostgreSQL 持久化事件为核心，把企业数据库、知识库、审批治理、主动预警、
-对话、记忆、Goal 与定时任务组织到同一条产品主链中。
+Agent Loop 和 PostgreSQL 持久化事件为核心，让用户专注于一个提问页面，并提供三类能力：
+RAG 检索、受治理的企业大脑上下文，以及只读 DataAgent/Text2SQL。
 
 > **项目状态：受控企业 Beta。** 支持范围内的产品主路径可进入受治理租户试点，但尚未达到
 > GA；真实放量仍需通过主链评测，并完成密钥托管、网络隔离、备份恢复、容量评估和组织级安全审查。
@@ -22,29 +22,27 @@ Agent Loop 和 PostgreSQL 持久化事件为核心，把企业数据库、知识
   租约执行，浏览器断线不会取消任务，SSE 可以按序号恢复。
 - **治理默认开启**：租户、工作区、用户和 Project 数据源边界在 API、Agent 与后台任务中
   重复校验；写入和破坏性工具进入持久化审批节点。
-- **从问数到主动预警**：DataAgent/Text2SQL 生成只读 SQL，主动预警复用相同权限范围，
-  保存阈值、SQL、结果预览和置信度等治理证据。
+- **聚焦提问工作流**：所有问题都经过同一条持久化 Responses 主链；RAG 提供引用，企业大脑
+  提供授权的公司上下文，DataAgent/Text2SQL 提供经过校验的只读数据答案。
 - **可观测、可测试、可替换**：模型调用统一经过 Model Gateway；架构边界、Responses、
   RAG、DataAgent、审批和调度行为均有合约测试。
 
 ## 产品主线
 
 ```text
-Project
-  ├─ 企业数据库：MySQL / Doris / ClickHouse / PostgreSQL
-  │    └─ 连接测试 → Schema 同步 → 语义层 → DataAgent / Text2SQL
-  ├─ 企业知识库：文档 → 编译 → 审核/发布 → RAG 引用
-  ├─ 审批治理：租户/工作区/Project ACL → 写操作审批 → 审计事件
-  └─ 主动预警：定时问数 → 确定性阈值 → 触发/恢复 → 通知与证据
+提问页
+  └─ IntentPlan → ContextAssembler → Manager loop
+       ├─ 企业大脑：授权的公司上下文
+       ├─ RAG：审核发布的知识与引用
+       └─ Text2SQL：授权数据库 → 校验后的只读 SQL → 证据
 ```
 
 典型使用方式：
 
-1. 在“数据库”页面连接并验证企业数据源，系统自动同步 Schema。
-2. 创建 Project，绑定允许查询的数据源，并上传制度、指标口径或业务文档。
-3. 在聊天页选择 Project 和数据源，提出“结合经营数据与制度知识分析风险”等问题。
-4. 进入 `/knowledge-base` 搜索有权访问的企业知识或向空间贡献内容；`/knowledge` 用于知识编排和治理。
-5. 让 Agent 创建预警规则；该写操作先进入审批，通过后由 Worker 持续运行。
+1. 管理员配置企业知识、企业大脑画像、权限和可查询的数据库。
+2. 用户进入 `/chat`，按需选择项目或数据源并提出问题。
+3. Manager loop 只选择 RAG 或 DataAgent/Text2SQL；企业大脑由 ContextAssembler 注入，
+   不作为用户可直接调用的工具暴露。
 
 ## 核心架构
 
@@ -54,11 +52,10 @@ POST /api/v2/responses
   → PostgreSQL Response / Item / Event / Outbox（同一事务）
   → Worker 投递 Redis Streams，并通过数据库租约领取 Response
   → IntentPlan → ContextAssembler → Manager model/tool loop
-  → typed tools / expert agents / RAG / DataAgent
-  → write/destructive tool → durable approval pause point
+  → RAG / 企业大脑上下文 / DataAgent (Text2SQL)
   → PostgreSQL 持久化结果、事件、模型调用与工具账本
   → SSE 按 sequence_number 断点续传
-  → 摘要、记忆学习、Goal/Task/Alert 后续执行
+  → 摘要与记忆学习
 ```
 
 PostgreSQL 是在线事实来源，Redis 仅承担投递、唤醒和可选镜像。旧
@@ -73,12 +70,12 @@ PostgreSQL 是在线事实来源，Redis 仅承担投递、唤醒和可选镜像
 | 企业数据库 | MySQL、Doris、ClickHouse、PostgreSQL；连接测试、Schema、语义映射、只读 SQL |
 | DataAgent | Text2SQL、指标/实体/时间/Join 推理、校验、反思、结果解释和可视化配置 |
 | 企业知识库 | 公司/部门/岗位/项目/个人空间、来源 ACL 同步、审核发布、有效期、密级、治理检索、关系图和引用 |
-| 治理 | 多租户/工作区边界、资源权限、持久化审批、审计、配额与策略接口 |
-| 自动化 | Goal、Scheduled Task、主动数据预警、通知、失败重试与恢复事件 |
+| 治理 | 多租户/工作区边界、资源权限、持久化审批、配额与策略接口 |
+| 用户支持 | 我的资料、数据库、个人记忆、任务、Skills 与设置 |
 | 记忆 | 会话摘要、用户/Project 记忆、记忆治理与反馈学习 |
 | Skills/Tools | typed tools、SkillHub、本地 Skill 管理；动态执行默认关闭 |
 | 可观测性 | 结构化日志、OpenTelemetry、Prometheus、Jaeger、运行时健康接口 |
-| 前端 | React、TypeScript、Vite；聊天、数据源、知识、审批、任务和预警界面 |
+| 前端 | 以提问页为主的 React、TypeScript、Vite 界面；用户页与管理员治理页按权限展示 |
 
 ## 技术栈
 
@@ -288,7 +285,6 @@ model/            Model Gateway、provider adapters、embedding、reranker
 execution/        SQL、DAG、workflow 与 sandbox 执行层
 tools/            typed tool registry 与内置工具
 skills/           Skill runtime、catalog 与安装策略
-connectors/       connector registry、SDK 与内置连接器
 governance/       宪法、审批与治理策略
 frontend/         React + TypeScript 用户界面
 alembic/          PostgreSQL 迁移

@@ -40,12 +40,10 @@ def test_capability_profiles_are_bounded_and_deterministic() -> None:
     profiles = set(annotation.__args__)
     assert profiles == {"core", "data", "knowledge", "data_knowledge"}
     assert len(profiles) <= 5
-    assert agent_types_for_profile("core") == frozenset({"tool", "skills", "rules"})
+    assert agent_types_for_profile("core") == frozenset()
     assert "data" in agent_types_for_profile("data")
     assert "rag" in agent_types_for_profile("knowledge")
-    assert {"data", "rag", "web_intelligence", "vision"}.issubset(
-        agent_types_for_profile("data_knowledge")
-    )
+    assert agent_types_for_profile("data_knowledge") == frozenset({"data", "rag"})
     assert agent_types_for_profile("unknown") == frozenset()
 
 

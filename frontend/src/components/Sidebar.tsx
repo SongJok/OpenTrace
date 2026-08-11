@@ -13,24 +13,16 @@ import {
   Bell,
   Brain,
   BrainCircuit,
-  ShieldAlert,
   Archive,
   ArchiveRestore,
   Pencil,
   Search,
-  Plug,
   Database,
   Wrench,
-  FileCode,
   ShieldCheck,
   Network,
-  FolderKanban,
-  Activity,
   CheckCheck,
-  Building2,
   X,
-  CalendarDays,
-  BarChartBig,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -145,7 +137,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
       setUnreadCount((count) => Math.max(0, count - 1))
     }
     setShowNotifications(false)
-    navigate(notification.kind === 'alert' ? '/alerts' : notification.kind === 'calendar' ? '/calendar' : '/tasks')
+    navigate('/tasks')
     onMobileClose?.()
   }
 
@@ -334,26 +326,21 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
         </button>
         <div className="my-1 h-px w-8 bg-[var(--border)]" />
         <button
-          onClick={() => navigate('/work')}
-          title="企业 AI 工作台"
-          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
-        >
-          <FolderKanban size={16} />
-        </button>
-        <button
           onClick={() => navigate('/documents')}
           title="我的资料"
           className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
         >
           <FileText size={16} className="cartoon-icon icon-documents" />
         </button>
-        <button
-          onClick={() => navigate('/company-brain')}
-          title="企业大脑"
-          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
-        >
-          <BrainCircuit size={16} />
-        </button>
+        {role === 'admin' && (
+          <button
+            onClick={() => navigate('/company-brain')}
+            title="企业大脑"
+            className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+          >
+            <BrainCircuit size={16} />
+          </button>
+        )}
         <button
           onClick={() => navigate('/databases')}
           className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
@@ -373,53 +360,27 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           <Bell size={16} className="cartoon-icon icon-task" />
         </button>
         <button
-          onClick={() => navigate('/alerts')}
-          title="主动预警"
-          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
-        >
-          <Activity size={16} />
-        </button>
-        <button
-          onClick={() => navigate('/audit')}
-          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
-        >
-          <ShieldAlert size={16} className="cartoon-icon icon-audit" />
-        </button>
-        <button
-          onClick={() => navigate('/integrations')}
-          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
-        >
-          <Plug size={16} className="cartoon-icon icon-integrations" />
-        </button>
-        <button
-          onClick={() => navigate(store.activeId ? `/skills?session=${encodeURIComponent(store.activeId)}` : '/skills')}
+          onClick={() => navigate('/skills')}
           className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
         >
           <Wrench size={16} className="cartoon-icon icon-skills" />
         </button>
-        <button
-          onClick={() => navigate('/knowledge-base')}
-          title="企业知识库"
-          className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
-        >
-          <BookOpen size={16} className="cartoon-icon" />
-        </button>
         {role === 'admin' && (
           <button
-            onClick={() => navigate('/knowledge')}
-            title="知识治理中心"
+            onClick={() => navigate('/knowledge-base')}
+            title="企业知识库"
             className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
           >
-            <Network size={16} className="cartoon-icon" />
+            <BookOpen size={16} className="cartoon-icon" />
           </button>
         )}
         {role === 'admin' && (
           <button
-            onClick={() => navigate('/enterprise-admin')}
-            title="企业运营中心"
+            onClick={() => navigate('/knowledge')}
+            title="知识库质量中心"
             className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
           >
-            <Building2 size={16} className="cartoon-icon" />
+            <Network size={16} className="cartoon-icon" />
           </button>
         )}
         {role === 'admin' && (
@@ -493,7 +454,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
               <Plus size={16} />
             </button>
           </div>
-          {showNotifications && <div className="absolute left-3 right-3 top-14 z-30 max-h-[420px] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg)] shadow-2xl"><div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3"><div><div className="text-sm font-medium">通知</div><div className="text-[11px] text-[var(--text-secondary)]">任务完成与主动预警会显示在这里</div></div>{unreadCount > 0 && <button onClick={() => void readAllNotifications()} className="inline-flex items-center gap-1 text-xs text-[var(--accent)]"><CheckCheck size={13} />全部已读</button>}</div><div className="max-h-[340px] overflow-y-auto p-2">{notifications.length === 0 ? <div className="p-8 text-center text-xs text-[var(--text-secondary)]">暂无通知</div> : notifications.map((notification) => <button key={notification.id} onClick={() => void openNotification(notification)} className={clsx('mb-1 w-full rounded-xl px-3 py-2.5 text-left hover:bg-[var(--surface)]', !notification.read && 'bg-[var(--accent-dim)]')}><div className="flex items-start gap-2"><span className={clsx('mt-1.5 h-2 w-2 flex-none rounded-full', notification.level === 'error' ? 'bg-red-500' : notification.level === 'warning' ? 'bg-amber-500' : notification.level === 'success' ? 'bg-emerald-500' : 'bg-blue-500')} /><div className="min-w-0"><div className="truncate text-xs font-medium">{notification.title}</div>{notification.body && <div className="mt-1 line-clamp-2 text-[11px] text-[var(--text-secondary)]">{notification.body}</div>}<div className="mt-1 text-[10px] text-[var(--text-secondary)]">{notification.created_at ? new Date(notification.created_at).toLocaleString() : ''}</div></div></div></button>)}</div></div>}
+          {showNotifications && <div className="absolute left-3 right-3 top-14 z-30 max-h-[420px] overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--bg)] shadow-2xl"><div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3"><div><div className="text-sm font-medium">任务通知</div><div className="text-[11px] text-[var(--text-secondary)]">定时任务的执行结果会显示在这里</div></div>{unreadCount > 0 && <button onClick={() => void readAllNotifications()} className="inline-flex items-center gap-1 text-xs text-[var(--accent)]"><CheckCheck size={13} />全部已读</button>}</div><div className="max-h-[340px] overflow-y-auto p-2">{notifications.length === 0 ? <div className="p-8 text-center text-xs text-[var(--text-secondary)]">暂无通知</div> : notifications.map((notification) => <button key={notification.id} onClick={() => void openNotification(notification)} className={clsx('mb-1 w-full rounded-xl px-3 py-2.5 text-left hover:bg-[var(--surface)]', !notification.read && 'bg-[var(--accent-dim)]')}><div className="flex items-start gap-2"><span className={clsx('mt-1.5 h-2 w-2 flex-none rounded-full', notification.level === 'error' ? 'bg-red-500' : notification.level === 'warning' ? 'bg-amber-500' : notification.level === 'success' ? 'bg-emerald-500' : 'bg-blue-500')} /><div className="min-w-0"><div className="truncate text-xs font-medium">{notification.title}</div>{notification.body && <div className="mt-1 line-clamp-2 text-[11px] text-[var(--text-secondary)]">{notification.body}</div>}<div className="mt-1 text-[10px] text-[var(--text-secondary)]">{notification.created_at ? new Date(notification.created_at).toLocaleString() : ''}</div></div></div></button>)}</div></div>}
           <div className="mt-3">
             <div className="text-sm font-semibold text-[var(--text)]">{brandName}</div>
             <div className="mt-0.5 text-xs text-[var(--text-secondary)]">你的对话</div>
@@ -503,11 +464,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
       </div>
 
       <div className="px-4 pb-3 space-y-2">
-        <button onClick={() => navigate('/work')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><FolderKanban size={15} /><span>企业 AI 工作台</span></button>
-        <button onClick={() => navigate('/company-brain')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><BrainCircuit size={15} /><span>企业大脑</span></button>
-        <button onClick={() => navigate('/tasks')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Bell size={15} /><span>定时任务</span></button>
-        <button onClick={() => navigate('/reports')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><BarChartBig size={15} /><span>经营报告</span></button>
-        <button onClick={() => navigate('/alerts')} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"><Activity size={15} /><span>主动预警</span></button>
+        <button onClick={() => navigate('/chat')} className="flex w-full items-center gap-2 rounded-xl bg-[var(--accent-dim)] px-3 py-2 text-sm font-medium text-[var(--accent)] hover:bg-[var(--surface-raised)]"><MessageSquare size={15} /><span>提问</span></button>
         <div className="relative rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
           <Search size={14} className="absolute left-3 top-3 text-[var(--text-secondary)]" />
           <input
@@ -604,7 +561,7 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           aria-expanded={showTools}
           className="mb-1 flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text)]"
         >
-          <span>工具与工作区</span>
+          <span>功能模块</span>
           <ChevronRight size={14} className={clsx('transition-transform', showTools && 'rotate-90')} />
         </button>
         {showTools && <div className="grid grid-cols-2 gap-2">
@@ -612,24 +569,20 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           <NavButton icon={<Database size={15} className="cartoon-icon icon-database" />} label="数据库" onClick={() => navigate('/databases')} />
           <NavButton icon={<Brain size={15} className="cartoon-icon icon-memory" />} label="个人记忆" onClick={() => navigate('/memories')} />
           <NavButton icon={<Bell size={15} className="cartoon-icon icon-task" />} label={t('nav.tasks')} onClick={() => navigate('/tasks')} />
-          <NavButton icon={<BarChartBig size={15} />} label="经营报告" onClick={() => navigate('/reports')} />
-          <NavButton icon={<CalendarDays size={15} />} label="我的日历" onClick={() => navigate('/calendar')} />
-          <NavButton icon={<Activity size={15} />} label="主动预警" onClick={() => navigate('/alerts')} />
-          <NavButton icon={<ShieldAlert size={15} className="cartoon-icon icon-audit" />} label={t('nav.audit')} onClick={() => navigate('/audit')} />
-          <NavButton icon={<Plug size={15} className="cartoon-icon icon-integrations" />} label={t('nav.integrations')} onClick={() => navigate('/integrations')} />
-          <NavButton icon={<Wrench size={15} className="cartoon-icon icon-skills" />} label="Skills" onClick={() => navigate(store.activeId ? `/skills?session=${encodeURIComponent(store.activeId)}` : '/skills')} />
-          <NavButton icon={<BookOpen size={15} className="cartoon-icon" />} label="企业知识库" onClick={() => navigate('/knowledge-base')} />
+          <NavButton icon={<Wrench size={15} className="cartoon-icon icon-skills" />} label="Skills" onClick={() => navigate('/skills')} />
+          <NavButton icon={<Settings size={15} className="cartoon-icon icon-settings" />} label={t('nav.settings')} onClick={() => navigate('/settings')} />
           {role === 'admin' && (
-            <NavButton icon={<Network size={15} className="cartoon-icon" />} label="知识治理中心" onClick={() => navigate('/knowledge')} />
+            <NavButton icon={<BrainCircuit size={15} />} label="企业大脑" onClick={() => navigate('/company-brain')} />
           )}
-          <NavButton icon={<FileCode size={15} className="cartoon-icon icon-rules" />} label="规则" onClick={() => navigate('/rules')} />
           {role === 'admin' && (
-            <NavButton icon={<Building2 size={15} className="cartoon-icon" />} label="企业运营中心" onClick={() => navigate('/enterprise-admin')} />
+            <NavButton icon={<BookOpen size={15} className="cartoon-icon" />} label="企业知识库" onClick={() => navigate('/knowledge-base')} />
+          )}
+          {role === 'admin' && (
+            <NavButton icon={<Network size={15} className="cartoon-icon" />} label="知识库质量中心" onClick={() => navigate('/knowledge')} />
           )}
           {role === 'admin' && (
             <NavButton icon={<ShieldCheck size={15} className="cartoon-icon icon-permissions" />} label="权限" onClick={() => navigate('/permissions')} />
           )}
-          <NavButton icon={<Settings size={15} className="cartoon-icon icon-settings" />} label={t('nav.settings')} onClick={() => navigate('/settings')} />
         </div>}
       </div>
 

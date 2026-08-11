@@ -557,8 +557,8 @@ async def test_connection(
         return {"ok": False, "status": "error", "error": str(exc)}
 
 
-@router.get("/databases/{database_id}/workbench")
-async def database_workbench(
+@router.get("/databases/{database_id}/health")
+async def database_health(
     http_request: Request,
     database_id: str,
     current_user: User = Depends(get_current_user),
@@ -657,7 +657,7 @@ async def database_workbench(
 
 
 @router.post("/databases/{database_id}/validate")
-async def validate_database_workbench(
+async def validate_database_health(
     http_request: Request,
     database_id: str,
     current_user: User = Depends(get_current_user),
@@ -669,7 +669,7 @@ async def validate_database_workbench(
     ok, error = await _check_connection(source)
     source.status = "active" if ok else "error"
     await db.commit()
-    overview = await database_workbench(http_request, database_id, current_user, db)
+    overview = await database_health(http_request, database_id, current_user, db)
     overview["checks"]["connection"] = ok
     overview["health_score"] = sum(25 for passed in overview["checks"].values() if passed)
     return {**overview, "validated": True, "connection_error": error}

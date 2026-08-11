@@ -647,22 +647,6 @@ class MemoryLearner:
                 ),
             ),
             ("template", ("模板", "片段", "固定格式", "template", "snippet")),
-            (
-                "calendar",
-                (
-                    "日历",
-                    "日程",
-                    "会议时间",
-                    "工作时间",
-                    "办公时间",
-                    "可用时间",
-                    "时区",
-                    "calendar",
-                    "schedule",
-                    "timezone",
-                    "working_hours",
-                ),
-            ),
             ("task", ("任务", "待办", "todo", "task")),
         )
         for category, markers in rules:
