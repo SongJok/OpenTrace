@@ -81,7 +81,6 @@ class DataScope(ContractModel):
     tenant_id: str = Field(default="default", min_length=1, max_length=128)
     workspace_id: str = Field(default="default", min_length=1, max_length=128)
     data_source_id: str = Field(..., min_length=1, max_length=128)
-    project_id: str | None = Field(default=None, max_length=128)
 
 
 class DataSourceCandidate(ContractModel):
@@ -156,7 +155,6 @@ def deterministic_run_id(request: QueryRequest) -> str:
             scope.tenant_id,
             scope.workspace_id,
             scope.data_source_id,
-            scope.project_id or "",
             request.idempotency_key,
         )
     )

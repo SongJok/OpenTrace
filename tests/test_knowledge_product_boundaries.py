@@ -13,7 +13,7 @@ def test_documents_are_the_only_interactive_upload_surface() -> None:
 
     assert "apiUploadDocument" in documents
     assert "仅自己使用" in documents
-    assert "当前 Project" in documents
+    assert "当前 Project" not in documents
     assert "投稿企业知识库" in documents
     assert "apiUploadDocument" not in employee
     assert "apiUploadDocument" not in governance

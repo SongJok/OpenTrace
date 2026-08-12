@@ -14,7 +14,7 @@ SLO、容量压测、备份恢复演练、安全评审、跨版本升级与至�
 
 1. 在线命令只进入 `/api/v2/responses`；API 不执行模型和工具。
 2. PostgreSQL 是 Response、事件、审批和工具账本的事实来源，Redis 仅负责投递与唤醒。
-3. 所有资源访问同时限定 user、tenant、workspace，并继续执行 Project 与数据源授权。
+3. 所有资源访问同时限定 user、tenant、workspace，并继续执行数据源授权。
 4. 在线问答仅允许 RAG 与 DataAgent；企业大脑只作为授权上下文注入，不暴露为工具。
 5. 数据库 Schema 元数据与业务 SQL 结果使用不同预算：同步端分批读取最多 100,000 张表和
    1,000,000 个列记录，页面按 100 张分页并支持搜索与按库筛选，不再被 DataAgent 的 500 行

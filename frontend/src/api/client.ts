@@ -240,7 +240,6 @@ export interface DocumentOut {
   chunk_strategy: number
   version: number
   status: 'pending' | 'processing' | 'ready' | 'error'
-  project_id?: string | null
   created_at: string
   updated_at: string
   metadata?: Record<string, unknown>
@@ -269,9 +268,8 @@ export interface SearchResult {
   score: number
 }
 
-export async function apiListDocuments(token: string, projectId?: string | null): Promise<DocumentOut[]> {
-  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''
-  const res = await apiFetch(`/documents${query}`, { headers: authHeaders(token) })
+export async function apiListDocuments(token: string): Promise<DocumentOut[]> {
+  const res = await apiFetch('/documents', { headers: authHeaders(token) })
   if (!res.ok) throw new Error('Failed to list documents')
   return res.json()
 }
@@ -279,13 +277,12 @@ export async function apiListDocuments(token: string, projectId?: string | null)
 export async function apiUploadDocument(
   token: string,
   file: File,
-  options?: { title?: string; chunk_strategy?: number; project_id?: string | null; knowledge_space_id?: string | null; classification?: 'public' | 'internal' | 'confidential' | 'restricted'; publish_policy?: 'auto' | 'review' }
+  options?: { title?: string; chunk_strategy?: number; knowledge_space_id?: string | null; classification?: 'public' | 'internal' | 'confidential' | 'restricted'; publish_policy?: 'auto' | 'review' }
 ): Promise<DocumentOut> {
   const form = new FormData()
   form.append('file', file)
   if (options?.title) form.append('title', options.title)
   if (options?.chunk_strategy) form.append('chunk_strategy', String(options.chunk_strategy))
-  if (options?.project_id) form.append('project_id', options.project_id)
   if (options?.knowledge_space_id) form.append('knowledge_space_id', options.knowledge_space_id)
   if (options?.classification) form.append('classification', options.classification)
   if (options?.publish_policy) form.append('publish_policy', options.publish_policy)
@@ -305,7 +302,7 @@ export interface KnowledgeSpaceItem {
   name: string
   slug: string
   description: string
-  space_type: 'company' | 'department' | 'role' | 'project' | 'personal'
+  space_type: 'company' | 'department' | 'role' | 'workspace' | 'personal'
   visibility: 'private' | 'members' | 'tenant'
   classification: 'public' | 'internal' | 'confidential' | 'restricted'
   publish_policy: 'auto' | 'review'
@@ -439,7 +436,7 @@ export interface KnowledgeMergeCaseItem {
 
 export interface KnowledgeSpaceMemberItem {
   id: string
-  subject_type: 'user' | 'department' | 'group' | 'role' | 'project'
+  subject_type: 'user' | 'department' | 'group' | 'role'
   subject_id: string
   role: 'viewer' | 'contributor' | 'reviewer' | 'publisher' | 'admin'
   expires_at?: string | null
@@ -468,7 +465,6 @@ export interface KnowledgeReviewItem {
 export interface KnowledgeSourceItem {
   id: string
   document_id?: string | null
-  project_id?: string | null
   space_id?: string | null
   title: string
   source_type: string
@@ -499,7 +495,6 @@ export interface KnowledgeJobItem {
   id: string
   source_id: string
   status: string
-  project_id?: string | null
   error?: string | null
   result?: Record<string, unknown>
   created_at?: string | null
@@ -524,14 +519,12 @@ export interface KnowledgeGraphEdge {
 
 export interface KnowledgeGraphData {
   network: 'entity' | 'dependency' | 'provenance'
-  project_id?: string | null
   nodes: KnowledgeGraphNode[]
   edges: KnowledgeGraphEdge[]
 }
 
-function projectQuery(projectId?: string | null, extra?: Record<string, string>): string {
+function queryString(extra?: Record<string, string>): string {
   const params = new URLSearchParams(extra || {})
-  if (projectId) params.set('project_id', projectId)
   const value = params.toString()
   return value ? `?${value}` : ''
 }
@@ -577,11 +570,11 @@ export async function apiListKnowledgeSpaceAssets(token: string, spaceId: string
   return (await res.json()).items ?? []
 }
 
-export async function apiSearchEnterpriseKnowledge(token: string, query: string, projectId?: string | null, spaceId?: string | null, topK = 8): Promise<EnterpriseKnowledgeEvidence[]> {
+export async function apiSearchEnterpriseKnowledge(token: string, query: string, spaceId?: string | null, topK = 8): Promise<EnterpriseKnowledgeEvidence[]> {
   const res = await apiFetch('/knowledge/search', {
     method: 'POST',
     headers: authHeaders(token),
-    body: JSON.stringify({ query, project_id: projectId || null, space_id: spaceId || null, top_k: topK }),
+    body: JSON.stringify({ query, space_id: spaceId || null, top_k: topK }),
   })
   if (!res.ok) throw new Error(await readApiError(res, '企业知识检索失败'))
   return (await res.json()).items ?? []
@@ -692,10 +685,9 @@ export async function apiWithdrawKnowledgeSource(token: string, sourceId: string
 
 export async function apiListKnowledgeSources(
   token: string,
-  options?: { projectId?: string | null; spaceId?: string | null; status?: string | null },
+  options?: { spaceId?: string | null; status?: string | null },
 ): Promise<KnowledgeSourceItem[]> {
   const query = new URLSearchParams()
-  if (options?.projectId) query.set('project_id', options.projectId)
   if (options?.spaceId) query.set('space_id', options.spaceId)
   if (options?.status) query.set('status', options.status)
   const suffix = query.size ? `?${query.toString()}` : ''
@@ -706,16 +698,15 @@ export async function apiListKnowledgeSources(
 
 export async function apiListKnowledgePages(
   token: string,
-  projectId?: string | null,
   status: 'published' | 'review' = 'published',
 ): Promise<KnowledgePageItem[]> {
-  const res = await apiFetch(`/knowledge/pages${projectQuery(projectId, { limit: '200', status })}`, { headers: authHeaders(token) })
+  const res = await apiFetch(`/knowledge/pages${queryString({ limit: '200', status })}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取知识页面失败'))
   return res.json()
 }
 
-export async function apiListKnowledgeJobs(token: string, projectId?: string | null): Promise<KnowledgeJobItem[]> {
-  const res = await apiFetch(`/knowledge/jobs${projectQuery(projectId, { limit: '100' })}`, { headers: authHeaders(token) })
+export async function apiListKnowledgeJobs(token: string): Promise<KnowledgeJobItem[]> {
+  const res = await apiFetch(`/knowledge/jobs${queryString({ limit: '100' })}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取编排任务失败'))
   return res.json()
 }
@@ -723,15 +714,14 @@ export async function apiListKnowledgeJobs(token: string, projectId?: string | n
 export async function apiGetKnowledgeGraph(
   token: string,
   network: KnowledgeGraphData['network'],
-  projectId?: string | null,
 ): Promise<KnowledgeGraphData> {
-  const res = await apiFetch(`/knowledge/graph${projectQuery(projectId, { network })}`, { headers: authHeaders(token) })
+  const res = await apiFetch(`/knowledge/graph${queryString({ network })}`, { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取知识网络失败'))
   return res.json()
 }
 
-export async function apiOrchestrateKnowledge(token: string, projectId?: string | null): Promise<Record<string, unknown>> {
-  const res = await apiFetch(`/knowledge/orchestrate${projectQuery(projectId)}`, { method: 'POST', headers: authHeaders(token) })
+export async function apiOrchestrateKnowledge(token: string): Promise<Record<string, unknown>> {
+  const res = await apiFetch('/knowledge/orchestrate', { method: 'POST', headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '启动知识编排失败'))
   return res.json()
 }
@@ -741,13 +731,12 @@ export interface KnowledgeRuleItem {
   rule_key: string
   version: number
   status: string
-  project_id?: string | null
   schema: Record<string, unknown>
   instructions?: string | null
 }
 
-export async function apiListKnowledgeRules(token: string, projectId?: string | null): Promise<KnowledgeRuleItem[]> {
-  const res = await apiFetch(`/knowledge/rules${projectQuery(projectId)}`, { headers: authHeaders(token) })
+export async function apiListKnowledgeRules(token: string): Promise<KnowledgeRuleItem[]> {
+  const res = await apiFetch('/knowledge/rules', { headers: authHeaders(token) })
   if (!res.ok) throw new Error(await readApiError(res, '读取编排规则失败'))
   return res.json()
 }
@@ -1491,34 +1480,6 @@ export async function apiArchiveEnterpriseCognitiveEntity(token: string, entityI
   return res.json()
 }
 
-export interface ProjectItem {
-  id: string
-  name: string
-  description: string
-  instructions: string
-  memory_mode: 'default' | 'project_only'
-  assistant_profile_id?: string | null
-  data_source_ids: string[]
-}
-
-export async function apiListProjects(token: string): Promise<ProjectItem[]> {
-  const res = await apiFetchResponses('/projects', { headers: authHeaders(token) })
-  if (!res.ok) throw new Error(await readApiError(res, '读取 Projects 失败'))
-  return (await res.json()).items ?? []
-}
-
-export async function apiCreateProject(token: string, payload: Omit<ProjectItem, 'id'>): Promise<ProjectItem> {
-  const res = await apiFetchResponses('/projects', { method: 'POST', headers: authHeaders(token), body: JSON.stringify(payload) })
-  if (!res.ok) throw new Error(await readApiError(res, '创建 Project 失败'))
-  return res.json()
-}
-
-export async function apiUpdateProject(token: string, projectId: string, payload: Omit<ProjectItem, 'id'>): Promise<ProjectItem> {
-  const res = await apiFetchResponses(`/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', headers: authHeaders(token), body: JSON.stringify(payload) })
-  if (!res.ok) throw new Error(await readApiError(res, '更新 Project 失败'))
-  return res.json()
-}
-
 export interface AssistantProfileItem {
   id: string
   name: string
@@ -1548,7 +1509,6 @@ export interface GoalItem {
   objective: string
   success_criteria: string
   status: string
-  project_id?: string | null
   conversation_id?: string | null
   response_id?: string | null
   current_step: number
@@ -1899,7 +1859,7 @@ export interface MemoryCandidateItem {
   content: string
   kind: string
   personal_category: PersonalMemoryCategory
-  scope_type: 'user' | 'project' | 'conversation'
+  scope_type: 'user' | 'conversation'
   scope_id?: string | null
   confidence: number
   salience: number
@@ -2039,12 +1999,11 @@ export async function apiSearchDocuments(
   token: string,
   query: string,
   topK = 6,
-  projectId?: string | null,
 ): Promise<SearchResult[]> {
   const res = await apiFetch('/documents/search', {
     method: 'POST',
     headers: authHeaders(token),
-    body: JSON.stringify({ query, top_k: topK, project_id: projectId || null }),
+    body: JSON.stringify({ query, top_k: topK }),
   })
   if (!res.ok) throw new Error(await readApiError(res, 'Search failed'))
   return res.json()

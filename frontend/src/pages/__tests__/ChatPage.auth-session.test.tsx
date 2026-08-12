@@ -91,9 +91,7 @@ describe('ChatPage 认证会话隔离', () => {
     }])
     await waitFor(() => expect(api.assistantProfiles).toHaveBeenCalledWith('new-token'))
     expect(useChatPreferences.getState().assistantProfileId).toBeNull()
-    expect(useChatPreferences.getState().projectId).toBeNull()
     expect(screen.queryByText('旧账号角色')).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Project')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('企业数据源')).not.toBeInTheDocument()
   })
 

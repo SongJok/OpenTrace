@@ -51,7 +51,6 @@ def _scope() -> DataScope:
         tenant_id="tenant-1",
         workspace_id="workspace-1",
         data_source_id="source-1",
-        project_id="project-1",
     )
 
 
@@ -227,10 +226,15 @@ def test_trusted_source_selector_clarifies_close_scores_and_blocks_policy() -> N
 
 
 @pytest.mark.asyncio
-async def test_source_resolver_does_not_expand_empty_project_candidate_intersection() -> None:
+async def test_source_resolver_uses_only_explicit_candidates() -> None:
+    class EmptyResult:
+        @staticmethod
+        def scalars():
+            return SimpleNamespace(all=lambda: [])
+
     db = SimpleNamespace(
-        scalar=AsyncMock(return_value=SimpleNamespace(data_source_ids=["project-source"])),
-        execute=AsyncMock(),
+        scalar=AsyncMock(return_value=None),
+        execute=AsyncMock(return_value=EmptyResult()),
     )
 
     decision = await OpenTraceSourceResolver(cast(AsyncSession, db)).resolve(
@@ -238,14 +242,13 @@ async def test_source_resolver_does_not_expand_empty_project_candidate_intersect
         user_id="user-1",
         tenant_id="tenant-1",
         workspace_id="workspace-1",
-        project_id="project-1",
         explicit_id="outside-source",
         candidate_ids=["outside-source"],
     )
 
     assert decision.status == "no_source"
     assert decision.selected_data_source_id is None
-    db.execute.assert_not_awaited()
+    db.execute.assert_awaited_once()
 
 
 def test_query_request_rejects_mismatched_source_decision() -> None:
@@ -384,8 +387,7 @@ async def test_learning_repository_promotes_then_rejects_pattern() -> None:
         user_id=run.request.scope.user_id,
         tenant_id=run.request.scope.tenant_id,
         workspace_id=run.request.scope.workspace_id,
-        project_id=run.request.scope.project_id,
-        scope_key=run.request.scope.project_id or "__global__",
+        scope_key="__global__",
         data_source_id=run.request.scope.data_source_id,
         pattern_key=plan_pattern_key(logical_plan),
         question_examples=[run.request.question],

@@ -144,7 +144,7 @@ def test_responses_main_path_injects_cognition_and_forces_governed_rag() -> None
         encoding="utf-8"
     )
     assert "load_enterprise_context" in context_source
-    assert context_source.index("enterprise_context.prompt") < context_source.index("Project 指令")
+    assert context_source.index("enterprise_context.prompt") < context_source.index("助手角色")
     assert 'context_manifest.get("enterprise_context")' in runner_source
     assert 'selected_capabilities.add("rag")' in runner_source
     assert "enterprise_grounding_required" in runner_source

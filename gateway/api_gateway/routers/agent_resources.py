@@ -1,4 +1,4 @@
-"""Projects, assistant profiles, goals and scheduled tasks for the v2 product."""
+"""Assistant profiles, goals and scheduled tasks for the v2 product."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.api_gateway.resource_scope import get_accessible_data_source
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.assistant_profiles import BUILT_IN_ASSISTANT_PROFILES
@@ -25,7 +24,6 @@ from infra.storage.models import (
     ChatSession,
     GoalCheckpoint,
     GoalRun,
-    Project,
     ResponseRecord,
     TaskDefinition,
     TaskNotification,
@@ -34,15 +32,6 @@ from infra.storage.models import (
 )
 
 router = APIRouter()
-
-
-class ProjectPayload(BaseModel):
-    name: str = Field(min_length=1, max_length=255)
-    description: str = Field(default="", max_length=8000)
-    instructions: str = Field(default="", max_length=16_000)
-    memory_mode: str = Field(default="default", pattern="^(default|project_only)$")
-    assistant_profile_id: str | None = None
-    data_source_ids: list[str] = Field(default_factory=list)
 
 
 class AssistantProfilePayload(BaseModel):
@@ -60,7 +49,6 @@ class AssistantProfilePayload(BaseModel):
 class GoalPayload(BaseModel):
     objective: str = Field(min_length=3, max_length=20_000)
     success_criteria: str = Field(default="", max_length=10_000)
-    project_id: str | None = None
     conversation_id: str | None = None
     execution_profile: str = Field(default="deep", pattern="^(auto|fast|deep)$")
 
@@ -77,7 +65,6 @@ class ScheduledTaskPayload(BaseModel):
     timezone: str = Field(default=DEFAULT_TIMEZONE, max_length=64)
     starts_at: datetime | None = None
     ends_at: datetime | None = None
-    project_id: str | None = None
     conversation_id: str | None = None
     enabled: bool = False
     requires_confirmation: bool = True
@@ -95,21 +82,6 @@ class SchedulePreviewPayload(BaseModel):
 def _scope(request: Request, user: User) -> tuple[str, str]:
     meta = build_tenant_metadata(request, user_id=user.id)
     return str(meta.get("tenant_id") or "default"), str(meta.get("workspace_id") or "default")
-
-
-def _project(row: Project) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "name": row.name,
-        "description": row.description,
-        "instructions": row.instructions,
-        "assistant_profile_id": row.assistant_profile_id,
-        "memory_mode": row.memory_mode,
-        "data_source_ids": list(row.data_source_ids or []),
-        "archived_at": row.archived_at.isoformat() if row.archived_at else None,
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-    }
 
 
 def _profile(row: AssistantProfile) -> dict[str, Any]:
@@ -167,156 +139,6 @@ async def _seed_profiles(db: AsyncSession, user: User, tenant_id: str, workspace
         changed = True
     if changed:
         await db.commit()
-
-
-async def _validate_project_bindings(
-    db: AsyncSession,
-    *,
-    user_id: str,
-    tenant_id: str,
-    workspace_id: str,
-    assistant_profile_id: str | None,
-    data_source_ids: list[str],
-) -> None:
-    if assistant_profile_id:
-        profile = await db.scalar(
-            select(AssistantProfile.id).where(
-                AssistantProfile.id == assistant_profile_id,
-                AssistantProfile.user_id == user_id,
-                AssistantProfile.tenant_id == tenant_id,
-                AssistantProfile.workspace_id == workspace_id,
-            )
-        )
-        if profile is None:
-            raise AppException(
-                ErrorCodes.RESOURCE_NOT_FOUND.code,
-                message="助手角色不存在或无权限",
-            )
-    tenant_metadata = {"tenant_id": tenant_id, "workspace_id": workspace_id}
-    for source_id in dict.fromkeys(data_source_ids):
-        source = await get_accessible_data_source(
-            db,
-            user_id=user_id,
-            tenant_metadata=tenant_metadata,
-            data_source_id=source_id,
-            required_permission="view",
-        )
-        if source is None:
-            raise AppException(
-                ErrorCodes.RESOURCE_NOT_FOUND.code,
-                message="数据源不存在或无权限",
-            )
-
-
-@router.get("/projects")
-async def list_projects(
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    tenant_id, workspace_id = _scope(request, current_user)
-    rows = (
-        (
-            await db.execute(
-                select(Project)
-                .where(
-                    Project.user_id == current_user.id,
-                    Project.tenant_id == tenant_id,
-                    Project.workspace_id == workspace_id,
-                    Project.archived_at.is_(None),
-                )
-                .order_by(Project.updated_at.desc())
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return {"items": [_project(row) for row in rows]}
-
-
-@router.post("/projects")
-async def create_project(
-    request: Request,
-    payload: ProjectPayload,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    tenant_id, workspace_id = _scope(request, current_user)
-    await _validate_project_bindings(
-        db,
-        user_id=current_user.id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        assistant_profile_id=payload.assistant_profile_id,
-        data_source_ids=payload.data_source_ids,
-    )
-    row = Project(
-        id=str(uuid.uuid4()),
-        user_id=current_user.id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        **payload.model_dump(),
-    )
-    db.add(row)
-    await db.commit()
-    await db.refresh(row)
-    return _project(row)
-
-
-@router.patch("/projects/{project_id}")
-async def update_project(
-    project_id: str,
-    request: Request,
-    payload: ProjectPayload,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    tenant_id, workspace_id = _scope(request, current_user)
-    row = await db.scalar(
-        select(Project).where(
-            Project.id == project_id,
-            Project.user_id == current_user.id,
-            Project.tenant_id == tenant_id,
-            Project.workspace_id == workspace_id,
-        )
-    )
-    if row is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project 不存在")
-    await _validate_project_bindings(
-        db,
-        user_id=current_user.id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        assistant_profile_id=payload.assistant_profile_id,
-        data_source_ids=payload.data_source_ids,
-    )
-    for key, value in payload.model_dump().items():
-        setattr(row, key, value)
-    await db.commit()
-    return _project(row)
-
-
-@router.delete("/projects/{project_id}")
-async def archive_project(
-    project_id: str,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    tenant_id, workspace_id = _scope(request, current_user)
-    row = await db.scalar(
-        select(Project).where(
-            Project.id == project_id,
-            Project.user_id == current_user.id,
-            Project.tenant_id == tenant_id,
-            Project.workspace_id == workspace_id,
-        )
-    )
-    if row is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project 不存在")
-    row.archived_at = datetime.now(UTC)
-    await db.commit()
-    return {"id": project_id, "archived": True}
 
 
 @router.get("/assistant-profiles")
@@ -488,18 +310,6 @@ async def create_goal(
     )
 
     tenant_id, workspace_id = _scope(request, current_user)
-    if payload.project_id:
-        project = await db.scalar(
-            select(Project).where(
-                Project.id == payload.project_id,
-                Project.user_id == current_user.id,
-                Project.tenant_id == tenant_id,
-                Project.workspace_id == workspace_id,
-                Project.archived_at.is_(None),
-            )
-        )
-        if project is None:
-            raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project 不存在或无权限")
     if payload.conversation_id:
         conversation = await db.scalar(
             select(ChatSession.id).where(
@@ -520,7 +330,6 @@ async def create_goal(
         user_id=current_user.id,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
-        project_id=payload.project_id,
         conversation_id=payload.conversation_id,
         objective=payload.objective,
         success_criteria=payload.success_criteria,
@@ -536,7 +345,6 @@ async def create_goal(
             conversation=payload.conversation_id,
             background=True,
             opentrace=OpenTraceOptions(
-                project_id=payload.project_id,
                 goal_id=row.id,
                 execution_profile=payload.execution_profile,
             ),
@@ -664,9 +472,7 @@ async def goal_action(
                 input=row.objective,
                 conversation=row.conversation_id,
                 background=True,
-                opentrace=OpenTraceOptions(
-                    project_id=row.project_id, goal_id=row.id, execution_profile="deep"
-                ),
+                opentrace=OpenTraceOptions(goal_id=row.id, execution_profile="deep"),
             ),
             f"goal:{row.id}:resume:{uuid.uuid4().hex}",
             current_user,
@@ -685,7 +491,6 @@ def _goal(row: GoalRun) -> dict[str, Any]:
         "objective": row.objective,
         "success_criteria": row.success_criteria,
         "status": row.status,
-        "project_id": row.project_id,
         "conversation_id": row.conversation_id,
         "plan": dict(row.plan or {}),
         "current_step": row.current_step,
@@ -810,20 +615,6 @@ async def create_scheduled_task(
         payload.starts_at, payload.ends_at, payload.timezone
     )
     tenant_id, workspace_id = _scope(request, current_user)
-    project_data_source_ids: list[str] = []
-    if payload.project_id:
-        project = await db.scalar(
-            select(Project).where(
-                Project.id == payload.project_id,
-                Project.user_id == current_user.id,
-                Project.tenant_id == tenant_id,
-                Project.workspace_id == workspace_id,
-                Project.archived_at.is_(None),
-            )
-        )
-        if project is None:
-            raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project 不存在或无权限")
-        project_data_source_ids = [str(item) for item in project.data_source_ids or [] if str(item)]
     if payload.conversation_id:
         conversation = await db.scalar(
             select(ChatSession.id).where(
@@ -849,7 +640,7 @@ async def create_scheduled_task(
         title=payload.title,
         description=payload.prompt,
         task_type="agent_task",
-        task_config={"data_source_ids": project_data_source_ids},
+        task_config={},
         trigger_type="rrule",
         trigger_config_json=json.dumps(
             {
@@ -861,7 +652,6 @@ async def create_scheduled_task(
         ),
         rrule=payload.rrule,
         timezone=payload.timezone,
-        project_id=payload.project_id,
         conversation_id=payload.conversation_id,
         requires_confirmation=payload.requires_confirmation,
         status="active" if payload.enabled else "draft",
@@ -1026,7 +816,6 @@ def _scheduled_task(row: TaskDefinition) -> dict[str, Any]:
         "starts_at": trigger_config.get("starts_at"),
         "ends_at": trigger_config.get("ends_at"),
         "status": row.status,
-        "project_id": row.project_id,
         "conversation_id": row.conversation_id,
         "requires_confirmation": row.requires_confirmation,
         "last_run_at": row.last_run_at.isoformat() if row.last_run_at else None,

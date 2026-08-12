@@ -225,7 +225,7 @@ describe('Responses API stream compatibility', () => {
     expect(finals).toEqual([])
   })
 
-  it('does not allow the chat client to bind a Project or enterprise data source', async () => {
+  it('does not allow the chat client to bind an enterprise data source', async () => {
     let body: any
     vi.stubGlobal('fetch', vi.fn().mockImplementation((_url, init) => {
       body = JSON.parse(String(init?.body || '{}'))
@@ -236,11 +236,9 @@ describe('Responses API stream compatibility', () => {
     }))
 
     await apiChatStream('token', 'conversation-1', '结合数据库和知识库分析风险', {}, false, undefined, 'deep', {
-      project_id: 'project-1',
       data_source_ids: ['doris-1'],
     })
 
-    expect(body.opentrace).not.toHaveProperty('project_id')
     expect(body.opentrace).not.toHaveProperty('data_source_ids')
     expect(body.opentrace.knowledge_mode).toBe('auto')
   })

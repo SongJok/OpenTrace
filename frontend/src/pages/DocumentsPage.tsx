@@ -7,7 +7,6 @@ import {
   Clock,
   Eye,
   FileText,
-  FolderKanban,
   Loader2,
   RefreshCw,
   Save,
@@ -20,7 +19,6 @@ import {
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useAuthStore } from '../store/auth'
-import { useChatPreferences } from '../store/chatPreferences'
 import {
   apiDeleteDocument,
   apiGetDocument,
@@ -36,7 +34,7 @@ import {
   type SearchResult,
 } from '../api/client'
 
-type UploadTarget = 'personal' | 'project' | 'space'
+type UploadTarget = 'personal' | 'space'
 type Classification = 'public' | 'internal' | 'confidential' | 'restricted'
 
 const CLASSIFICATION_LABELS: Record<Classification, string> = {
@@ -50,7 +48,6 @@ const DOCUMENT_UPLOAD_MAX_BYTES = DOCUMENT_UPLOAD_MAX_SIZE_MB * 1024 * 1024
 
 export default function DocumentsPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((state) => state.token)!
-  const projectId = useChatPreferences((state) => state.projectId)
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedSpaceId = searchParams.get('space_id') || ''
   const [docs, setDocs] = useState<DocumentOut[]>([])
@@ -122,10 +119,6 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
       setMessage(`“${oversizedFile.name}”超过 ${DOCUMENT_UPLOAD_MAX_SIZE_MB}MB，请压缩或拆分后重试。`)
       return
     }
-    if (target === 'project' && !projectId) {
-      setMessage('请先在提问页选择 Project，再上传 Project 资料。')
-      return
-    }
     if (target === 'space' && !selectedSpace) {
       setMessage('请选择一个具有贡献权限的知识空间。')
       return
@@ -138,7 +131,6 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
         uploaded.push(
           await apiUploadDocument(token, file, {
             chunk_strategy: chunkStrategy,
-            project_id: target === 'project' ? projectId : null,
             knowledge_space_id: target === 'space' ? selectedSpace?.id : null,
             classification,
             publish_policy: target === 'space' ? selectedSpace?.publish_policy : 'auto',
@@ -149,7 +141,7 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
       setMessage(
         target === 'space'
           ? `已投稿 ${uploaded.length} 份资料到“${selectedSpace?.name}”，将按${selectedSpace?.publish_policy === 'review' ? '审核后发布' : '自动发布'}策略处理。`
-          : `已上传 ${uploaded.length} 份${target === 'project' ? ' Project' : '个人'}资料，可立即用于授权范围内的原文检索。`,
+          : `已上传 ${uploaded.length} 份个人资料，可立即用于授权范围内的原文检索。`,
       )
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
@@ -176,7 +168,7 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
     setSearching(true)
     setSearchResults(null)
     try {
-      setSearchResults(await apiSearchDocuments(token, searchQuery.trim(), 8, projectId))
+      setSearchResults(await apiSearchDocuments(token, searchQuery.trim(), 8))
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {
@@ -240,14 +232,13 @@ export default function DocumentsPage({ onBack }: { onBack: () => void }) {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="font-semibold">上传资料</h2>
-              <p className="mt-1 text-xs text-[var(--text-secondary)]">上传一次，根据目标决定仅自己使用、加入 Project，或投稿到企业知识空间。</p>
+              <p className="mt-1 text-xs text-[var(--text-secondary)]">上传一次，选择仅自己使用或投稿到企业知识空间。</p>
             </div>
             <button onClick={() => setShowStrategy((value) => !value)} className="inline-flex items-center gap-2 rounded-xl border border-[var(--border)] px-3 py-2 text-xs"><Settings2 size={14} />分块策略 {chunkStrategy}</button>
           </div>
 
-          <div className="mt-4 grid gap-2 md:grid-cols-3">
+          <div className="mt-4 grid gap-2 md:grid-cols-2">
             <TargetCard active={target === 'personal'} icon={<FileText size={18} />} title="仅自己使用" description="个人资料和原文检索" onClick={() => selectTarget('personal')} />
-            <TargetCard active={target === 'project'} icon={<FolderKanban size={18} />} title="当前 Project" description={projectId ? '加入当前 Project 范围' : '需要先选择 Project'} onClick={() => selectTarget('project')} />
             <TargetCard active={target === 'space'} icon={<ShieldCheck size={18} />} title="投稿企业知识库" description="进入编排、审核和发布流程" onClick={() => selectTarget('space')} />
           </div>
 

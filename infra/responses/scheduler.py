@@ -17,7 +17,6 @@ from infra.responses.repository import add_outbox, append_event
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import (
     ChatSession,
-    Project,
     ResponseItem,
     ResponseRecord,
     TaskDefinition,
@@ -287,27 +286,11 @@ async def queue_task_run(
             tenant_id=task.tenant_id,
             workspace_id=task.workspace_id,
             org_id="default",
-            project_id=task.project_id,
         )
         db.add(session)
         await db.flush()
         task.conversation_id = session.id
 
-    task_config = dict(getattr(task, "task_config", None) or {})
-    data_source_ids = [str(item) for item in task_config.get("data_source_ids") or [] if str(item)]
-    if not data_source_ids and task.project_id:
-        project = await db.scalar(
-            select(Project).where(
-                Project.id == task.project_id,
-                Project.user_id == task.user_id,
-                Project.tenant_id == task.tenant_id,
-                Project.workspace_id == task.workspace_id,
-                Project.archived_at.is_(None),
-            )
-        )
-        data_source_ids = [
-            str(item) for item in (project.data_source_ids if project else []) if str(item)
-        ]
     from services.response_enterprise_runtime import evaluate_response_admission
 
     admission = await evaluate_response_admission(
@@ -345,10 +328,8 @@ async def queue_task_run(
             "tool_choice": "auto",
             "parallel_tool_calls": True,
             "opentrace": {
-                "project_id": task.project_id,
                 "execution_profile": "auto",
                 "memory_mode": "enabled",
-                "data_source_ids": data_source_ids,
             },
         },
         response_metadata={

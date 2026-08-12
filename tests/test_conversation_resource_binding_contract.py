@@ -10,7 +10,7 @@ from gateway.api_gateway.routers.conversations import (
     UpdateConversationRequest,
     _active_chain,
     _project_response_approvals,
-    _validate_conversation_bindings,
+    _validate_assistant_profile,
 )
 from infra.errors import AppException
 
@@ -18,45 +18,42 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.asyncio
-async def test_conversation_rejects_unowned_project_binding() -> None:
+async def test_conversation_rejects_unowned_assistant_profile_binding() -> None:
     db = AsyncMock()
     db.scalar.return_value = None
 
     with pytest.raises(AppException):
-        await _validate_conversation_bindings(
+        await _validate_assistant_profile(
             db,
             user_id="user-1",
             tenant_id="tenant-1",
             workspace_id="workspace-1",
-            project_id="project-other",
-            assistant_profile_id=None,
+            assistant_profile_id="profile-other",
         )
 
 
 @pytest.mark.asyncio
-async def test_conversation_accepts_owned_project_and_profile_bindings() -> None:
+async def test_conversation_accepts_owned_assistant_profile_binding() -> None:
     db = AsyncMock()
-    db.scalar.side_effect = ["project-1", "profile-1"]
+    db.scalar.return_value = "profile-1"
 
-    await _validate_conversation_bindings(
+    await _validate_assistant_profile(
         db,
         user_id="user-1",
         tenant_id="tenant-1",
         workspace_id="workspace-1",
-        project_id="project-1",
         assistant_profile_id="profile-1",
     )
 
-    assert db.scalar.await_count == 2
+    assert db.scalar.await_count == 1
 
 
 def test_explicit_null_binding_is_distinct_from_omitted_binding() -> None:
     omitted = UpdateConversationRequest(title="保留现有绑定")
-    cleared = UpdateConversationRequest(project_id=None, assistant_profile_id=None)
+    cleared = UpdateConversationRequest(assistant_profile_id=None)
 
-    assert "project_id" not in omitted.model_fields_set
     assert "assistant_profile_id" not in omitted.model_fields_set
-    assert {"project_id", "assistant_profile_id"}.issubset(cleared.model_fields_set)
+    assert "assistant_profile_id" in cleared.model_fields_set
 
 
 @pytest.mark.asyncio

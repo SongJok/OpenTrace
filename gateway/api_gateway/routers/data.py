@@ -35,7 +35,6 @@ class DataQueryRequest(BaseModel):
     session_context: dict[str, object] | None = None
     group_type: str = Field(default="alternative", pattern="^(alternative|batch)$")
     output_mode: str = Field(default="sql_only", pattern="^(sql_only|execute_and_answer)$")
-    project_id: str | None = Field(default=None, deprecated=True)
 
 
 @router.post("/data/query")
@@ -57,7 +56,6 @@ async def data_query(
         user_id=current_user.id,
         tenant_id=str(tenant_md.get("tenant_id") or "default"),
         workspace_id=str(tenant_md.get("workspace_id") or "default"),
-        project_id=None,
         explicit_id=None,
         candidate_ids=None,
     )
@@ -93,7 +91,6 @@ async def data_query(
         data_source=source,
         question=req.question,
         supplied_sql=req.sql,
-        project_id=None,
         conversation_id=req.session_id,
         group_type=req.group_type,
         output_mode=req.output_mode,

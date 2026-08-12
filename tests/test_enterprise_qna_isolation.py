@@ -243,10 +243,7 @@ async def test_data_agent_ignores_client_and_model_source_selection(monkeypatch)
     response = _response(
         request_payload={
             "input": "查询付费用户数",
-            "opentrace": {
-                "project_id": "client-project",
-                "data_source_ids": ["client-source"],
-            },
+            "opentrace": {},
         }
     )
 
@@ -254,7 +251,6 @@ async def test_data_agent_ignores_client_and_model_source_selection(monkeypatch)
         response=response,
         agent_name="data",
         params={
-            "project_id": "model-project",
             "data_source_id": "model-source",
             "data_source_name": "模型指定库",
             "source_decision": {"status": "selected"},
@@ -263,13 +259,11 @@ async def test_data_agent_ignores_client_and_model_source_selection(monkeypatch)
     )
 
     assert error is None
-    assert captured["project_id"] is None
     assert captured["explicit_id"] is None
     assert captured["candidate_ids"] is None
     assert params["data_source_id"] == "trusted-source"
     assert params["data_source_name"] == "认证交易数仓"
     assert params["source_decision"]["selected_data_source_id"] == "trusted-source"
-    assert "project_id" not in params
     assert params["generation_only"] is True
 
 

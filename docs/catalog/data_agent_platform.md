@@ -19,7 +19,7 @@ OpenTrace 的 DataAgent 主路径现在由独立的 `data_agent/` 领域包提�
   -> 合格执行进入 observed，重复成功后晋升 trusted 经验
 ```
 
-聊天入口不再暴露 Project 或数据源选择。Responses 与旧 `/data/query` 的兼容字段可以在滚动升级
+聊天入口不再暴露数据源选择。Responses 与旧 `/data/query` 的兼容字段可以在滚动升级
 期间被接收，但不会参与 DataAgent 选源；模型也不能通过 `data_source_id` 强制指定数据库。候选集
 始终由服务端按当前用户、租户、工作区、`query` 权限和数据源状态构造。只有管理员或超级管理员
 可以新增数据库。证据不足或候选分数接近时必须澄清业务场景，不允许以手工选择代替可信来源判定。
@@ -30,14 +30,14 @@ OpenTrace 的 DataAgent 主路径现在由独立的 `data_agent/` 领域包提�
 | --- | --- | --- |
 | POST | `/api/v1/data-agent/queries` | 研究、规划、生成 SQL；`mode=execute_and_answer` 仍需 `confirmed=true`，可通过 `Idempotency-Key` 安全重试 |
 | POST | `/api/v1/data-agent/source-resolution` | 返回可信数据源评分；证据不足或评分接近时要求澄清 |
-| GET | `/api/v1/data-agent/queries/{run_id}?data_source_id=...&project_id=...` | 读取带完整 Scope 的查询运行记录 |
-| POST | `/api/v1/data-agent/queries/{run_id}/execute?data_source_id=...&project_id=...` | 重新校验 Schema 后执行选定候选 |
+| GET | `/api/v1/data-agent/queries/{run_id}?data_source_id=...` | 读取带完整 Scope 的查询运行记录 |
+| POST | `/api/v1/data-agent/queries/{run_id}/execute?data_source_id=...` | 重新校验 Schema 后执行选定候选 |
 | POST/GET | `/api/v1/data-agent/semantic-assets` | 创建或查询业务规则、政策、报表、血缘、质量和实体草案 |
 | POST | `/api/v1/data-agent/semantic-assets/{id}/publish` | 管理员发布治理资产 |
 | POST/GET | `/api/v1/data-agent/profiles/refresh` / `profiles` | 刷新或读取有界真实数据画像 |
 | POST | `/api/v1/data-agent/evaluation-cases` | 保存冻结数据快照上的 Golden Case |
 | POST | `/api/v1/data-agent/evaluation-cases/{id}/evaluate` | 运行 SQL 与结果回归 |
-| POST | `/api/v1/data-agent/queries/{run_id}/feedback?data_source_id=...&project_id=...` | 保存用户反馈，不自动晋升知识 |
+| POST | `/api/v1/data-agent/queries/{run_id}/feedback?data_source_id=...` | 保存用户反馈，不自动晋升知识 |
 
 ## 证据和权威级别
 
@@ -71,7 +71,7 @@ OpenTrace 的 DataAgent 主路径现在由独立的 `data_agent/` 领域包提�
 - `data_agent_run_events`：阶段化审计事件；
 - `data_agent_feedback`：用户纠错和结果反馈；
 - `data_agent_profiles`：有界真实样本生成的表级和字段级画像。
-- `data_agent_learning_patterns`：只保存完整验证通过的执行模式，按用户、租户、工作区、Project、Schema 和语义版本隔离。
+- `data_agent_learning_patterns`：只保存完整验证通过的执行模式，按用户、租户、工作区、Schema 和语义版本隔离。
 
 指标发布由管理员完成，并要求公式、底层字段、聚合、业务定义、Owner、业务域、粒度、时间
 字段和证据引用完整。答案引用使用白名单校验；执行经验不会修改指标与业务规则，只能在同一

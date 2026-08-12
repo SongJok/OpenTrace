@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from data_agent.adapters.opentrace.answer import OpenTraceAnswerSynthesizer
@@ -34,7 +34,7 @@ from infra.storage.data_agent_models import (
     DataAgentSemanticAsset,
 )
 from infra.storage.database import db_session_dependency as get_db
-from infra.storage.models import Project, User
+from infra.storage.models import User
 
 
 def _ensure_enabled() -> None:
@@ -58,7 +58,6 @@ class DataAgentQueryRequest(BaseModel):
     timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
     as_of: datetime | None = None
     minimum_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
-    project_id: str | None = Field(default=None, max_length=128)
 
 
 class DataAgentExecuteRequest(BaseModel):
@@ -84,7 +83,6 @@ class SemanticAssetCreateRequest(BaseModel):
     owner: str | None = Field(default=None, max_length=255)
     valid_from: datetime | None = None
     valid_to: datetime | None = None
-    project_id: str | None = Field(default=None, max_length=128)
 
 
 class EvaluationCaseCreateRequest(BaseModel):
@@ -119,19 +117,15 @@ class SourceResolutionRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=8192)
     data_source_id: str | None = Field(default=None, min_length=1, max_length=128)
     candidate_data_source_ids: list[str] = Field(default_factory=list, max_length=100)
-    project_id: str | None = Field(default=None, max_length=128)
 
 
-def _scope(
-    request: Request, user: User, data_source_id: str, project_id: str | None = None
-) -> DataScope:
+def _scope(request: Request, user: User, data_source_id: str) -> DataScope:
     metadata = build_tenant_metadata(request, user_id=user.id)
     return DataScope(
         user_id=user.id,
         tenant_id=str(metadata.get("tenant_id") or "default"),
         workspace_id=str(metadata.get("workspace_id") or "default"),
         data_source_id=data_source_id,
-        project_id=project_id,
     )
 
 
@@ -176,27 +170,6 @@ async def _source_for_scope(
     return scope, source
 
 
-async def _validate_project_scope(
-    db: AsyncSession,
-    *,
-    scope: DataScope,
-    project_id: str | None,
-) -> None:
-    if not project_id:
-        return
-    project = await db.scalar(
-        select(Project).where(
-            Project.id == project_id,
-            Project.user_id == scope.user_id,
-            Project.tenant_id == scope.tenant_id,
-            Project.workspace_id == scope.workspace_id,
-            Project.archived_at.is_(None),
-        )
-    )
-    if project is None or scope.data_source_id not in set(project.data_source_ids or []):
-        raise HTTPException(status_code=403, detail="Project 未绑定该数据源")
-
-
 def _validate_max_rows(max_rows: int) -> None:
     if max_rows > settings.data_agent_max_result_rows:
         raise HTTPException(
@@ -228,7 +201,6 @@ async def create_data_agent_query(
         user_id=current_user.id,
         tenant_id=str(tenant_metadata.get("tenant_id") or "default"),
         workspace_id=str(tenant_metadata.get("workspace_id") or "default"),
-        project_id=payload.project_id,
         explicit_id=payload.data_source_id,
     )
     if decision.status != "selected" or not decision.selected_data_source_id:
@@ -238,8 +210,7 @@ async def create_data_agent_query(
             "source_decision": decision.model_dump(mode="json"),
         }
     selected_source_id = decision.selected_data_source_id
-    scope = _scope(request, current_user, selected_source_id, payload.project_id)
-    await _validate_project_scope(db, scope=scope, project_id=payload.project_id)
+    scope = _scope(request, current_user, selected_source_id)
     _validate_max_rows(payload.max_rows)
     source = await get_accessible_data_source(
         db,
@@ -293,7 +264,6 @@ async def resolve_data_agent_source(
         user_id=current_user.id,
         tenant_id=str(metadata.get("tenant_id") or "default"),
         workspace_id=str(metadata.get("workspace_id") or "default"),
-        project_id=payload.project_id,
         explicit_id=payload.data_source_id,
         candidate_ids=payload.candidate_data_source_ids,
     )
@@ -305,12 +275,10 @@ async def get_data_agent_query(
     request: Request,
     run_id: str,
     data_source_id: str,
-    project_id: str | None = Query(default=None, max_length=128),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    scope = _scope(request, current_user, data_source_id, project_id)
-    await _validate_project_scope(db, scope=scope, project_id=project_id)
+    scope = _scope(request, current_user, data_source_id)
     source = await get_accessible_data_source(
         db,
         user_id=current_user.id,
@@ -333,12 +301,10 @@ async def execute_data_agent_query(
     run_id: str,
     payload: DataAgentExecuteRequest,
     data_source_id: str,
-    project_id: str | None = Query(default=None, max_length=128),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    scope = _scope(request, current_user, data_source_id, project_id)
-    await _validate_project_scope(db, scope=scope, project_id=project_id)
+    scope = _scope(request, current_user, data_source_id)
     source = await get_accessible_data_source(
         db,
         user_id=current_user.id,
@@ -368,7 +334,6 @@ async def create_semantic_asset(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     scope, _ = await _source_for_scope(request, current_user, db, payload.data_source_id, "edit")
-    await _validate_project_scope(db, scope=scope, project_id=payload.project_id)
     _validate_effective_interval(payload.valid_from, payload.valid_to)
     latest_version = await db.scalar(
         select(func.max(DataAgentSemanticAsset.version)).where(
@@ -384,7 +349,6 @@ async def create_semantic_asset(
         user_id=current_user.id,
         tenant_id=scope.tenant_id,
         workspace_id=scope.workspace_id,
-        project_id=payload.project_id,
         data_source_id=payload.data_source_id,
         asset_type=payload.asset_type,
         asset_key=payload.asset_key,
@@ -410,14 +374,12 @@ async def create_semantic_asset(
 async def list_semantic_assets(
     request: Request,
     data_source_id: str = Query(..., min_length=1),
-    project_id: str | None = Query(default=None, max_length=128),
     asset_type: str | None = Query(default=None),
     status: str = Query(default="published"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    scope = _scope(request, current_user, data_source_id, project_id)
-    await _validate_project_scope(db, scope=scope, project_id=project_id)
+    scope = _scope(request, current_user, data_source_id)
     source = await get_accessible_data_source(
         db,
         user_id=current_user.id,
@@ -432,10 +394,6 @@ async def list_semantic_assets(
         DataAgentSemanticAsset.tenant_id == scope.tenant_id,
         DataAgentSemanticAsset.workspace_id == scope.workspace_id,
         DataAgentSemanticAsset.data_source_id == data_source_id,
-        or_(
-            DataAgentSemanticAsset.project_id.is_(None),
-            DataAgentSemanticAsset.project_id == scope.project_id,
-        ),
     )
     if asset_type:
         statement = statement.where(DataAgentSemanticAsset.asset_type == asset_type)
@@ -524,12 +482,10 @@ async def submit_data_agent_feedback(
     run_id: str,
     data_source_id: str,
     payload: FeedbackRequest,
-    project_id: str | None = Query(default=None, max_length=128),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    scope = _scope(request, current_user, data_source_id, project_id)
-    await _validate_project_scope(db, scope=scope, project_id=project_id)
+    scope = _scope(request, current_user, data_source_id)
     source = await get_accessible_data_source(
         db,
         user_id=current_user.id,
@@ -577,7 +533,6 @@ def _semantic_asset_payload(asset: DataAgentSemanticAsset) -> dict[str, Any]:
     return {
         "id": asset.id,
         "data_source_id": asset.data_source_id,
-        "project_id": asset.project_id,
         "asset_type": asset.asset_type,
         "asset_key": asset.asset_key,
         "version": asset.version,

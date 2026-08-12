@@ -503,13 +503,10 @@ class RagAgent(BaseAgent):
             user_id = (task.user_id or str(task.params.get("user_id", ""))).strip() or "shared"
             tenant_id = str(task.params.get("tenant_id", "") or "").strip() or None
             workspace_id = str(task.params.get("workspace_id", "") or "").strip() or None
-            project_id = str(task.params.get("project_id", "") or "").strip() or None
             retrieval_scope: dict[str, Any] = {
                 "tenant_id": tenant_id,
                 "workspace_id": workspace_id,
             }
-            if project_id:
-                retrieval_scope["project_id"] = project_id
 
             top_k = int(task.params.get("top_k", 5))
             top_k = max(1, min(top_k, 20))
@@ -592,8 +589,6 @@ class RagAgent(BaseAgent):
             )
             if has_knowledge_space_scope:
                 rag_plan.filters["knowledge_space_ids"] = list(knowledge_space_ids)
-            if project_id:
-                rag_plan.filters["document_scope"] = "project_and_user_personal"
             rag_routing_reason = str(task.params.get("rag_routing_reason") or "auto")
             rag_plan.filters["rag_routing_reason"] = rag_routing_reason
             if enterprise_grounding_required:
@@ -730,13 +725,7 @@ class RagAgent(BaseAgent):
                 conversation_id = str(
                     task.params.get("conversation_id") or task.session_id or ""
                 ).strip()
-                scope_clauses = []
-                if not bool(task.params.get("memory_project_only", False)):
-                    scope_clauses.append(UserMemory.scope_type == "user")
-                if project_id:
-                    scope_clauses.append(
-                        (UserMemory.scope_type == "project") & (UserMemory.scope_id == project_id)
-                    )
+                scope_clauses = [UserMemory.scope_type == "user"]
                 if conversation_id:
                     scope_clauses.append(
                         (UserMemory.scope_type == "conversation")
@@ -964,7 +953,6 @@ class RagAgent(BaseAgent):
                             top_k=max(top_k, 8),
                             tenant_id=tenant_id,
                             workspace_id=workspace_id,
-                            project_id=project_id,
                         )
                         for sq in fallback_queries
                     ],

@@ -40,7 +40,7 @@ describe('enterprise knowledge base contracts', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const spaces = await apiListKnowledgeSpaces('token')
-    const evidence = await apiSearchEnterpriseKnowledge('token', '报销制度', 'project-1')
+    const evidence = await apiSearchEnterpriseKnowledge('token', '报销制度', 'space-1')
     const decision = await apiDecideKnowledgeReview('token', 'review-1', 'approve', '通过')
 
     expect(spaces[0].id).toBe('space-1')
@@ -50,7 +50,7 @@ describe('enterprise knowledge base contracts', () => {
     expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/knowledge/search')
     expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({
       query: '报销制度',
-      project_id: 'project-1',
+      space_id: 'space-1',
       top_k: 8,
     })
     expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/knowledge/reviews/review-1/decision')

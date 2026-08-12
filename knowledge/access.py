@@ -15,8 +15,6 @@ from infra.storage.models import (
     KnowledgeSourcePermission,
     KnowledgeSpace,
     KnowledgeSpaceMember,
-    KnowledgeSpaceProject,
-    Project,
     User,
 )
 
@@ -55,7 +53,6 @@ async def resolve_access_context(
     user: User,
     tenant_id: str,
     workspace_id: str,
-    project_id: str | None = None,
 ) -> KnowledgeAccessContext:
     """解析用户、组织主体、空间角色和密级上限。"""
 
@@ -91,18 +88,6 @@ async def resolve_access_context(
                 clearance = membership.principal_id
             continue
         subjects.add((membership.principal_type, membership.principal_id))
-
-    if project_id:
-        project = await db.scalar(
-            select(Project).where(
-                Project.id == project_id,
-                Project.tenant_id == tenant_id,
-                Project.workspace_id == workspace_id,
-                Project.user_id == user.id,
-            )
-        )
-        if project is not None:
-            subjects.add(("project", project.id))
 
     member_filters = [
         and_(
@@ -140,15 +125,6 @@ async def resolve_access_context(
             visibility_scope,
         )
     )
-    if project_id:
-        mounted = exists(
-            select(KnowledgeSpaceProject.id).where(
-                KnowledgeSpaceProject.space_id == KnowledgeSpace.id,
-                KnowledgeSpaceProject.project_id == project_id,
-            )
-        )
-        stmt = stmt.where(or_(KnowledgeSpace.space_type != "project", mounted))
-
     roles: dict[str, str] = {}
     for space, member_role in (await db.execute(stmt)).all():
         role = (
@@ -196,11 +172,7 @@ async def require_space_role(
     return space, role or "viewer"
 
 
-def accessible_source_predicate(
-    context: KnowledgeAccessContext,
-    *,
-    project_id: str | None = None,
-):
+def accessible_source_predicate(context: KnowledgeAccessContext):
     """构造查询时 ACL 条件；旧 owner 资产继续兼容。"""
 
     now = datetime.now(UTC)
@@ -260,23 +232,4 @@ def accessible_source_predicate(
         for level, rank in CLASSIFICATION_RANK.items()
         if rank <= CLASSIFICATION_RANK.get(context.clearance, 2)
     ]
-    project_scope = True
-    if project_id:
-        mounted = exists(
-            select(KnowledgeSpaceProject.id).where(
-                KnowledgeSpaceProject.space_id == KnowledgeSource.space_id,
-                KnowledgeSpaceProject.project_id == project_id,
-            )
-        )
-        enterprise_space = exists(
-            select(KnowledgeSpace.id).where(
-                KnowledgeSpace.id == KnowledgeSource.space_id,
-                KnowledgeSpace.space_type.in_(("company", "department", "role", "personal")),
-            )
-        )
-        project_scope = or_(
-            KnowledgeSource.project_id == project_id,
-            mounted,
-            enterprise_space,
-        )
-    return and_(tenant_scope, scope_access, validity, or_(*classification_filters), project_scope)
+    return and_(tenant_scope, scope_access, validity, or_(*classification_filters))

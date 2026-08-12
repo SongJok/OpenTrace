@@ -10,7 +10,7 @@ uses semantic versioning once stable release tags are published.
 ### Added
 
 - Durable Responses API and resumable Agent Loop.
-- Project-scoped enterprise database, knowledge, approval, and active-alert workflow.
+- Workspace-scoped enterprise database, knowledge, approval, and active-alert workflow.
 - MySQL, Doris, ClickHouse, and PostgreSQL data-source support.
 - Open-source release documentation and public-release checks.
 

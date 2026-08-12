@@ -19,12 +19,12 @@ context, and read-only DataAgent.
 
 ## Why OpenTrace
 
-- **Joint reasoning over enterprise data and knowledge:** bind MySQL, Doris, ClickHouse, or
-  PostgreSQL to a Project and combine governed data with published knowledge and citations.
+- **Joint reasoning over enterprise data and knowledge:** connect MySQL, Doris, ClickHouse, or
+  PostgreSQL within a governed workspace and combine data with published knowledge and citations.
 - **Durable execution instead of request-bound jobs:** the API only submits commands. Workers
   execute through an Outbox, Redis Streams, and database leases. Browser disconnects do not
   cancel work, and SSE streams can resume from a sequence number.
-- **Governance by default:** tenant, workspace, user, Project, and data-source boundaries are
+- **Governance by default:** tenant, workspace, user, and data-source boundaries are
   checked across the API, Agent runtime, and background jobs. Write and destructive tools pause
   at durable approval checkpoints.
 - **Governed company understanding:** versioned company and department cognitive profiles bind
@@ -40,7 +40,7 @@ context, and read-only DataAgent.
 ## Product Workflow
 
 Authenticated users land on `/chat`, the question page. The page is the only employee work
-surface: ask a question, optionally select an authorized project/data source, and receive an
+surface: ask a question and receive an
 answer with RAG citations, enterprise-brain context, or a read-only DataAgent result. Supporting
 pages are limited to personal data, databases, memory, tasks, Skills, and settings. Enterprise
 brain, enterprise knowledge, knowledge quality, and permissions are administrator-only pages.
@@ -57,8 +57,7 @@ A typical workflow looks like this:
 
 1. An administrator configures enterprise knowledge, company-brain profiles, permissions, and
    authorized database sources.
-2. A user opens `/chat`, selects an available project or data source when needed, and asks a
-   question.
+2. A user opens `/chat` and asks a question within their authorized workspace scope.
 3. The Manager loop chooses only RAG or DataAgent capabilities; enterprise-brain
    context is injected by the ContextAssembler and is never exposed as a user-callable tool.
 
@@ -66,7 +65,7 @@ A typical workflow looks like this:
 
 ```text
 POST /api/v2/responses
-  -> Validate identity, tenant, Project, data source, and idempotency key
+  -> Validate identity, tenant, workspace, data source, and idempotency key
   -> Commit PostgreSQL Response / Item / Event / Outbox in one transaction
   -> Worker publishes Redis Streams messages and claims Responses with database leases
   -> IntentPlan -> ContextAssembler -> Manager model/tool loop
@@ -88,10 +87,10 @@ return `410 Gone`.
 | Agent Loop | IntentPlan, minimum-capability selection, tool loop, expert agents, evidence synthesis, and step limits |
 | Enterprise databases | MySQL, Doris, ClickHouse, and PostgreSQL; connection tests, schemas, semantic mappings, governed SQL assets, and confirmed read-only execution |
 | DataAgent | DataAgent drafts, asset grounding, stable candidates, metric/entity/time/join reasoning, validation, confirmation, and result interpretation |
-| Enterprise Knowledge | Company/department/role/project/personal spaces, source ACL sync, review publishing, validity, classification, governed retrieval, graphs, and citations |
+| Enterprise Knowledge | Company/department/role/workspace/personal spaces, source ACL sync, review publishing, validity, classification, governed retrieval, graphs, and citations |
 | Governance | Multi-tenant/workspace boundaries, resource permissions, durable approvals, quotas, and policy interfaces |
 | User support | Personal profile, databases, memory, tasks, Skills, and settings |
-| Memory | Conversation summaries, user and Project memory, memory governance, and feedback learning |
+| Memory | Conversation summaries, user and conversation memory, memory governance, and feedback learning |
 | Skills and tools | Typed tools, SkillHub, and local Skill management; dynamic execution is disabled by default |
 | Observability | Structured logging, OpenTelemetry, Prometheus, Jaeger, and runtime health endpoints |
 | Frontend | Focused question page plus React, TypeScript, and Vite pages for personal data, databases, memory, tasks, Skills, settings, and administrator governance |
@@ -208,7 +207,7 @@ cause staging and production startup to fail fast.
 
 Create a least-privilege, read-only account for every production data source. OpenTrace also uses
 SQL AST allowlists, SQL hashes, Schema fingerprints, result row limits, execution timeouts, and
-Project/ACL validation. Uploaded ETL/DDL/DML is retained only for lineage; it is never eligible for
+workspace/ACL validation. Uploaded ETL/DDL/DML is retained only for lineage; it is never eligible for
 interactive execution. These application-level controls do not replace database permissions.
 
 ## Configuration and Security
@@ -237,7 +236,7 @@ configuration entries, sensitive template values, and runtime dependency drift.
 
 - `POST /api/v2/responses`
 - Response queries, event streams, retry, cancellation, and approval
-- Conversations, Projects, Assistant Profiles, and Goals
+- Conversations, Assistant Profiles, and Goals
 - Scheduled Tasks, Active Alerts, and Notifications
 - Resource Permissions, Memories, and Personalization
 

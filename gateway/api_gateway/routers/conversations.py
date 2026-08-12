@@ -24,7 +24,6 @@ from infra.storage.models import (
     ChatSession,
     ConversationShare,
     MemoryEvidence,
-    Project,
     ResponseApproval,
     ResponseItem,
     ResponseRecord,
@@ -46,7 +45,6 @@ class ConversationOut(BaseModel):
     pinned: bool = False
     is_temporary: bool = False
     expires_at: str | None = None
-    project_id: str | None = None
     assistant_profile_id: str | None = None
 
 
@@ -78,7 +76,6 @@ class UpdateConversationRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     tags: list[str] | None = None
     pinned: bool | None = None
-    project_id: str | None = None
     assistant_profile_id: str | None = None
     instructions: str | None = Field(default=None, max_length=8000)
 
@@ -89,7 +86,6 @@ class ArchiveConversationRequest(BaseModel):
 
 class CreateConversationRequest(BaseModel):
     temporary: bool = False
-    project_id: str | None = None
     assistant_profile_id: str | None = None
     instructions: str | None = Field(default=None, max_length=8000)
 
@@ -110,7 +106,6 @@ def _conversation_out(session: ChatSession) -> ConversationOut:
         pinned=bool(session.pinned),
         is_temporary=bool(session.is_temporary),
         expires_at=session.expires_at.isoformat() if session.expires_at else None,
-        project_id=session.project_id,
         assistant_profile_id=session.assistant_profile_id,
     )
 
@@ -194,30 +189,14 @@ async def _owned_session(
     return session
 
 
-async def _validate_conversation_bindings(
+async def _validate_assistant_profile(
     db: AsyncSession,
     *,
     user_id: str,
     tenant_id: str,
     workspace_id: str,
-    project_id: str | None,
     assistant_profile_id: str | None,
 ) -> None:
-    if project_id:
-        project = await db.scalar(
-            select(Project.id).where(
-                Project.id == project_id,
-                Project.user_id == user_id,
-                Project.tenant_id == tenant_id,
-                Project.workspace_id == workspace_id,
-                Project.archived_at.is_(None),
-            )
-        )
-        if project is None:
-            raise AppException(
-                ErrorCodes.RESOURCE_NOT_FOUND.code,
-                message="Project 不存在或无权限",
-            )
     if assistant_profile_id:
         profile = await db.scalar(
             select(AssistantProfile.id).where(
@@ -347,14 +326,11 @@ async def create_conversation(
 ) -> ConversationOut:
     payload = req or CreateConversationRequest()
     tenant_id, org_id, workspace_id = _scope(request, current_user.id)
-    if payload.temporary and payload.project_id:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="临时对话不能加入 Project")
-    await _validate_conversation_bindings(
+    await _validate_assistant_profile(
         db,
         user_id=current_user.id,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
-        project_id=payload.project_id,
         assistant_profile_id=payload.assistant_profile_id,
     )
     session = ChatSession(
@@ -367,7 +343,6 @@ async def create_conversation(
         display_title="New conversation",
         is_temporary=payload.temporary,
         expires_at=datetime.now(UTC) + timedelta(days=30) if payload.temporary else None,
-        project_id=None if payload.temporary else payload.project_id,
         assistant_profile_id=payload.assistant_profile_id,
         conversation_instructions=payload.instructions,
     )
@@ -387,22 +362,16 @@ async def update_conversation(
 ) -> ConversationOut:
     tenant_id, _org_id, workspace_id = _scope(request, current_user.id)
     session = await _owned_session(db, conversation_id, current_user.id, tenant_id, workspace_id)
-    requested_project_id = (
-        req.project_id if "project_id" in req.model_fields_set else session.project_id
-    )
     requested_profile_id = (
         req.assistant_profile_id
         if "assistant_profile_id" in req.model_fields_set
         else session.assistant_profile_id
     )
-    if session.is_temporary and requested_project_id:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="临时对话不能加入 Project")
-    await _validate_conversation_bindings(
+    await _validate_assistant_profile(
         db,
         user_id=current_user.id,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
-        project_id=requested_project_id,
         assistant_profile_id=requested_profile_id,
     )
     if req.title is not None:
@@ -411,8 +380,6 @@ async def update_conversation(
         session.tags = req.tags
     if req.pinned is not None:
         session.pinned = req.pinned
-    if "project_id" in req.model_fields_set:
-        session.project_id = req.project_id or None
     if "assistant_profile_id" in req.model_fields_set:
         session.assistant_profile_id = req.assistant_profile_id or None
     if req.instructions is not None:
@@ -612,7 +579,6 @@ async def branch_conversation(
         tenant_id=source_session.tenant_id,
         org_id=source_session.org_id,
         workspace_id=source_session.workspace_id,
-        project_id=source_session.project_id,
         assistant_profile_id=source_session.assistant_profile_id,
         conversation_instructions=source_session.conversation_instructions,
     )

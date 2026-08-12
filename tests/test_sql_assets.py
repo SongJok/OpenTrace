@@ -854,7 +854,7 @@ async def test_duplicate_upload_is_serialized_and_scoped_to_global_assets() -> N
     assert assets == []
     assert deduplicated is True
     assert "FOR UPDATE" in str(db.scalar_statements[0])
-    assert "sql_asset_sources.project_id IS NULL" in str(db.scalar_statements[1])
+    assert "sql_asset_sources.workspace_id" in str(db.scalar_statements[1])
 
 
 @pytest.mark.asyncio
@@ -1063,6 +1063,7 @@ async def test_completed_candidate_is_idempotent_and_not_executed_again(monkeypa
     candidate.row_count = 1
     draft.selected_candidate_ids = [candidate.id]
     await _patch_execution_scope(monkeypatch, draft, [candidate], schema)
+    monkeypatch.setattr(sql_assets, "decrypt_data_source_secret", MagicMock(return_value="pw"))
     executor = MagicMock()
     monkeypatch.setattr(sql_assets, "SQLExecutor", executor)
     db = SimpleNamespace(commit=AsyncMock())
@@ -1201,30 +1202,26 @@ async def test_stale_executing_draft_is_recovered_and_retried(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_draft_execution_revalidates_project_binding(monkeypatch) -> None:
+async def test_draft_execution_uses_workspace_scope(monkeypatch) -> None:
     schema = {"tables": [{"name": "orders"}]}
     draft = _draft(fingerprint=sql_assets.schema_fingerprint(schema))
-    draft.project_id = "project-1"
     candidate = _candidate("candidate-1", "SELECT id FROM orders LIMIT 100", 1)
     await _patch_execution_scope(monkeypatch, draft, [candidate], schema)
-    validate_project = AsyncMock(side_effect=ValidationException("Project 未绑定该数据源"))
-    monkeypatch.setattr(sql_assets, "_validate_project_scope", validate_project)
+    monkeypatch.setattr(sql_assets, "decrypt_data_source_secret", MagicMock(return_value="pw"))
     executor = MagicMock()
-    monkeypatch.setattr(sql_assets, "SQLExecutor", executor)
+    executor.run_on_dsn = AsyncMock(return_value=[{"id": 1}])
+    monkeypatch.setattr(sql_assets, "SQLExecutor", MagicMock(return_value=executor))
     db = SimpleNamespace(commit=AsyncMock())
 
-    with pytest.raises(ValidationException, match="Project 未绑定"):
-        await sql_assets.execute_sql_query_draft(
-            db,
-            draft_id=draft.id,
-            user_id=draft.user_id,
-            tenant_id=draft.tenant_id,
-            workspace_id=draft.workspace_id,
-            candidate_ids=[candidate.id],
-        )
-
-    validate_project.assert_awaited_once()
-    executor.assert_not_called()
+    result = await sql_assets.execute_sql_query_draft(
+        db,
+        draft_id=draft.id,
+        user_id=draft.user_id,
+        tenant_id=draft.tenant_id,
+        workspace_id=draft.workspace_id,
+        candidate_ids=[candidate.id],
+    )
+    assert result["status"] == "completed"
 
 
 def test_sql_asset_migration_and_responses_approval_contract() -> None:
@@ -1333,7 +1330,6 @@ async def test_asset_retrieval_only_uses_published_scoped_assets() -> None:
         data_source_id="source-a",
         question="订单收入",
         dialect="postgres",
-        project_id=None,
     )
 
     assert rows == []
@@ -1412,7 +1408,6 @@ async def test_asset_retrieval_uses_valid_draft_as_scoped_reference_fallback() -
         data_source_id="source-a",
         question="完全没有关键词命中",
         dialect="clickhouse",
-        project_id=None,
         include_draft_reference=True,
         available_tables=["tuwan_mysql.play_captain_hpay"],
     )

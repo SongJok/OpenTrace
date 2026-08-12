@@ -17,14 +17,14 @@ durable compilation jobs
 
 ## 在产品页面中使用
 
-1. 在问答页选择一个 Project，再进入侧边栏的“知识编排”；页面会沿用当前 Project。
+1. 进入侧边栏的“知识编排”，选择当前工作区内可访问的知识空间。
 2. 将 PDF、DOCX、Markdown 或 TXT 拖入上传区。
 3. 选择“自动纳入问答”或“人工审核后纳入问答”。自动模式会在编译成功后发布；审核模式需要调用发布接口。
-4. 在实体图谱、依赖关系、来源网络间切换，查看当前 Project 的节点、关系与可追溯来源。
+4. 在实体图谱、依赖关系、来源网络间切换，查看当前工作区的节点、关系与可追溯来源。
 5. 如需立即扫描所有已上传文件，点击“立即编排”。Worker 还会按 `KNOWLEDGE_RECONCILE_SECONDS` 周期兜底扫描变更。
 
-主问答的 RAG Agent 默认按 `knowledge → documents → semantic_memory` 检索，并携带当前
-`project_id`。因此已发布知识无需手工添加到 prompt；切换 Project 后检索边界也会同步切换。
+主问答的 RAG Agent 默认按 `knowledge → documents → semantic_memory` 检索，并受当前
+工作区和知识空间授权边界约束。因此已发布知识无需手工添加到 prompt。
 
 部署时必须运行数据库迁移和 Agent Worker：
 

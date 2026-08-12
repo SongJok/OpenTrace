@@ -251,17 +251,16 @@ async def compile_document_knowledge(document_id: str, job_id: str | None = None
         try:
             result = await compile_document_knowledge_in_session(db, document_id, job_id=job_id)
             if result.get("status") == "succeeded":
-                from knowledge.graph import link_project_pages
+                from knowledge.graph import link_workspace_pages
                 from knowledge.lint import run_knowledge_lint
 
                 document = await db.get(Document, document_id)
                 if document is not None:
-                    await link_project_pages(
+                    await link_workspace_pages(
                         db,
                         tenant_id=document.tenant_id,
                         workspace_id=document.workspace_id,
                         owner_id=document.owner_id,
-                        project_id=document.project_id,
                     )
                     await run_knowledge_lint(
                         db,
@@ -357,7 +356,6 @@ async def compile_document_knowledge_in_session(
             owner_id=document.owner_id,
             tenant_id=document.tenant_id,
             workspace_id=document.workspace_id,
-            project_id=document.project_id,
             space_id=document_metadata.get("knowledge_space_id"),
             steward_id=document_metadata.get("knowledge_steward_id") or document.owner_id,
             source_type="document",
@@ -381,7 +379,6 @@ async def compile_document_knowledge_in_session(
             source.active_version_id,
             KnowledgeStatus.COMPILING,
         )
-        source.project_id = document.project_id
         source.space_id = source.space_id or document_metadata.get("knowledge_space_id")
         source.steward_id = (
             source.steward_id or document_metadata.get("knowledge_steward_id") or document.owner_id
@@ -415,7 +412,6 @@ async def compile_document_knowledge_in_session(
             owner_id=document.owner_id,
             tenant_id=document.tenant_id,
             workspace_id=document.workspace_id,
-            project_id=document.project_id,
             status="running",
             compiler_version=KNOWLEDGE_COMPILER_VERSION,
             started_at=datetime.now(UTC),
@@ -427,7 +423,6 @@ async def compile_document_knowledge_in_session(
         job.owner_id = document.owner_id
         job.tenant_id = document.tenant_id
         job.workspace_id = document.workspace_id
-        job.project_id = document.project_id
         job.compiler_version = KNOWLEDGE_COMPILER_VERSION
         job.started_at = job.started_at or datetime.now(UTC)
 
@@ -454,13 +449,11 @@ async def compile_document_knowledge_in_session(
             db,
             tenant_id=document.tenant_id,
             workspace_id=document.workspace_id,
-            project_id=document.project_id,
         )
         rule = await active_rule(
             db,
             tenant_id=document.tenant_id,
             workspace_id=document.workspace_id,
-            project_id=document.project_id,
         )
         if version is None:
             version = KnowledgeSourceVersion(
@@ -473,7 +466,6 @@ async def compile_document_knowledge_in_session(
                 raw_metadata={
                     "document_id": document.id,
                     "document_version": document.version,
-                    "project_id": document.project_id,
                     "rule_version": rule_version,
                 },
             )
@@ -526,7 +518,6 @@ async def compile_document_knowledge_in_session(
                     page_metadata={
                         "document_id": document.id,
                         "document_version": document.version,
-                        "project_id": document.project_id,
                         "chunk_ids": page["chunk_ids"],
                         "compiler_version": KNOWLEDGE_COMPILER_VERSION,
                         "rule_version": rule_version,

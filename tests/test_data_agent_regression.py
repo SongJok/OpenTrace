@@ -140,10 +140,10 @@ class DataAgentRegressionTests(unittest.TestCase):
         self.assertEqual(resp["rows"], [])
         self.assertFalse(resp["executed"])
         self.assertIn("等待确认执行", resp["summary"])
-        self.assertIsNone(resolver.await_args.kwargs["project_id"])
         self.assertIsNone(resolver.await_args.kwargs["explicit_id"])
         self.assertIsNone(resolver.await_args.kwargs["candidate_ids"])
-        self.assertIsNone(generate_draft.await_args.kwargs["project_id"])
+        self.assertNotIn("project_id", resolver.await_args.kwargs)
+        self.assertNotIn("project_id", generate_draft.await_args.kwargs)
         planner.plan.assert_not_called()
         executor_cls.assert_not_called()
 

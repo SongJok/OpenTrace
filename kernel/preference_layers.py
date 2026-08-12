@@ -14,7 +14,7 @@ logger = get_logger(__name__)
 class PreferenceLayer(str, enum.Enum):
     EXPLICIT = "explicit"
     BEHAVIORAL = "behavioral"
-    PROJECT = "project"
+    WORKSPACE = "workspace"
     SESSION = "session"
 
 
@@ -25,9 +25,7 @@ class LayeredMemory:
     tags: list[str] = field(default_factory=list)
 
 
-def classify_memories(
-    rows: list[Any], session_id: str = ""
-) -> list[LayeredMemory]:
+def classify_memories(rows: list[Any], session_id: str = "") -> list[LayeredMemory]:
     results: list[LayeredMemory] = []
     for row in rows:
         kind = getattr(row, "kind", "fact")
@@ -35,8 +33,8 @@ def classify_memories(
         tags = getattr(row, "tags", []) or []
         if kind == "preference":
             layer = PreferenceLayer.EXPLICIT
-        elif kind == "project_fact":
-            layer = PreferenceLayer.PROJECT
+        elif kind == "workspace_fact":
+            layer = PreferenceLayer.WORKSPACE
         elif kind == "session_fact":
             layer = PreferenceLayer.SESSION
         else:

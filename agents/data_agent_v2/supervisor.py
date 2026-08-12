@@ -1232,7 +1232,6 @@ class DataAgentV2Supervisor:
                         data_source_id=ctx.data_source_id,
                         question=ctx.query,
                         dialect=ctx.dialect,
-                        project_id=str(task.params.get("project_id") or "").strip() or None,
                         limit=5,
                         include_draft_reference=True,
                         available_tables=list(ctx.table_columns or ctx.table_names),

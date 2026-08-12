@@ -67,7 +67,6 @@ enterprise_knowledge:
     - KnowledgeSpace
     - KnowledgeSpaceMember
     - KnowledgePrincipalMembership
-    - KnowledgeSpaceProject
     - KnowledgeSourcePermission
     - KnowledgeReviewTask
   authorization: knowledge.access:accessible_source_predicate

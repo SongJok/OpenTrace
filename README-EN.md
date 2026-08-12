@@ -16,11 +16,11 @@ RAG 检索、受治理的企业大脑上下文，以及只读 DataAgent。
 
 ## 为什么是 OpenTrace
 
-- **企业数据与知识联合推理**：在同一个 Project 中绑定 MySQL、Doris、ClickHouse 或
+- **企业数据与知识联合推理**：在受治理的工作区内接入 MySQL、Doris、ClickHouse 或
   PostgreSQL，并结合已发布知识生成带证据的回答。
 - **持久化而非请求内执行**：API 只提交命令；Worker 通过 Outbox、Redis Streams 和数据库
   租约执行，浏览器断线不会取消任务，SSE 可以按序号恢复。
-- **治理默认开启**：租户、工作区、用户和 Project 数据源边界在 API、Agent 与后台任务中
+- **治理默认开启**：租户、工作区、用户和数据源边界在 API、Agent 与后台任务中
   重复校验；写入和破坏性工具进入持久化审批节点。
 - **聚焦提问工作流**：所有问题都经过同一条持久化 Responses 主链；RAG 提供引用，企业大脑
   提供授权的公司上下文，DataAgent 提供经过校验的只读数据答案。
@@ -40,7 +40,7 @@ RAG 检索、受治理的企业大脑上下文，以及只读 DataAgent。
 典型使用方式：
 
 1. 管理员配置企业知识、企业大脑画像、权限和可查询的数据库。
-2. 用户进入 `/chat`，按需选择项目或数据源并提出问题。
+2. 用户进入 `/chat`，在授权工作区范围内提出问题。
 3. Manager loop 只选择 RAG 或 DataAgent；企业大脑由 ContextAssembler 注入，
    不作为用户可直接调用的工具暴露。
 
@@ -48,7 +48,7 @@ RAG 检索、受治理的企业大脑上下文，以及只读 DataAgent。
 
 ```text
 POST /api/v2/responses
-  → 校验身份、租户、Project、数据源和幂等键
+  → 校验身份、租户、工作区、数据源和幂等键
   → PostgreSQL Response / Item / Event / Outbox（同一事务）
   → Worker 投递 Redis Streams，并通过数据库租约领取 Response
   → IntentPlan → ContextAssembler → Manager model/tool loop
@@ -69,10 +69,10 @@ PostgreSQL 是在线事实来源，Redis 仅承担投递、唤醒和可选镜像
 | Agent Loop | IntentPlan、最小能力选择、工具循环、专家 Agent、证据合成、步骤上限保护 |
 | 企业数据库 | MySQL、Doris、ClickHouse、PostgreSQL；连接测试、Schema、语义映射、只读 SQL |
 | DataAgent | DataAgent、指标/实体/时间/Join 推理、校验、反思、结果解释和可视化配置 |
-| 企业知识库 | 公司/部门/岗位/项目/个人空间、来源 ACL 同步、审核发布、有效期、密级、治理检索、关系图和引用 |
+| 企业知识库 | 公司/部门/岗位/工作区/个人空间、来源 ACL 同步、审核发布、有效期、密级、治理检索、关系图和引用 |
 | 治理 | 多租户/工作区边界、资源权限、持久化审批、配额与策略接口 |
 | 用户支持 | 我的资料、数据库、个人记忆、任务、Skills 与设置 |
-| 记忆 | 会话摘要、用户/Project 记忆、记忆治理与反馈学习 |
+| 记忆 | 会话摘要、用户/会话记忆、记忆治理与反馈学习 |
 | Skills/Tools | typed tools、SkillHub、本地 Skill 管理；动态执行默认关闭 |
 | 可观测性 | 结构化日志、OpenTelemetry、Prometheus、Jaeger、运行时健康接口 |
 | 前端 | 以提问页为主的 React、TypeScript、Vite 界面；用户页与管理员治理页按权限展示 |
@@ -181,7 +181,7 @@ API 端口以 `APP_PORT=14100` 为准。`GATEWAY_PORT` 必须保持一致；stag
 | PostgreSQL | `asyncpg` | `5432` | 支持 PostgreSQL 方言与只读事务 |
 
 生产环境建议为每个数据源创建最小权限的只读账号。OpenTrace 同时使用 SQL AST 白名单、
-结果行数限制、执行超时和 Project/ACL 校验，但这些应用层控制不能替代数据库权限。
+结果行数限制、执行超时和工作区/ACL 校验，但这些应用层控制不能替代数据库权限。
 
 ## 配置与安全
 
@@ -207,7 +207,7 @@ python scripts/check_public_release.py
 
 - `POST /api/v2/responses`
 - Response 查询、事件流、重试、取消和审批
-- Conversations、Projects、Assistant Profiles、Goals
+- Conversations、Assistant Profiles、Goals
 - Scheduled Tasks、Active Alerts、Notifications
 - Resource Permissions、Memories 与 Personalization
 

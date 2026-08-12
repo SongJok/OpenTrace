@@ -12,7 +12,7 @@
 - 用户直接陈述的姓名、职业等稳定身份事实；
 - 长期回答偏好和默认输出方式；
 - 长期目标、职责、重复工作流程、个人术语、审批习惯和常用模板；
-- 当前 Project 的稳定技术或业务约定。
+- 当前工作区的稳定技术或业务约定。
 
 确定性规则命中且置信度足够高的低风险候选会自动写入 `UserMemory`，并记录来源
 Response、证据和 `learning_mode=proactive`。模型补充发现、较弱习惯或与旧记忆冲突的
@@ -23,7 +23,7 @@ Response、证据和 `learning_mode=proactive`。模型补充发现、较弱习�
 
 - `memory_mode=disabled`、临时会话、用户关闭学习或 Assistant Profile 禁止学习时不写入；
 - 健康、财务、身份号码、联系方式、认证信息、密钥及一次性请求不会持久化；
-- user、tenant、workspace、Project、conversation 作用域必须同时隔离；
+- user、tenant、workspace、conversation 作用域必须同时隔离；
 - 同一稳定 key 的主动冲突不会静默覆盖，而是进入收件箱等待确认；
 - 不同 Response 对同一内容的重复观察会强化原记忆并追加证据，不创建重复节点；
 - 具名遗忘只失效当前有效 scope 内精确主题匹配的记忆；模糊全量删除仍在 Memories 页面确认；

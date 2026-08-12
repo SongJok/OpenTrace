@@ -7,31 +7,11 @@ from starlette.requests import Request
 
 from gateway.api_gateway.routers.agent_resources import (
     SchedulePreviewPayload,
-    _validate_project_bindings,
     preview_scheduled_task,
     run_scheduled_task,
     scheduled_task_action,
 )
-from infra.errors import AppException
 from infra.storage.models import User
-
-
-@pytest.mark.asyncio
-async def test_project_rejects_inaccessible_data_source_binding() -> None:
-    db = AsyncMock()
-    with patch(
-        "gateway.api_gateway.routers.agent_resources.get_accessible_data_source",
-        new=AsyncMock(return_value=None),
-    ):
-        with pytest.raises(AppException):
-            await _validate_project_bindings(
-                db,
-                user_id="user-1",
-                tenant_id="tenant-1",
-                workspace_id="workspace-1",
-                assistant_profile_id=None,
-                data_source_ids=["source-other"],
-            )
 
 
 @pytest.mark.asyncio
@@ -45,7 +25,6 @@ async def test_enable_scheduled_task_calculates_next_run() -> None:
         rrule="FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
         timezone="Asia/Shanghai",
         status="draft",
-        project_id=None,
         conversation_id=None,
         requires_confirmation=True,
         last_run_at=None,

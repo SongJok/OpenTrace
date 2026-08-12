@@ -167,7 +167,9 @@ def test_idempotency_run_id_is_stable_inside_scope() -> None:
     )
     assert deterministic_run_id(request) == deterministic_run_id(request)
     assert deterministic_run_id(
-        request.model_copy(update={"scope": _scope().model_copy(update={"project_id": "p1"})})
+        request.model_copy(
+            update={"scope": _scope().model_copy(update={"workspace_id": "workspace-2"})}
+        )
     ) != deterministic_run_id(request)
 
 

@@ -144,7 +144,6 @@ async def search_knowledge(
     user_id: str,
     tenant_id: str | None,
     workspace_id: str | None,
-    project_id: str | None = None,
     space_id: str | None = None,
     knowledge_space_ids: Sequence[str] | None = None,
     top_k: int,
@@ -173,7 +172,6 @@ async def search_knowledge(
                     user=user,
                     tenant_id=tenant,
                     workspace_id=workspace,
-                    project_id=project_id,
                 )
                 if user is not None
                 else None
@@ -204,9 +202,7 @@ async def search_knowledge(
                 if not requested_space_ids:
                     return []
             source_access = (
-                accessible_source_predicate(access_context, project_id=project_id)
-                if access_context is not None
-                else None
+                accessible_source_predicate(access_context) if access_context is not None else None
             )
             if knowledge_space_ids is None:
                 source_space = KnowledgeSource.space_id == space_id if space_id else True
@@ -292,8 +288,6 @@ async def search_knowledge(
                 owner_clause = _owner_filter(KnowledgePage.owner_id, user_id)
                 if owner_clause is not None:
                     page_stmt = page_stmt.where(owner_clause)
-                if project_id:
-                    page_stmt = page_stmt.where(KnowledgeSource.project_id == project_id)
             page_filters: list[Any] = []
             for token in tokens:
                 like = f"%{token}%"
@@ -336,8 +330,6 @@ async def search_knowledge(
                 owner_clause = _owner_filter(KnowledgeClaim.owner_id, user_id)
                 if owner_clause is not None:
                     claim_stmt = claim_stmt.where(owner_clause)
-                if project_id:
-                    claim_stmt = claim_stmt.where(KnowledgeSource.project_id == project_id)
             claim_filters = [KnowledgeClaim.text.ilike(f"%{token}%") for token in tokens]
             claim_search = func.to_tsvector(
                 "simple", func.concat(KnowledgeClaim.text, " ", KnowledgeClaim.normalized_text)
@@ -404,10 +396,6 @@ async def search_knowledge(
                         relation_stmt = relation_stmt.where(
                             owner_clause,
                             target_page.owner_id == user_id,
-                        )
-                    if project_id:
-                        relation_stmt = relation_stmt.where(
-                            KnowledgeSource.project_id == project_id
                         )
                 relation_rows = (
                     await db.execute(

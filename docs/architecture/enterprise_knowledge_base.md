@@ -12,7 +12,7 @@
   → Lint / ACL / 有效期 / 密级 / 版本差异
   → Review Task
   → Active Published Version
-  → 企业知识搜索 / RAG / Project / Agent
+  → 企业知识搜索 / RAG / 工作区 / Agent
   → 反馈、复审、撤回和重新投稿
 ```
 
@@ -20,7 +20,7 @@
 
 | 产品面 | 用户 | 职责 |
 |---|---|---|
-| 我的资料 `/documents` | 全体员工 | 原始文件、个人/Project 检索资料，以及向知识空间投稿的唯一上传入口 |
+| 我的资料 `/documents` | 全体员工 | 原始文件、个人检索资料，以及向知识空间投稿的唯一上传入口 |
 | 企业知识库 `/knowledge-base` | 管理员 | 搜索、浏览空间、查看已发布资产和来源状态、发起知识投稿 |
 | 知识库质量中心 `/knowledge` | 管理员 | 编排策略、关系图、任务、审核、质量和空间授权 |
 | Responses/RAG | Agent | 在统一权限范围内检索 Page、Claim、Relation 和原文证据 |
@@ -36,11 +36,11 @@
 
 ## 治理边界
 
-`KnowledgeSpace` 独立于 Project。公司、部门、岗位、个人空间长期存在；Project 通过 `KnowledgeSpaceProject` 挂载空间。员工查询可以使用公司/部门/岗位空间以及当前 Project 挂载空间，Project 结束不会删除企业知识。
+`KnowledgeSpace` 独立于临时会话。公司、部门、岗位、工作区和个人空间长期存在；员工查询在工作区与空间授权范围内使用对应知识，短期会话结束不会删除企业知识。
 
 公司和部门知识空间可以绑定到[企业认知实体](enterprise_cognition.md)。认知实体只保存适合每轮装配的稳定骨架，知识空间继续保存有来源、版本、ACL 和 citation 的详细事实；二者不能复制维护同一份全文内容。
 
-空间角色依次为 `viewer → contributor → reviewer → publisher → admin`。授权主体支持用户、部门、用户组、岗位和 Project；`KnowledgePrincipalMembership` 可由 SCIM/HR 同步。来源系统 ACL 写入 `KnowledgeSourcePermission`，查询权限是空间访问权与来源 ACL 的交集。
+空间角色依次为 `viewer → contributor → reviewer → publisher → admin`。授权主体支持用户、部门、用户组和岗位；`KnowledgePrincipalMembership` 可由 SCIM/HR 同步。来源系统 ACL 写入 `KnowledgeSourcePermission`，查询权限是空间访问权与来源 ACL 的交集。
 
 密级为 `public → internal → confidential → restricted`。查询在召回前过滤密级、租户、工作区、空间、来源 ACL、有效期和撤回状态；Session 热证据也必须重新授权。
 
@@ -62,4 +62,4 @@ Page、Claim 与 Relation。API 请求内不执行分块、Embedding 或编译�
 
 ## 兼容策略
 
-历史个人文档与 Project 知识可以保持 `space_id=NULL`，继续按 `owner_id + project_id` 访问。新企业知识应进入 Knowledge Space；迁移过程不修改已冻结历史迁移。
+历史个人文档可以保持 `space_id=NULL`，继续按 `owner_id` 访问。新企业知识应进入 Knowledge Space；迁移过程不修改已冻结历史迁移。

@@ -233,18 +233,17 @@ def test_explicit_reaffirmation_promotes_existing_proactive_memory():
     assert json.loads(memory.metadata_json)["learning_mode"] == "explicit"
 
 
-def test_memory_learner_proactively_extracts_goals_workflows_and_project_facts():
+def test_memory_learner_proactively_extracts_goals_and_workflows():
     candidates = MemoryLearner._extract_proactive(
         "我的长期目标是成为可靠的架构师。\n"
         "我的工作流程是先写测试，再实现功能。\n"
-        "本项目数据库使用 PostgreSQL。"
+        "我的数据库使用 PostgreSQL。"
     )
 
     assert {item["kind"] for item in candidates} == {"fact", "workflow"}
     assert any(item["key"].startswith("goal.long_term.") for item in candidates)
     assert any(item["key"].startswith("workflow.routine.") for item in candidates)
-    project = next(item for item in candidates if item["key"].startswith("project.fact."))
-    assert project["scope_type"] == "project"
+    assert all(item["scope_type"] == "user" for item in candidates)
 
 
 def test_memory_learner_extracts_stable_user_time_definitions() -> None:

@@ -25,13 +25,13 @@ OpenTrace 的在线对话继续以 Responses API、PostgreSQL Response 父链和
 ### 长期受治理记忆
 
 - 只学习稳定、低风险且有 Response/Item 证据的信息；临时会话、禁用记忆模式和记忆宪法继续作为硬边界。
-- 一条消息可以确定性提取多项稳定信息；姓名、职责、回答偏好、个人术语、审批习惯、常用模板、工作时间和 Project 约定使用稳定 key，并按 user/project/conversation scope 写入。
+- 一条消息可以确定性提取多项稳定信息；姓名、职责、回答偏好、个人术语、审批习惯、常用模板、工作时间和工作区约定使用稳定 key，并按 user/conversation scope 写入。
 - 同一内容被不同 Response 重复确认时复用原候选和 `UserMemory` 节点，累计观察次数、置信度、显著性和证据；同一 Response 重试不重复计数。
 - 用户以“更正、现在改为、不是旧值而是新值”等方式明确修正稳定个人事实时，新记忆以 `correction` 学习模式激活并替代同 scope、同 key 的旧记忆。
 - 用户具名要求“忘记我的某项信息”时，只在当前有效 scope 内失效精确主题匹配的活动记忆和待确认候选，并保留触发 Response/Item 证据；模糊的全量删除继续要求在记忆管理页显式执行。
 - “不要记住”“仅这一次”等否定或临时表达不能产生记忆候选，也不能被模型补充提取重新写回。
 - 更正不会自动置顶；只有用户明确要求“记住”的信息保持 pinned 语义。
-- 记忆读取继续限定 user、tenant、workspace，并按 user/project/conversation scope 隔离。
+- 记忆读取继续限定 user、tenant、workspace，并按 user/conversation scope 隔离。
 - 任务和审批状态不复制为长期语义记忆；当前业务表是事实来源，历史状态仅按用户明确的问题
   召回。稳定偏好和重复习惯仍可长期学习。
 

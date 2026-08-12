@@ -6,21 +6,20 @@ from infra.storage.models import Document, KnowledgeCompilationJob, KnowledgeSou
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_project_scope_is_first_class_on_document_and_compiled_assets():
-    assert "project_id" in Document.__table__.columns
-    assert "project_id" in KnowledgeSource.__table__.columns
-    assert "project_id" in KnowledgeCompilationJob.__table__.columns
+def test_workspace_scope_is_first_class_on_document_and_compiled_assets():
+    for model in (Document, KnowledgeSource, KnowledgeCompilationJob):
+        assert "tenant_id" in model.__table__.columns
+        assert "workspace_id" in model.__table__.columns
 
 
-def test_ingest_preserves_review_policy_and_trusted_project_scope():
+def test_ingest_preserves_review_policy_and_workspace_metadata():
     metadata = _merge_ingest_metadata(
-        '{"publish_policy":"review","project_id":"untrusted-old"}',
+        '{"publish_policy":"review","workspace_id":"workspace-old"}',
         {"owner": "u1", "tags": ["document"]},
-        "project-a",
     )
 
     assert metadata["publish_policy"] == "review"
-    assert metadata["project_id"] == "project-a"
+    assert metadata["workspace_id"] == "workspace-old"
     assert metadata["owner"] == "u1"
 
 
@@ -45,17 +44,16 @@ def test_knowledge_governance_reuses_unified_ingestion_and_review_lifecycle():
     assert "background_tasks.add_task(enqueue_document_compile" not in documents
 
 
-def test_worker_reconciles_uploads_and_main_rag_receives_project_scope():
+def test_worker_reconciles_uploads_and_main_rag_receives_workspace_scope():
     jobs = (ROOT / "knowledge/jobs.py").read_text(encoding="utf-8")
     runner = (ROOT / "kernel/agent_loop/runner.py").read_text(encoding="utf-8")
     rag = (ROOT / "agents/rag_agent.py").read_text(encoding="utf-8")
     assert "reconcile_ready_documents()" in jobs
     assert "KNOWLEDGE_RECONCILE_SECONDS" in jobs
-    assert 'hydrated["project_id"] = project_id' in runner
+    assert 'hydrated["workspace_id"] = response.workspace_id' in runner
     assert "agent_params.setdefault(" in runner
     assert '"sources", ["knowledge", "documents", "semantic_memory"]' in runner
-    assert 'retrieval_scope["project_id"] = project_id' in rag
-    assert "project_id=project_id" in rag
+    assert '"workspace_id": workspace_id' in rag
 
 
 def test_project_knowledge_migration_is_current_head():

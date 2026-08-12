@@ -78,7 +78,6 @@ class DataAgent(BaseAgent):
                 data_source=source,
                 question=task.query,
                 supplied_sql=str(task.params.get("sql") or "") or None,
-                project_id=str(task.params.get("project_id") or "") or None,
                 conversation_id=str(task.params.get("conversation_id") or task.session_id or "")
                 or None,
                 response_id=str(task.params.get("response_id") or "") or None,

@@ -145,7 +145,7 @@ bash scripts/verify_migration_idempotent.sh
 ### Manager Agent Loop
 
 - `kernel/agent_loop/runner.py` 是当前 Manager loop：先用严格工具调用生成 `IntentPlan`，再选择最小能力集合，调用统一 Model Gateway，并循环执行工具/专家 Agent。
-- `kernel/agent_loop/context.py` 只沿当前 Response 父链组装上下文。优先级依次为平台/租户、Project、Assistant Profile/用户指令、会话/回合指令、当前输入；记忆按 user/project/conversation scope 隔离。
+- `kernel/agent_loop/context.py` 只沿当前 Response 父链组装上下文。优先级依次为平台/租户、工作区、Assistant Profile/用户指令、会话/回合指令、当前输入；记忆按 user/conversation scope 隔离。
 - 只读工具可自动执行；write/destructive 工具必须写入 `ResponseApproval` 并返回 `requires_action`。副作用工具不自动重试，未知结果进入 reconciliation 状态；不要绕过持久化幂等账本。
 - `model/model_gateway/gateway.py` 是模型调用统一入口，按 `LLMRole` 管理 adapter、fallback、重试、熔断和调用计量。不要在业务模块直接实例化 provider client。
 

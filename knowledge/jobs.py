@@ -82,7 +82,6 @@ async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
                 owner_id=document.owner_id,
                 tenant_id=document.tenant_id,
                 workspace_id=document.workspace_id,
-                project_id=document.project_id,
                 space_id=document_metadata.get("knowledge_space_id"),
                 steward_id=document_metadata.get("knowledge_steward_id") or document.owner_id,
                 source_type="document",
@@ -106,7 +105,6 @@ async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
         else:
             source.content_hash = digest
             source.title = document.title
-            source.project_id = document.project_id
             source.space_id = source.space_id or document_metadata.get("knowledge_space_id")
             source.steward_id = (
                 source.steward_id
@@ -167,7 +165,6 @@ async def enqueue_document_compile(document_id: str) -> dict[str, Any]:
             owner_id=document.owner_id,
             tenant_id=document.tenant_id,
             workspace_id=document.workspace_id,
-            project_id=document.project_id,
             status="pending",
             compiler_version=KNOWLEDGE_COMPILER_VERSION,
             result_metadata={"document_id": document.id, "document_version": document.version},

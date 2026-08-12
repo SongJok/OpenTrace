@@ -37,7 +37,6 @@ import {
   apiListKnowledgeSources,
   apiListKnowledgeSpaceMembers,
   apiListKnowledgeSpaces,
-  apiListProjects,
   apiOrchestrateKnowledge,
   apiReconcileDueKnowledgeReviews,
   apiResolveKnowledgeFeedback,
@@ -57,10 +56,8 @@ import {
   type KnowledgeSourceItem,
   type KnowledgeSpaceItem,
   type KnowledgeSpaceMemberItem,
-  type ProjectItem,
 } from '../api/client'
 import { useAuthStore } from '../store/auth'
-import { useChatPreferences } from '../store/chatPreferences'
 
 type GovernanceTab = 'pipeline' | 'reviews' | 'quality' | 'access'
 type NetworkType = KnowledgeGraphData['network']
@@ -73,10 +70,7 @@ const NETWORK_LABELS: Record<NetworkType, string> = {
 
 export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void }) {
   const token = useAuthStore((state) => state.token)!
-  const selectedProjectId = useChatPreferences((state) => state.projectId)
-  const setSelectedProjectId = useChatPreferences((state) => state.setProjectId)
   const [tab, setTab] = useState<GovernanceTab>('pipeline')
-  const [projects, setProjects] = useState<ProjectItem[]>([])
   const [spaces, setSpaces] = useState<KnowledgeSpaceItem[]>([])
   const [selectedSpaceId, setSelectedSpaceId] = useState('')
   const [network, setNetwork] = useState<NetworkType>('entity')
@@ -114,12 +108,12 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
     if (!silent) setLoading(true)
     try {
       const [nextGraph, nextSources, publishedPages, reviewPages, nextJobs, nextRules] = await Promise.all([
-        apiGetKnowledgeGraph(token, network, selectedProjectId),
-        apiListKnowledgeSources(token, { projectId: selectedProjectId, spaceId: selectedSpaceId || null }),
-        apiListKnowledgePages(token, selectedProjectId, 'published'),
-        apiListKnowledgePages(token, selectedProjectId, 'review'),
-        apiListKnowledgeJobs(token, selectedProjectId),
-        apiListKnowledgeRules(token, selectedProjectId),
+        apiGetKnowledgeGraph(token, network),
+        apiListKnowledgeSources(token, { spaceId: selectedSpaceId || null }),
+        apiListKnowledgePages(token, 'published'),
+        apiListKnowledgePages(token, 'review'),
+        apiListKnowledgeJobs(token),
+        apiListKnowledgeRules(token),
       ])
       setGraph(nextGraph)
       setSources(nextSources)
@@ -131,7 +125,7 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [network, selectedProjectId, selectedSpaceId, token])
+  }, [network, selectedSpaceId, token])
 
   const loadGovernance = useCallback(async () => {
     try {
@@ -180,8 +174,7 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
   }, [selectedSpaceId, spaces, token])
 
   useEffect(() => {
-    void Promise.all([apiListProjects(token), apiListKnowledgeSpaces(token)]).then(([nextProjects, nextSpaces]) => {
-      setProjects(nextProjects)
+    void apiListKnowledgeSpaces(token).then((nextSpaces) => {
       setSpaces(nextSpaces)
       setSelectedSpaceId((current) => current || nextSpaces.find((space) => ['reviewer', 'publisher', 'admin'].includes(space.role))?.id || nextSpaces[0]?.id || '')
     })
@@ -201,7 +194,7 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
     setWorking(true)
     setMessage('')
     try {
-      const result = await apiOrchestrateKnowledge(token, selectedProjectId)
+      const result = await apiOrchestrateKnowledge(token)
       setMessage(`已提交知识编排：${String(result.queued ?? 0)} 个任务进入队列`)
       await loadPipeline(true)
     } catch (error) {
@@ -216,7 +209,6 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
     try {
       const created = await apiCreateKnowledgeRule(token, {
         rule_key: 'knowledge_page_compiler',
-        project_id: selectedProjectId || null,
         rule_type: 'schema',
         schema_json: ruleConfig,
         instructions: ruleInstructions,
@@ -376,7 +368,6 @@ export default function KnowledgeCenterPage({ onBack }: { onBack?: () => void })
       <header className="sticky top-0 z-10 flex flex-wrap items-center gap-3 border-b border-[var(--border)] bg-[var(--bg)]/95 px-6 py-4 backdrop-blur">
         <button onClick={onBack} className="rounded-lg p-2 hover:bg-[var(--surface)]"><ChevronLeft size={18} /></button>
         <div className="min-w-52 flex-1"><h1 className="text-lg font-semibold">知识库质量中心</h1><p className="text-xs text-[var(--text-secondary)]">编排、审核、质量与访问控制的管理员控制面</p></div>
-        <select value={selectedProjectId || ''} onChange={(event) => setSelectedProjectId(event.target.value || null)} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><option value="">工作区默认</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select>
         <select value={selectedSpaceId} onChange={(event) => setSelectedSpaceId(event.target.value)} className="max-w-56 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs"><option value="">我的非空间知识</option>{spaces.map((space) => <option key={space.id} value={space.id}>{space.name} · {space.role}</option>)}</select>
         <button onClick={() => { void loadPipeline(); void loadGovernance(); void loadQuality() }} className="rounded-xl border border-[var(--border)] p-2" title="刷新"><RefreshCw size={15} /></button>
       </header>
@@ -468,8 +459,8 @@ function ReviewPanel({ reviews, canReview, working, onDecision }: { reviews: Kno
 
 function AccessPanel({ selectedSpace, canAdmin, members, subjectType, subjectId, role, working, onSubjectType, onSubjectId, onRole, onGrant, onRevoke }: { selectedSpace: KnowledgeSpaceItem | null; canAdmin: boolean; members: KnowledgeSpaceMemberItem[]; subjectType: KnowledgeSpaceMemberItem['subject_type']; subjectId: string; role: KnowledgeSpaceMemberItem['role']; working: boolean; onSubjectType: (value: KnowledgeSpaceMemberItem['subject_type']) => void; onSubjectId: (value: string) => void; onRole: (value: KnowledgeSpaceMemberItem['role']) => void; onGrant: () => Promise<void>; onRevoke: (member: KnowledgeSpaceMemberItem) => Promise<void> }) {
   if (!selectedSpace) return <Empty text="请选择知识空间后管理访问控制" />
-  if (!canAdmin) return <Empty text="只有空间 admin 可以管理成员、部门、用户组、岗位和 Project 授权" />
-  return <div className="space-y-3"><section className="flex flex-wrap gap-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><select value={subjectType} onChange={(event) => onSubjectType(event.target.value as KnowledgeSpaceMemberItem['subject_type'])} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"><option value="user">用户</option><option value="department">部门</option><option value="group">用户组</option><option value="role">岗位</option><option value="project">Project</option></select><input value={subjectId} onChange={(event) => onSubjectId(event.target.value)} placeholder="主体 ID" className="min-w-52 flex-1 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm" /><select value={role} onChange={(event) => onRole(event.target.value as KnowledgeSpaceMemberItem['role'])} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm">{['viewer', 'contributor', 'reviewer', 'publisher', 'admin'].map((value) => <option key={value} value={value}>{value}</option>)}</select><button onClick={() => void onGrant()} disabled={working || !subjectId.trim()} className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm text-[var(--accent-foreground)] disabled:opacity-40">授权</button></section>{members.map((member) => <article key={member.id} className="flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><Users size={17} className="text-[var(--accent)]" /><div className="flex-1"><h3 className="text-sm font-medium">{member.subject_type}:{member.subject_id}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">角色 {member.role} · 到期 {member.expires_at ? new Date(member.expires_at).toLocaleDateString() : '长期'}</p></div><button onClick={() => void onRevoke(member)} className="rounded-lg p-2 text-red-500 hover:bg-red-500/10"><Trash2 size={15} /></button></article>)}{!members.length && <Empty text="该空间暂无显式成员授权" />}</div>
+  if (!canAdmin) return <Empty text="只有空间 admin 可以管理成员、部门、用户组和岗位授权" />
+  return <div className="space-y-3"><section className="flex flex-wrap gap-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><select value={subjectType} onChange={(event) => onSubjectType(event.target.value as KnowledgeSpaceMemberItem['subject_type'])} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"><option value="user">用户</option><option value="department">部门</option><option value="group">用户组</option><option value="role">岗位</option></select><input value={subjectId} onChange={(event) => onSubjectId(event.target.value)} placeholder="主体 ID" className="min-w-52 flex-1 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm" /><select value={role} onChange={(event) => onRole(event.target.value as KnowledgeSpaceMemberItem['role'])} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm">{['viewer', 'contributor', 'reviewer', 'publisher', 'admin'].map((value) => <option key={value} value={value}>{value}</option>)}</select><button onClick={() => void onGrant()} disabled={working || !subjectId.trim()} className="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm text-[var(--accent-foreground)] disabled:opacity-40">授权</button></section>{members.map((member) => <article key={member.id} className="flex items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4"><Users size={17} className="text-[var(--accent)]" /><div className="flex-1"><h3 className="text-sm font-medium">{member.subject_type}:{member.subject_id}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">角色 {member.role} · 到期 {member.expires_at ? new Date(member.expires_at).toLocaleDateString() : '长期'}</p></div><button onClick={() => void onRevoke(member)} className="rounded-lg p-2 text-red-500 hover:bg-red-500/10"><Trash2 size={15} /></button></article>)}{!members.length && <Empty text="该空间暂无显式成员授权" />}</div>
 }
 
 function Status({ value }: { value: string }) {

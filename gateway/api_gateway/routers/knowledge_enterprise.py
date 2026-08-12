@@ -27,8 +27,6 @@ from infra.storage.models import (
     KnowledgeSourceVersion,
     KnowledgeSpace,
     KnowledgeSpaceMember,
-    KnowledgeSpaceProject,
-    Project,
     User,
 )
 from knowledge.access import (
@@ -48,17 +46,17 @@ from knowledge.query import search_knowledge
 
 router = APIRouter()
 
-SpaceType = Literal["company", "department", "role", "project", "personal"]
+SpaceType = Literal["company", "department", "role", "workspace", "personal"]
 SpaceRole = Literal["viewer", "contributor", "reviewer", "publisher", "admin"]
 Classification = Literal["public", "internal", "confidential", "restricted"]
-SubjectType = Literal["user", "department", "group", "role", "project"]
+SubjectType = Literal["user", "department", "group", "role"]
 
 
 class KnowledgeSpaceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     slug: str | None = Field(default=None, max_length=128)
     description: str = Field(default="", max_length=4000)
-    space_type: SpaceType = "project"
+    space_type: SpaceType = "workspace"
     visibility: Literal["private", "members", "tenant"] = "members"
     default_classification: Classification = "internal"
     publish_policy: Literal["auto", "review"] = "review"
@@ -95,7 +93,6 @@ class PrincipalMembershipUpsert(BaseModel):
 
 class KnowledgeSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
-    project_id: str | None = None
     space_id: str | None = None
     top_k: int = Field(default=8, ge=1, le=50)
 
@@ -207,7 +204,6 @@ async def enterprise_knowledge_search(
         user_id=current_user.id,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
-        project_id=payload.project_id,
         space_id=payload.space_id,
         top_k=payload.top_k,
     )
@@ -327,7 +323,7 @@ async def create_space(
 ) -> dict:
     tenant_id, workspace_id = _scope(request, current_user)
     if not is_enterprise_admin(current_user) and (
-        payload.space_type not in {"personal", "project"} or payload.visibility == "tenant"
+        payload.space_type != "personal" or payload.visibility == "tenant"
     ):
         raise AppException(
             ErrorCodes.PERMISSION_DENIED.code,
@@ -567,54 +563,6 @@ async def upsert_principal_membership(
         },
     )
     return {"id": row.id, "status": row.status}
-
-
-@router.post("/knowledge/spaces/{space_id}/projects/{project_id}")
-async def attach_space_project(
-    space_id: str,
-    project_id: str,
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    _, tenant_id, workspace_id = await _space_or_error(
-        db, request=request, user=current_user, space_id=space_id, role="admin"
-    )
-    project = await db.scalar(
-        select(Project).where(
-            Project.id == project_id,
-            Project.user_id == current_user.id,
-            Project.tenant_id == tenant_id,
-            Project.workspace_id == workspace_id,
-        )
-    )
-    if project is None:
-        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project not found")
-    row = await db.scalar(
-        select(KnowledgeSpaceProject).where(
-            KnowledgeSpaceProject.space_id == space_id,
-            KnowledgeSpaceProject.project_id == project_id,
-        )
-    )
-    if row is None:
-        row = KnowledgeSpaceProject(
-            id=str(uuid.uuid4()),
-            space_id=space_id,
-            project_id=project_id,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            attached_by=current_user.id,
-        )
-        db.add(row)
-        await db.commit()
-    await write_audit_log(
-        user_id=current_user.id,
-        action="knowledge_space.project.attach",
-        resource_type="knowledge_space",
-        resource_id=space_id,
-        payload={"project_id": project_id},
-    )
-    return {"attached": True, "space_id": space_id, "project_id": project_id}
 
 
 @router.post("/knowledge/reviews/reconcile-due")

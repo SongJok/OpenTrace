@@ -36,7 +36,7 @@ RAG 返回带引用的已发布知识；DataAgent 只访问授权数据源并执
 
 - PostgreSQL 是 Response、Item、Event、Outbox、审批和工具账本的事实来源。
 - API 只提交命令，模型和工具只在 Worker 中执行。
-- 资源查询同时受 user、tenant、workspace、Project 和数据源授权约束。
+- 资源查询同时受 user、tenant、workspace 和数据源授权约束。
 - 企业大脑、RAG 和 DataAgent 均通过统一 Model Gateway 与 Agent Loop 执行。
 - 只读能力自动执行；任何未来写能力都必须经过持久化审批和幂等账本。
 - 任何能力收敛都必须同时删除用户入口、API 暴露、Worker 循环和运行时注册。

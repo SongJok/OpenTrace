@@ -21,7 +21,6 @@ from infra.storage.models import (
     DataSource,
     DataSourceSchema,
     MetricDefinition,
-    Project,
     SchemaMetadata,
     SchemaTableMetadata,
 )
@@ -54,7 +53,6 @@ class OpenTraceSourceResolver:
         user_id: str,
         tenant_id: str,
         workspace_id: str,
-        project_id: str | None = None,
         explicit_id: str | None = None,
         candidate_ids: list[str] | None = None,
     ) -> DataSourceDecision:
@@ -70,22 +68,6 @@ class OpenTraceSourceResolver:
             if candidate_restricted
             else None
         )
-        if project_id:
-            project = await self.db.scalar(
-                select(Project).where(
-                    Project.id == project_id,
-                    Project.user_id == user_id,
-                    Project.tenant_id == tenant_id,
-                    Project.workspace_id == workspace_id,
-                    Project.archived_at.is_(None),
-                )
-            )
-            if project is None:
-                raise PermissionError("project_not_found_or_not_authorized")
-            project_ids = {str(item) for item in project.data_source_ids or [] if str(item)}
-            allowed_ids = (
-                project_ids if allowed_ids is None else allowed_ids.intersection(project_ids)
-            )
         if allowed_ids is not None:
             if not allowed_ids:
                 return self.selector.select(question, [], explicit_id=explicit_id)
@@ -111,15 +93,14 @@ class OpenTraceSourceResolver:
         source_ids = list(entries)
         await self._add_schema_signals(entries, source_ids)
         await self._add_metric_signals(entries, source_ids)
-        await self._add_semantic_signals(entries, source_ids, tenant_id, workspace_id, project_id)
-        await self._add_sql_signals(entries, source_ids, tenant_id, workspace_id, project_id)
+        await self._add_semantic_signals(entries, source_ids, tenant_id, workspace_id)
+        await self._add_sql_signals(entries, source_ids, tenant_id, workspace_id)
         await self._add_execution_signals(
             entries,
             source_ids,
             user_id=user_id,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
-            project_id=project_id,
         )
         await self._add_profile_flags(
             entries,
@@ -267,17 +248,12 @@ class OpenTraceSourceResolver:
         source_ids: list[str],
         tenant_id: str,
         workspace_id: str,
-        project_id: str | None,
     ) -> None:
         statement = select(DataAgentSemanticAsset).where(
             DataAgentSemanticAsset.tenant_id == tenant_id,
             DataAgentSemanticAsset.workspace_id == workspace_id,
             DataAgentSemanticAsset.data_source_id.in_(source_ids),
             DataAgentSemanticAsset.status == "published",
-            or_(
-                DataAgentSemanticAsset.project_id.is_(None),
-                DataAgentSemanticAsset.project_id == project_id,
-            ),
         )
         rows = list((await self.db.execute(statement.limit(5000))).scalars().all())
         now = datetime.now(UTC)
@@ -315,7 +291,6 @@ class OpenTraceSourceResolver:
         source_ids: list[str],
         tenant_id: str,
         workspace_id: str,
-        project_id: str | None,
     ) -> None:
         statement = select(SQLAsset).where(
             SQLAsset.tenant_id == tenant_id,
@@ -326,12 +301,6 @@ class OpenTraceSourceResolver:
             SQLAsset.quality_status == "verified",
             SQLAsset.executable.is_(True),
         )
-        if project_id:
-            statement = statement.where(
-                or_(SQLAsset.project_id.is_(None), SQLAsset.project_id == project_id)
-            )
-        else:
-            statement = statement.where(SQLAsset.project_id.is_(None))
         rows = list((await self.db.execute(statement.limit(5000))).scalars().all())
         for row in rows:
             entries[row.data_source_id].signals.append(
@@ -359,7 +328,6 @@ class OpenTraceSourceResolver:
         user_id: str,
         tenant_id: str,
         workspace_id: str,
-        project_id: str | None,
     ) -> None:
         patterns = list(
             (
@@ -370,7 +338,7 @@ class OpenTraceSourceResolver:
                         DataAgentLearningPattern.tenant_id == tenant_id,
                         DataAgentLearningPattern.workspace_id == workspace_id,
                         DataAgentLearningPattern.data_source_id.in_(source_ids),
-                        DataAgentLearningPattern.scope_key == (project_id or "__global__"),
+                        DataAgentLearningPattern.scope_key == "__global__",
                         DataAgentLearningPattern.status == "trusted",
                     )
                     .order_by(DataAgentLearningPattern.last_verified_at.desc())

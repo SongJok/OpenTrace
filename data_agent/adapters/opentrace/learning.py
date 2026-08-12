@@ -20,7 +20,7 @@ class OpenTraceLearningRepository:
 
     @staticmethod
     def _scope_key(run: QueryRun) -> str:
-        return run.request.scope.project_id or "__global__"
+        return "__global__"
 
     @staticmethod
     def _statement(run: QueryRun, pattern_key: str):
@@ -31,7 +31,7 @@ class OpenTraceLearningRepository:
             DataAgentLearningPattern.tenant_id == scope.tenant_id,
             DataAgentLearningPattern.workspace_id == scope.workspace_id,
             DataAgentLearningPattern.data_source_id == scope.data_source_id,
-            DataAgentLearningPattern.scope_key == (scope.project_id or "__global__"),
+            DataAgentLearningPattern.scope_key == "__global__",
             DataAgentLearningPattern.pattern_key == pattern_key,
             DataAgentLearningPattern.schema_fingerprint
             == str(evidence.schema_fingerprint if evidence else ""),
@@ -68,7 +68,6 @@ class OpenTraceLearningRepository:
                 user_id=run.request.scope.user_id,
                 tenant_id=run.request.scope.tenant_id,
                 workspace_id=run.request.scope.workspace_id,
-                project_id=run.request.scope.project_id,
                 scope_key=self._scope_key(run),
                 data_source_id=run.request.scope.data_source_id,
                 pattern_key=learning.pattern_key,

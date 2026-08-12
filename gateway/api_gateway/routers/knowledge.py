@@ -26,7 +26,6 @@ from infra.storage.models import (
     KnowledgeRule,
     KnowledgeSource,
     KnowledgeSourceVersion,
-    Project,
     User,
 )
 from knowledge.access import accessible_source_predicate, require_space_role, resolve_access_context
@@ -38,7 +37,7 @@ from knowledge.governance import (
     list_knowledge_feedback,
     resolve_knowledge_feedback,
 )
-from knowledge.graph import build_project_graph, link_project_pages
+from knowledge.graph import build_knowledge_graph, link_workspace_pages
 from knowledge.jobs import enqueue_document_compile
 from knowledge.lifecycle import publish_source_version
 from knowledge.lint import merge_case_ids_in_claim_scope, run_knowledge_lint
@@ -66,7 +65,6 @@ class KnowledgeRuleRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     rule_key: str
-    project_id: str | None = None
     rule_type: str = "schema"
     schema_payload: dict = Field(default_factory=dict, alias="schema_json")
     instructions: str | None = None
@@ -165,7 +163,6 @@ async def _space_quality_scope(
 @router.get("/knowledge/sources")
 async def list_knowledge_sources(
     http_request: Request,
-    project_id: str | None = None,
     space_id: str | None = None,
     status: str | None = None,
     current_user: User = Depends(get_current_user),
@@ -184,7 +181,6 @@ async def list_knowledge_sources(
         user=current_user,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
-        project_id=project_id,
     )
     if space_id:
         try:
@@ -199,9 +195,7 @@ async def list_knowledge_sources(
         except PermissionError as exc:
             raise AppException(ErrorCodes.PERMISSION_DENIED.code, message=str(exc)) from exc
         stmt = stmt.where(KnowledgeSource.space_id == space_id)
-    stmt = stmt.where(accessible_source_predicate(context, project_id=project_id))
-    if project_id:
-        stmt = stmt.where(KnowledgeSource.project_id == project_id)
+    stmt = stmt.where(accessible_source_predicate(context))
     if status:
         stmt = stmt.where(KnowledgeSource.status == status)
     rows = (await db.execute(stmt.order_by(KnowledgeSource.updated_at.desc()))).scalars().all()
@@ -216,7 +210,6 @@ async def list_knowledge_sources(
             "classification": row.classification,
             "status": row.status,
             "sync_status": row.sync_status,
-            "project_id": row.project_id,
             "space_id": row.space_id,
             "active_version_id": row.active_version_id,
             "review_due_at": row.review_due_at.isoformat() if row.review_due_at else None,
@@ -297,7 +290,6 @@ async def trace_knowledge(
 @router.get("/knowledge/rules")
 async def list_knowledge_rules(
     http_request: Request,
-    project_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
@@ -309,8 +301,6 @@ async def list_knowledge_rules(
         KnowledgeRule.tenant_id == tenant_id,
         KnowledgeRule.workspace_id == workspace_id,
     )
-    if project_id:
-        stmt = stmt.where(KnowledgeRule.project_id == project_id)
     rows = (
         (
             await db.execute(
@@ -330,7 +320,6 @@ async def list_knowledge_rules(
             "schema": row.schema_json,
             "instructions": row.instructions,
             "provenance": row.provenance,
-            "project_id": row.project_id,
         }
         for row in rows
     ]
@@ -346,18 +335,6 @@ async def create_knowledge_rule(
     tenant_id, workspace_id = normalized_tenant_scope(
         build_tenant_metadata(http_request, user_id=current_user.id)
     )
-    if req.project_id:
-        project = await db.scalar(
-            select(Project.id).where(
-                Project.id == req.project_id,
-                Project.user_id == current_user.id,
-                Project.tenant_id == tenant_id,
-                Project.workspace_id == workspace_id,
-                Project.archived_at.is_(None),
-            )
-        )
-        if project is None:
-            raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project not found")
     allowed_keys = {
         "summary_length",
         "content_limit",
@@ -391,7 +368,6 @@ async def create_knowledge_rule(
         owner_id=current_user.id,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
-        project_id=req.project_id,
         rule_key=req.rule_key,
         version=version,
         rule_type=req.rule_type,
@@ -407,7 +383,6 @@ async def create_knowledge_rule(
         "rule_key": row.rule_key,
         "version": row.version,
         "status": row.status,
-        "project_id": row.project_id,
     }
 
 
@@ -439,7 +414,6 @@ async def approve_knowledge_rule(
                     KnowledgeRule.tenant_id == tenant_id,
                     KnowledgeRule.workspace_id == workspace_id,
                     KnowledgeRule.rule_key == row.rule_key,
-                    KnowledgeRule.project_id == row.project_id,
                     KnowledgeRule.status == "approved",
                     KnowledgeRule.id != row.id,
                 )
@@ -463,7 +437,6 @@ async def list_knowledge_pages(
     source_id: str | None = None,
     limit: int = 50,
     status: str | None = "published",
-    project_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
@@ -486,8 +459,6 @@ async def list_knowledge_pages(
             stmt = stmt.where(KnowledgeSource.active_version_id == KnowledgeSourceVersion.id)
     if source_id:
         stmt = stmt.where(KnowledgeSource.id == source_id)
-    if project_id:
-        stmt = stmt.where(KnowledgeSource.project_id == project_id)
     rows = (
         await db.execute(
             stmt.order_by(
@@ -542,7 +513,6 @@ async def list_knowledge_jobs(
     http_request: Request,
     status: str | None = None,
     limit: int = 50,
-    project_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
@@ -557,8 +527,6 @@ async def list_knowledge_jobs(
     ]
     if status:
         conditions.append(KnowledgeCompilationJob.status == status)
-    if project_id:
-        conditions.append(KnowledgeCompilationJob.project_id == project_id)
     rows = (
         (
             await db.execute(
@@ -577,7 +545,6 @@ async def list_knowledge_jobs(
             "source_id": row.source_id,
             "source_version_id": row.source_version_id,
             "status": row.status,
-            "project_id": row.project_id,
             "compiler_version": row.compiler_version,
             "error": row.error,
             "result": row.result_metadata,
@@ -593,63 +560,35 @@ async def list_knowledge_jobs(
 async def get_knowledge_graph(
     http_request: Request,
     network: str = "entity",
-    project_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     tenant_id, workspace_id = normalized_tenant_scope(
         build_tenant_metadata(http_request, user_id=current_user.id)
     )
-    if project_id:
-        project = await db.scalar(
-            select(Project.id).where(
-                Project.id == project_id,
-                Project.user_id == current_user.id,
-                Project.tenant_id == tenant_id,
-                Project.workspace_id == workspace_id,
-                Project.archived_at.is_(None),
-            )
-        )
-        if project is None:
-            raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project not found")
-    graph = await build_project_graph(
+    graph = await build_knowledge_graph(
         db,
         owner_id=current_user.id,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
-        project_id=project_id,
         network=network,
     )
-    return {**graph, "project_id": project_id}
+    return graph
 
 
 @router.post("/knowledge/orchestrate")
 async def orchestrate_knowledge(
     http_request: Request,
-    project_id: str | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Queue all ready project documents and refresh current cross-document links."""
+    """Queue all ready workspace documents and refresh cross-document links."""
     tenant_id, workspace_id = normalized_tenant_scope(
         build_tenant_metadata(http_request, user_id=current_user.id)
     )
-    if project_id:
-        project = await db.scalar(
-            select(Project.id).where(
-                Project.id == project_id,
-                Project.user_id == current_user.id,
-                Project.tenant_id == tenant_id,
-                Project.workspace_id == workspace_id,
-                Project.archived_at.is_(None),
-            )
-        )
-        if project is None:
-            raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project not found")
     doc_stmt = scoped_documents_statement(
         user_id=current_user.id,
         tenant_metadata={"tenant_id": tenant_id, "workspace_id": workspace_id},
-        project_id=project_id,
     ).where(Document.status == "ready")
     documents = (await db.execute(doc_stmt)).scalars().all()
     queued = 0
@@ -657,12 +596,11 @@ async def orchestrate_knowledge(
         result = await enqueue_document_compile(document.id)
         if result.get("status") == "queued" and not result.get("deduplicated"):
             queued += 1
-    linked = await link_project_pages(
+    linked = await link_workspace_pages(
         db,
         owner_id=current_user.id,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
-        project_id=project_id,
     )
     await db.commit()
     return {"accepted": True, "documents": len(documents), "jobs_queued": queued, **linked}

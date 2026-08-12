@@ -33,7 +33,6 @@ export interface SQLAssetItem {
   retrieval_count: number
   lineage: Record<string, unknown>
   validation_report: { status?: string; errors?: string[]; warnings?: string[] }
-  project_id?: string | null
   approved_by?: string | null
   approved_at?: string | null
   created_at?: string
@@ -156,7 +155,6 @@ export interface SQLAssetListParams {
   corpus_role?: SQLAssetItem['corpus_role'] | ''
   quality_status?: SQLAssetItem['quality_status'] | ''
   domain?: string
-  project_id?: string
   search?: string
   offset?: number
   limit?: number
@@ -182,7 +180,6 @@ export async function apiListSQLAssets(
   if (params.corpus_role) query.set('corpus_role', params.corpus_role)
   if (params.quality_status) query.set('quality_status', params.quality_status)
   if (params.domain?.trim()) query.set('domain', params.domain.trim())
-  if (params.project_id) query.set('project_id', params.project_id)
   if (params.search?.trim()) query.set('search', params.search.trim())
   if (params.offset !== undefined) query.set('offset', String(params.offset))
   if (params.limit !== undefined) query.set('limit', String(params.limit))

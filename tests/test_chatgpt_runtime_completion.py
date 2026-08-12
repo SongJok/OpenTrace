@@ -1,6 +1,6 @@
 from gateway.api_gateway.routers.responses import ResponseCreateRequest
 from infra.config.settings import LLMSettings
-from infra.storage.models import Project
+from infra.storage.models import ChatSession
 from kernel.agent_loop.context import ContextAssembler
 from kernel.agent_loop.runner import AgentLoop
 from model.llm_adapter.openai_adapter import OpenAICompatibleAdapter
@@ -38,16 +38,12 @@ def test_dashscope_multimodal_parts_and_thinking_are_normalized():
             "image_url": {"url": "data:image/png;base64,AA=="},
         },
     ]
-    assert OpenAICompatibleAdapter._qwen_thinking_enabled(
-        {"reasoning": {"effort": "high"}}
-    )
-    assert not OpenAICompatibleAdapter._qwen_thinking_enabled(
-        {"reasoning": {"effort": "low"}}
-    )
+    assert OpenAICompatibleAdapter._qwen_thinking_enabled({"reasoning": {"effort": "high"}})
+    assert not OpenAICompatibleAdapter._qwen_thinking_enabled({"reasoning": {"effort": "low"}})
 
 
-def test_project_memory_isolation_and_chinese_relevance_terms_exist():
-    assert "memory_mode" in Project.__table__.columns
+def test_workspace_memory_isolation_and_chinese_relevance_terms_exist():
+    assert "project_id" not in ChatSession.__table__.columns
     terms = ContextAssembler._search_terms("我偏好简洁的中文回答")
     assert "偏好" in terms
     assert "中文" in terms

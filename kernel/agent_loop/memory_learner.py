@@ -15,7 +15,6 @@ from infra.storage.models import (
     AssistantProfile,
     MemoryCandidate,
     MemoryEvidence,
-    Project,
     ResponseItem,
     ResponseRecord,
     UserMemory,
@@ -125,22 +124,7 @@ class MemoryLearner:
         )
         if mode != "enabled":
             return []
-        project = (
-            await db.scalar(
-                select(Project).where(
-                    Project.id == session.project_id,
-                    Project.user_id == response.user_id,
-                    Project.tenant_id == response.tenant_id,
-                    Project.workspace_id == response.workspace_id,
-                    Project.archived_at.is_(None),
-                )
-            )
-            if session.project_id
-            else None
-        )
-        profile_id = session.assistant_profile_id or (
-            project.assistant_profile_id if project else None
-        )
+        profile_id = session.assistant_profile_id
         profile = (
             await db.scalar(
                 select(AssistantProfile).where(
@@ -156,10 +140,6 @@ class MemoryLearner:
         memory_policy = dict(profile.memory_policy or {}) if profile else {}
         if memory_policy.get("enabled") is False or memory_policy.get("learn") is False:
             return []
-        project_only = bool(
-            project
-            and (project.memory_mode == "project_only" or memory_policy.get("project_only") is True)
-        )
         settings_row = await db.scalar(
             select(UserMemorySettings).where(UserMemorySettings.user_id == response.user_id)
         )
@@ -189,11 +169,9 @@ class MemoryLearner:
                 db,
                 response=response,
                 session=session,
-                project=project,
                 input_item=input_item,
                 targets=forget_targets,
                 text=text,
-                include_user_scope=not project_only,
             )
         source_decision = evaluate_memory_constitution(
             text,
@@ -293,21 +271,10 @@ class MemoryLearner:
                 continue
             if constitution_decision.decision == "review":
                 status = "pending"
-            scope_type = str(
-                candidate.get("scope_type") or ("project" if session.project_id else "user")
-            )
-            if scope_type not in {"user", "project", "conversation"}:
+            scope_type = str(candidate.get("scope_type") or "user")
+            if scope_type not in {"user", "conversation"}:
                 scope_type = "user"
-            if project_only:
-                scope_type = "project"
-            elif scope_type == "project" and not session.project_id:
-                # 没有 Project 的普通会话不能产生 scope_id=None 的“伪项目记忆”。
-                scope_type = "conversation"
-            scope_id = (
-                session.project_id
-                if scope_type == "project"
-                else session.id if scope_type == "conversation" else None
-            )
+            scope_id = session.id if scope_type == "conversation" else None
             memory_key = (
                 re.sub(r"[^a-z0-9_.:-]+", "_", str(candidate.get("key") or "").lower()).strip("_")[
                     :128
@@ -507,8 +474,8 @@ class MemoryLearner:
         prompt = (
             "主动从用户消息中提取将来多轮对话中仍有用的稳定记忆，即使用户没有说‘记住’也要识别。只输出 JSON 数组。"
             "每项字段为 content, key(稳定的snake_case主题键), kind(profile|preference|workflow|fact|episodic), confidence(0-1), "
-            "salience(0-1), explicit(boolean), sensitive(boolean), scope_type(user|project)。"
-            "scope_type 可为 user|project|conversation。优先提取用户直接陈述的稳定身份、长期偏好、长期目标、重复工作方式和项目约定。"
+            "salience(0-1), explicit(boolean), sensitive(boolean), scope_type(user|conversation)。"
+            "scope_type 可为 user|conversation。优先提取用户直接陈述的稳定身份、长期偏好、长期目标和重复工作方式。"
             "不要记录问题、一次性请求、临时状态、模型推测、第三方信息、健康/财务/身份号码/联系方式等敏感信息、认证信息或秘密。"
             "个人记忆应服务于个人术语/黑话、回复风格偏好、审批/操作习惯、常用模板与片段，"
             "以及稳定的时区、工作时间和重复习惯。具体日期的日历、任务和业务状态属于可变事实资源，"
@@ -603,7 +570,7 @@ class MemoryLearner:
         clauses: list[str] = []
         clause_start = (
             r"(?:我|我的|本项目|这个项目|当前项目|以后|今后|后续|默认情况下|"
-            r"更正|纠正|更新|修改|请|帮我|不要|别|my\b|i\b|this project\b|"
+            r"更正|纠正|更新|修改|请|帮我|不要|别|my\b|i\b|this workspace\b|"
             r"from now on\b|please\b|forget\b)"
         )
         for sentence in sentences:
@@ -1050,28 +1017,6 @@ class MemoryLearner:
                 )
                 continue
 
-            project_match = re.match(
-                r"^(?:本项目|这个项目|当前项目)(?:的)?(?P<subject>[^，。:：]{1,40}?)(?:是|为|使用|采用)\s*(?P<value>[^。！？!?]{2,180})",
-                statement,
-                flags=re.I,
-            ) or re.match(
-                r"^(?:this|the current) project(?:'s)?\s+(?P<subject>[^,.!:]{1,40}?)\s+(?:is|uses)\s+(?P<value>[^.!?]{2,180})",
-                statement,
-                flags=re.I,
-            )
-            if project_match:
-                subject = project_match.group("subject").strip()
-                digest = sha256(subject.lower().encode("utf-8")).hexdigest()[:16]
-                add(
-                    content=statement,
-                    key=f"project.fact.{digest}",
-                    kind="fact",
-                    confidence=0.90,
-                    salience=0.84,
-                    scope_type="project",
-                )
-                continue
-
             fact_match = re.match(
                 r"^我的(?P<subject>[^，。:：]{1,20}?)(?:是|为|使用|采用)\s*(?P<value>[^。！？!?]{2,160})",
                 statement,
@@ -1150,11 +1095,6 @@ class MemoryLearner:
             kind = "workflow"
         else:
             kind = "fact"
-        scope_type = (
-            "project"
-            if re.search(r"本项目|这个项目|当前项目|this project|current project", lowered)
-            else "user"
-        )
         subject_match = re.search(
             r"我的(?P<subject>[^，。,:：]{1,40}?)(?:是|为|:|：)", content
         ) or re.search(
@@ -1171,7 +1111,7 @@ class MemoryLearner:
                 "salience": 0.9,
                 "explicit": True,
                 "sensitive": False,
-                "scope_type": scope_type,
+                "scope_type": "user",
                 "_learning_mode": "explicit",
             }
         ]
@@ -1276,23 +1216,12 @@ class MemoryLearner:
         *,
         response: ResponseRecord,
         session: Any,
-        project: Project | None,
         input_item: ResponseItem | None,
         targets: list[dict[str, Any]],
         text: str,
-        include_user_scope: bool,
     ) -> list[str]:
-        scope_filters = [UserMemory.scope_type == "user"] if include_user_scope else []
-        candidate_scope_filters = (
-            [MemoryCandidate.scope_type == "user"] if include_user_scope else []
-        )
-        if project is not None:
-            scope_filters.append(
-                (UserMemory.scope_type == "project") & (UserMemory.scope_id == project.id)
-            )
-            candidate_scope_filters.append(
-                (MemoryCandidate.scope_type == "project") & (MemoryCandidate.scope_id == project.id)
-            )
+        scope_filters = [UserMemory.scope_type == "user"]
+        candidate_scope_filters = [MemoryCandidate.scope_type == "user"]
         scope_filters.append(
             (UserMemory.scope_type == "conversation") & (UserMemory.scope_id == session.id)
         )

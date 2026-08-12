@@ -33,7 +33,6 @@ from infra.errors import AppException, ErrorCodes
 from infra.model_settings import snapshot_runtime_llm_selection
 from infra.observability.metrics import RESPONSE_CREATED_TOTAL
 from infra.responses.repository import TERMINAL_STATUSES, add_outbox, append_event
-from infra.security.resource_scope import get_accessible_data_source
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
@@ -41,7 +40,6 @@ from infra.storage.models import (
     Attachment,
     ChatSession,
     GoalRun,
-    Project,
     ResponseEvent,
     ResponseItem,
     ResponseRecord,
@@ -86,13 +84,11 @@ class ResponseInputItem(BaseModel):
 class OpenTraceOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    project_id: str | None = None
     assistant_profile_id: str | None = None
     execution_profile: str = Field(default="auto", pattern="^(auto|fast|deep)$")
     memory_mode: str = Field(default="enabled", pattern="^(enabled|disabled|temporary)$")
     knowledge_mode: str = Field(default="auto", pattern="^(auto|required)$")
     enabled_skills: list[str] = Field(default_factory=list)
-    data_source_ids: list[str] = Field(default_factory=list)
     attachment_ids: list[str] = Field(default_factory=list, max_length=10)
     goal_id: str | None = None
     timezone: str = Field(default=DEFAULT_TIMEZONE, max_length=64)
@@ -136,7 +132,6 @@ class ResponseCreateRequest(BaseModel):
             "execution_profile": "execution_profile",
             "memory_mode": "memory_mode",
             "enabled_skills": "enabled_skills",
-            "project_id": "project_id",
             "assistant_profile_id": "assistant_profile_id",
             "attachment_ids": "attachment_ids",
             "goal_id": "goal_id",
@@ -144,9 +139,9 @@ class ResponseCreateRequest(BaseModel):
         for old, new in aliases.items():
             if old in data:
                 extension.setdefault(new, data.pop(old))
-        if "data_source_id" in data:
-            source = data.pop("data_source_id")
-            extension.setdefault("data_source_ids", [source] if source else [])
+        data.pop("data_source_id", None)
+        extension.pop("data_source_id", None)
+        extension.pop("data_source_ids", None)
         # Discard execution controls that belonged to the retired v1 chat pipeline.
         for old in (
             "disabled_skills",
@@ -190,10 +185,6 @@ class ResponseCreateRequest(BaseModel):
     @property
     def enabled_skills(self) -> list[str]:
         return self.opentrace.enabled_skills
-
-    @property
-    def data_source_id(self) -> str | None:
-        return self.opentrace.data_source_ids[0] if self.opentrace.data_source_ids else None
 
     @property
     def attachment_ids(self) -> list[str]:
@@ -378,10 +369,8 @@ async def _ensure_conversation(
             raise AppException(
                 ErrorCodes.RESOURCE_NOT_FOUND.code, message="Conversation 不存在或无权限"
             )
-        if session.is_temporary and (request.opentrace.project_id or request.opentrace.goal_id):
-            raise AppException(
-                ErrorCodes.PARAM_INVALID.code, message="临时对话不能加入 Project 或 Goal"
-            )
+        if session.is_temporary and request.opentrace.goal_id:
+            raise AppException(ErrorCodes.PARAM_INVALID.code, message="临时对话不能加入 Goal")
         return session
     temporary = request.opentrace.memory_mode == "temporary"
     session = ChatSession(
@@ -392,7 +381,6 @@ async def _ensure_conversation(
         tenant_id=tenant_id,
         workspace_id=workspace_id,
         org_id=org_id,
-        project_id=request.opentrace.project_id,
         assistant_profile_id=request.opentrace.assistant_profile_id,
         is_temporary=temporary,
         expires_at=datetime.now(UTC) + timedelta(days=30) if temporary else None,
@@ -411,23 +399,8 @@ async def _validate_opentrace_scope(
     workspace_id: str,
 ) -> None:
     extension = request.opentrace
-    if extension.memory_mode == "temporary" and (extension.project_id or extension.goal_id):
-        raise AppException(
-            ErrorCodes.PARAM_INVALID.code, message="临时对话不能加入 Project 或 Goal"
-        )
-    project: Project | None = None
-    if extension.project_id:
-        project = await db.scalar(
-            select(Project).where(
-                Project.id == extension.project_id,
-                Project.user_id == user.id,
-                Project.tenant_id == tenant_id,
-                Project.workspace_id == workspace_id,
-                Project.archived_at.is_(None),
-            )
-        )
-        if project is None:
-            raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Project 不存在或无权限")
+    if extension.memory_mode == "temporary" and extension.goal_id:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="临时对话不能加入 Goal")
     if extension.assistant_profile_id:
         owned = await db.scalar(
             select(AssistantProfile.id).where(
@@ -450,19 +423,6 @@ async def _validate_opentrace_scope(
         )
         if owned is None:
             raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Goal 不存在或无权限")
-    for source_id in extension.data_source_ids:
-        source = await get_accessible_data_source(
-            db,
-            user_id=user.id,
-            tenant_metadata={"tenant_id": tenant_id, "workspace_id": workspace_id},
-            data_source_id=source_id,
-            required_permission="query",
-            active_only=True,
-        )
-        if source is None:
-            raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="数据源不存在或无权限")
-        if project is not None and source_id not in set(project.data_source_ids or []):
-            raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="Project 未授权该数据源")
 
 
 async def _resolve_parent(
@@ -657,8 +617,6 @@ async def create_response(
     )
     if session.is_temporary:
         request.opentrace.memory_mode = "temporary"
-    if not request.opentrace.project_id and session.project_id:
-        request.opentrace.project_id = session.project_id
     if not request.opentrace.assistant_profile_id and session.assistant_profile_id:
         request.opentrace.assistant_profile_id = session.assistant_profile_id
     await _validate_opentrace_scope(

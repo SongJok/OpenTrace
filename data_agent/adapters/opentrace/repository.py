@@ -16,15 +16,12 @@ class OpenTraceRunRepository:
 
     @staticmethod
     def _scope_filter(statement, scope: DataScope):
-        scoped = statement.where(
+        return statement.where(
             DataAgentRunRecord.user_id == scope.user_id,
             DataAgentRunRecord.tenant_id == scope.tenant_id,
             DataAgentRunRecord.workspace_id == scope.workspace_id,
             DataAgentRunRecord.data_source_id == scope.data_source_id,
         )
-        if scope.project_id is None:
-            return scoped.where(DataAgentRunRecord.project_id.is_(None))
-        return scoped.where(DataAgentRunRecord.project_id == scope.project_id)
 
     @staticmethod
     def _record_to_run(record: DataAgentRunRecord) -> QueryRun:
@@ -117,7 +114,6 @@ class OpenTraceRunRepository:
             user_id=run.request.scope.user_id,
             tenant_id=run.request.scope.tenant_id,
             workspace_id=run.request.scope.workspace_id,
-            project_id=run.request.scope.project_id,
             data_source_id=run.request.scope.data_source_id,
         )
         self._apply(run, record)
@@ -163,11 +159,6 @@ class OpenTraceRunRepository:
                 DataAgentRunRecord.tenant_id == scope.tenant_id,
                 DataAgentRunRecord.workspace_id == scope.workspace_id,
                 DataAgentRunRecord.data_source_id == scope.data_source_id,
-                (
-                    DataAgentRunRecord.project_id.is_(None)
-                    if scope.project_id is None
-                    else DataAgentRunRecord.project_id == scope.project_id
-                ),
                 DataAgentRunRecord.state.in_(
                     [RunState.READY.value, RunState.BLOCKED.value, RunState.FAILED.value]
                 ),

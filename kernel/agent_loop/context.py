@@ -19,9 +19,6 @@ from infra.security import resource_scope
 from infra.storage.models import (
     AssistantProfile,
     Attachment,
-    DataSource,
-    DataSourceSchema,
-    Project,
     ResponseApproval,
     ResponseItem,
     ResponseRecord,
@@ -55,7 +52,6 @@ class AssembledContext:
     attachment_ids: list[str]
     attachment_context: str
     contains_images: bool
-    project_id: str | None
     assistant_profile_id: str | None
     profile_execution_default: str
     tool_policy: dict[str, Any]
@@ -106,9 +102,6 @@ class ContextAssembler:
             timezone_name = requested_timezone
         except ZoneInfoNotFoundError:
             timezone_name = DEFAULT_TIMEZONE
-        project_id = (
-            str(extension.get("project_id") or getattr(session, "project_id", None) or "") or None
-        )
         profile_id = (
             str(
                 extension.get("assistant_profile_id")
@@ -160,65 +153,13 @@ class ContextAssembler:
         )
         if business_context:
             system_blocks.append(business_context)
-        project: Project | None = None
         profile: AssistantProfile | None = None
         profile_execution_default = "auto"
         tool_policy: dict[str, Any] = {}
         memory_policy: dict[str, Any] = {}
 
-        # Precedence is encoded by block order: platform/tenant, project,
-        # profile/custom instructions, conversation/turn instructions, input.
-        if project_id:
-            project = await db.scalar(
-                select(Project).where(
-                    Project.id == project_id,
-                    Project.user_id == response.user_id,
-                    Project.tenant_id == response.tenant_id,
-                    Project.workspace_id == response.workspace_id,
-                )
-            )
-            if project and project.instructions.strip():
-                system_blocks.append("Project 指令：\n" + project.instructions.strip())
-            if project and project.data_source_ids:
-                source_stmt = resource_scope.accessible_data_sources_statement(
-                    user_id=response.user_id,
-                    tenant_metadata={
-                        "tenant_id": response.tenant_id,
-                        "workspace_id": response.workspace_id,
-                    },
-                    required_permission="query",
-                    active_only=True,
-                ).where(DataSource.id.in_(project.data_source_ids))
-                project_sources = list(
-                    (await db.execute(source_stmt.order_by(DataSource.name))).scalars().all()
-                )
-                synced_ids = set(
-                    (
-                        await db.execute(
-                            select(DataSourceSchema.data_source_id).where(
-                                DataSourceSchema.data_source_id.in_(
-                                    [source.id for source in project_sources]
-                                )
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                system_blocks.append(
-                    "Project 企业上下文：\n"
-                    + "\n".join(
-                        f"- 数据源 {source.name}（{source.source_type}，ID={source.id}，"
-                        f"Schema={'已同步' if source.id in synced_ids else '未同步'}）"
-                        for source in project_sources
-                    )
-                    + "\n- 知识范围：仅检索当前 Project 下已授权、已发布的知识。"
-                    "\n当问题要求结合企业数据与知识制度时，应同时调用 data 与 rag，"
-                    "以数据库结果作为指标证据、知识库作为口径或治理依据，并保留引用。"
-                )
-            if project and not profile_id:
-                profile_id = project.assistant_profile_id
-
+        # Precedence is encoded by block order: platform/tenant, profile/custom
+        # instructions, conversation/turn instructions, input.
         if profile_id:
             profile = await db.scalar(
                 select(AssistantProfile).where(
@@ -396,16 +337,7 @@ class ContextAssembler:
             scope_clause = (UserMemory.scope_type == "conversation") & (
                 UserMemory.scope_id == response.conversation_id
             )
-            if project_id:
-                scope_clause = scope_clause | (
-                    (UserMemory.scope_type == "project") & (UserMemory.scope_id == project_id)
-                )
-            project_memory_mode = str(getattr(project, "memory_mode", "default") or "default")
-            if (
-                project_memory_mode != "project_only"
-                and memory_policy.get("project_only") is not True
-            ):
-                scope_clause = (UserMemory.scope_type == "user") | scope_clause
+            scope_clause = (UserMemory.scope_type == "user") | scope_clause
             memories, memory_lexical_candidate_count = await self._memory_candidate_pool(
                 db,
                 response=response,
@@ -586,7 +518,6 @@ class ContextAssembler:
             attachment_ids=attachment_ids,
             attachment_context=attachment_context,
             contains_images=modality_counts.get("image", 0) > 0,
-            project_id=project_id,
             assistant_profile_id=profile_id,
             profile_execution_default=profile_execution_default,
             tool_policy=tool_policy,

@@ -37,7 +37,7 @@ async def finalize_world_model_for_turn(
     request: Any,
     response: Any | None = None,
 ) -> dict[str, Any]:
-    """Project turn into RuntimeGroundingState; persist when flag enabled."""
+    """将工作区回合投影为 RuntimeGroundingState，并在开关启用时持久化。"""
     sid = (session_id or getattr(request, "session_id", "") or "").strip()
     if not sid:
         return {}
@@ -104,8 +104,8 @@ async def finalize_world_model_for_turn(
         logger.debug("world_persist_skipped", error=str(exc))
 
     try:
-        from world.world_runtime import build_shared_world_state
         from tenant.tenant_context import resolve_tenant_context
+        from world.world_runtime import build_shared_world_state
 
         tenant_ctx = resolve_tenant_context(
             user_id=getattr(request, "user_id", None),

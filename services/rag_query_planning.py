@@ -165,7 +165,6 @@ def build_rag_query_plan(
             "user_id": user_id,
             "tenant_id": (tenant_id or "default"),
             "workspace_id": (workspace_id or "default"),
-            "project_id": params.get("project_id"),
             "acl_scope_enforced": True,
             "pre_retrieval_filtering": True,
         },

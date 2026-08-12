@@ -10,12 +10,10 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
-    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
-    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -29,26 +27,6 @@ def _uuid() -> str:
 
 class SQLAssetSource(Base):
     __tablename__ = "sql_asset_sources"
-    __table_args__ = (
-        UniqueConstraint(
-            "tenant_id",
-            "workspace_id",
-            "data_source_id",
-            "project_id",
-            "content_sha256",
-            name="uq_sql_asset_source_scope_hash",
-        ),
-        Index(
-            "uq_sql_asset_source_global_hash",
-            "tenant_id",
-            "workspace_id",
-            "data_source_id",
-            "content_sha256",
-            unique=True,
-            postgresql_where=text("project_id IS NULL"),
-            sqlite_where=text("project_id IS NULL"),
-        ),
-    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(
@@ -56,7 +34,6 @@ class SQLAssetSource(Base):
     )
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     data_source_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -80,24 +57,6 @@ class SQLAsset(Base):
     __tablename__ = "sql_assets"
     __table_args__ = (
         UniqueConstraint("source_id", "statement_index", name="uq_sql_asset_source_statement"),
-        UniqueConstraint(
-            "tenant_id",
-            "workspace_id",
-            "data_source_id",
-            "project_id",
-            "sql_hash",
-            name="uq_sql_asset_scope_hash",
-        ),
-        Index(
-            "uq_sql_asset_global_hash",
-            "tenant_id",
-            "workspace_id",
-            "data_source_id",
-            "sql_hash",
-            unique=True,
-            postgresql_where=text("project_id IS NULL"),
-            sqlite_where=text("project_id IS NULL"),
-        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
@@ -112,7 +71,6 @@ class SQLAsset(Base):
     )
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     data_source_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -168,7 +126,6 @@ class SQLQueryDraft(Base):
     )
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     response_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     data_agent_run_id: Mapped[str | None] = mapped_column(

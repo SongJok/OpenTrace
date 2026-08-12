@@ -12,7 +12,6 @@ from infra.storage.models import (
     KnowledgeSourcePermission,
     KnowledgeSpace,
     KnowledgeSpaceMember,
-    KnowledgeSpaceProject,
 )
 from knowledge.access import (
     CLASSIFICATION_RANK,
@@ -39,7 +38,6 @@ def test_enterprise_knowledge_models_cover_space_acl_and_review() -> None:
     assert {"principal_type", "principal_id", "source", "effective_to"}.issubset(
         set(KnowledgePrincipalMembership.__table__.columns.keys())
     )
-    assert KnowledgeSpaceProject.__tablename__ == "knowledge_space_projects"
     assert {"space_id", "classification", "effective_to", "deleted_at"}.issubset(
         set(KnowledgeSource.__table__.columns.keys())
     )
@@ -73,7 +71,7 @@ def test_source_access_predicate_contains_space_acl_validity_and_classification(
         clearance="confidential",
         space_roles={"space-a": "viewer"},
     )
-    sql = str(accessible_source_predicate(context, project_id="project-a"))
+    sql = str(accessible_source_predicate(context))
     for expected in (
         "knowledge_sources.owner_id",
         "knowledge_sources.space_id",
@@ -81,7 +79,6 @@ def test_source_access_predicate_contains_space_acl_validity_and_classification(
         "knowledge_sources.deleted_at",
         "knowledge_sources.effective_to",
         "knowledge_sources.classification",
-        "knowledge_space_projects",
     ):
         assert expected in sql
 

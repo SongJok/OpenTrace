@@ -281,7 +281,6 @@ async def has_table(db: AsyncSession, table: str) -> bool:
 def merge_ingest_metadata(
     raw_metadata: str | None,
     normalized_metadata: dict,
-    project_id: str | None,
 ) -> dict:
     """标准化摄入元数据，同时保留发布策略等编排命令。"""
     try:
@@ -293,7 +292,6 @@ def merge_ingest_metadata(
     return {
         **normalized_metadata,
         **existing_metadata,
-        "project_id": project_id,
     }
 
 
@@ -309,7 +307,6 @@ async def ingest_document(db: AsyncSession, doc: Document, text: str) -> None:
             merge_ingest_metadata(
                 doc.doc_metadata,
                 make_doc_metadata(owner=doc.owner_id).to_dict(),
-                doc.project_id,
             ),
             ensure_ascii=False,
         )

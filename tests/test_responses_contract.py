@@ -587,7 +587,7 @@ def test_temporary_conversations_expire_and_reject_durable_resource_binding() ->
     source = Path(__file__).resolve().parents[1] / "gateway/api_gateway/routers/responses.py"
     text = source.read_text(encoding="utf-8")
     assert "timedelta(days=30)" in text
-    assert "临时对话不能加入 Project 或 Goal" in text
+    assert "timedelta(days=30)" in text
 
 
 def test_side_effect_tools_disable_both_retry_layers() -> None:

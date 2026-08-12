@@ -57,7 +57,6 @@ class BusinessFlowVerifier:
         self.conversation_ids: list[str] = []
         self.attachment_ids: list[str] = []
         self.profile_id = ""
-        self.project_id = ""
         self.database_id = ""
         self.task_id = ""
         self.goal_id = ""
@@ -156,7 +155,7 @@ class BusinessFlowVerifier:
             body={
                 "name": f"验收助手-{marker}",
                 "personality": "pragmatic",
-                "instructions": "只使用已授权的项目资源。",
+                "instructions": "只使用当前工作区已授权的资源。",
                 "memory_policy": {"enabled": True},
             },
         )
@@ -167,7 +166,7 @@ class BusinessFlowVerifier:
             body={
                 "name": f"验收助手更新-{marker}",
                 "personality": "friendly",
-                "instructions": "优先使用附件和项目数据。",
+                "instructions": "优先使用附件和已授权数据。",
                 "memory_policy": {"enabled": True},
             },
         )
@@ -211,60 +210,38 @@ class BusinessFlowVerifier:
         rows = executed_candidates[0].get("rows") if executed_candidates else []
         assert executed.get("status") == "completed" and rows and "total" in rows[0], executed
 
-        project = self.request(
-            "POST",
-            "/api/v2/projects",
-            body={
-                "name": f"验收项目-{marker}",
-                "description": "跨资源主链路验收",
-                "instructions": "只能访问当前项目绑定的数据源。",
-                "memory_mode": "project_only",
-                "assistant_profile_id": self.profile_id,
-                "data_source_ids": [self.database_id],
-            },
-        )
-        self.project_id = project["id"]
-        assert project["data_source_ids"] == [self.database_id]
-        self.request(
-            "POST",
-            "/api/v2/projects",
-            body={"name": "越权绑定", "data_source_ids": [str(uuid.uuid4())]},
-            expected_status=404,
-        )
-        self.passed("助手角色、数据源查询与 Project 授权绑定")
+        self.passed("助手角色与工作区数据源查询")
 
     def conversation_flow(self, marker: str) -> None:
         conversation = self.request(
             "POST",
             "/api/v2/conversations",
             body={
-                "project_id": self.project_id,
                 "assistant_profile_id": self.profile_id,
                 "instructions": "本会话用于业务验收。",
             },
         )
         conversation_id = conversation["id"]
         self.conversation_ids.append(conversation_id)
-        assert conversation["project_id"] == self.project_id
+        assert conversation["assistant_profile_id"] == self.profile_id
 
         cleared = self.request(
             "PATCH",
             f"/api/v2/conversations/{conversation_id}",
-            body={"project_id": None, "assistant_profile_id": None},
+            body={"assistant_profile_id": None},
         )
-        assert cleared["project_id"] is None and cleared["assistant_profile_id"] is None
+        assert cleared["assistant_profile_id"] is None
         rebound = self.request(
             "PATCH",
             f"/api/v2/conversations/{conversation_id}",
             body={
                 "title": f"业务验收会话-{marker}",
-                "project_id": self.project_id,
                 "assistant_profile_id": self.profile_id,
                 "pinned": True,
                 "tags": ["e2e", "business"],
             },
         )
-        assert rebound["pinned"] is True and rebound["project_id"] == self.project_id
+        assert rebound["pinned"] is True and rebound["assistant_profile_id"] == self.profile_id
 
         attachment = self.request(
             "POST",
@@ -365,10 +342,9 @@ class BusinessFlowVerifier:
             "/api/v2/scheduled-tasks",
             body={
                 "title": f"业务验收任务-{marker}",
-                "prompt": "检查项目状态并生成简报",
+                "prompt": "检查工作区状态并生成简报",
                 "rrule": preview["rrule"],
                 "timezone": "Asia/Shanghai",
-                "project_id": self.project_id,
                 "conversation_id": conversation_id,
                 "enabled": False,
             },
@@ -385,7 +361,6 @@ class BusinessFlowVerifier:
             body={
                 "objective": f"完成一次可取消的业务验收目标 {marker}",
                 "success_criteria": "目标能创建、暂停、恢复和取消",
-                "project_id": self.project_id,
                 "conversation_id": conversation_id,
                 "execution_profile": "fast",
             },
@@ -419,8 +394,6 @@ class BusinessFlowVerifier:
             self._delete_conversation_when_idle(conversation_id)
         if self.task_id:
             self._cleanup_request("POST", f"/api/v2/scheduled-tasks/{self.task_id}/actions/cancel")
-        if self.project_id:
-            self._cleanup_request("DELETE", f"/api/v2/projects/{self.project_id}")
         if self.profile_id:
             self._cleanup_request("DELETE", f"/api/v2/assistant-profiles/{self.profile_id}")
         if self.database_id:

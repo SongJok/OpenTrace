@@ -490,6 +490,7 @@ async def list_databases(
                 "database": x.database,
                 "username": x.username,
                 "status": x.status,
+                "access_mode": x.access_mode,
                 "updated_at": x.updated_at.isoformat() if x.updated_at else None,
                 "created_at": x.created_at.isoformat() if x.created_at else None,
                 "synced_at": schema_payload.get("synced_at"),
@@ -528,6 +529,7 @@ async def get_database(
         "database": x.database,
         "username": x.username,
         "status": x.status,
+        "access_mode": x.access_mode,
     }
 
 
@@ -858,7 +860,6 @@ class DatabaseQueryRequest(BaseModel):
     sql: str | None = None
     stream: bool = False
     group_type: str = Field(default="alternative", pattern="^(alternative|batch)$")
-    project_id: str | None = None
     output_mode: str = Field(default="sql_only", pattern="^(sql_only|execute_and_answer)$")
     clarify_context: str | None = Field(default=None, max_length=4000)
 
@@ -905,7 +906,6 @@ async def query_database(
             data_source=x,
             question=req.question,
             supplied_sql=req.sql,
-            project_id=req.project_id,
             group_type=req.group_type,
             output_mode=req.output_mode,
             clarification_context=req.clarify_context,

@@ -16,7 +16,7 @@ from infra.audit.logger import write_audit_log
 from infra.errors import AppException, ErrorCodes, ValidationException
 from infra.metadata.schema_inspector import load_schema_inspection
 from infra.storage.database import db_session_dependency as get_db
-from infra.storage.models import Project, SQLAsset, SQLAssetSource, SQLQueryDraft, User
+from infra.storage.models import SQLAsset, SQLAssetSource, SQLQueryDraft, User
 from kernel.data_cognition.sql_dialect import detect_sql_dialect
 from services.sql_assets import (
     CORPUS_ROLES,
@@ -83,37 +83,12 @@ async def _source_or_404(
     return source
 
 
-async def _validate_project(
-    db: AsyncSession,
-    *,
-    project_id: str | None,
-    user_id: str,
-    tenant_id: str,
-    workspace_id: str,
-    data_source_id: str,
-) -> None:
-    if not project_id:
-        return
-    project = await db.scalar(
-        select(Project).where(
-            Project.id == project_id,
-            Project.user_id == user_id,
-            Project.tenant_id == tenant_id,
-            Project.workspace_id == workspace_id,
-            Project.archived_at.is_(None),
-        )
-    )
-    if project is None or data_source_id not in set(project.data_source_ids or []):
-        raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="Project 未绑定该数据源")
-
-
 @router.post("/databases/{database_id}/sql-assets/upload")
 async def upload_sql_asset(
     request: Request,
     database_id: str,
     file: UploadFile = File(...),
     dialect: str | None = Form(default=None),
-    project_id: str | None = Form(default=None),
     corpus_role: str = Form(default="retrieval"),
     domain: str | None = Form(default=None),
     owner: str | None = Form(default=None),
@@ -128,14 +103,6 @@ async def upload_sql_asset(
         permission="edit",
     )
     _, tenant_id, workspace_id = _scope(request, current_user)
-    await _validate_project(
-        db,
-        project_id=project_id,
-        user_id=current_user.id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        data_source_id=database_id,
-    )
     filename = str(file.filename or "").strip()
     if not filename.lower().endswith((".sql", ".txt")):
         raise ValidationException("仅支持上传 .sql 或 .txt 文件")
@@ -160,7 +127,6 @@ async def upload_sql_asset(
         content_type=file.content_type or "text/plain",
         source_text=source_text,
         dialect=expected_dialect,
-        project_id=project_id,
         corpus_role=corpus_role,
         domain=domain,
         owner=owner,
@@ -172,7 +138,6 @@ async def upload_sql_asset(
         resource_id=asset_source.id,
         payload={
             "data_source_id": database_id,
-            "project_id": project_id,
             "filename": filename,
             "statement_count": asset_source.statement_count,
         },
@@ -191,7 +156,6 @@ async def batch_upload_sql_assets(
     database_id: str,
     files: list[UploadFile] = File(...),
     dialect: str | None = Form(default=None),
-    project_id: str | None = Form(default=None),
     corpus_role: str = Form(default="retrieval"),
     domain: str | None = Form(default=None),
     owner: str | None = Form(default=None),
@@ -208,14 +172,6 @@ async def batch_upload_sql_assets(
         permission="edit",
     )
     _, tenant_id, workspace_id = _scope(request, current_user)
-    await _validate_project(
-        db,
-        project_id=project_id,
-        user_id=current_user.id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        data_source_id=database_id,
-    )
     if not files or len(files) > MAX_BATCH_UPLOAD_FILES:
         raise ValidationException(f"每批最多上传 {MAX_BATCH_UPLOAD_FILES} 个 SQL 文件")
     if corpus_role not in CORPUS_ROLES:
@@ -251,7 +207,6 @@ async def batch_upload_sql_assets(
                 content_type=file.content_type or "text/plain",
                 source_text=source_text,
                 dialect=expected_dialect,
-                project_id=project_id,
                 corpus_role=corpus_role,
                 domain=domain,
                 owner=owner,
@@ -277,7 +232,6 @@ async def batch_upload_sql_assets(
         resource_type="data_source",
         resource_id=database_id,
         payload={
-            "project_id": project_id,
             "corpus_role": corpus_role,
             "file_count": len(files),
             "imported": imported,
@@ -305,7 +259,6 @@ async def list_sql_assets(
         default=None,
         pattern="^(draft|published|deprecated|rejected)$",
     ),
-    project_id: str | None = Query(default=None),
     corpus_role: str | None = Query(default=None, pattern="^(retrieval|evaluation|quarantine)$"),
     quality_status: str | None = Query(
         default=None, pattern="^(unverified|verified|failed|deprecated)$"
@@ -325,14 +278,6 @@ async def list_sql_assets(
         permission="view",
     )
     _, tenant_id, workspace_id = _scope(request, current_user)
-    await _validate_project(
-        db,
-        project_id=project_id,
-        user_id=current_user.id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        data_source_id=database_id,
-    )
     source_conditions = [
         SQLAssetSource.tenant_id == tenant_id,
         SQLAssetSource.workspace_id == workspace_id,
@@ -343,16 +288,6 @@ async def list_sql_assets(
         SQLAsset.workspace_id == workspace_id,
         SQLAsset.data_source_id == database_id,
     ]
-    if project_id:
-        source_conditions.append(
-            or_(SQLAssetSource.project_id.is_(None), SQLAssetSource.project_id == project_id)
-        )
-        asset_conditions.append(
-            or_(SQLAsset.project_id.is_(None), SQLAsset.project_id == project_id)
-        )
-    else:
-        source_conditions.append(SQLAssetSource.project_id.is_(None))
-        asset_conditions.append(SQLAsset.project_id.is_(None))
     if status:
         asset_conditions.append(SQLAsset.status == status)
     if corpus_role:
@@ -445,14 +380,6 @@ async def update_sql_asset(
     )
     if asset is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="SQL 资产不存在")
-    await _validate_project(
-        db,
-        project_id=asset.project_id,
-        user_id=current_user.id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        data_source_id=database_id,
-    )
     if payload.expected_updated_at is not None and asset.updated_at != payload.expected_updated_at:
         raise AppException(
             ErrorCodes.RESOURCE_EXISTS.code,
@@ -582,14 +509,6 @@ async def delete_sql_asset_source(
     )
     if source is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="SQL 资产源文件不存在")
-    await _validate_project(
-        db,
-        project_id=source.project_id,
-        user_id=current_user.id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        data_source_id=database_id,
-    )
     await db.delete(source)
     await db.commit()
     await write_audit_log(

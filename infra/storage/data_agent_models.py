@@ -44,7 +44,6 @@ class DataAgentRunRecord(Base):
     )
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     data_source_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -119,7 +118,6 @@ class DataAgentSemanticAsset(Base):
     )
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     data_source_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -237,7 +235,6 @@ class DataAgentLearningPattern(Base):
     )
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     scope_key: Mapped[str] = mapped_column(String(128), nullable=False, default="__global__")
     data_source_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True

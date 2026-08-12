@@ -77,19 +77,17 @@ def test_required_rag_policy_supplements_intent_and_plan() -> None:
     assert grounded.execution_plan.steps[0].capability == "rag"
 
 
-def test_project_document_scope_keeps_current_users_unscoped_documents() -> None:
+def test_workspace_document_scope_keeps_current_users_documents() -> None:
     stmt = _apply_document_scope(
         select(Document),
         user_id="user-a",
         tenant_id="tenant-a",
         workspace_id="workspace-a",
-        project_id="project-a",
-        include_personal_unscoped=True,
     )
     sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
-    assert "documents.project_id = 'project-a'" in sql
-    assert "documents.project_id IS NULL" in sql
+    assert "documents.tenant_id = 'tenant-a'" in sql
+    assert "documents.workspace_id = 'workspace-a'" in sql
     assert "documents.owner_id = 'user-a'" in sql
 
 

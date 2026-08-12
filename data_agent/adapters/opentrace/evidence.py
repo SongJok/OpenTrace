@@ -407,7 +407,6 @@ class OpenTraceEvidenceProvider:
                 data_source_id=self.data_source.id,
                 question=question,
                 dialect=dialect,
-                project_id=scope.project_id,
                 include_draft_reference=False,
                 available_tables=list(inspection.column_map) or inspection.table_names,
             )
@@ -557,10 +556,6 @@ class OpenTraceEvidenceProvider:
                             DataAgentSemanticAsset.workspace_id == scope.workspace_id,
                             DataAgentSemanticAsset.data_source_id == self.data_source.id,
                             DataAgentSemanticAsset.status == "published",
-                            or_(
-                                DataAgentSemanticAsset.project_id.is_(None),
-                                DataAgentSemanticAsset.project_id == scope.project_id,
-                            ),
                         )
                     )
                 )
@@ -626,8 +621,7 @@ class OpenTraceEvidenceProvider:
                             DataAgentLearningPattern.tenant_id == scope.tenant_id,
                             DataAgentLearningPattern.workspace_id == scope.workspace_id,
                             DataAgentLearningPattern.data_source_id == self.data_source.id,
-                            DataAgentLearningPattern.scope_key
-                            == (scope.project_id or "__global__"),
+                            DataAgentLearningPattern.scope_key == "__global__",
                             DataAgentLearningPattern.schema_fingerprint == schema_fingerprint,
                             DataAgentLearningPattern.semantic_version == current_semantic_version,
                             DataAgentLearningPattern.status.in_(["observed", "trusted"]),
@@ -685,11 +679,6 @@ class OpenTraceEvidenceProvider:
                         citation=learning_row.last_run_id,
                     )
                 )
-            memory_scope = (
-                DataAgentRunRecord.project_id.is_(None)
-                if scope.project_id is None
-                else DataAgentRunRecord.project_id == scope.project_id
-            )
             memory_rows = list(
                 (
                     await self.db.execute(
@@ -702,7 +691,6 @@ class OpenTraceEvidenceProvider:
                             DataAgentRunRecord.state == "completed",
                             DataAgentRunRecord.schema_fingerprint == schema_fingerprint,
                             DataAgentRunRecord.semantic_version == current_semantic_version,
-                            memory_scope,
                         )
                         .order_by(DataAgentRunRecord.completed_at.desc())
                         .limit(30)

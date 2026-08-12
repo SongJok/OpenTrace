@@ -44,4 +44,4 @@ Agent topology manifest、bootstrap、Worker 和 AgentLoop 必须保持同一集
 2. Redis 仅用于投递和唤醒；丢失消息时 Worker 通过数据库租约恢复。
 3. API 进程不运行模型、工具或后台任务。
 4. SSE 断开不会取消 Response，客户端可按 sequence number 续传。
-5. 资源访问同时匹配 user、tenant、workspace 以及 Project/数据源权限。
+5. 资源访问同时匹配 user、tenant、workspace 以及数据源权限。

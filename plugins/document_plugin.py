@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import and_, delete, or_, select, text
+from sqlalchemy import delete, or_, select, text
 
 from infra.config.settings import settings
 from infra.observability.logger import get_logger
@@ -434,11 +434,10 @@ class DocumentPlugin(BasePlugin):
         *,
         tenant_id: str | None = None,
         workspace_id: str | None = None,
-        project_id: str | None = None,
     ) -> list[ContextChunk]:
         from kernel.context_builder import ContextChunk
 
-        scope = dict(tenant_id=tenant_id, workspace_id=workspace_id, project_id=project_id)
+        scope = dict(tenant_id=tenant_id, workspace_id=workspace_id)
         try:
             candidates = await fetch_document_candidates(
                 user_id=user_id, query=query, limit=200, **scope
@@ -476,7 +475,6 @@ class DocumentPlugin(BasePlugin):
         *,
         tenant_id: str | None = None,
         workspace_id: str | None = None,
-        project_id: str | None = None,
     ) -> list[ContextChunk]:
         from kernel.context_builder import ContextChunk
 
@@ -507,13 +505,6 @@ class DocumentPlugin(BasePlugin):
                     tenant_metadata={"tenant_id": tenant_id, "workspace_id": workspace_id},
                 )
             )
-            if project_id:
-                stmt = stmt.where(
-                    or_(
-                        Document.project_id == project_id,
-                        and_(Document.project_id.is_(None), Document.owner_id == user_id),
-                    )
-                )
             if terms:
                 like_filters = []
                 for term in terms[:8]:

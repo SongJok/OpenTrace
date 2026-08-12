@@ -506,7 +506,6 @@ class AgentLoop:
                 "history_items": max(0, len(context.messages) - 2),
                 "memory_ids": context.memory_ids,
                 "attachment_ids": context.attachment_ids,
-                "project_id": context.project_id,
                 "assistant_profile_id": context.assistant_profile_id,
                 "modalities": context.modality_counts,
                 "manifest": context.context_manifest,
@@ -2851,18 +2850,12 @@ class AgentLoop:
         """Resolve trusted scope server-side; never trust model-supplied ids."""
         from infra.security.resource_scope import load_scoped_conversation
         from infra.storage.database import AsyncSessionLocal
-        from infra.storage.models import (
-            AssistantProfile,
-            Project,
-        )
+        from infra.storage.models import AssistantProfile
 
         hydrated = dict(params or {})
         extension = dict((response.request_payload or {}).get("opentrace") or {})
-        project_id = str(extension.get("project_id") or "").strip() or None
         hydrated["tenant_id"] = response.tenant_id
         hydrated["workspace_id"] = response.workspace_id
-        if agent_name == "rag" and project_id:
-            hydrated["project_id"] = project_id
 
         if agent_name not in {"data", "rag"}:
             return hydrated, None
@@ -2897,21 +2890,8 @@ class AgentLoop:
                     or (response.request_payload or {}).get("memory_mode")
                     or "enabled"
                 )
-                project = None
-                if project_id:
-                    project = await scope_db.scalar(
-                        select(Project).where(
-                            Project.id == project_id,
-                            Project.user_id == response.user_id,
-                            Project.tenant_id == response.tenant_id,
-                            Project.workspace_id == response.workspace_id,
-                            Project.archived_at.is_(None),
-                        )
-                    )
-                profile_id = (
-                    str(extension.get("assistant_profile_id") or "").strip()
-                    or getattr(session, "assistant_profile_id", None)
-                    or getattr(project, "assistant_profile_id", None)
+                profile_id = str(extension.get("assistant_profile_id") or "").strip() or getattr(
+                    session, "assistant_profile_id", None
                 )
                 profile = (
                     await scope_db.scalar(
@@ -2934,14 +2914,9 @@ class AgentLoop:
                     and memory_policy.get("enabled") is not False
                     and not enterprise_grounding_required
                 )
-                hydrated["memory_project_only"] = bool(
-                    getattr(project, "memory_mode", "default") == "project_only"
-                    or memory_policy.get("project_only") is True
-                )
                 return hydrated, None
             # 在线问数只接受服务端可信选源结果，兼容字段和模型参数都不能收窄或强制数据源。
             for untrusted_key in (
-                "project_id",
                 "data_source_id",
                 "data_source_ids",
                 "data_source_name",
@@ -2956,7 +2931,6 @@ class AgentLoop:
                     user_id=response.user_id,
                     tenant_id=response.tenant_id,
                     workspace_id=response.workspace_id,
-                    project_id=None,
                     explicit_id=None,
                     candidate_ids=None,
                 )

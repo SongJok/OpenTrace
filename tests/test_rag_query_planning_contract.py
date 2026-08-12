@@ -200,7 +200,7 @@ async def test_rag_agent_returns_query_plan_trace_and_protocol_evidence(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_document_fallback_keeps_project_scope(monkeypatch):
+async def test_document_fallback_keeps_workspace_scope(monkeypatch):
     calls = []
 
     async def fake_search_chunks(
@@ -211,9 +211,8 @@ async def test_document_fallback_keeps_project_scope(monkeypatch):
         *,
         tenant_id=None,
         workspace_id=None,
-        project_id=None,
     ):
-        calls.append(("chunks", tenant_id, workspace_id, project_id))
+        calls.append(("chunks", tenant_id, workspace_id))
         return []
 
     async def fake_search_llmwiki(
@@ -224,9 +223,8 @@ async def test_document_fallback_keeps_project_scope(monkeypatch):
         *,
         tenant_id=None,
         workspace_id=None,
-        project_id=None,
     ):
-        calls.append(("llmwiki", tenant_id, workspace_id, project_id))
+        calls.append(("llmwiki", tenant_id, workspace_id))
         return []
 
     monkeypatch.setattr("plugins.document_plugin.DocumentPlugin.search_chunks", fake_search_chunks)
@@ -244,7 +242,6 @@ async def test_document_fallback_keeps_project_scope(monkeypatch):
             params={
                 "tenant_id": "tenant-a",
                 "workspace_id": "workspace-a",
-                "project_id": "project-a",
                 "sources": ["documents"],
             },
         )
@@ -252,4 +249,4 @@ async def test_document_fallback_keeps_project_scope(monkeypatch):
 
     assert result.status == "success"
     assert calls
-    assert all(call[1:] == ("tenant-a", "workspace-a", "project-a") for call in calls)
+    assert all(call[1:] == ("tenant-a", "workspace-a") for call in calls)

@@ -102,7 +102,6 @@ describe('认证会话失效处理', () => {
     })
     useChatPreferences.setState({
       assistantProfileId: 'profile-old',
-      projectId: 'project-old',
     })
     storage.setItem('opentrace:selected_data_source', JSON.stringify({ id: 'source-old' }))
 
@@ -112,7 +111,6 @@ describe('认证会话失效处理', () => {
     expect(useChatStore.getState().activeId).toBeNull()
     expect(useChatStore.getState().messages).toEqual({})
     expect(useChatPreferences.getState().assistantProfileId).toBeNull()
-    expect(useChatPreferences.getState().projectId).toBeNull()
     expect(storage.getItem('opentrace:selected_data_source')).toBeNull()
   })
 

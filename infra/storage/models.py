@@ -118,7 +118,6 @@ class ChatSession(Base):
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     assistant_profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     conversation_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -374,7 +373,6 @@ class Document(Base):
         String(128), nullable=False, default="default", index=True
     )
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     file_type: Mapped[str] = mapped_column(String(20), default="text")  # pdf|txt|docx|md
     file_size: Mapped[int] = mapped_column(Integer, default=0)
@@ -470,7 +468,7 @@ class DocumentLLMWiki(Base):
 
 
 class KnowledgeSpace(Base):
-    """企业知识治理边界，独立于临时 Project 生命周期。"""
+    """企业知识治理边界，独立于临时会话生命周期。"""
 
     __tablename__ = "knowledge_spaces"
     __table_args__ = (
@@ -491,7 +489,7 @@ class KnowledgeSpace(Base):
     slug: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     space_type: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="project", index=True
+        String(32), nullable=False, default="workspace", index=True
     )
     visibility: Mapped[str] = mapped_column(
         String(20), nullable=False, default="members", index=True
@@ -510,7 +508,7 @@ class KnowledgeSpace(Base):
 
 
 class KnowledgeSpaceMember(Base):
-    """空间级 ReBAC 关系；subject 可为用户、部门、组、岗位或项目。"""
+    """空间级 ReBAC 关系；subject 可为用户、部门、组或岗位。"""
 
     __tablename__ = "knowledge_space_members"
     __table_args__ = (
@@ -877,34 +875,6 @@ class KnowledgePrincipalMembership(Base):
     )
 
 
-class KnowledgeSpaceProject(Base):
-    """Project 挂载长期 Knowledge Space，而不是拥有其生命周期。"""
-
-    __tablename__ = "knowledge_space_projects"
-    __table_args__ = (
-        UniqueConstraint("space_id", "project_id", name="uq_knowledge_space_project"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    space_id: Mapped[str] = mapped_column(
-        String(36),
-        ForeignKey("knowledge_spaces.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    project_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    tenant_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    workspace_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    attached_by: Mapped[str] = mapped_column(String(36), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
 class KnowledgeSource(Base):
     __tablename__ = "knowledge_sources"
     __table_args__ = (
@@ -922,7 +892,6 @@ class KnowledgeSource(Base):
     workspace_id: Mapped[str] = mapped_column(
         String(128), nullable=False, default="default", index=True
     )
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     space_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("knowledge_spaces.id", ondelete="SET NULL"),
@@ -1187,7 +1156,6 @@ class KnowledgeCompilationJob(Base):
     workspace_id: Mapped[str] = mapped_column(
         String(128), nullable=False, default="default", index=True
     )
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
     compiler_version: Mapped[str] = mapped_column(String(64), nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1267,7 +1235,6 @@ class KnowledgeRule(Base):
     workspace_id: Mapped[str] = mapped_column(
         String(128), nullable=False, default="default", index=True
     )
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     rule_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     rule_type: Mapped[str] = mapped_column(String(32), nullable=False, default="schema")
@@ -1657,34 +1624,6 @@ class AssistantProfile(Base):
     )
 
 
-class Project(Base):
-    """Conversation workspace with isolated instructions and memory scope."""
-
-    __tablename__ = "projects"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    tenant_id: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="default", index=True
-    )
-    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    memory_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="default")
-    assistant_profile_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    data_source_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    archived_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-
 class ResponseApproval(Base):
     """Durable pause point for a side-effecting tool call."""
 
@@ -1739,7 +1678,6 @@ class GoalRun(Base):
         String(128), nullable=False, default="default", index=True
     )
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     objective: Mapped[str] = mapped_column(Text, nullable=False)
     success_criteria: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -1860,7 +1798,6 @@ class TaskDefinition(Base):
         String(128), nullable=False, default="default", index=True
     )
     workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
-    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     rrule: Mapped[str | None] = mapped_column(String(512), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default=DEFAULT_TIMEZONE)
@@ -2141,6 +2078,7 @@ class DataSource(Base):
     username: Mapped[str] = mapped_column(String(255), nullable=False)
     password_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    access_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="workspace")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

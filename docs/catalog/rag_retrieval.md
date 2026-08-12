@@ -15,7 +15,7 @@ Lint 会记录 `KnowledgeObservation`，并通过 `/api/v1/knowledge/evolution/p
 
 ## 企业知识空间与授权
 
-企业知识检索不再只按 `owner_id` 判断。在线查询通过 `knowledge.access` 解析用户、部门、组、岗位、Project、空间角色和密级，并在候选召回前过滤 Source ACL、有效期、撤回状态及 Project 挂载关系。旧个人资产继续按 owner/project 兼容。证据对象同时携带 `space_id`、`classification`、`source_system`、`sync_status`、有效期和复审日期，Session 热证据每轮重新授权。
+企业知识检索不再只按 `owner_id` 判断。在线查询通过 `knowledge.access` 解析用户、部门、组、岗位、空间角色和密级，并在候选召回前过滤 Source ACL、有效期和撤回状态。旧个人资产继续按 owner 兼容。证据对象同时携带 `space_id`、`classification`、`source_system`、`sync_status`、有效期和复审日期，Session 热证据每轮重新授权。
 
 排序在文本相关性之外加入权威级别与过期复审惩罚；RAG 仍通过多 lane RRF 融合受治理知识和原始文档证据。
 
@@ -34,8 +34,7 @@ Lint 会记录 `KnowledgeObservation`，并通过 `/api/v1/knowledge/evolution/p
 - 路由与预取状态通过 `opentrace.rag.routing`、`opentrace.rag.prefetched` 事件及
   `context_manifest.rag_routing` 持久化，便于前端展示和审计。
 
-Project 会话中的 RAG 文档 lane 会检索“当前 Project 文档 + 当前用户未绑定 Project 的我的资料”。
-该兼容范围只用于 RAG；`POST /documents/search` 的 `project_id` 仍保持严格 Project 过滤。所有候选继续先
+RAG 文档 lane 会检索当前用户在工作区内有权访问的个人资料和已发布知识。所有候选继续先
 执行 user/tenant/workspace 权限谓词，管理员权限也不能借此读取其他用户的未绑定个人文档。
 
 ## 2. 核心职责

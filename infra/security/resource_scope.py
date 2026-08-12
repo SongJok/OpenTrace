@@ -25,7 +25,6 @@ def scoped_documents_statement(
     user_id: str,
     tenant_metadata: dict[str, Any] | None,
     document_id: str | None = None,
-    project_id: str | None = None,
 ) -> Select:
     tenant_id, workspace_id = normalized_tenant_scope(tenant_metadata)
     stmt = select(Document).where(
@@ -35,8 +34,6 @@ def scoped_documents_statement(
     )
     if document_id:
         stmt = stmt.where(Document.id == document_id)
-    if project_id:
-        stmt = stmt.where(Document.project_id == project_id)
     return stmt
 
 
@@ -147,10 +144,13 @@ def accessible_data_sources_statement(
             ),
         )
     )
+    access_predicates = [DataSource.user_id == user_id, permission_exists]
+    if required_permission in {"view", "query"}:
+        access_predicates.append(DataSource.access_mode == "workspace")
     stmt = select(DataSource).where(
         DataSource.tenant_id == tenant_id,
         DataSource.workspace_id == workspace_id,
-        or_(DataSource.user_id == user_id, permission_exists),
+        or_(*access_predicates),
     )
     if data_source_id:
         stmt = stmt.where(DataSource.id == data_source_id)

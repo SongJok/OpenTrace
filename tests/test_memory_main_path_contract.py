@@ -65,7 +65,7 @@ def test_memory_e2e_covers_cross_conversation_and_isolation() -> None:
     assert "用户记忆跨会话召回" in source
     assert "禁用模式与临时会话隔离" in source
     assert "会话记忆隔离与级联清理" in source
-    assert "Project 记忆隔离" in source
+    assert "Project 记忆隔离" not in source
     assert "对话自动学习与新会话召回" in source
     assert "无需明确指令的主动学习与跨会话召回" in source
     assert "重复观察强化同一记忆且不生成重复节点" in source
@@ -86,11 +86,10 @@ def test_rag_memory_retrieval_keeps_runtime_scope_and_lifecycle_filters() -> Non
         'UserMemory.status == "active"',
         "UserMemory.expires_at > now",
         'UserMemory.scope_type == "conversation"',
-        'UserMemory.scope_type == "project"',
     ):
         assert clause in rag
     assert 'hydrated["memory_enabled"]' in runner
-    assert 'hydrated["memory_project_only"]' in runner
+    assert 'hydrated["memory_enabled"]' in runner
 
 
 def test_confirmed_memory_prompt_requires_direct_answers() -> None:

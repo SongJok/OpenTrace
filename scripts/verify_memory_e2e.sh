@@ -22,7 +22,6 @@ base_url, email, password = sys.argv[1:]
 token = ""
 conversation_ids: list[str] = []
 memory_ids: list[str] = []
-project_ids: list[str] = []
 original_settings: dict | None = None
 original_constitution: dict | None = None
 constitution_changed = False
@@ -166,11 +165,6 @@ def cleanup() -> None:
             request(f"/api/v2/conversations/{conversation_id}", "DELETE", timeout=20)
         except Exception:
             pass
-    for project_id in reversed(project_ids):
-        try:
-            request(f"/api/v2/projects/{project_id}", "DELETE", timeout=20)
-        except Exception:
-            pass
     if original_settings is not None:
         try:
             request("/api/v2/memories/settings", "POST", original_settings, timeout=20)
@@ -216,8 +210,8 @@ invalid = expect_error(
     "/api/v2/memories",
     {
         "memory_type": "semantic",
-        "content": "无效 Project 记忆",
-        "scope_type": "project",
+        "content": "无效工作区记忆",
+        "scope_type": "workspace",
     },
 )
 assert invalid.get("code") == 1003, invalid
@@ -265,30 +259,6 @@ conversation_ids.remove(conversation)
 assert all(item["id"] != conversation_memory_id for item in memories())
 memory_ids.remove(conversation_memory_id)
 print("[PASS] 会话记忆隔离与级联清理")
-
-project = request(
-    "/api/v2/projects",
-    "POST",
-    {"name": f"memory-e2e-{suffix}", "memory_mode": "default"},
-)
-project_id = project["id"]
-project_ids.append(project_id)
-project_conversation = create_conversation(project_id=project_id)
-project_marker = f"项目暗号-{suffix}"
-project_memory_id = create_memory(
-    memory_type="semantic",
-    kind="fact",
-    memory_key=f"verify.project.{suffix}",
-    content=f"当前项目暗号是 {project_marker}",
-    scope_type="project",
-    scope_id=project_id,
-)
-project_result = respond(project_conversation, "当前项目暗号是什么？")
-assert project_memory_id in response_memory_ids(project_result)
-general = create_conversation()
-general_result = respond(general, "当前项目暗号是什么？")
-assert project_memory_id not in response_memory_ids(general_result)
-print("[PASS] Project 记忆隔离")
 
 request(
     "/api/v2/memories/settings",

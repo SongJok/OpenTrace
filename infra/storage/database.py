@@ -190,7 +190,7 @@ async def _verify_runtime_schema(conn) -> None:
             "model",
             "api_mode",
         },
-        "projects": {"memory_mode"},
+        "data_sources": {"access_mode"},
         "user_memories": {
             "score",
             "personal_category",
@@ -311,7 +311,6 @@ async def _verify_runtime_schema(conn) -> None:
         "response_model_calls",
         "response_tool_executions",
         "user_custom_instructions",
-        "projects",
         "assistant_profiles",
         "response_approvals",
         "response_outbox",
@@ -379,10 +378,9 @@ async def _ensure_responses_columns(conn) -> None:
 async def _ensure_unified_runtime_columns(conn) -> None:
     """Additive local-dev guard; Alembic remains authoritative in production."""
     statements = [
-        "ALTER TABLE IF EXISTS public.chat_sessions ADD COLUMN IF NOT EXISTS project_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.chat_sessions ADD COLUMN IF NOT EXISTS assistant_profile_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.chat_sessions ADD COLUMN IF NOT EXISTS conversation_instructions TEXT",
-        "ALTER TABLE IF EXISTS public.projects ADD COLUMN IF NOT EXISTS memory_mode VARCHAR(20) NOT NULL DEFAULT 'default'",
+        "ALTER TABLE IF EXISTS public.data_sources ADD COLUMN IF NOT EXISTS access_mode VARCHAR(20) NOT NULL DEFAULT 'workspace'",
         "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS goal_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.response_tool_executions ADD COLUMN IF NOT EXISTS side_effect_level VARCHAR(20) NOT NULL DEFAULT 'read'",
@@ -413,7 +411,6 @@ async def _ensure_unified_runtime_columns(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_attachments_media_kind ON public.attachments (media_kind)",
         "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(128) NOT NULL DEFAULT 'default'",
         "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS workspace_id VARCHAR(128) NOT NULL DEFAULT 'default'",
-        "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS project_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS conversation_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS rrule VARCHAR(512)",
         "ALTER TABLE IF EXISTS public.task_definitions ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai'",

@@ -23,7 +23,7 @@ complete startup flow and port map.
 
 1. Keep changes focused and explain the user-visible outcome.
 2. Add or update contract tests for behavior changes.
-3. Preserve user, tenant, workspace, and Project boundaries on every resource query.
+3. Preserve user, tenant, and workspace boundaries on every resource query.
 4. Do not execute models or tools inside the API process; durable Responses run in Worker.
 5. Route write/destructive tools through persisted approval and idempotency records.
 6. Update `.env.example` and configuration documentation when adding settings.

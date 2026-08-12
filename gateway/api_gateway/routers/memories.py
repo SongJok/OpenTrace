@@ -18,7 +18,6 @@ from infra.storage.models import (
     ChatSession,
     MemoryCandidate,
     MemoryEvidence,
-    Project,
     User,
     UserMemory,
     UserMemorySettings,
@@ -56,7 +55,7 @@ class MemoryCreateRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
     pinned: bool = False
-    scope_type: str = Field(default="user", pattern="^(user|project|conversation)$")
+    scope_type: str = Field(default="user", pattern="^(user|conversation)$")
     scope_id: str | None = None
 
 
@@ -98,13 +97,12 @@ async def _validated_scope_id(
             ErrorCodes.PARAM_INVALID.code,
             message=f"{scope_type} scope 必须设置 scope_id",
         )
-    model = Project if scope_type == "project" else ChatSession
     row = await db.scalar(
-        select(model.id).where(
-            model.id == scope_id,
-            model.user_id == user_id,
-            model.tenant_id == tenant_id,
-            model.workspace_id == workspace_id,
+        select(ChatSession.id).where(
+            ChatSession.id == scope_id,
+            ChatSession.user_id == user_id,
+            ChatSession.tenant_id == tenant_id,
+            ChatSession.workspace_id == workspace_id,
         )
     )
     if row is None:

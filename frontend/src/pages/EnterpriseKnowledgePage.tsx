@@ -31,7 +31,6 @@ import {
   type KnowledgeSpaceItem,
 } from '../api/client'
 import { useAuthStore } from '../store/auth'
-import { useChatPreferences } from '../store/chatPreferences'
 
 type Tab = 'assets' | 'sources'
 type FeedbackTarget = { targetType: string; targetId: string }
@@ -40,7 +39,7 @@ const TYPE_LABEL: Record<string, string> = {
   company: '公司',
   department: '部门',
   role: '岗位',
-  project: '项目',
+  workspace: '工作区',
   personal: '个人',
 }
 
@@ -68,7 +67,6 @@ function evidenceFeedbackTarget(result: EnterpriseKnowledgeEvidence): FeedbackTa
 export default function EnterpriseKnowledgePage({ onBack }: { onBack?: () => void }) {
   const token = useAuthStore((state) => state.token)!
   const platformRole = useAuthStore((state) => state.role)
-  const projectId = useChatPreferences((state) => state.projectId)
   const navigate = useNavigate()
   const [spaces, setSpaces] = useState<KnowledgeSpaceItem[]>([])
   const [selectedSpaceId, setSelectedSpaceId] = useState('')
@@ -83,7 +81,7 @@ export default function EnterpriseKnowledgePage({ onBack }: { onBack?: () => voi
   const [message, setMessage] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [createName, setCreateName] = useState('')
-  const [createType, setCreateType] = useState<KnowledgeSpaceItem['space_type']>('project')
+  const [createType, setCreateType] = useState<KnowledgeSpaceItem['space_type']>('workspace')
 
   const selectedSpace = useMemo(
     () => spaces.find((space) => space.id === selectedSpaceId) ?? null,
@@ -131,7 +129,7 @@ export default function EnterpriseKnowledgePage({ onBack }: { onBack?: () => voi
     setSearching(true)
     setMessage('')
     try {
-      setResults(await apiSearchEnterpriseKnowledge(token, query.trim(), projectId, selectedSpaceId, 12))
+      setResults(await apiSearchEnterpriseKnowledge(token, query.trim(), selectedSpaceId, 12))
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error))
     } finally {

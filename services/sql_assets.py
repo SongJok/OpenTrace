@@ -28,7 +28,6 @@ from infra.storage.models import (
     DataSource,
     MetricDefinition,
     MetricLineage,
-    Project,
     SchemaMetadata,
     SQLAsset,
     SQLAssetSource,
@@ -1473,30 +1472,6 @@ async def learn_quarantined_etl_assets(
     return totals
 
 
-async def _validate_project_scope(
-    db: AsyncSession,
-    *,
-    project_id: str | None,
-    user_id: str,
-    tenant_id: str,
-    workspace_id: str,
-    data_source_id: str,
-) -> None:
-    if not project_id:
-        return
-    project = await db.scalar(
-        select(Project).where(
-            Project.id == project_id,
-            Project.user_id == user_id,
-            Project.tenant_id == tenant_id,
-            Project.workspace_id == workspace_id,
-            Project.archived_at.is_(None),
-        )
-    )
-    if project is None or data_source_id not in set(project.data_source_ids or []):
-        raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="Project 未绑定该数据源")
-
-
 async def create_sql_asset_source(
     db: AsyncSession,
     *,
@@ -1508,7 +1483,6 @@ async def create_sql_asset_source(
     content_type: str,
     source_text: str,
     dialect: str,
-    project_id: str | None = None,
     corpus_role: str = "retrieval",
     domain: str | None = None,
     owner: str | None = None,
@@ -1518,15 +1492,6 @@ async def create_sql_asset_source(
     encoded = source_text.encode("utf-8")
     if len(encoded) > MAX_UPLOAD_BYTES:
         raise ValidationException(f"SQL 文件不能超过 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
-    await _validate_project_scope(
-        db,
-        project_id=project_id,
-        user_id=user_id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        data_source_id=data_source_id,
-    )
-
     # 同一数据源的上传在事务内串行化，消除“先查再插”的内容去重和版本号竞争。
     await db.scalar(select(DataSource.id).where(DataSource.id == data_source_id).with_for_update())
     content_hash = _hash_text(source_text)
@@ -1535,11 +1500,6 @@ async def create_sql_asset_source(
         SQLAssetSource.workspace_id == workspace_id,
         SQLAssetSource.data_source_id == data_source_id,
         SQLAssetSource.content_sha256 == content_hash,
-        (
-            SQLAssetSource.project_id == project_id
-            if project_id
-            else SQLAssetSource.project_id.is_(None)
-        ),
     ]
     existing = await db.scalar(select(SQLAssetSource).where(*source_scope))
     if existing is not None:
@@ -1574,11 +1534,6 @@ async def create_sql_asset_source(
                     SQLAssetSource.workspace_id == workspace_id,
                     SQLAssetSource.data_source_id == data_source_id,
                     SQLAssetSource.filename == filename,
-                    (
-                        SQLAssetSource.project_id == project_id
-                        if project_id
-                        else SQLAssetSource.project_id.is_(None)
-                    ),
                 )
                 .order_by(SQLAssetSource.version.desc())
                 .limit(1)
@@ -1592,7 +1547,6 @@ async def create_sql_asset_source(
         user_id=user_id,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
-        project_id=project_id,
         data_source_id=data_source_id,
         filename=filename,
         content_type=content_type or "text/plain",
@@ -1615,11 +1569,6 @@ async def create_sql_asset_source(
                 SQLAsset.tenant_id == tenant_id,
                 SQLAsset.workspace_id == workspace_id,
                 SQLAsset.data_source_id == data_source_id,
-                (
-                    SQLAsset.project_id == project_id
-                    if project_id
-                    else SQLAsset.project_id.is_(None)
-                ),
                 or_(
                     SQLAsset.sql_hash.in_(parsed_hashes),
                     SQLAsset.structure_hash.in_(parsed_structure_hashes),
@@ -1663,7 +1612,6 @@ async def create_sql_asset_source(
             user_id=user_id,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
-            project_id=project_id,
             data_source_id=data_source_id,
             statement_index=item.statement_index,
             title=item.title or f"{filename} / SQL {item.statement_index}",
@@ -1732,7 +1680,6 @@ def serialize_asset(asset: SQLAsset, *, include_sql: bool = True) -> dict[str, A
         "lineage": asset.lineage or {},
         "validation_report": asset.validation_report or {},
         "schema_fingerprint": asset.schema_fingerprint,
-        "project_id": asset.project_id,
         "approved_by": asset.approved_by,
         "approved_at": asset.approved_at,
         "created_at": asset.created_at,
@@ -1754,7 +1701,6 @@ def serialize_source(source: SQLAssetSource) -> dict[str, Any]:
         "statement_count": source.statement_count,
         "parse_report": source.parse_report or {},
         "version": source.version,
-        "project_id": source.project_id,
         "created_at": source.created_at,
     }
 
@@ -1767,7 +1713,6 @@ async def retrieve_sql_assets(
     data_source_id: str,
     question: str,
     dialect: str,
-    project_id: str | None,
     limit: int = 5,
     include_draft_reference: bool = False,
     available_tables: list[str] | None = None,
@@ -1792,10 +1737,6 @@ async def retrieve_sql_assets(
             SQLAsset.executable.is_(True),
             SQLAsset.dialect == dialect,
         )
-    if project_id:
-        stmt = stmt.where(or_(SQLAsset.project_id.is_(None), SQLAsset.project_id == project_id))
-    else:
-        stmt = stmt.where(SQLAsset.project_id.is_(None))
     rows = list((await db.execute(stmt.limit(500))).scalars().all())
 
     known_tables = {
@@ -2504,7 +2445,6 @@ async def generate_sql_query_draft(
     data_source: DataSource,
     question: str,
     supplied_sql: str | None = None,
-    project_id: str | None = None,
     conversation_id: str | None = None,
     response_id: str | None = None,
     group_type: str = "alternative",
@@ -2518,15 +2458,6 @@ async def generate_sql_query_draft(
         raise ValidationException("group_type 仅支持 alternative 或 batch")
     if output_mode not in {"sql_only", "execute_and_answer"}:
         raise ValidationException("output_mode 仅支持 sql_only 或 execute_and_answer")
-    await _validate_project_scope(
-        db,
-        project_id=project_id,
-        user_id=user_id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        data_source_id=data_source.id,
-    )
-
     from data_agent.adapters.opentrace.evidence import OpenTraceEvidenceProvider
     from data_agent.adapters.opentrace.generator import OpenTraceSQLGenerator
     from data_agent.adapters.opentrace.repository import OpenTraceRunRepository
@@ -2552,7 +2483,6 @@ async def generate_sql_query_draft(
         tenant_id=tenant_id,
         workspace_id=workspace_id,
         data_source_id=data_source.id,
-        project_id=project_id,
     )
     normalized_source_decision = (
         DataSourceDecision.model_validate(source_decision)
@@ -2619,7 +2549,6 @@ async def generate_sql_query_draft(
         user_id=user_id,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
-        project_id=project_id,
         conversation_id=conversation_id,
         response_id=response_id,
         data_agent_run_id=run.id,
@@ -2794,14 +2723,6 @@ async def execute_sql_query_draft(
     )
     if source is None:
         raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="无权执行该数据源查询")
-    await _validate_project_scope(
-        db,
-        project_id=draft.project_id,
-        user_id=user_id,
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        data_source_id=draft.data_source_id,
-    )
     if draft.expires_at and draft.expires_at < datetime.now(UTC):
         draft.status = "expired"
         await db.commit()
@@ -2912,7 +2833,6 @@ async def execute_sql_query_draft(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             data_source_id=draft.data_source_id,
-            project_id=draft.project_id,
         )
         run = await DataAgentService(
             evidence_provider=OpenTraceEvidenceProvider(db, source),
