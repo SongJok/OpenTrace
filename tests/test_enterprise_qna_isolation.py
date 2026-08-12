@@ -265,6 +265,76 @@ async def test_data_agent_ignores_client_and_model_source_selection(monkeypatch)
     assert params["data_source_name"] == "认证交易数仓"
     assert params["source_decision"]["selected_data_source_id"] == "trusted-source"
     assert params["generation_only"] is True
+    assert params["group_type"] == "alternative"
+    assert params["output_mode"] == "sql_only"
+
+
+@pytest.mark.asyncio
+async def test_pending_sql_draft_lookup_is_parent_chain_and_full_scope_bounded() -> None:
+    parent = _response(id="parent-1", parent_response_id=None)
+
+    class Session:
+        statement = None
+
+        async def get(self, _model, key):
+            return parent if key == parent.id else None
+
+        async def scalar(self, statement):
+            self.statement = statement
+            return None
+
+    db = Session()
+    current = _response(parent_response_id=parent.id)
+
+    assert await AgentLoop._pending_sql_draft(db, response=current) is None
+    sql = str(db.statement)
+    for column in (
+        "sql_query_drafts.response_id",
+        "sql_query_drafts.conversation_id",
+        "sql_query_drafts.user_id",
+        "sql_query_drafts.tenant_id",
+        "sql_query_drafts.workspace_id",
+        "sql_query_drafts.status",
+    ):
+        assert column in sql
+
+
+@pytest.mark.asyncio
+async def test_governed_sql_execution_uses_response_identity_not_model_scope(monkeypatch) -> None:
+    from kernel.agent_loop import data_tools
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    captured: dict[str, object] = {}
+
+    async def execute(_db, **kwargs):
+        captured.update(kwargs)
+        return {"status": "completed"}
+
+    monkeypatch.setattr(data_tools, "execute_sql_query_draft", execute, raising=False)
+    monkeypatch.setattr("infra.storage.database.AsyncSessionLocal", Session)
+    monkeypatch.setattr("services.sql_assets.execute_sql_query_draft", execute)
+    result = await data_tools.execute_governed_sql_draft(
+        response=_response(),
+        arguments={
+            "draft_id": "draft-1",
+            "candidate_ids": ["candidate-1"],
+            "execute_all": False,
+            "user_id": "attacker",
+            "tenant_id": "tenant-other",
+            "workspace_id": "workspace-other",
+        },
+    )
+
+    assert result == {"status": "completed"}
+    assert captured["user_id"] == "user-1"
+    assert captured["tenant_id"] == "tenant-1"
+    assert captured["workspace_id"] == "workspace-1"
 
 
 @pytest.mark.asyncio

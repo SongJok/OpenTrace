@@ -1262,6 +1262,7 @@ def test_sql_asset_migration_and_responses_approval_contract() -> None:
     assert tool is not None
     assert tool.side_effect == "write"
     assert tool.max_retries == 0
+    assert "retry_failed" in tool.parameters["properties"]
 
 
 def test_public_query_routes_only_generate_drafts() -> None:

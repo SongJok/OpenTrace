@@ -2642,6 +2642,7 @@ def serialize_candidate(
 def serialize_draft(draft: SQLQueryDraft, candidates: list[SQLQueryCandidate]) -> dict[str, Any]:
     return {
         "id": draft.id,
+        "data_agent_run_id": getattr(draft, "data_agent_run_id", None),
         "data_source_id": draft.data_source_id,
         "question": draft.question,
         "group_type": draft.group_type,

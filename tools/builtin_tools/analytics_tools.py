@@ -32,8 +32,12 @@ from tools.registry.registry import registry
                 "type": "boolean",
                 "description": "仅当用户明确要求执行全部候选时设为 true",
             },
+            "retry_failed": {
+                "type": "boolean",
+                "description": "仅当用户明确要求重试失败候选时设为 true",
+            },
         },
-        "required": ["draft_id", "candidate_ids", "execute_all"],
+        "required": ["draft_id", "candidate_ids", "execute_all", "retry_failed"],
         "additionalProperties": False,
     },
     side_effect="write",
@@ -45,6 +49,7 @@ async def tool_execute_sql_draft(
     draft_id: str,
     candidate_ids: list[str] | None = None,
     execute_all: bool = False,
+    retry_failed: bool = False,
     user_id: str = "",
     tenant_id: str = "",
     workspace_id: str = "",
@@ -64,6 +69,7 @@ async def tool_execute_sql_draft(
             workspace_id=workspace_id,
             candidate_ids=candidate_ids,
             execute_all=execute_all,
+            retry_failed=retry_failed,
         )
 
 

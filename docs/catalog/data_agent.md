@@ -31,6 +31,8 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
   -> SQLGuard 校验 AST、表列范围、指标覆盖、时间边界和 JOIN
   -> SQLQueryDraft 投影为现有前端确认执行界面
   -> 用户显式确认
+  -> Responses Manager 只从当前父链恢复草案并确定性绑定用户选择
+  -> execute_sql_draft 写工具进入持久审批，审批恢复后仅执行一次
   -> Schema 与语义版本重检
   -> 数据库 EXPLAIN 成本预检
   -> 只读执行
@@ -203,6 +205,13 @@ PostgreSQL 是事实来源。草案状态不能代替 DataAgentRun 的证据、�
 
 `/api/v2/responses`、`/api/v1/data/query` 和管理员数据库 Query 页面都通过
 `services.sql_assets.generate_sql_query_draft()` 进入同一治理运行。
+
+在问答页中，`data` 能力只生成草案；用户下一轮说“执行第一个候选”或提供候选 ID 后，Manager
+只能从同一 user/tenant/workspace/conversation 的当前 Response 父链选择最近可执行草案，并把
+确定性参数绑定到 `execute_sql_draft`。备选方案必须选择一个并分别验证，候选不唯一且用户未指明
+时必须澄清，不能把多个替代 SQL 的结果拼成一个业务答案。该写工具沿用
+Responses 的持久审批与幂等账本；审批恢复后的 `answer`、`answer_citations`、`answer_metadata`、
+预检、结果验证和学习状态同时投影到最终 Response 元数据，便于前端展示与审计。
 
 ## 配置
 

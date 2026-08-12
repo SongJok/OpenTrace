@@ -56,12 +56,75 @@ def is_contextual_follow_up(query: str) -> bool:
     )
 
 
+def is_sql_draft_execution_request(query: str) -> bool:
+    """识别用户对已展示 SQL 草案或候选的明确执行选择。"""
+
+    normalized = re.sub(r"[\s，。！？,.!?]", "", (query or "").lower())
+    if normalized in {
+        "确认",
+        "确认执行",
+        "继续",
+        "执行",
+        "可以",
+        "好的",
+        "好",
+        "同意",
+        "批准",
+        "是的",
+        "就这样",
+        "按这个",
+        "confirm",
+        "continue",
+        "proceed",
+        "approve",
+        "yes",
+    }:
+        return True
+    targets = (
+        "sql草案",
+        "sql候选",
+        "候选",
+        "方案",
+        "第一个",
+        "第二个",
+        "第三个",
+        "第一条",
+        "第二条",
+        "第三条",
+        "全部",
+        "所有",
+        "candidate",
+        "draft",
+    )
+    actions = (
+        "执行",
+        "运行",
+        "采用",
+        "选择",
+        "使用",
+        "用第",
+        "按第",
+        "重试",
+        "确认",
+        "execute",
+        "run",
+        "retry",
+        "select",
+        "use",
+    )
+    return any(target in normalized for target in targets) and any(
+        action in normalized for action in actions
+    )
+
+
 def is_explicit_write_request(
     query: str,
     *,
     pending_action: dict[str, Any] | None = None,
 ) -> bool:
     if pending_action and is_affirmative_follow_up(query):
+        return True
+    if is_sql_draft_execution_request(query):
         return True
     normalized = re.sub(r"\s+", "", query or "")
     direct_markers = (
@@ -81,6 +144,17 @@ def is_explicit_write_request(
         "预约日程",
         "创建任务",
         "创建预警",
+        "执行sql草案",
+        "执行sql候选",
+        "执行候选",
+        "执行全部候选",
+        "运行sql草案",
+        "运行sql候选",
+        "运行候选",
+        "选择候选",
+        "采用候选",
+        "重试候选",
+        "确认执行候选",
         "提醒我",
         "取消日程",
         "删除日程",

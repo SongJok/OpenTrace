@@ -13,6 +13,8 @@ uses semantic versioning once stable release tags are published.
 - Workspace-scoped enterprise database, knowledge, approval, and active-alert workflow.
 - MySQL, Doris, ClickHouse, and PostgreSQL data-source support.
 - Open-source release documentation and public-release checks.
+- Closed the governed chat DataAgent loop from trusted draft generation through candidate
+  selection, durable approval, verified execution, evidence projection, and controlled learning.
 
 ### Changed
 

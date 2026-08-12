@@ -3,7 +3,7 @@
 ## 定位
 
 OpenTrace 是面向企业数据与知识的受治理提问系统。用户进入平台后首先看到提问页，围绕
-三类能力获得可解释答案：RAG 检索、企业大脑上下文和 DataAgent。
+四类受治理信息获得可解释答案：个人记忆、企业大脑上下文、RAG 检索和 DataAgent。
 
 平台不再提供企业 AI 工作台，也不提供经验报告、审计、主动预警、通用规则或通用集成等
 独立产品模块。复杂的治理和执行能力保留在后端作为提问链路的安全边界，不形成额外的
@@ -16,13 +16,18 @@ OpenTrace 是面向企业数据与知识的受治理提问系统。用户进入�
   -> Responses API 持久化 Response / Event / Outbox
   -> Worker 租约领取与可恢复 Agent Loop
   -> ContextAssembler 注入授权企业大脑上下文
-  -> IntentPlan 仅选择 RAG 或 DataAgent
+  -> ContextAssembler 按当前用户边界召回个人记忆
+  -> IntentPlan 选择最小充分的 RAG / DataAgent 组合并在 Loop 中迭代
+  -> DataAgent 草案经用户明确选择后进入持久审批、执行、验证和受控学习
   -> PostgreSQL 持久化答案、引用、SQL 与运行事件
   -> SSE 流式返回并支持断点续传
 ```
 
 企业大脑只提供当前用户可见的公司、部门和术语上下文，不替代企业知识库或实时数据库；
-RAG 返回带引用的已发布知识；DataAgent 只访问授权数据源并执行只读 SQL。
+个人记忆只提供当前 user/tenant/workspace 下的稳定偏好与已确认事实；RAG 返回带引用的已发布
+知识；DataAgent 先找到公司认可的指标和可信数据源，再研究业务规则、规划并验证 SQL。聊天中
+首次问数只生成草案；用户明确选择候选并完成持久审批后，系统重新校验 Schema 和语义版本，
+执行 EXPLAIN 与只读查询，验证结果后返回带本次结果证据的答案，并只学习完整验证通过的模式。
 
 ## 产品页面
 
