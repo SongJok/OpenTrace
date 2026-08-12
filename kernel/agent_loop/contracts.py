@@ -17,6 +17,47 @@ class ExecutionProfile(StrEnum):
     DEEP = "deep"
 
 
+class InformationSource(StrEnum):
+    """问答可使用的四类受治理信息来源。"""
+
+    PERSONAL_MEMORY = "personal_memory"
+    COMPANY_BRAIN = "company_brain"
+    RAG = "rag"
+    DATA = "data"
+
+
+class FreshnessRequirement(StrEnum):
+    """用户问题对事实时效性的要求。"""
+
+    UNSPECIFIED = "unspecified"
+    STABLE = "stable"
+    PUBLISHED = "published"
+    CURRENT = "current"
+    HISTORICAL = "historical"
+
+
+class EvidenceRequirement(StrEnum):
+    """最终答案必须满足的可审计证据要求。"""
+
+    PERSONAL_CONTEXT = "personal_context"
+    ENTERPRISE_CONTEXT = "enterprise_context"
+    PUBLISHED_CITATIONS = "published_citations"
+    METRIC_DEFINITION = "metric_definition"
+    TRUSTED_DATA_SOURCE = "trusted_data_source"
+    BUSINESS_RULES = "business_rules"
+    VALIDATED_SQL = "validated_sql"
+    EXECUTED_RESULT = "executed_result"
+
+
+class DataIntentStage(StrEnum):
+    """交互式企业问数当前应该推进到的阶段。"""
+
+    NONE = "none"
+    RESEARCH_AND_DRAFT = "research_and_draft"
+    SELECT_CANDIDATE = "select_candidate"
+    EXECUTE_AND_VERIFY = "execute_and_verify"
+
+
 _NULLISH_OPTIONAL_TEXT = frozenset({"null", "none", "undefined", "nil"})
 
 
@@ -42,6 +83,10 @@ class IntentPlan:
     execution_mode: str = "interactive"
     expected_outputs: tuple[str, ...] = ("answer",)
     clarification_question: str | None = None
+    information_sources: tuple[InformationSource, ...] = ()
+    freshness_requirement: FreshnessRequirement = FreshnessRequirement.UNSPECIFIED
+    evidence_requirements: tuple[EvidenceRequirement, ...] = ()
+    data_stage: DataIntentStage = DataIntentStage.NONE
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,6 +99,10 @@ class IntentPlan:
             "execution_mode": self.execution_mode,
             "expected_outputs": list(self.expected_outputs),
             "clarification_question": self.clarification_question,
+            "information_sources": [item.value for item in self.information_sources],
+            "freshness_requirement": self.freshness_requirement.value,
+            "evidence_requirements": [item.value for item in self.evidence_requirements],
+            "data_stage": self.data_stage.value,
         }
 
     @classmethod
@@ -71,6 +120,32 @@ class IntentPlan:
         execution_mode = str(value.get("execution_mode") or "interactive")
         if execution_mode not in {"interactive", "background", "goal"}:
             execution_mode = "interactive"
+        information_sources: list[InformationSource] = []
+        for item in value.get("information_sources") or []:
+            try:
+                source = InformationSource(str(item))
+            except ValueError:
+                continue
+            if source not in information_sources:
+                information_sources.append(source)
+        evidence_requirements: list[EvidenceRequirement] = []
+        for item in value.get("evidence_requirements") or []:
+            try:
+                requirement = EvidenceRequirement(str(item))
+            except ValueError:
+                continue
+            if requirement not in evidence_requirements:
+                evidence_requirements.append(requirement)
+        try:
+            freshness_requirement = FreshnessRequirement(
+                str(value.get("freshness_requirement") or FreshnessRequirement.UNSPECIFIED.value)
+            )
+        except ValueError:
+            freshness_requirement = FreshnessRequirement.UNSPECIFIED
+        try:
+            data_stage = DataIntentStage(str(value.get("data_stage") or DataIntentStage.NONE.value))
+        except ValueError:
+            data_stage = DataIntentStage.NONE
         return cls(
             goal=str(value.get("goal") or "").strip(),
             task_type=str(value.get("task_type") or "chat"),
@@ -83,6 +158,10 @@ class IntentPlan:
                 str(item) for item in (value.get("expected_outputs") or ["answer"])
             ),
             clarification_question=normalize_optional_text(value.get("clarification_question")),
+            information_sources=tuple(information_sources),
+            freshness_requirement=freshness_requirement,
+            evidence_requirements=tuple(evidence_requirements),
+            data_stage=data_stage,
         )
 
 

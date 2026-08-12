@@ -5,7 +5,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from agents.bootstrap import register_builtin_agents
-from kernel.agent_loop.contracts import ExecutionPlan, IntentPlan, PlanningDecision, SideEffect
+from kernel.agent_loop.contracts import (
+    ExecutionPlan,
+    ExecutionStep,
+    IntentPlan,
+    PlanningDecision,
+    SideEffect,
+)
 from kernel.agent_loop.runner import AgentLoop
 from kernel.agent_loop.write_intent import (
     is_explicit_write_request,
@@ -95,10 +101,26 @@ class KernelFlowContractTests(unittest.TestCase):
         self.assertEqual(specs["execute_sql_draft"].max_retries, 0)
         self.assertTrue({"code_interpreter", "file_sandbox", "data_analysis"}.isdisjoint(specs))
 
+    def test_tier_one_semantic_candidates_can_be_pinned_without_keyword_overlap(self):
+        register_builtin_agents(force=True)
+        specs = AgentLoop._available_tool_specs({})
+        available = [spec for spec in specs if spec.name in {"data", "rag"}]
+
+        from kernel.agent_loop.discovery import CapabilityDiscovery
+
+        result = CapabilityDiscovery().discover(
+            "本月复购率同比是多少",
+            available,
+            pinned_names={spec.name for spec in available},
+        )
+
+        self.assertEqual({spec.name for spec in result.specs}, {"data", "rag"})
+
     def test_sql_draft_selection_is_bound_to_the_pending_draft(self):
         draft = {
             "draft_id": "draft-1",
             "group_type": "alternative",
+            "question": "去年订单金额是多少",
             "candidates": [
                 {"id": "candidate-a", "position": 1, "execution_status": "pending"},
                 {"id": "candidate-b", "position": 2, "execution_status": "pending"},
@@ -108,6 +130,7 @@ class KernelFlowContractTests(unittest.TestCase):
         assert selected == {
             "status": "ready",
             "draft_id": "draft-1",
+            "original_question": "去年订单金额是多少",
             "arguments": {
                 "draft_id": "draft-1",
                 "candidate_ids": ["candidate-b"],
@@ -218,6 +241,54 @@ class KernelFlowContractTests(unittest.TestCase):
         self.assertEqual(captured["spec"].max_retries, 0)
         self.assertEqual(captured["spec"].timeout_seconds, 60.0)
         self.assertEqual(captured["spec"].side_effect, SideEffect.WRITE)
+
+    def test_existing_plan_is_upgraded_after_deterministic_intent_reconciliation(self):
+        existing = SimpleNamespace(
+            payload={
+                "version": 1,
+                "intent": {"goal": "旧意图"},
+                "plan": {
+                    "goal": "回答问题",
+                    "steps": [
+                        {
+                            "id": "old-step",
+                            "objective": "旧步骤",
+                            "capability": None,
+                            "depends_on": [],
+                            "success_criteria": "",
+                        }
+                    ],
+                },
+                "statuses": {"old-step": "completed"},
+                "replan_count": 0,
+            }
+        )
+        db = SimpleNamespace(scalar=AsyncMock(return_value=existing), flush=AsyncMock())
+        intent = IntentPlan(goal="回答问题", capabilities=("data",))
+        proposed = ExecutionPlan(
+            goal="回答问题",
+            steps=(
+                ExecutionStep(
+                    id="data-research-draft",
+                    objective="研究并生成草案",
+                    capability="data",
+                ),
+            ),
+        )
+
+        restored = asyncio.run(
+            AgentLoop()._restore_or_persist_execution_plan(
+                db,
+                response=SimpleNamespace(id="response-1"),
+                proposed=proposed,
+                intent=intent,
+            )
+        )
+
+        self.assertEqual(restored, proposed)
+        self.assertEqual(existing.payload["version"], 2)
+        self.assertEqual(existing.payload["intent"], intent.to_dict())
+        self.assertEqual(existing.payload["statuses"], {"data-research-draft": "pending"})
 
     def test_analytics_tools_registered_module_importable(self):
         txt = self._read("tools/builtin_tools/analytics_tools.py")

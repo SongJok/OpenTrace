@@ -213,6 +213,12 @@ PostgreSQL 是事实来源。草案状态不能代替 DataAgentRun 的证据、�
 Responses 的持久审批与幂等账本；审批恢复后的 `answer`、`answer_citations`、`answer_metadata`、
 预检、结果验证和学习状态同时投影到最终 Response 元数据，便于前端展示与审计。
 
+Responses 的 `IntentPlan` 会在普通能力名之外记录：`information_sources`、
+`freshness_requirement`、`evidence_requirements` 和 `data_stage`。规划模型负责理解问题语义，
+确定性策略负责安全校正：明显要求实际业务数字的问题不会因词面发现漏掉 `data`；纯指标口径解释
+不会被强制升级成数据库查询；显式文档证据和实际数据可以组合使用；当调用方禁用工具时仍保留
+信息与证据缺口，但不会偷偷执行能力。恢复后的计划沿用相同结构化意图，避免阶段漂移。
+
 ## 配置
 
 公开配置统一使用 `DATA_AGENT_*`：

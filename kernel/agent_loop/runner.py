@@ -24,9 +24,13 @@ from infra.storage.models import (
 from kernel.agent_loop.context import ContextAssembler
 from kernel.agent_loop.contracts import (
     AgentLoopResult,
+    DataIntentStage,
+    EvidenceRequirement,
     ExecutionPlan,
     ExecutionProfile,
     ExecutionStep,
+    FreshnessRequirement,
+    InformationSource,
     IntentPlan,
     PlanningDecision,
     SideEffect,
@@ -35,6 +39,7 @@ from kernel.agent_loop.contracts import (
     parse_tool_specs,
 )
 from kernel.agent_loop.discovery import CapabilityDiscovery
+from kernel.agent_loop.intent_policy import apply_enterprise_intent_policy, intent_answer_contract
 from kernel.agent_loop.rag_routing import RagRoutingDecision, resolve_rag_routing
 from kernel.agent_loop.write_intent import (
     is_affirmative_follow_up,
@@ -399,7 +404,12 @@ class AgentLoop:
         client_tool_names = {
             spec.name for spec in parse_tool_specs(list(payload.get("tools") or []))
         }
-        pinned_names = set(client_tool_names)
+        # Tier-1 的 data/rag 必须始终进入语义规划候选；词面发现只负责缩小其它能力，
+        # 不能让“本月复购率”因未出现 Agent 名称而失去企业问数能力。
+        pinned_names = {
+            *client_tool_names,
+            *(spec.name for spec in available_specs if spec.name in {"data", "rag"}),
+        }
         if pending_action and self._is_affirmative_follow_up(query):
             pinned_names.add(str(pending_action["name"]))
         if sql_draft_request and sql_draft_request.get("status") in {"ready", "clarify"}:
@@ -455,6 +465,23 @@ class AgentLoop:
             and any(spec.name == "rag" for spec in available_specs)
         ):
             decision = self._apply_required_rag_policy(decision)
+        decision = apply_enterprise_intent_policy(
+            decision,
+            query=str((sql_draft_request or {}).get("original_question") or rag_routing.query),
+            context_manifest=context.context_manifest,
+            tool_specs=available_specs,
+            rag_required=rag_routing.required,
+            tools_enabled=str(payload.get("tool_choice") or "auto") != "none",
+            data_stage_override=(
+                DataIntentStage.SELECT_CANDIDATE
+                if sql_draft_request and sql_draft_request.get("status") == "clarify"
+                else (
+                    DataIntentStage.EXECUTE_AND_VERIFY
+                    if sql_draft_request and sql_draft_request.get("status") == "ready"
+                    else None
+                )
+            ),
+        )
         intent = decision.intent
         execution_plan = await self._restore_or_persist_execution_plan(
             db,
@@ -524,7 +551,15 @@ class AgentLoop:
             },
         )
         direct_memory_answer = None
-        if str(payload.get("tool_choice") or "auto") != "required" and not rag_routing.required:
+        direct_memory_sources = set(intent.information_sources)
+        if (
+            str(payload.get("tool_choice") or "auto") != "required"
+            and not rag_routing.required
+            and not intent.capabilities
+            and intent.data_stage == DataIntentStage.NONE
+            and InformationSource.DATA not in direct_memory_sources
+            and InformationSource.RAG not in direct_memory_sources
+        ):
             direct_memory_answer = self._direct_memory_answer(query, context.recalled_memories)
         if direct_memory_answer:
             await self._emit_text(emit, direct_memory_answer)
@@ -584,6 +619,7 @@ class AgentLoop:
             )
             for item in context.messages
         ]
+        messages.append(LLMMessage(role="system", content=intent_answer_contract(intent)))
         if sql_draft_request and sql_draft_request.get("status") == "ready":
             messages.append(
                 LLMMessage(
@@ -646,7 +682,7 @@ class AgentLoop:
             )
 
         verified_data_answer = str(data_answer_projection.get("answer") or "").strip()
-        if verified_data_answer:
+        if verified_data_answer and set(intent.capabilities).issubset({"execute_sql_draft"}):
             await self._emit_text(emit, verified_data_answer)
             await self._complete_remaining_plan(emit, execution_plan, plan_statuses)
             await self._persist_execution_plan_runtime(
@@ -1469,10 +1505,20 @@ class AgentLoop:
             payload = dict(existing.payload or {})
             restored = ExecutionPlan.from_dict(dict(payload.get("plan") or payload))
             if restored.steps:
-                if intent is not None and not isinstance(payload.get("intent"), dict):
+                proposed_payload = proposed.to_dict()
+                if proposed_payload != restored.to_dict():
+                    payload["plan"] = proposed_payload
+                    previous_statuses = dict(payload.get("statuses") or {})
+                    payload["statuses"] = {
+                        step.id: previous_statuses.get(step.id, "pending")
+                        for step in proposed.steps
+                    }
+                    restored = proposed
+                if intent is not None and payload.get("intent") != intent.to_dict():
                     payload["intent"] = intent.to_dict()
-                    existing.payload = payload
-                    await db.flush()
+                payload["version"] = 2
+                existing.payload = payload
+                await db.flush()
                 return restored
         item = ResponseItem(
             id=f"item_{uuid.uuid4().hex}",
@@ -1486,7 +1532,7 @@ class AgentLoop:
                 "intent": intent.to_dict() if intent is not None else None,
                 "statuses": {step.id: "pending" for step in proposed.steps},
                 "replan_count": 0,
-                "version": 1,
+                "version": 2,
             },
         )
         db.add(item)
@@ -1741,6 +1787,10 @@ class AgentLoop:
             execution_mode=intent.execution_mode,
             expected_outputs=intent.expected_outputs,
             clarification_question=None,
+            information_sources=intent.information_sources,
+            freshness_requirement=intent.freshness_requirement,
+            evidence_requirements=intent.evidence_requirements,
+            data_stage=intent.data_stage,
         )
         return PlanningDecision(intent=grounded_intent, execution_plan=decision.execution_plan)
 
@@ -1760,6 +1810,20 @@ class AgentLoop:
             execution_mode=intent.execution_mode,
             expected_outputs=intent.expected_outputs,
             clarification_question=None,
+            information_sources=tuple(
+                dict.fromkeys([*intent.information_sources, InformationSource.RAG])
+            ),
+            freshness_requirement=(
+                FreshnessRequirement.PUBLISHED
+                if intent.freshness_requirement == FreshnessRequirement.UNSPECIFIED
+                else intent.freshness_requirement
+            ),
+            evidence_requirements=tuple(
+                dict.fromkeys(
+                    [*intent.evidence_requirements, EvidenceRequirement.PUBLISHED_CITATIONS]
+                )
+            ),
+            data_stage=intent.data_stage,
         )
         plan = decision.execution_plan
         if any(step.capability == "rag" for step in plan.steps):
@@ -2001,6 +2065,7 @@ class AgentLoop:
             return {
                 "status": "clarify",
                 "draft_id": draft["draft_id"],
+                "original_question": str(draft.get("question") or ""),
                 "question": (
                     f"请明确选择一个要执行的 SQL 候选：{options}。"
                     "备选方案需要分别验证，不能在一次企业问数回答中同时执行。"
@@ -2009,6 +2074,7 @@ class AgentLoop:
         return {
             "status": "ready",
             "draft_id": draft["draft_id"],
+            "original_question": str(draft.get("question") or ""),
             "arguments": {
                 "draft_id": draft["draft_id"],
                 "candidate_ids": [] if execute_all else selected_ids,
@@ -2034,6 +2100,15 @@ class AgentLoop:
                 execution_mode=intent.execution_mode,
                 expected_outputs=("candidate_selection",),
                 clarification_question=str(request.get("question") or "请明确选择 SQL 候选。"),
+                information_sources=(InformationSource.DATA,),
+                freshness_requirement=FreshnessRequirement.CURRENT,
+                evidence_requirements=(
+                    EvidenceRequirement.METRIC_DEFINITION,
+                    EvidenceRequirement.TRUSTED_DATA_SOURCE,
+                    EvidenceRequirement.BUSINESS_RULES,
+                    EvidenceRequirement.VALIDATED_SQL,
+                ),
+                data_stage=DataIntentStage.SELECT_CANDIDATE,
             )
             return PlanningDecision(
                 intent=clarified,
@@ -2061,6 +2136,16 @@ class AgentLoop:
             execution_mode=intent.execution_mode,
             expected_outputs=("verified_data_answer", "citations"),
             clarification_question=None,
+            information_sources=(InformationSource.DATA,),
+            freshness_requirement=FreshnessRequirement.CURRENT,
+            evidence_requirements=(
+                EvidenceRequirement.METRIC_DEFINITION,
+                EvidenceRequirement.TRUSTED_DATA_SOURCE,
+                EvidenceRequirement.BUSINESS_RULES,
+                EvidenceRequirement.VALIDATED_SQL,
+                EvidenceRequirement.EXECUTED_RESULT,
+            ),
+            data_stage=DataIntentStage.EXECUTE_AND_VERIFY,
         )
         return PlanningDecision(
             intent=executable_intent,
@@ -2238,6 +2323,28 @@ class AgentLoop:
                         "enum": ["interactive", "background", "goal"],
                     },
                     "expected_outputs": {"type": "array", "items": {"type": "string"}},
+                    "information_sources": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [item.value for item in InformationSource],
+                        },
+                    },
+                    "freshness_requirement": {
+                        "type": "string",
+                        "enum": [item.value for item in FreshnessRequirement],
+                    },
+                    "evidence_requirements": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [item.value for item in EvidenceRequirement],
+                        },
+                    },
+                    "data_stage": {
+                        "type": "string",
+                        "enum": [item.value for item in DataIntentStage],
+                    },
                     "clarification_question": {"type": ["string", "null"]},
                     "complexity": {
                         "type": "string",
@@ -2280,6 +2387,10 @@ class AgentLoop:
                     "ambiguity",
                     "execution_mode",
                     "expected_outputs",
+                    "information_sources",
+                    "freshness_requirement",
+                    "evidence_requirements",
+                    "data_stage",
                     "clarification_question",
                     "complexity",
                     "steps",
@@ -2313,7 +2424,7 @@ class AgentLoop:
                 tools=[planning_tool],
                 tool_choice="required",
                 parallel_tool_calls=False,
-                max_output_tokens=800,
+                max_output_tokens=1200,
                 store=False,
             )
             if result.tool_calls:
@@ -2343,8 +2454,9 @@ class AgentLoop:
                 )
             )
             if parsed
-            else tuple(names)
+            else ()
         )
+        parsed_intent = IntentPlan.from_dict(parsed)
         selected_specs = [spec for spec in tool_specs if spec.name in selected]
         risk = max(
             (spec.side_effect for spec in selected_specs),
@@ -2365,6 +2477,10 @@ class AgentLoop:
                 str(item) for item in (parsed.get("expected_outputs") or ["answer"])
             ),
             clarification_question=normalize_optional_text(parsed.get("clarification_question")),
+            information_sources=parsed_intent.information_sources,
+            freshness_requirement=parsed_intent.freshness_requirement,
+            evidence_requirements=parsed_intent.evidence_requirements,
+            data_stage=parsed_intent.data_stage,
         )
         raw_plan: dict[str, Any] = {
             "goal": intent.goal,
@@ -2616,6 +2732,10 @@ class AgentLoop:
         sanitized.setdefault("ambiguity", None)
         sanitized.setdefault("execution_mode", "interactive")
         sanitized.setdefault("expected_outputs", ["确认当前记忆策略"])
+        sanitized["information_sources"] = [InformationSource.PERSONAL_MEMORY.value]
+        sanitized["freshness_requirement"] = FreshnessRequirement.STABLE.value
+        sanitized["evidence_requirements"] = [EvidenceRequirement.PERSONAL_CONTEXT.value]
+        sanitized["data_stage"] = DataIntentStage.NONE.value
         sanitized.setdefault("clarification_question", None)
         sanitized["complexity"] = "simple"
         sanitized["replan_limit"] = 0
@@ -2652,6 +2772,10 @@ class AgentLoop:
         sanitized["ambiguity"] = None
         sanitized["execution_mode"] = "interactive"
         sanitized["expected_outputs"] = ["完成上一轮已确认操作并返回可核验结果"]
+        sanitized.setdefault("information_sources", [])
+        sanitized.setdefault("freshness_requirement", FreshnessRequirement.UNSPECIFIED.value)
+        sanitized.setdefault("evidence_requirements", [])
+        sanitized.setdefault("data_stage", DataIntentStage.NONE.value)
         sanitized["clarification_question"] = None
         sanitized["complexity"] = "simple"
         sanitized["steps"] = [
@@ -2680,6 +2804,13 @@ class AgentLoop:
         prompt = (
             "识别用户真实目标并选择完成它所需的最小能力集合。不要用关键词路由。"
             "有歧义且会显著改变结果时给出 clarification_question。"
+            "同时判断最终答案需要哪些受治理信息来源：personal_memory、company_brain、rag、data；"
+            "个人记忆和企业大脑由上下文注入，不是工具。rag 用于已发布知识或文档证据，data 用于"
+            "需要实际企业数据计算的业务问题，两者可以组合。不要用 data 回答纯指标释义，也不要用"
+            "RAG 文档中的旧数字冒充实时查询结果。"
+            "freshness_requirement 必须表达 stable、published、current、historical 或 unspecified；"
+            "evidence_requirements 必须列出答案成立所需证据。data_stage 首次问数只能是 "
+            "research_and_draft；此阶段要研究指标、可信数据源和业务规则并生成待确认草案，不能执行。"
             f"\n可用能力：{json.dumps(capability_catalogue or capability_names, ensure_ascii=False)}"
             f"\n用户请求：{query}"
             "\n能力列表只是候选集合，不代表调用顺序。只选择完成当前目标不可缺少的能力。"

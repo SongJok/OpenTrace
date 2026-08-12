@@ -15,6 +15,8 @@ uses semantic versioning once stable release tags are published.
 - Open-source release documentation and public-release checks.
 - Closed the governed chat DataAgent loop from trusted draft generation through candidate
   selection, durable approval, verified execution, evidence projection, and controlled learning.
+- Added durable four-source intent contracts for memory, company context, RAG, and DataAgent,
+  including freshness, evidence requirements, and governed data lifecycle stages.
 
 ### Changed
 
