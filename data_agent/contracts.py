@@ -52,6 +52,7 @@ class EvidenceType(str, Enum):
     KNOWLEDGE = "knowledge"
     DATA_QUALITY = "data_quality"
     EXECUTION_MEMORY = "execution_memory"
+    FAILURE_MEMORY = "failure_memory"
     SKILL = "skill"
     SOURCE_POLICY = "source_policy"
 
@@ -119,6 +120,7 @@ class DataSourceDecision(ContractModel):
 class QueryRequest(ContractModel):
     question: str = Field(..., min_length=1, max_length=8192)
     scope: DataScope
+    run_purpose: str = Field(default="online", pattern="^(online|evaluation)$")
     mode: ExecutionMode = ExecutionMode.SQL_ONLY
     clarification_context: str | None = Field(default=None, max_length=4000)
     candidate_count: int = Field(default=3, ge=1, le=5)

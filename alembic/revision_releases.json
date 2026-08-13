@@ -75,6 +75,12 @@
     },
     "r0025_evidence_closure": {
       "release": "unreleased"
+    },
+    "r0026_data_agent_operational_governance": {
+      "release": "unreleased"
+    },
+    "r0027_add_data_agent_run_purpose": {
+      "release": "unreleased"
     }
   }
 }

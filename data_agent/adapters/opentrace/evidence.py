@@ -21,6 +21,7 @@ from data_agent.contracts import (
 )
 from infra.metadata.schema_inspector import load_schema_inspection
 from infra.storage.data_agent_models import (
+    DataAgentFailurePattern,
     DataAgentLearningPattern,
     DataAgentProfile,
     DataAgentRunRecord,
@@ -679,6 +680,63 @@ class OpenTraceEvidenceProvider:
                         citation=learning_row.last_run_id,
                     )
                 )
+
+        if EvidenceType.FAILURE_MEMORY in requested_types:
+            current_semantic_version = self._semantic_version(items)
+            failure_rows = list(
+                (
+                    await self.db.execute(
+                        select(DataAgentFailurePattern)
+                        .where(
+                            DataAgentFailurePattern.user_id == scope.user_id,
+                            DataAgentFailurePattern.tenant_id == scope.tenant_id,
+                            DataAgentFailurePattern.workspace_id == scope.workspace_id,
+                            DataAgentFailurePattern.data_source_id == self.data_source.id,
+                            DataAgentFailurePattern.schema_fingerprint == schema_fingerprint,
+                            DataAgentFailurePattern.semantic_version == current_semantic_version,
+                            DataAgentFailurePattern.status == "open",
+                        )
+                        .order_by(DataAgentFailurePattern.last_failure_at.desc())
+                        .limit(100)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            failure_rows.sort(
+                key=lambda row: _score(question_tokens, row.question_examples),
+                reverse=True,
+            )
+            for failure_row in failure_rows[:10]:
+                relevance = _score(question_tokens, failure_row.question_examples)
+                if relevance <= 0:
+                    continue
+                items.append(
+                    EvidenceItem(
+                        type=EvidenceType.FAILURE_MEMORY,
+                        source_id=f"failure-pattern:{failure_row.id}",
+                        source_name="DataAgentFailurePattern",
+                        authority=Authority.VERIFIED,
+                        confidence=min(1.0, 0.5 + 0.1 * failure_row.failure_count),
+                        version=failure_row.semantic_version,
+                        scope={
+                            "tenant_id": scope.tenant_id,
+                            "workspace_id": scope.workspace_id,
+                            "data_source_id": self.data_source.id,
+                        },
+                        payload={
+                            "pattern_key": failure_row.pattern_key,
+                            "sql_structure_hash": failure_row.candidate_sql_hash,
+                            "failure_stage": failure_row.failure_stage,
+                            "error_codes": failure_row.error_codes or [],
+                            "failure_count": failure_row.failure_count,
+                            "status": failure_row.status,
+                        },
+                        citation=failure_row.last_run_id,
+                    )
+                )
+        if EvidenceType.EXECUTION_MEMORY in requested_types:
+            current_semantic_version = self._semantic_version(items)
             memory_rows = list(
                 (
                     await self.db.execute(
@@ -688,6 +746,7 @@ class OpenTraceEvidenceProvider:
                             DataAgentRunRecord.tenant_id == scope.tenant_id,
                             DataAgentRunRecord.workspace_id == scope.workspace_id,
                             DataAgentRunRecord.data_source_id == self.data_source.id,
+                            DataAgentRunRecord.run_purpose == "online",
                             DataAgentRunRecord.state == "completed",
                             DataAgentRunRecord.schema_fingerprint == schema_fingerprint,
                             DataAgentRunRecord.semantic_version == current_semantic_version,

@@ -32,7 +32,11 @@ export interface SQLAssetItem {
   risk_flags: string[]
   retrieval_count: number
   lineage: Record<string, unknown>
-  validation_report: { status?: string; errors?: string[]; warnings?: string[] }
+  validation_report: {
+    status?: string
+    errors?: string[]
+    warnings?: string[]
+  }
   approved_by?: string | null
   approved_at?: string | null
   created_at?: string
@@ -150,6 +154,76 @@ export interface SQLQueryDraftItem {
   clarification: Record<string, unknown>
 }
 
+export interface DataAgentGovernanceOverview {
+  window_days: number
+  runs: {
+    total: number
+    analyzed: number
+    truncated: boolean
+    completed: number
+    verified: number
+    success_rate?: number | null
+    verified_answer_rate?: number | null
+    evidence_complete_rate?: number | null
+    p95_execution_ms?: number | null
+    states: Record<string, number>
+    failure_stages: Record<string, number>
+  }
+  governance: {
+    open_feedback: number
+    open_failure_patterns: number
+    learning: Record<string, number>
+    golden_cases: Record<string, number>
+  }
+  release_gate?: DataAgentEvaluationSuiteItem | null
+}
+
+export interface DataAgentFailurePatternItem {
+  id: string
+  failure_stage: string
+  error_codes: string[]
+  question_examples: string[]
+  failure_count: number
+  status: 'open' | 'resolved' | 'ignored'
+  last_failure_at?: string | null
+  resolution_note?: string | null
+}
+
+export interface DataAgentFeedbackItem {
+  id: string
+  run_id: string
+  verdict: string
+  corrected_sql?: string | null
+  comment?: string | null
+  status: 'open' | 'resolved' | 'ignored'
+  created_at?: string | null
+  resolution_note?: string | null
+}
+
+export interface DataAgentEvaluationCaseItem {
+  id: string
+  question: string
+  business_domain?: string | null
+  tags: string[]
+  status: 'draft' | 'published' | 'retired'
+  pass_count: number
+  failure_count: number
+  schema_fingerprint?: string | null
+  last_evaluation?: Record<string, unknown>
+}
+
+export interface DataAgentEvaluationSuiteItem {
+  id: string
+  name: string
+  status: 'running' | 'passed' | 'failed'
+  case_count: number
+  passed_count: number
+  failed_count: number
+  pass_rate: number
+  minimum_pass_rate: number
+  completed_at?: string | null
+}
+
 export interface SQLAssetListParams {
   status?: SQLAssetItem['status'] | ''
   corpus_role?: SQLAssetItem['corpus_role'] | ''
@@ -163,18 +237,19 @@ export interface SQLAssetListParams {
 export interface SQLAssetListResponse {
   sources: SQLAssetSourceItem[]
   assets: SQLAssetItem[]
-  pagination: { offset: number; limit: number; total: number; has_more: boolean }
+  pagination: {
+    offset: number
+    limit: number
+    total: number
+    has_more: boolean
+  }
   facets?: {
     corpus_roles: Record<string, number>
     quality_statuses: Record<string, number>
   }
 }
 
-export async function apiListSQLAssets(
-  token: string,
-  databaseId: string,
-  params: SQLAssetListParams = {},
-): Promise<SQLAssetListResponse> {
+export async function apiListSQLAssets(token: string, databaseId: string, params: SQLAssetListParams = {}): Promise<SQLAssetListResponse> {
   const query = new URLSearchParams()
   if (params.status) query.set('status', params.status)
   if (params.corpus_role) query.set('corpus_role', params.corpus_role)
@@ -191,11 +266,7 @@ export async function apiListSQLAssets(
   return res.json()
 }
 
-export async function apiUploadSQLAsset(
-  token: string,
-  databaseId: string,
-  file: File,
-): Promise<unknown> {
+export async function apiUploadSQLAsset(token: string, databaseId: string, file: File): Promise<unknown> {
   const form = new FormData()
   form.append('file', file)
   const res = await apiFetch(`/databases/${databaseId}/sql-assets/upload`, {
@@ -211,9 +282,18 @@ export async function apiBatchUploadSQLAssets(
   token: string,
   databaseId: string,
   files: File[],
-  metadata: { corpus_role: SQLAssetItem['corpus_role']; domain?: string; owner?: string },
+  metadata: {
+    corpus_role: SQLAssetItem['corpus_role']
+    domain?: string
+    owner?: string
+  },
 ): Promise<{
-  summary: { total: number; imported: number; deduplicated: number; failed: number }
+  summary: {
+    total: number
+    imported: number
+    deduplicated: number
+    failed: number
+  }
   results: Array<{ filename: string; status: string; error?: string }>
 }> {
   const form = new FormData()
@@ -230,12 +310,7 @@ export async function apiBatchUploadSQLAssets(
   return res.json()
 }
 
-export async function apiUpdateSQLAsset(
-  token: string,
-  databaseId: string,
-  assetId: string,
-  payload: Record<string, unknown>,
-): Promise<SQLAssetItem> {
+export async function apiUpdateSQLAsset(token: string, databaseId: string, assetId: string, payload: Record<string, unknown>): Promise<SQLAssetItem> {
   const res = await apiFetch(`/databases/${databaseId}/sql-assets/${assetId}`, {
     method: 'PATCH',
     headers: authHeaders(token),
@@ -245,11 +320,7 @@ export async function apiUpdateSQLAsset(
   return res.json()
 }
 
-export async function apiDeleteSQLAssetSource(
-  token: string,
-  databaseId: string,
-  sourceId: string,
-): Promise<void> {
+export async function apiDeleteSQLAssetSource(token: string, databaseId: string, sourceId: string): Promise<void> {
   const res = await apiFetch(`/databases/${databaseId}/sql-assets/sources/${sourceId}`, {
     method: 'DELETE',
     headers: authHeaders(token),
@@ -257,11 +328,7 @@ export async function apiDeleteSQLAssetSource(
   if (!res.ok) throw new Error(await readApiError(res, '删除 SQL 资产源失败'))
 }
 
-export async function apiGetSQLDraft(
-  token: string,
-  databaseId: string,
-  draftId: string,
-): Promise<SQLQueryDraftItem> {
+export async function apiGetSQLDraft(token: string, databaseId: string, draftId: string): Promise<SQLQueryDraftItem> {
   const res = await apiFetch(`/databases/${databaseId}/sql-drafts/${draftId}`, {
     headers: authHeaders(token),
   })
@@ -273,7 +340,11 @@ export async function apiExecuteSQLDraft(
   token: string,
   databaseId: string,
   draftId: string,
-  payload: { candidate_ids?: string[]; execute_all?: boolean; retry_failed?: boolean },
+  payload: {
+    candidate_ids?: string[]
+    execute_all?: boolean
+    retry_failed?: boolean
+  },
 ): Promise<SQLQueryDraftItem> {
   const res = await apiFetch(`/databases/${databaseId}/sql-drafts/${draftId}/execute`, {
     method: 'POST',
@@ -286,4 +357,133 @@ export async function apiExecuteSQLDraft(
   })
   if (!res.ok) throw new Error(await readApiError(res, '执行 SQL 草案失败'))
   return res.json()
+}
+
+export async function apiGetDataAgentGovernanceOverview(token: string, databaseId: string): Promise<DataAgentGovernanceOverview> {
+  const query = new URLSearchParams({ data_source_id: databaseId })
+  const res = await apiFetch(`/data-agent/governance/overview?${query.toString()}`, {
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '读取问数质量失败'))
+  return res.json()
+}
+
+export async function apiListDataAgentFailurePatterns(token: string, databaseId: string): Promise<DataAgentFailurePatternItem[]> {
+  const query = new URLSearchParams({
+    data_source_id: databaseId,
+    status: 'open',
+  })
+  const res = await apiFetch(`/data-agent/governance/failure-patterns?${query.toString()}`, {
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '读取失败模式失败'))
+  const payload = await res.json()
+  return payload.items || []
+}
+
+export async function apiResolveDataAgentFailurePattern(token: string, patternId: string, resolutionNote: string): Promise<DataAgentFailurePatternItem> {
+  const res = await apiFetch(`/data-agent/governance/failure-patterns/${patternId}/resolve`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({
+      status: 'resolved',
+      resolution_note: resolutionNote,
+    }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '处置失败模式失败'))
+  const payload = await res.json()
+  return payload.item
+}
+
+export async function apiListDataAgentFeedback(token: string, databaseId: string): Promise<DataAgentFeedbackItem[]> {
+  const query = new URLSearchParams({
+    data_source_id: databaseId,
+    status: 'open',
+  })
+  const res = await apiFetch(`/data-agent/governance/feedback?${query.toString()}`, {
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '读取问数反馈失败'))
+  const payload = await res.json()
+  return payload.items || []
+}
+
+export async function apiResolveDataAgentFeedback(token: string, feedbackId: string, resolutionNote: string): Promise<DataAgentFeedbackItem> {
+  const res = await apiFetch(`/data-agent/governance/feedback/${feedbackId}/resolve`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({
+      status: 'resolved',
+      resolution_note: resolutionNote,
+    }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '处置问数反馈失败'))
+  const payload = await res.json()
+  return payload.item
+}
+
+export async function apiListDataAgentEvaluationCases(token: string, databaseId: string): Promise<DataAgentEvaluationCaseItem[]> {
+  const query = new URLSearchParams({ data_source_id: databaseId })
+  const res = await apiFetch(`/data-agent/evaluation-cases?${query.toString()}`, {
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '读取 Golden Case 失败'))
+  const payload = await res.json()
+  return payload.items || []
+}
+
+export async function apiCreateDataAgentEvaluationCase(
+  token: string,
+  databaseId: string,
+  payload: {
+    question: string
+    expected_sql?: string | null
+    schema_fingerprint: string
+    business_domain?: string | null
+    tags?: string[]
+  },
+): Promise<DataAgentEvaluationCaseItem> {
+  const res = await apiFetch('/data-agent/evaluation-cases', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({
+      data_source_id: databaseId,
+      question: payload.question,
+      expected_sql: payload.expected_sql || null,
+      expected_plan: {},
+      expected_result: [],
+      schema_fingerprint: payload.schema_fingerprint,
+      business_domain: payload.business_domain || null,
+      tags: payload.tags || [],
+    }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '创建 Golden Case 失败'))
+  const result = await res.json()
+  return result.case
+}
+
+export async function apiPublishDataAgentEvaluationCase(token: string, caseId: string): Promise<DataAgentEvaluationCaseItem> {
+  const res = await apiFetch(`/data-agent/evaluation-cases/${caseId}/publish`, {
+    method: 'POST',
+    headers: authHeaders(token),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '发布 Golden Case 失败'))
+  const result = await res.json()
+  return result.case
+}
+
+export async function apiRunDataAgentEvaluationSuite(token: string, databaseId: string, execute = false): Promise<DataAgentEvaluationSuiteItem> {
+  const res = await apiFetch('/data-agent/evaluation-suites/run', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({
+      data_source_id: databaseId,
+      name: execute ? '真实执行发布门禁' : '计划与 SQL 发布门禁',
+      execute,
+      minimum_pass_rate: 1,
+    }),
+  })
+  if (!res.ok) throw new Error(await readApiError(res, '运行发布门禁失败'))
+  const payload = await res.json()
+  return payload.suite
 }

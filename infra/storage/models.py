@@ -35,6 +35,9 @@ from sqlalchemy.sql import func
 from infra.config.constants import DEFAULT_TIMEZONE
 from infra.config.settings import settings
 from infra.storage.data_agent_models import DataAgentEvaluationCase as DataAgentEvaluationCase
+from infra.storage.data_agent_models import (
+    DataAgentEvaluationSuiteRun as DataAgentEvaluationSuiteRun,
+)
 from infra.storage.data_agent_models import DataAgentFailurePattern as DataAgentFailurePattern
 from infra.storage.data_agent_models import DataAgentFeedback as DataAgentFeedback
 from infra.storage.data_agent_models import DataAgentLearningPattern as DataAgentLearningPattern

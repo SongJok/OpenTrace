@@ -32,6 +32,7 @@ from infra.security.data_source_secrets import (
 from infra.security.identity import is_enterprise_admin
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
+    DataAgentRunRecord,
     DataQueryLog,
     DataSource,
     DataSourceSchema,
@@ -620,17 +621,20 @@ async def database_health(
         )
         or 0
     )
+    query_scope = (
+        DataAgentRunRecord.tenant_id == source.tenant_id,
+        DataAgentRunRecord.workspace_id == source.workspace_id,
+        DataAgentRunRecord.data_source_id == database_id,
+        DataAgentRunRecord.run_purpose == "online",
+    )
     queries = int(
-        await db.scalar(
-            select(func.count(DataQueryLog.id)).where(DataQueryLog.data_source_id == database_id)
-        )
-        or 0
+        await db.scalar(select(func.count(DataAgentRunRecord.id)).where(*query_scope)) or 0
     )
     successful = int(
         await db.scalar(
-            select(func.count(DataQueryLog.id)).where(
-                DataQueryLog.data_source_id == database_id,
-                DataQueryLog.success.is_(True),
+            select(func.count(DataAgentRunRecord.id)).where(
+                *query_scope,
+                DataAgentRunRecord.state == "completed",
             )
         )
         or 0
@@ -1017,6 +1021,8 @@ async def get_database_schema(
         payload = {"tables": []}
     if not isinstance(payload, dict):
         payload = {"tables": []}
+    from services.sql_assets import schema_fingerprint
+
     page_payload, pagination = _schema_catalog_page(
         payload,
         search=search,
@@ -1024,6 +1030,7 @@ async def get_database_schema(
         offset=offset,
         limit=limit,
     )
+    page_payload["schema_fingerprint"] = schema_fingerprint(payload)
     return {
         "data_source_id": database_id,
         "schema": page_payload,

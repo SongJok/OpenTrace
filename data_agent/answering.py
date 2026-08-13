@@ -101,6 +101,17 @@ class AnswerEvidenceBuilder:
             ),
         )[:12]
         covered_plan_ids = {item_id for item_id in plan.evidence_ids if item_id in indexed}
+        governed_metric_ids = {
+            item.source_id
+            for item in evidence.items
+            if item.type == EvidenceType.METRIC and item.authority.value in {"governed", "verified"}
+        }
+        source_decision = run.request.source_decision
+        trusted_source_selected = bool(
+            source_decision
+            and source_decision.status == "selected"
+            and source_decision.selected_data_source_id == run.request.scope.data_source_id
+        )
 
         result_citation = AnswerCitation(
             label="R1",
@@ -178,5 +189,28 @@ class AnswerEvidenceBuilder:
             "snapshot_id": run.result.snapshot_id,
             "citation_count": len(citations),
             "evidence_coverage": len(covered_plan_ids) / max(1, len(set(plan.evidence_ids))),
+            "evidence_requirements": {
+                "metric_definition": bool(plan.metrics)
+                and all(
+                    metric.source_evidence_id in governed_metric_ids for metric in plan.metrics
+                ),
+                "trusted_data_source": bool(evidence.schema_fingerprint)
+                and bool(evidence.of_type(EvidenceType.SCHEMA))
+                and trusted_source_selected,
+                "business_rules": any(metric.required_filters for metric in plan.metrics)
+                or any(
+                    item.type
+                    in {
+                        EvidenceType.METRIC,
+                        EvidenceType.BUSINESS_RULE,
+                        EvidenceType.POLICY,
+                        EvidenceType.SOURCE_POLICY,
+                    }
+                    and item.authority.value in {"governed", "verified"}
+                    for item in selected_items
+                ),
+                "validated_sql": not candidate.validation.errors,
+                "executed_result": bool(run.result.snapshot_id),
+            },
         }
         return citations, metadata

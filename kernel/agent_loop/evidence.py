@@ -271,13 +271,50 @@ class ResponseEvidenceLedger:
         citations = list(summary.get("answer_citations") or [])
         snapshot_id = str(answer_metadata.get("snapshot_id") or "").strip()
         passed = state == "completed" and validation.get("status") in {"pass", "warn"}
-        requirements = {
-            EvidenceRequirement.METRIC_DEFINITION,
-            EvidenceRequirement.TRUSTED_DATA_SOURCE,
-            EvidenceRequirement.BUSINESS_RULES,
-            EvidenceRequirement.VALIDATED_SQL,
+        requirements: set[EvidenceRequirement] = set()
+        metrics = [item for item in answer_metadata.get("metrics") or [] if isinstance(item, dict)]
+        coverage = dict(answer_metadata.get("evidence_requirements") or {})
+        citation_types = {
+            str(item.get("evidence_type") or "") for item in citations if isinstance(item, dict)
         }
-        if passed:
+        source = dict(answer_metadata.get("data_source") or {})
+        source_decision = dict(source.get("decision") or {})
+        sql_validation = dict(answer_metadata.get("sql_validation") or {})
+        has_governance_coverage = bool(coverage)
+        if coverage.get("metric_definition") or (
+            not has_governance_coverage
+            and metrics
+            and all(item.get("evidence_id") for item in metrics)
+        ):
+            requirements.add(EvidenceRequirement.METRIC_DEFINITION)
+        if coverage.get("trusted_data_source") or (
+            not has_governance_coverage
+            and source.get("id")
+            and (not source_decision or source_decision.get("status") == "selected")
+        ):
+            requirements.add(EvidenceRequirement.TRUSTED_DATA_SOURCE)
+        if coverage.get("business_rules") or (
+            not has_governance_coverage
+            and (
+                citation_types.intersection({"business_rule", "policy", "source_policy"})
+                or any(item.get("required_filters") for item in metrics)
+            )
+        ):
+            requirements.add(EvidenceRequirement.BUSINESS_RULES)
+        if coverage.get("validated_sql") or (
+            not has_governance_coverage
+            and answer_metadata.get("sql")
+            and not [
+                item
+                for item in sql_validation.get("issues") or []
+                if isinstance(item, dict) and item.get("severity") == "error"
+            ]
+        ):
+            requirements.add(EvidenceRequirement.VALIDATED_SQL)
+        if passed and (
+            coverage.get("executed_result")
+            or (not has_governance_coverage and bool(snapshot_id or citations))
+        ):
             requirements.add(EvidenceRequirement.EXECUTED_RESULT)
         evidence_id = snapshot_id or (f"execution-result:{run_id}" if run_id else "")
         if not evidence_id:
@@ -343,6 +380,20 @@ class ResponseEvidenceLedger:
             governed = (
                 "当前用户、租户和工作区范围内没有找到可确认的个人记忆证据。"
                 "请补充相关信息，或先启用并确认个人记忆。"
+            )
+        elif self.intent.data_stage == DataIntentStage.EXECUTE_AND_VERIFY and missing.intersection(
+            {
+                EvidenceRequirement.METRIC_DEFINITION.value,
+                EvidenceRequirement.TRUSTED_DATA_SOURCE.value,
+                EvidenceRequirement.BUSINESS_RULES.value,
+                EvidenceRequirement.VALIDATED_SQL.value,
+            }
+        ):
+            labels = "、".join(sorted(missing))
+            governed = (
+                "本次查询虽然可能已经执行，但企业治理证据仍不完整，因此不能把结果作为可靠的"
+                f"业务结论。缺少：{labels}。请先补齐或发布对应指标口径、业务规则、可信数据源"
+                "或 SQL 校验证据，再重新生成并执行。"
             )
         elif self.intent.data_stage == DataIntentStage.RESEARCH_AND_DRAFT:
             governed = content

@@ -130,7 +130,17 @@ def _completed_run(*, rows: list[dict] | None = None) -> tuple[QueryRun, Candida
     result_rows = [{"paid_users": 12}] if rows is None else rows
     run = QueryRun(
         id="run-1",
-        request=QueryRequest(question=plan.question, scope=_scope()),
+        request=QueryRequest(
+            question=plan.question,
+            scope=_scope(),
+            source_decision=DataSourceDecision(
+                status="selected",
+                question=plan.question,
+                selected_data_source_id="source-1",
+                selected_data_source_name="交易数仓",
+                confidence=0.96,
+            ),
+        ),
         state=RunState.COMPLETED,
         evidence=_evidence(),
         logical_plan=plan,
@@ -298,6 +308,22 @@ def test_answer_evidence_builder_binds_result_and_governed_metric() -> None:
     assert metadata["metrics"][0]["owner"] is None
     assert metadata["result_validation"]["status"] == "pass"
     assert metadata["evidence_coverage"] == 1.0
+    assert metadata["evidence_requirements"] == {
+        "metric_definition": True,
+        "trusted_data_source": True,
+        "business_rules": True,
+        "validated_sql": True,
+        "executed_result": False,
+    }
+
+
+def test_answer_evidence_builder_requires_explicit_trusted_source_decision() -> None:
+    run, candidate = _completed_run()
+    run.request.source_decision = None
+
+    _, metadata = AnswerEvidenceBuilder().build(run, candidate)
+
+    assert metadata["evidence_requirements"]["trusted_data_source"] is False
 
 
 def test_semantic_version_changes_when_business_rule_payload_changes() -> None:
@@ -376,6 +402,44 @@ def test_only_trusted_execution_memory_changes_candidate_ranking() -> None:
     assert ranked[0].score >= plan.confidence * 10 + 2
 
 
+def test_open_failure_memory_demotes_matching_sql_structure() -> None:
+    plan = _plan()
+    failed_sql = "SELECT COUNT(DISTINCT orders.user_id) AS paid_users FROM orders LIMIT 100"
+    alternative_sql = "SELECT COUNT(DISTINCT orders.user_id) AS total_users FROM orders LIMIT 100"
+    structure = sql_structure_hash(failed_sql, dialect="mysql")
+    evidence = _evidence()
+    evidence.items.append(
+        EvidenceItem(
+            type=EvidenceType.FAILURE_MEMORY,
+            source_id="failure-pattern:open",
+            authority=Authority.VERIFIED,
+            payload={
+                "pattern_key": plan_pattern_key(plan),
+                "sql_structure_hash": structure,
+                "status": "open",
+                "failure_count": 3,
+            },
+        )
+    )
+    failed = CandidateSQL(
+        id="failed",
+        sql=failed_sql,
+        validation=ValidationReport(status="pass"),
+    )
+    alternative = CandidateSQL(
+        id="alternative",
+        sql=alternative_sql,
+        validation=ValidationReport(status="pass"),
+    )
+
+    ranked = CandidateRanker().rank([failed, alternative], plan, evidence)
+
+    assert ranked[0].id == "alternative"
+    assert failed.score < alternative.score
+    assert "failure-pattern:open" in failed.supporting_memory_ids
+    assert any("失败模式" in item for item in failed.assumptions)
+
+
 @pytest.mark.asyncio
 async def test_learning_repository_promotes_then_rejects_pattern() -> None:
     run, candidate = _completed_run()
@@ -419,6 +483,15 @@ async def test_learning_repository_promotes_then_rejects_pattern() -> None:
     )
     assert promoted.status == "trusted"
     assert promoted.success_count == 2
+
+    positive = await repository.record_feedback(
+        run,
+        verdict="correct",
+        candidate_id=candidate.id,
+        corrected_sql=None,
+    )
+    assert positive is not None and positive.status == "trusted"
+    assert positive.success_count == 2
 
     rejected = await repository.record_feedback(
         run,

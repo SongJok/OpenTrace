@@ -10,7 +10,12 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 
 bash "$SCRIPT_DIR/verify_error_envelope.sh"
 bash "$SCRIPT_DIR/verify_e2e.sh"
-"$PYTHON_BIN" "$SCRIPT_DIR/verify_business_flows_e2e.py"
+business_flow_db_host="${VERIFY_DATABASE_HOST:-}"
+if [ -z "$business_flow_db_host" ] && command -v docker >/dev/null 2>&1; then
+  business_flow_db_host="$(docker compose exec -T postgres hostname -i 2>/dev/null || true)"
+fi
+VERIFY_DATABASE_HOST="${business_flow_db_host:-host.docker.internal}" \
+  "$PYTHON_BIN" -m scripts.verify_business_flows_e2e
 bash "$SCRIPT_DIR/verify_memory_e2e.sh"
 bash "$SCRIPT_DIR/verify_kernel_loop.sh"
 bash "$SCRIPT_DIR/verify_code_plugin.sh"

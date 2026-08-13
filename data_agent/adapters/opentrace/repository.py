@@ -89,6 +89,7 @@ class OpenTraceRunRepository:
     def _apply(run: QueryRun, record: DataAgentRunRecord) -> None:
         payload = run.model_dump(mode="json")
         record.question = run.request.question
+        record.run_purpose = run.request.run_purpose
         record.mode = run.request.mode.value
         record.state = run.state.value
         record.request_json = payload["request"]

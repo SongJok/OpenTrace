@@ -18,8 +18,9 @@ async def main():
     await bus.publish_task(
         AgentTaskEnvelope(
             task_id=task_id,
-            agent_type="tool",
-            query="现在几点？",
+            # Agent Bus 只消费拓扑清单声明的 Tier-1 Agent；tool 已不在在线拓扑中。
+            agent_type="rag",
+            query="Agent Bus 验收：检索不存在的验证主题。",
             params={},
             session_id="agent-bus-e2e",
             user_id="system-verify",

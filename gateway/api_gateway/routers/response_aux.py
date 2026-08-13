@@ -738,6 +738,8 @@ async def response_feedback(
                     "data_agent_feedback_id": None,
                 }
             data_feedback_id = str(uuid.uuid4())
+            positive_feedback = verdict == "correct"
+            resolved_at = datetime.now(UTC) if positive_feedback else None
             db.add(
                 DataAgentFeedback(
                     id=data_feedback_id,
@@ -756,6 +758,10 @@ async def response_feedback(
                         "feedback_type": feedback_type,
                         "score": score,
                     },
+                    status="resolved" if positive_feedback else "open",
+                    resolution_note="正向反馈自动归档" if positive_feedback else None,
+                    resolved_by=current_user.id if positive_feedback else None,
+                    resolved_at=resolved_at,
                 )
             )
             if settings.data_agent_learning_enabled:

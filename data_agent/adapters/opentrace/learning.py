@@ -166,19 +166,21 @@ class OpenTraceLearningRepository:
             "recorded_at": datetime.now(UTC).isoformat(),
         }
         pattern.validation_summary = summary
-        if verdict == "correct":
-            pattern.success_count += 1
-            if (
-                pattern.success_count >= settings.data_agent_learning_trust_min_success
-                and pattern.failure_count == 0
-            ):
-                pattern.status = "trusted"
-        else:
+        if verdict != "correct":
             pattern.failure_count += 1
             pattern.status = "rejected"
             pattern.confidence = max(0.0, float(pattern.confidence or 0.0) - 0.25)
         await self.db.flush()
-        return self._contract(pattern, ["人工反馈已更新经验可信状态"])
+        return self._contract(
+            pattern,
+            [
+                (
+                    "正向反馈已记录，但仍需重复真实执行才可晋升可信经验"
+                    if verdict == "correct"
+                    else "负向反馈已拒绝该经验，等待治理复核"
+                )
+            ],
+        )
 
     async def record_failure(
         self,
@@ -200,6 +202,7 @@ class OpenTraceLearningRepository:
         schema_fingerprint = str(run.evidence.schema_fingerprint or "")
         semantic_version = str(run.evidence.semantic_version or "")
         normalized_stage = str(stage or "failed")[:64]
+        candidate_sql_hash = sql_structure_hash(candidate.sql, dialect=run.evidence.dialect)
         statement = select(DataAgentFailurePattern).where(
             DataAgentFailurePattern.user_id == scope.user_id,
             DataAgentFailurePattern.tenant_id == scope.tenant_id,
@@ -208,6 +211,7 @@ class OpenTraceLearningRepository:
             DataAgentFailurePattern.pattern_key == pattern_key,
             DataAgentFailurePattern.schema_fingerprint == schema_fingerprint,
             DataAgentFailurePattern.semantic_version == semantic_version,
+            DataAgentFailurePattern.candidate_sql_hash == candidate_sql_hash,
             DataAgentFailurePattern.failure_stage == normalized_stage,
         )
         pattern = await self.db.scalar(statement.with_for_update())
@@ -224,7 +228,7 @@ class OpenTraceLearningRepository:
                 failure_stage=normalized_stage,
                 error_codes=list(dict.fromkeys(error_codes))[:20],
                 question_examples=[run.request.question],
-                candidate_sql_hash=sql_structure_hash(candidate.sql, dialect=run.evidence.dialect),
+                candidate_sql_hash=candidate_sql_hash,
                 failure_count=1,
                 last_run_id=run.id,
                 last_failure_at=datetime.now(UTC),
@@ -246,11 +250,12 @@ class OpenTraceLearningRepository:
             pattern.question_examples = list(
                 dict.fromkeys([*(pattern.question_examples or []), run.request.question])
             )[-10:]
-            pattern.candidate_sql_hash = sql_structure_hash(
-                candidate.sql, dialect=run.evidence.dialect
-            )
             pattern.last_run_id = run.id
             pattern.last_failure_at = datetime.now(UTC)
+            pattern.status = "open"
+            pattern.resolution_note = None
+            pattern.resolved_by = None
+            pattern.resolved_at = None
         await self.db.flush()
         return LearningRecord(
             pattern_key=pattern_key,

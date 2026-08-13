@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import os
-import socket
 import time
 import uuid
 from pathlib import Path
@@ -37,7 +36,7 @@ def _database_connection() -> dict[str, Any]:
     parsed = urlparse(os.getenv("DATABASE_URL", ""))
     configured_host = os.getenv("VERIFY_DATABASE_HOST") or parsed.hostname or "host.docker.internal"
     if not os.getenv("VERIFY_DATABASE_HOST") and is_docker_internal_database_host(configured_host):
-        configured_host = socket.gethostbyname(configured_host)
+        configured_host = "host.docker.internal"
     return {
         "host": configured_host,
         "port": int(os.getenv("VERIFY_DATABASE_PORT") or parsed.port or 5432),

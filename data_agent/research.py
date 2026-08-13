@@ -126,6 +126,13 @@ class ResearchPlanner:
         )
         steps.append(
             ResearchStep(
+                source=EvidenceType.FAILURE_MEMORY,
+                reason="规避相同作用域和版本下已重复失败的查询结构",
+                required=False,
+            )
+        )
+        steps.append(
+            ResearchStep(
                 source=EvidenceType.DATA_QUALITY,
                 reason="执行前检查数据新鲜度和已知质量问题",
                 required=False,

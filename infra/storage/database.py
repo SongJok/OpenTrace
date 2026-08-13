@@ -273,6 +273,25 @@ async def _verify_runtime_schema(conn) -> None:
             "result_rows",
         },
         "response_approvals": {"operation_class"},
+        "data_agent_runs": {"run_purpose"},
+        "data_agent_result_artifacts": {"details_purged_at"},
+        "data_agent_failure_patterns": {
+            "status",
+            "resolution_note",
+            "resolved_by",
+            "resolved_at",
+        },
+        "data_agent_feedback": {
+            "status",
+            "resolution_note",
+            "resolved_by",
+            "resolved_at",
+        },
+        "data_agent_evaluation_cases": {
+            "business_domain",
+            "published_by",
+            "published_at",
+        },
     }
     missing: list[str] = []
     for table, columns in required_columns.items():
@@ -344,6 +363,7 @@ async def _verify_runtime_schema(conn) -> None:
         "schema_table_metadata",
         "data_agent_result_artifacts",
         "data_agent_failure_patterns",
+        "data_agent_evaluation_suite_runs",
     }
     table_rows = await conn.execute(
         text(
@@ -389,6 +409,18 @@ async def _ensure_unified_runtime_columns(conn) -> None:
         "ALTER TABLE IF EXISTS public.response_tool_executions ADD COLUMN IF NOT EXISTS side_effect_level VARCHAR(20) NOT NULL DEFAULT 'read'",
         "ALTER TABLE IF EXISTS public.response_approvals ADD COLUMN IF NOT EXISTS operation_class VARCHAR(32) NOT NULL DEFAULT 'write'",
         "UPDATE public.response_approvals SET operation_class = 'governed_read' WHERE tool_name = 'execute_sql_draft' AND operation_class = 'write'",
+        "ALTER TABLE IF EXISTS public.data_agent_result_artifacts ADD COLUMN IF NOT EXISTS details_purged_at TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE IF EXISTS public.data_agent_failure_patterns ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'open'",
+        "ALTER TABLE IF EXISTS public.data_agent_failure_patterns ADD COLUMN IF NOT EXISTS resolution_note TEXT",
+        "ALTER TABLE IF EXISTS public.data_agent_failure_patterns ADD COLUMN IF NOT EXISTS resolved_by VARCHAR(36)",
+        "ALTER TABLE IF EXISTS public.data_agent_failure_patterns ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE IF EXISTS public.data_agent_feedback ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'open'",
+        "ALTER TABLE IF EXISTS public.data_agent_feedback ADD COLUMN IF NOT EXISTS resolution_note TEXT",
+        "ALTER TABLE IF EXISTS public.data_agent_feedback ADD COLUMN IF NOT EXISTS resolved_by VARCHAR(36)",
+        "ALTER TABLE IF EXISTS public.data_agent_feedback ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMP WITH TIME ZONE",
+        "ALTER TABLE IF EXISTS public.data_agent_evaluation_cases ADD COLUMN IF NOT EXISTS business_domain VARCHAR(128)",
+        "ALTER TABLE IF EXISTS public.data_agent_evaluation_cases ADD COLUMN IF NOT EXISTS published_by VARCHAR(36)",
+        "ALTER TABLE IF EXISTS public.data_agent_evaluation_cases ADD COLUMN IF NOT EXISTS published_at TIMESTAMP WITH TIME ZONE",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS score DOUBLE PRECISION NOT NULL DEFAULT 0.5",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS personal_category VARCHAR(30) NOT NULL DEFAULT 'profile'",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS scope_type VARCHAR(20) NOT NULL DEFAULT 'user'",

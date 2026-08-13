@@ -48,6 +48,9 @@ class DataAgentRunRecord(Base):
         String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True
     )
     question: Mapped[str] = mapped_column(Text, nullable=False)
+    run_purpose: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="online", index=True
+    )
     mode: Mapped[str] = mapped_column(String(32), nullable=False, default="sql_only")
     state: Mapped[str] = mapped_column(
         String(32), nullable=False, default="researching", index=True
@@ -137,6 +140,9 @@ class DataAgentResultArtifact(Base):
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    details_purged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class DataAgentFailurePattern(Base):
@@ -152,8 +158,9 @@ class DataAgentFailurePattern(Base):
             "pattern_key",
             "schema_fingerprint",
             "semantic_version",
+            "candidate_sql_hash",
             "failure_stage",
-            name="uq_data_agent_failure_pattern_version",
+            name="uq_data_agent_failure_pattern_structure_version",
         ),
         Index(
             "ix_data_agent_failure_pattern_scope",
@@ -182,6 +189,12 @@ class DataAgentFailurePattern(Base):
     question_examples: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     candidate_sql_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open", index=True)
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_run_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("data_agent_runs.id", ondelete="SET NULL"), nullable=True
     )
@@ -263,7 +276,12 @@ class DataAgentEvaluationCase(Base):
     expected_result: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     schema_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    business_domain: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", index=True)
+    published_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_evaluation_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     last_run_id: Mapped[str | None] = mapped_column(
         String(64), ForeignKey("data_agent_runs.id", ondelete="SET NULL"), nullable=True, index=True
@@ -298,7 +316,51 @@ class DataAgentFeedback(Base):
     corrected_sql: Mapped[str | None] = mapped_column(Text, nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open", index=True)
+    resolution_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DataAgentEvaluationSuiteRun(Base):
+    """Golden Case 套件级发布门禁运行。"""
+
+    __tablename__ = "data_agent_evaluation_suite_runs"
+    __table_args__ = (
+        Index(
+            "ix_data_agent_eval_suite_scope",
+            "tenant_id",
+            "workspace_id",
+            "data_source_id",
+            "started_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    data_source_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="发布门禁")
+    execute: Mapped[bool] = mapped_column(nullable=False, default=False)
+    tags_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    business_domain: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    minimum_pass_rate: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    case_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    passed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pass_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running", index=True)
+    results_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class DataAgentLearningPattern(Base):

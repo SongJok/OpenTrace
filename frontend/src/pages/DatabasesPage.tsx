@@ -1,61 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, BarChart3, CheckCircle2, ChevronLeft, Circle, Database, FileCode2, Gauge, Pencil, PlayCircle, Plus, RefreshCw, Search, Settings2, ShieldCheck, Table2, Trash2, Upload, Users, Zap } from 'lucide-react'
+import { Activity, Archive, BarChart3, CheckCircle2, ChevronLeft, Circle, Database, FileCode2, Gauge, Pencil, PlayCircle, Plus, RefreshCw, Search, Settings2, ShieldCheck, Table2, Trash2, Upload, Users, Zap } from 'lucide-react'
 import DatabaseTypeSelect, { DATABASE_HOST_MODE_OPTIONS, type DatabaseHostMode, type DatabaseType } from '../components/DatabaseTypeSelect'
 import MarkdownMessage from '../components/MarkdownMessage'
 import { useAuthStore } from '../store/auth'
 import { useChatPreferences } from '../store/chatPreferences'
-import {
-  buildJdbc,
-  getDefaultHostForMode,
-  getDefaultJdbcParams,
-  isAllowedDatabaseHost,
-  isLocalHost,
-  parseJdbc,
-  parseJdbcLikeHostInput,
-} from '../lib/databaseConnection'
-import {
-  apiAnalyzeDatabase,
-  apiAutoSuggestSchemaAnnotations,
-  apiCreateDatabase,
-  apiDatabaseQuery,
-  apiDeleteDatabase,
-  apiDeleteSchemaAnnotation,
-  apiGetDatabaseSchema,
-  apiListDatabases,
-  apiSyncDatabaseSchema,
-  apiTestDatabaseConnection,
-  apiUpdateDatabase,
-  apiGetSemanticConfig,
-  apiUpdateSemanticConfig,
-  apiAutoExtractSemantic,
-  apiGetDatabaseHealth,
-  apiDeleteSQLAssetSource,
-  apiExecuteSQLDraft,
-  apiGetSQLDraft,
-  apiValidateDatabase,
-  apiListSQLAssets,
-  apiListPermissionSubjects,
-  apiListResourcePermissions,
-  apiListSchemaAnnotations,
-  apiGrantResourcePermission,
-  apiRevokeResourcePermission,
-  apiReviewSchemaAnnotation,
-  apiUpdateSQLAsset,
-  apiUpsertSchemaAnnotation,
-  apiBatchUploadSQLAssets,
-  type DataSourceItem,
-  type DatabaseSchemaPagination,
-  type DatabaseSchemaPayload,
-  type ResourcePermissionItem,
-  type SchemaAnnotationItem,
-  type SQLAssetItem,
-  type SQLAssetSourceItem,
-  type SQLDataSourceDecisionItem,
-  type SQLQueryCandidateItem,
-  type SQLQueryExecutionSummary,
-} from '../api/client'
+import { buildJdbc, getDefaultHostForMode, getDefaultJdbcParams, isAllowedDatabaseHost, isLocalHost, parseJdbc, parseJdbcLikeHostInput } from '../lib/databaseConnection'
+import { apiAnalyzeDatabase, apiAutoSuggestSchemaAnnotations, apiCreateDataAgentEvaluationCase, apiCreateDatabase, apiDatabaseQuery, apiDeleteDatabase, apiDeleteSchemaAnnotation, apiGetDatabaseSchema, apiListDatabases, apiPublishDataAgentEvaluationCase, apiSyncDatabaseSchema, apiTestDatabaseConnection, apiUpdateDatabase, apiGetSemanticConfig, apiUpdateSemanticConfig, apiAutoExtractSemantic, apiGetDatabaseHealth, apiGetDataAgentGovernanceOverview, apiListDataAgentEvaluationCases, apiListDataAgentFailurePatterns, apiListDataAgentFeedback, apiResolveDataAgentFailurePattern, apiResolveDataAgentFeedback, apiRunDataAgentEvaluationSuite, apiDeleteSQLAssetSource, apiExecuteSQLDraft, apiGetSQLDraft, apiValidateDatabase, apiListSQLAssets, apiListPermissionSubjects, apiListResourcePermissions, apiListSchemaAnnotations, apiGrantResourcePermission, apiRevokeResourcePermission, apiReviewSchemaAnnotation, apiUpdateSQLAsset, apiUpsertSchemaAnnotation, apiBatchUploadSQLAssets, type DataSourceItem, type DataAgentEvaluationCaseItem, type DataAgentFailurePatternItem, type DataAgentFeedbackItem, type DataAgentGovernanceOverview, type DatabaseSchemaPagination, type DatabaseSchemaPayload, type ResourcePermissionItem, type SchemaAnnotationItem, type SQLAssetItem, type SQLAssetSourceItem, type SQLDataSourceDecisionItem, type SQLQueryCandidateItem, type SQLQueryExecutionSummary } from '../api/client'
 
-type TabKey = 'overview' | 'tables' | 'annotations' | 'query' | 'sql_assets' | 'analysis' | 'settings' | 'metrics' | 'relationships' | 'skills'
+type TabKey = 'overview' | 'quality' | 'tables' | 'annotations' | 'query' | 'sql_assets' | 'analysis' | 'settings' | 'metrics' | 'relationships' | 'skills'
 
 const SQL_ASSET_PAGE_SIZE = 20
 const SCHEMA_TABLE_PAGE_SIZE = 100
@@ -79,6 +31,7 @@ const SQL_EXECUTION_STATUS_LABELS: Record<SQLQueryCandidateItem['execution_statu
 
 export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const token = useAuthStore((s) => s.token)!
+  const role = useAuthStore((s) => s.role)
   const requestPrefill = useChatPreferences((state) => state.requestPrefill)
   const [items, setItems] = useState<DataSourceItem[]>([])
   const [selected, setSelected] = useState<DataSourceItem | null>(null)
@@ -112,11 +65,13 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   } | null>(null)
   const [querySessionId, setQuerySessionId] = useState<string | null>(null)
   const [sessionContext, setSessionContext] = useState<Record<string, any> | null>(null)
-  const [queryHistory, setQueryHistory] = useState<Array<{
-    question: string
-    answer: string
-    isClarification: boolean
-  }>>([])
+  const [queryHistory, setQueryHistory] = useState<
+    Array<{
+      question: string
+      answer: string
+      isClarification: boolean
+    }>
+  >([])
   const [schema, setSchema] = useState<DatabaseSchemaPayload | null>(null)
   const [schemaPagination, setSchemaPagination] = useState<DatabaseSchemaPagination | null>(null)
   const [schemaSearch, setSchemaSearch] = useState('')
@@ -125,7 +80,12 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const [schemaLoading, setSchemaLoading] = useState(false)
   const [schemaError, setSchemaError] = useState('')
   const schemaRequestId = useRef(0)
-  const [analysis, setAnalysis] = useState<{ summary: string; charts: any[]; tables: any[]; insights: string[] } | null>(null)
+  const [analysis, setAnalysis] = useState<{
+    summary: string
+    charts: any[]
+    tables: any[]
+    insights: string[]
+  } | null>(null)
   const [creating, setCreating] = useState(false)
   const [saving, setSaving] = useState(false)
   const [schemaSyncing, setSchemaSyncing] = useState(false)
@@ -137,15 +97,31 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     metrics: Record<string, string>
     time_macros: Array<{ keyword: string; column: string; days: number }>
   }>({ dimensions: {}, metrics: {}, time_macros: [] })
-  const [editingDimension, setEditingDimension] = useState<{ name: string; column: string; table: string }>({ name: '', column: '', table: '' })
-  const [editingMetric, setEditingMetric] = useState<{ name: string; expression: string }>({ name: '', expression: '' })
-  const [editingTimeMacro, setEditingTimeMacro] = useState<{ keyword: string; column: string; days: number }>({ keyword: '', column: '', days: 7 })
+  const [editingDimension, setEditingDimension] = useState<{
+    name: string
+    column: string
+    table: string
+  }>({ name: '', column: '', table: '' })
+  const [editingMetric, setEditingMetric] = useState<{
+    name: string
+    expression: string
+  }>({ name: '', expression: '' })
+  const [editingTimeMacro, setEditingTimeMacro] = useState<{
+    keyword: string
+    column: string
+    days: number
+  }>({ keyword: '', column: '', days: 7 })
 
   // DataAgent 治理资产状态
   const [metricsList, setMetricsList] = useState<any[]>([])
   const [relationshipsList, setRelationshipsList] = useState<any[]>([])
   const [skillsList, setSkillsList] = useState<any[]>([])
   const [databaseHealth, setDatabaseHealth] = useState<any>(null)
+  const [governanceOverview, setGovernanceOverview] = useState<DataAgentGovernanceOverview | null>(null)
+  const [failurePatterns, setFailurePatterns] = useState<DataAgentFailurePatternItem[]>([])
+  const [dataFeedback, setDataFeedback] = useState<DataAgentFeedbackItem[]>([])
+  const [evaluationCases, setEvaluationCases] = useState<DataAgentEvaluationCaseItem[]>([])
+  const [governanceBusy, setGovernanceBusy] = useState(false)
   const [validating, setValidating] = useState(false)
   const [permissions, setPermissions] = useState<ResourcePermissionItem[]>([])
   const [subjects, setSubjects] = useState<Array<{ id: string; email: string; display_name?: string }>>([])
@@ -231,7 +207,12 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
 
   const loadSchemaPage = async (
     databaseId: string,
-    options: { search?: string; database?: string; offset?: number; append?: boolean } = {},
+    options: {
+      search?: string
+      database?: string
+      offset?: number
+      append?: boolean
+    } = {},
   ) => {
     const requestId = schemaRequestId.current + 1
     schemaRequestId.current = requestId
@@ -245,9 +226,14 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
         limit: SCHEMA_TABLE_PAGE_SIZE,
       })
       if (requestId !== schemaRequestId.current) return
-      setSchema((previous) => options.append && previous
-        ? { ...result.schema, tables: [...previous.tables, ...(result.schema.tables || [])] }
-        : result.schema)
+      setSchema((previous) =>
+        options.append && previous
+          ? {
+              ...result.schema,
+              tables: [...previous.tables, ...(result.schema.tables || [])],
+            }
+          : result.schema,
+      )
       setSchemaPagination(result.pagination)
     } catch (error) {
       if (requestId !== schemaRequestId.current) return
@@ -277,19 +263,52 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     setSchemaPagination(null)
     void loadSchemaPage(selected.id)
     void apiGetSemanticConfig(token, selected.id)
-      .then((x) => setSemanticConfig({
-        dimensions: x?.dimensions || {},
-        metrics: x?.metrics || {},
-        time_macros: x?.time_macros || [],
-      }))
+      .then((x) =>
+        setSemanticConfig({
+          dimensions: x?.dimensions || {},
+          metrics: x?.metrics || {},
+          time_macros: x?.time_macros || [],
+        }),
+      )
       .catch(() => setSemanticConfig({ dimensions: {}, metrics: {}, time_macros: [] }))
     // 加载 DataAgent 治理资产
-    apiFetch(`/api/v1/metrics?data_source_id=${selected.id}`, token).then((x) => setMetricsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setMetricsList([]))
-    apiFetch(`/api/v1/table-relationships?data_source_id=${selected.id}`, token).then((x) => setRelationshipsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setRelationshipsList([]))
-    apiFetch(`/api/v1/analytical-skills`, token).then((x) => setSkillsList(Array.isArray(x) ? x : (x?.items || []))).catch(() => setSkillsList([]))
-    apiGetDatabaseHealth(token, selected.id).then(setDatabaseHealth).catch(() => setDatabaseHealth(null))
-    apiListResourcePermissions(token, 'data_source', selected.id).then(setPermissions).catch(() => setPermissions([]))
-    apiListPermissionSubjects(token).then(setSubjects).catch(() => setSubjects([]))
+    apiFetch(`/api/v1/metrics?data_source_id=${selected.id}`, token)
+      .then((x) => setMetricsList(Array.isArray(x) ? x : x?.items || []))
+      .catch(() => setMetricsList([]))
+    apiFetch(`/api/v1/table-relationships?data_source_id=${selected.id}`, token)
+      .then((x) => setRelationshipsList(Array.isArray(x) ? x : x?.items || []))
+      .catch(() => setRelationshipsList([]))
+    apiFetch(`/api/v1/analytical-skills`, token)
+      .then((x) => setSkillsList(Array.isArray(x) ? x : x?.items || []))
+      .catch(() => setSkillsList([]))
+    apiGetDatabaseHealth(token, selected.id)
+      .then(setDatabaseHealth)
+      .catch(() => setDatabaseHealth(null))
+    if (role === 'admin') {
+      apiGetDataAgentGovernanceOverview(token, selected.id)
+        .then(setGovernanceOverview)
+        .catch(() => setGovernanceOverview(null))
+      apiListDataAgentFailurePatterns(token, selected.id)
+        .then(setFailurePatterns)
+        .catch(() => setFailurePatterns([]))
+      apiListDataAgentFeedback(token, selected.id)
+        .then(setDataFeedback)
+        .catch(() => setDataFeedback([]))
+      apiListDataAgentEvaluationCases(token, selected.id)
+        .then(setEvaluationCases)
+        .catch(() => setEvaluationCases([]))
+    } else {
+      setGovernanceOverview(null)
+      setFailurePatterns([])
+      setDataFeedback([])
+      setEvaluationCases([])
+    }
+    apiListResourcePermissions(token, 'data_source', selected.id)
+      .then(setPermissions)
+      .catch(() => setPermissions([]))
+    apiListPermissionSubjects(token)
+      .then(setSubjects)
+      .catch(() => setSubjects([]))
     apiListSQLAssets(token, selected.id, { limit: SQL_ASSET_PAGE_SIZE })
       .then((result) => {
         setSqlAssets(result.assets || [])
@@ -311,7 +330,100 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
         setSchemaAnnotationHasMore(!!result.pagination?.has_more)
       })
       .catch(() => setSchemaAnnotations([]))
-  }, [selected?.id, token])
+  }, [selected?.id, token, role])
+
+  const reloadDataAgentGovernance = async () => {
+    if (!selected) return
+    const [overview, failures, feedback, cases] = await Promise.all([apiGetDataAgentGovernanceOverview(token, selected.id), apiListDataAgentFailurePatterns(token, selected.id), apiListDataAgentFeedback(token, selected.id), apiListDataAgentEvaluationCases(token, selected.id)])
+    setGovernanceOverview(overview)
+    setFailurePatterns(failures)
+    setDataFeedback(feedback)
+    setEvaluationCases(cases)
+  }
+
+  const resolveFailurePattern = async (item: DataAgentFailurePatternItem) => {
+    const note = window.prompt('请记录修复依据（例如已修订指标、关系或 SQL 编译规则）')?.trim()
+    if (!note) return
+    setGovernanceBusy(true)
+    try {
+      await apiResolveDataAgentFailurePattern(token, item.id, note)
+      await reloadDataAgentGovernance()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '处置失败模式失败')
+    } finally {
+      setGovernanceBusy(false)
+    }
+  }
+
+  const resolveDataFeedback = async (item: DataAgentFeedbackItem) => {
+    const note = window.prompt('请记录反馈处理结论')?.trim()
+    if (!note) return
+    setGovernanceBusy(true)
+    try {
+      await apiResolveDataAgentFeedback(token, item.id, note)
+      await reloadDataAgentGovernance()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '处置问数反馈失败')
+    } finally {
+      setGovernanceBusy(false)
+    }
+  }
+
+  const runReleaseGate = async (execute: boolean) => {
+    if (!selected) return
+    if (execute && !window.confirm('真实执行门禁会运行全部已发布 Golden Case 的只读 SQL，是否继续？')) return
+    setGovernanceBusy(true)
+    try {
+      const suite = await apiRunDataAgentEvaluationSuite(token, selected.id, execute)
+      await reloadDataAgentGovernance()
+      alert(`发布门禁${suite.status === 'passed' ? '通过' : '未通过'}：${suite.passed_count}/${suite.case_count}`)
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '运行发布门禁失败')
+    } finally {
+      setGovernanceBusy(false)
+    }
+  }
+
+  const createGoldenCase = async () => {
+    if (!selected) return
+    const schemaFingerprint = schema?.schema_fingerprint?.trim()
+    if (!schemaFingerprint) {
+      alert('请先同步当前数据源 Schema，再创建可发布的 Golden Case。')
+      return
+    }
+    const questionText = window.prompt('请输入公司认可的业务问题')?.trim()
+    if (!questionText) return
+    const expectedSql = window.prompt('请输入已人工核验的期望只读 SQL')?.trim()
+    if (!expectedSql) return
+    const businessDomain = window.prompt('请输入业务域（可留空）')?.trim() || null
+    setGovernanceBusy(true)
+    try {
+      await apiCreateDataAgentEvaluationCase(token, selected.id, {
+        question: questionText,
+        expected_sql: expectedSql,
+        schema_fingerprint: schemaFingerprint,
+        business_domain: businessDomain,
+      })
+      await reloadDataAgentGovernance()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '创建 Golden Case 失败')
+    } finally {
+      setGovernanceBusy(false)
+    }
+  }
+
+  const publishGoldenCase = async (item: DataAgentEvaluationCaseItem) => {
+    if (!window.confirm('发布后该案例将进入问数发布门禁，是否继续？')) return
+    setGovernanceBusy(true)
+    try {
+      await apiPublishDataAgentEvaluationCase(token, item.id)
+      await reloadDataAgentGovernance()
+    } catch (error) {
+      alert(error instanceof Error ? error.message : '发布 Golden Case 失败')
+    } finally {
+      setGovernanceBusy(false)
+    }
+  }
 
   const reloadSchemaAnnotations = async (options: { search?: string; offset?: number; append?: boolean } = {}) => {
     if (!selected) return
@@ -319,9 +431,12 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     try {
       const search = options.search ?? schemaAnnotationSearch
       const offset = options.offset ?? 0
-      const result = await apiListSchemaAnnotations(token, selected.id, { search, offset })
+      const result = await apiListSchemaAnnotations(token, selected.id, {
+        search,
+        offset,
+      })
       const incoming = [...(result.tables || []), ...(result.columns || [])]
-      setSchemaAnnotations((current) => options.append ? [...current, ...incoming] : incoming)
+      setSchemaAnnotations((current) => (options.append ? [...current, ...incoming] : incoming))
       setSchemaAnnotationOffset(offset)
       setSchemaAnnotationHasMore(!!result.pagination?.has_more)
     } finally {
@@ -329,7 +444,14 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     }
   }
 
-  const reloadSQLAssets = async (overrides: { search?: string; status?: SQLAssetItem['status'] | ''; corpusRole?: SQLAssetItem['corpus_role'] | ''; offset?: number } = {}) => {
+  const reloadSQLAssets = async (
+    overrides: {
+      search?: string
+      status?: SQLAssetItem['status'] | ''
+      corpusRole?: SQLAssetItem['corpus_role'] | ''
+      offset?: number
+    } = {},
+  ) => {
     if (!selected) return
     const nextSearch = overrides.search ?? sqlAssetSearch
     const nextStatus = overrides.status ?? sqlAssetStatus
@@ -388,7 +510,10 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
       await apiUpdateSQLAsset(token, selected.id, asset.id, {
         title: editingSQLAsset.title,
         description: editingSQLAsset.description,
-        tags: editingSQLAsset.tags.split(',').map((item) => item.trim()).filter(Boolean),
+        tags: editingSQLAsset.tags
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean),
         corpus_role: editingSQLAsset.corpus_role,
         domain: editingSQLAsset.domain,
         owner: editingSQLAsset.owner,
@@ -408,10 +533,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     await reloadSQLAssets()
   }
 
-  const beginSchemaAnnotation = (
-    targetType: 'table' | 'column',
-    annotation?: SchemaAnnotationItem,
-  ) => {
+  const beginSchemaAnnotation = (targetType: 'table' | 'column', annotation?: SchemaAnnotationItem) => {
     setEditingSchemaAnnotation({
       id: annotation?.id,
       target_type: targetType,
@@ -434,9 +556,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     if (!selected || !editingSchemaAnnotation) return
     let valueMap: Record<string, string> = {}
     try {
-      valueMap = editingSchemaAnnotation.value_map.trim()
-        ? JSON.parse(editingSchemaAnnotation.value_map)
-        : {}
+      valueMap = editingSchemaAnnotation.value_map.trim() ? JSON.parse(editingSchemaAnnotation.value_map) : {}
     } catch {
       alert('枚举值映射必须是合法 JSON 对象')
       return
@@ -444,11 +564,15 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     try {
       await apiUpsertSchemaAnnotation(token, selected.id, {
         ...editingSchemaAnnotation,
-        column_name: editingSchemaAnnotation.target_type === 'column'
-          ? editingSchemaAnnotation.column_name
-          : null,
-        aliases: editingSchemaAnnotation.aliases.split(',').map((item) => item.trim()).filter(Boolean),
-        tags: editingSchemaAnnotation.tags.split(',').map((item) => item.trim()).filter(Boolean),
+        column_name: editingSchemaAnnotation.target_type === 'column' ? editingSchemaAnnotation.column_name : null,
+        aliases: editingSchemaAnnotation.aliases
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean),
+        tags: editingSchemaAnnotation.tags
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean),
         semantic_type: editingSchemaAnnotation.semantic_type || null,
         value_map: valueMap,
       })
@@ -491,14 +615,24 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   const validateDatabaseHealth = async () => {
     if (!selected) return
     setValidating(true)
-    try { setDatabaseHealth(await apiValidateDatabase(token, selected.id)); await load() }
-    catch (e: any) { alert(e?.message || '验证失败') }
-    finally { setValidating(false) }
+    try {
+      setDatabaseHealth(await apiValidateDatabase(token, selected.id))
+      await load()
+    } catch (e: any) {
+      alert(e?.message || '验证失败')
+    } finally {
+      setValidating(false)
+    }
   }
 
   const grantPermission = async () => {
     if (!selected || !grantUserId) return
-    await apiGrantResourcePermission(token, { subject_user_id: grantUserId, resource_type: 'data_source', resource_id: selected.id, permission: grantLevel })
+    await apiGrantResourcePermission(token, {
+      subject_user_id: grantUserId,
+      resource_type: 'data_source',
+      resource_id: selected.id,
+      permission: grantLevel,
+    })
     setPermissions(await apiListResourcePermissions(token, 'data_source', selected.id))
   }
 
@@ -513,7 +647,17 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
 
   const beginCreate = () => {
     setEditingId(null)
-    setForm({ name: '', source_type: 'mysql', host_mode: 'local', host: getDefaultHostForMode('local'), port: DB_PORTS.mysql, database: '', username: '', password: '', jdbc: buildJdbc('mysql', getDefaultHostForMode('local'), DB_PORTS.mysql, '', getDefaultJdbcParams('mysql')) })
+    setForm({
+      name: '',
+      source_type: 'mysql',
+      host_mode: 'local',
+      host: getDefaultHostForMode('local'),
+      port: DB_PORTS.mysql,
+      database: '',
+      username: '',
+      password: '',
+      jdbc: buildJdbc('mysql', getDefaultHostForMode('local'), DB_PORTS.mysql, '', getDefaultJdbcParams('mysql')),
+    })
     setCreating((v) => !v)
   }
 
@@ -570,7 +714,17 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
       const id = editingId || resp.id
       setCreating(false)
       setEditingId(null)
-      setForm({ name: '', source_type: 'mysql', host_mode: 'local', host: getDefaultHostForMode('local'), port: DB_PORTS.mysql, database: '', username: '', password: '', jdbc: buildJdbc('mysql', getDefaultHostForMode('local'), DB_PORTS.mysql, '', getDefaultJdbcParams('mysql')) })
+      setForm({
+        name: '',
+        source_type: 'mysql',
+        host_mode: 'local',
+        host: getDefaultHostForMode('local'),
+        port: DB_PORTS.mysql,
+        database: '',
+        username: '',
+        password: '',
+        jdbc: buildJdbc('mysql', getDefaultHostForMode('local'), DB_PORTS.mysql, '', getDefaultJdbcParams('mysql')),
+      })
       await load()
       try {
         const test = await apiTestDatabaseConnection(token, id)
@@ -603,11 +757,14 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     if (out.session_id) setQuerySessionId(out.session_id)
     if (out.session_context) setSessionContext(out.session_context)
 
-    setQueryHistory(prev => [...prev, {
-      question: clarifyContext ? `(补充) ${clarifyContext}` : question,
-      answer: out.answer,
-      isClarification: !!out.needs_clarification,
-    }])
+    setQueryHistory((prev) => [
+      ...prev,
+      {
+        question: clarifyContext ? `(补充) ${clarifyContext}` : question,
+        answer: out.answer,
+        isClarification: !!out.needs_clarification,
+      },
+    ])
 
     setQueryOutput({
       answer: out.answer,
@@ -643,19 +800,21 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
       })
       const candidates = draft.candidates || []
       const completed = candidates.find((item) => item.execution_status === 'completed')
-      const executionAnswer = typeof draft.execution_summary?.answer === 'string'
-        ? draft.execution_summary.answer
-        : null
-      setQueryOutput((previous) => previous ? {
-        ...previous,
-        answer: executionAnswer || (draft.status === 'completed' ? 'SQL 执行完成。' : 'SQL 执行结束，部分候选执行失败。'),
-        summary: `${candidates.filter((item) => item.execution_status === 'completed').length} 条 SQL 执行成功`,
-        sql: completed?.sql || previous.sql,
-        rows: completed?.rows || [],
-        draft_status: draft.status,
-        candidates,
-        execution_summary: draft.execution_summary || {},
-      } : previous)
+      const executionAnswer = typeof draft.execution_summary?.answer === 'string' ? draft.execution_summary.answer : null
+      setQueryOutput((previous) =>
+        previous
+          ? {
+              ...previous,
+              answer: executionAnswer || (draft.status === 'completed' ? 'SQL 执行完成。' : 'SQL 执行结束，部分候选执行失败。'),
+              summary: `${candidates.filter((item) => item.execution_status === 'completed').length} 条 SQL 执行成功`,
+              sql: completed?.sql || previous.sql,
+              rows: completed?.rows || [],
+              draft_status: draft.status,
+              candidates,
+              execution_summary: draft.execution_summary || {},
+            }
+          : previous,
+      )
     } catch (error: any) {
       alert(error?.message || '执行 SQL 草案失败')
     } finally {
@@ -668,14 +827,18 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
     try {
       const draft = await apiGetSQLDraft(token, selected.id, queryOutput.draft_id)
       const completed = draft.candidates?.find((item) => item.execution_status === 'completed')
-      setQueryOutput((previous) => previous ? {
-        ...previous,
-        sql: completed?.sql || previous.sql,
-        rows: completed?.rows || previous.rows,
-        draft_status: draft.status,
-        candidates: draft.candidates || [],
-        execution_summary: draft.execution_summary || {},
-      } : previous)
+      setQueryOutput((previous) =>
+        previous
+          ? {
+              ...previous,
+              sql: completed?.sql || previous.sql,
+              rows: completed?.rows || previous.rows,
+              draft_status: draft.status,
+              candidates: draft.candidates || [],
+              execution_summary: draft.execution_summary || {},
+            }
+          : previous,
+      )
     } catch (error: any) {
       alert(error?.message || '刷新 SQL 草案失败')
     }
@@ -802,48 +965,59 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
   return (
     <div className="flex flex-col h-screen bg-[var(--bg)] text-[var(--text)]">
       <div className="flex items-center gap-3 px-6 h-14 border-b border-[var(--border)]">
-        <button onClick={onBack} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--surface)]"><ChevronLeft size={18} /></button>
-        <h1 className="text-sm font-semibold inline-flex items-center gap-2"><Database size={16} /> 数据库</h1>
+        <button onClick={onBack} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--surface)]">
+          <ChevronLeft size={18} />
+        </button>
+        <h1 className="text-sm font-semibold inline-flex items-center gap-2">
+          <Database size={16} /> 数据库
+        </h1>
       </div>
 
       <div className="grid grid-cols-12 gap-4 p-4 flex-1 overflow-hidden">
         <div className="col-span-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 overflow-y-auto">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold">数据库列表</h2>
-            <button className="px-2 py-1 rounded border text-xs inline-flex items-center gap-1" onClick={beginCreate}><Plus size={12} /> 添加</button>
+            <button className="px-2 py-1 rounded border text-xs inline-flex items-center gap-1" onClick={beginCreate}>
+              <Plus size={12} /> 添加
+            </button>
           </div>
 
           {creating ? (
             <div className="space-y-2 mb-3 rounded border border-[var(--border)] p-2">
               <div className="flex items-center justify-between text-xs text-[var(--text-secondary)]">
                 <span>{editingId ? '编辑数据库' : '新建数据库'}</span>
-                <button className="inline-flex items-center gap-1 rounded border px-2 py-1" onClick={() => { setCreating(false); setEditingId(null) }}>取消</button>
+                <button
+                  className="inline-flex items-center gap-1 rounded border px-2 py-1"
+                  onClick={() => {
+                    setCreating(false)
+                    setEditingId(null)
+                  }}
+                >
+                  取消
+                </button>
               </div>
               <input className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent" placeholder="别名" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-              <div className="text-[11px] text-[var(--text-secondary)]">
-                示例 MySQL：`127.0.0.1` / `root` / `123456` / `test_db`
-              </div>
+              <div className="text-[11px] text-[var(--text-secondary)]">示例 MySQL：`127.0.0.1` / `root` / `123456` / `test_db`</div>
               <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-raised)] px-3 py-2 text-[11px] text-[var(--text-secondary)] space-y-1">
                 <div>仅支持连接本机/宿主机或外部链接数据库，不提供 Docker 内数据库创建入口。</div>
               </div>
-              <DatabaseTypeSelect
-                value={form.source_type}
-                onChange={(source_type) => setForm({ ...form, source_type, port: DB_PORTS[source_type] })}
-              />
+              <DatabaseTypeSelect value={form.source_type} onChange={(source_type) => setForm({ ...form, source_type, port: DB_PORTS[source_type] })} />
               <div className="grid grid-cols-2 gap-2">
                 {DATABASE_HOST_MODE_OPTIONS.map((opt) => (
                   <button
                     key={opt.value}
                     type="button"
-                    onClick={() => setForm((f) => {
-                      const host = getDefaultHostForMode(opt.value)
-                      return {
-                        ...f,
-                        host_mode: opt.value,
-                        host,
-                        jdbc: buildJdbc(f.source_type, host || f.host, f.port, f.database, getDefaultJdbcParams(f.source_type)),
-                      }
-                    })}
+                    onClick={() =>
+                      setForm((f) => {
+                        const host = getDefaultHostForMode(opt.value)
+                        return {
+                          ...f,
+                          host_mode: opt.value,
+                          host,
+                          jdbc: buildJdbc(f.source_type, host || f.host, f.port, f.database, getDefaultJdbcParams(f.source_type)),
+                        }
+                      })
+                    }
                     className={`rounded-xl border px-3 py-2 text-left text-xs ${form.host_mode === opt.value ? 'border-[var(--accent)] bg-[var(--accent-dim)]' : 'border-[var(--border)] bg-[var(--surface-raised)]'}`}
                   >
                     <div className="font-semibold">{opt.label}</div>
@@ -855,85 +1029,138 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                 className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent"
                 placeholder={form.host_mode === 'local' ? 'localhost / 127.0.0.1 / host.docker.internal / 宿主机IP' : '外部主机名 / IP'}
                 value={form.host}
-                onChange={(e) => setForm((f) => {
-                  const rawHost = e.target.value
-                  const parsedHostInput = parseJdbcLikeHostInput(rawHost, {
-                    source_type: f.source_type,
-                    port: f.port,
-                    database: f.database.trim(),
-                  })
-                  if (parsedHostInput) {
+                onChange={(e) =>
+                  setForm((f) => {
+                    const rawHost = e.target.value
+                    const parsedHostInput = parseJdbcLikeHostInput(rawHost, {
+                      source_type: f.source_type,
+                      port: f.port,
+                      database: f.database.trim(),
+                    })
+                    if (parsedHostInput) {
+                      return {
+                        ...f,
+                        source_type: parsedHostInput.source_type,
+                        host_mode: parsedHostInput.host_mode,
+                        host: parsedHostInput.host,
+                        port: parsedHostInput.port,
+                        database: parsedHostInput.database,
+                        jdbc: parsedHostInput.jdbc,
+                      }
+                    }
                     return {
                       ...f,
-                      source_type: parsedHostInput.source_type,
-                      host_mode: parsedHostInput.host_mode,
-                      host: parsedHostInput.host,
-                      port: parsedHostInput.port,
-                      database: parsedHostInput.database,
-                      jdbc: parsedHostInput.jdbc,
+                      host: rawHost,
+                      jdbc: buildJdbc(f.source_type, rawHost || getDefaultHostForMode(f.host_mode), f.port, f.database, getDefaultJdbcParams(f.source_type)),
                     }
-                  }
-                  return {
-                    ...f,
-                    host: rawHost,
-                    jdbc: buildJdbc(f.source_type, rawHost || getDefaultHostForMode(f.host_mode), f.port, f.database, getDefaultJdbcParams(f.source_type)),
-                  }
-                })}
+                  })
+                }
               />
-              <input className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent" placeholder="port" type="number" value={form.port} onChange={(e) => setForm((f) => ({ ...f, port: Number(e.target.value), jdbc: buildJdbc(f.source_type, f.host || getDefaultHostForMode(f.host_mode), Number(e.target.value), f.database, getDefaultJdbcParams(f.source_type)) }))} />
-              <input className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent" placeholder={form.source_type === 'clickhouse' ? '数据库名（可留空，连接后覆盖 ods / dwd）' : '数据库名'} value={form.database} onChange={(e) => setForm((f) => ({ ...f, database: e.target.value, jdbc: buildJdbc(f.source_type, f.host || getDefaultHostForMode(f.host_mode), f.port, e.target.value, getDefaultJdbcParams(f.source_type)) }))} />
+              <input
+                className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent"
+                placeholder="port"
+                type="number"
+                value={form.port}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    port: Number(e.target.value),
+                    jdbc: buildJdbc(f.source_type, f.host || getDefaultHostForMode(f.host_mode), Number(e.target.value), f.database, getDefaultJdbcParams(f.source_type)),
+                  }))
+                }
+              />
+              <input
+                className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent"
+                placeholder={form.source_type === 'clickhouse' ? '数据库名（可留空，连接后覆盖 ods / dwd）' : '数据库名'}
+                value={form.database}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    database: e.target.value,
+                    jdbc: buildJdbc(f.source_type, f.host || getDefaultHostForMode(f.host_mode), f.port, e.target.value, getDefaultJdbcParams(f.source_type)),
+                  }))
+                }
+              />
               <input className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent" placeholder="username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
               <input className="w-full rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent" placeholder="password" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
               <label className="block text-[11px] text-[var(--text-secondary)]">JDBC 地址</label>
               <textarea
                 className="w-full min-h-[72px] rounded border border-[var(--border)] px-2 py-1 text-xs bg-transparent font-mono"
                 value={form.jdbc}
-                onChange={(e) => setForm((f) => {
-                  const rawJdbc = e.target.value
-                  const parsedJdbc = parseJdbc(rawJdbc)
-                  if (!parsedJdbc) return { ...f, jdbc: rawJdbc }
-                  const nextSourceType = parsedJdbc.source_type
-                  const nextHost = parsedJdbc.host.trim()
-                  const nextPort = parsedJdbc.port || DB_PORTS[nextSourceType]
-                  const nextDatabase = parsedJdbc.database.trim() || f.database
-                  return {
-                    ...f,
-                    source_type: nextSourceType,
-                    host_mode: isLocalHost(nextHost) ? 'local' : 'external',
-                    host: nextHost,
-                    port: nextPort,
-                    database: nextDatabase,
-                    jdbc: buildJdbc(nextSourceType, nextHost, nextPort, nextDatabase, parsedJdbc.params || getDefaultJdbcParams(nextSourceType)),
-                  }
-                })}
+                onChange={(e) =>
+                  setForm((f) => {
+                    const rawJdbc = e.target.value
+                    const parsedJdbc = parseJdbc(rawJdbc)
+                    if (!parsedJdbc) return { ...f, jdbc: rawJdbc }
+                    const nextSourceType = parsedJdbc.source_type
+                    const nextHost = parsedJdbc.host.trim()
+                    const nextPort = parsedJdbc.port || DB_PORTS[nextSourceType]
+                    const nextDatabase = parsedJdbc.database.trim() || f.database
+                    return {
+                      ...f,
+                      source_type: nextSourceType,
+                      host_mode: isLocalHost(nextHost) ? 'local' : 'external',
+                      host: nextHost,
+                      port: nextPort,
+                      database: nextDatabase,
+                      jdbc: buildJdbc(nextSourceType, nextHost, nextPort, nextDatabase, parsedJdbc.params || getDefaultJdbcParams(nextSourceType)),
+                    }
+                  })
+                }
                 placeholder="jdbc:mysql://localhost:3306/test_db?allowPublicKeyRetrieval=true"
               />
-              <div className="text-[10px] text-[var(--text-secondary)]">
-                你可以直接修改 JDBC 里的 host / port / database / 参数；粘贴完整 JDBC 后会自动同步到表单字段。
-              </div>
-              <button disabled={saving} className="w-full rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs py-1 disabled:opacity-50" onClick={() => void saveAndTest()}>{saving ? '保存中...' : '保存并测试连接'}</button>
+              <div className="text-[10px] text-[var(--text-secondary)]">你可以直接修改 JDBC 里的 host / port / database / 参数；粘贴完整 JDBC 后会自动同步到表单字段。</div>
+              <button disabled={saving} className="w-full rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs py-1 disabled:opacity-50" onClick={() => void saveAndTest()}>
+                {saving ? '保存中...' : '保存并测试连接'}
+              </button>
             </div>
           ) : null}
 
           <div className="space-y-2">
             {items.map((x) => (
-              <div key={x.id} className={`rounded border p-2 text-xs cursor-pointer ${selected?.id === x.id ? 'border-[var(--accent)]' : 'border-[var(--border)]'}`} onClick={() => {
-                setSelected(x)
-              }}>
+              <div
+                key={x.id}
+                className={`rounded border p-2 text-xs cursor-pointer ${selected?.id === x.id ? 'border-[var(--accent)]' : 'border-[var(--border)]'}`}
+                onClick={() => {
+                  setSelected(x)
+                }}
+              >
                 <div className="flex items-center justify-between">
                   <div className="font-medium">{x.name}</div>
                   <div className="flex items-center gap-1">
-                    <button type="button" onClick={(e) => { e.stopPropagation(); beginEdit(x) }} className="text-sky-500"><Pencil size={12} /></button>
-                    <button type="button" onClick={(e) => { e.stopPropagation(); void removeDb(x.id) }} className="text-red-500"><Trash2 size={12} /></button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        beginEdit(x)
+                      }}
+                      className="text-sky-500"
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void removeDb(x.id)
+                      }}
+                      className="text-red-500"
+                    >
+                      <Trash2 size={12} />
+                    </button>
                   </div>
                 </div>
-                <div className="text-[var(--text-secondary)]">{x.type} · {x.host}:{x.port}/{x.database || (x.type === 'clickhouse' ? '全部可访问库' : '未指定')}</div>
+                <div className="text-[var(--text-secondary)]">
+                  {x.type} · {x.host}:{x.port}/{x.database || (x.type === 'clickhouse' ? '全部可访问库' : '未指定')}
+                </div>
                 <div className="flex items-center gap-1 text-[var(--text-secondary)]">
                   <Circle size={10} className={x.status === 'active' ? 'fill-emerald-500 text-emerald-500' : x.status === 'error' ? 'fill-rose-500 text-rose-500' : 'fill-slate-400 text-slate-400'} />
                   <span>状态：{x.status}</span>
                 </div>
                 <div className="text-[var(--text-secondary)]">
-                  库数：{x.database_count ?? (x.database ? 1 : 0)} · 表数：{x.tables_truncated ? '至少 ' : ''}{x.table_count ?? 0} · 更新：{x.updated_at || '—'} · 上次同步：{x.last_schema_sync_at || x.synced_at || '—'}
+                  库数：{x.database_count ?? (x.database ? 1 : 0)} · 表数：
+                  {x.tables_truncated ? '至少 ' : ''}
+                  {x.table_count ?? 0} · 更新：{x.updated_at || '—'} · 上次同步：{x.last_schema_sync_at || x.synced_at || '—'}
                 </div>
                 {x.metadata_warning ? <div className="mt-1 text-amber-500">{x.metadata_warning}</div> : null}
               </div>
@@ -942,18 +1169,25 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
         </div>
 
         <div className="col-span-8 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 overflow-y-auto">
-          {!selected ? <p className="text-sm text-[var(--text-secondary)]">请选择一个数据库</p> : (
+          {!selected ? (
+            <p className="text-sm text-[var(--text-secondary)]">请选择一个数据库</p>
+          ) : (
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="text-sm font-semibold">{selected.name}</h2>
                 <div className="flex gap-2">
-                  <button className="px-2 py-1 rounded border text-xs inline-flex items-center gap-1" onClick={() => void testConn()}><PlayCircle size={12} /> 测试连接</button>
-                  <button disabled={schemaSyncing} className="px-2 py-1 rounded border text-xs inline-flex items-center gap-1 disabled:opacity-50" onClick={() => void syncSchema()}><RefreshCw size={12} className={schemaSyncing ? 'animate-spin' : ''} /> {schemaSyncing ? '同步中' : '同步Schema'}</button>
+                  <button className="px-2 py-1 rounded border text-xs inline-flex items-center gap-1" onClick={() => void testConn()}>
+                    <PlayCircle size={12} /> 测试连接
+                  </button>
+                  <button disabled={schemaSyncing} className="px-2 py-1 rounded border text-xs inline-flex items-center gap-1 disabled:opacity-50" onClick={() => void syncSchema()}>
+                    <RefreshCw size={12} className={schemaSyncing ? 'animate-spin' : ''} /> {schemaSyncing ? '同步中' : '同步Schema'}
+                  </button>
                 </div>
               </div>
 
               <div className="flex flex-wrap gap-2 border-b border-[var(--border)] pb-2">
                 <TabButton active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} icon={<Gauge size={14} />} label="总览" />
+                {role === 'admin' ? <TabButton active={activeTab === 'quality'} onClick={() => setActiveTab('quality')} icon={<Activity size={14} />} label="问数质量" /> : null}
                 <TabButton active={activeTab === 'tables'} onClick={() => setActiveTab('tables')} icon={<Table2 size={14} />} label="Tables" />
                 <TabButton active={activeTab === 'annotations'} onClick={() => setActiveTab('annotations')} icon={<Pencil size={14} />} label="Schema 标注" />
                 <TabButton active={activeTab === 'query'} onClick={() => setActiveTab('query')} icon={<Search size={14} />} label="Query" />
@@ -967,14 +1201,44 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
 
               {activeTab === 'overview' ? (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between rounded-xl border border-[var(--border)] p-4"><div><div className="text-xs text-[var(--text-secondary)]">数据源健康度</div><div className="mt-1 text-3xl font-semibold">{databaseHealth?.health_score ?? 0}<span className="text-sm text-[var(--text-secondary)]">/100</span></div></div><button disabled={validating} onClick={() => void validateDatabaseHealth()} className="rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-50"><ShieldCheck size={13} className="mr-1 inline" />{validating ? '验证中…' : '执行全链路验证'}</button></div>
-                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[
-                    ['连接', databaseHealth?.checks?.connection, databaseHealth?.source?.status || 'unknown'],
-                    ['表结构', databaseHealth?.checks?.schema, `${databaseHealth?.schema?.table_count ?? 0} 张表`],
-                    ['依赖关系', databaseHealth?.checks?.relationships, `${databaseHealth?.relationships?.verified ?? 0}/${databaseHealth?.relationships?.total ?? 0} 已验证`],
-                    ['指标资产', databaseHealth?.checks?.metrics, `${databaseHealth?.metrics?.published ?? 0}/${databaseHealth?.metrics?.total ?? 0} 已发布`],
-                  ].map(([label, ok, detail]) => <div key={String(label)} className="rounded-xl border border-[var(--border)] p-3"><div className={`text-xs ${ok ? 'text-emerald-500' : 'text-amber-500'}`}>{ok ? '✓ 正常' : '○ 待完善'}</div><div className="mt-2 text-sm font-medium">{label}</div><div className="mt-1 text-[11px] text-[var(--text-secondary)]">{detail}</div></div>)}</div>
-                  <div className="grid gap-3 md:grid-cols-2"><div className="rounded-xl border border-[var(--border)] p-4"><div className="text-xs font-medium">AI 问数质量</div><div className="mt-3 text-2xl font-semibold">{databaseHealth?.queries?.success_rate == null ? '—' : `${Math.round(databaseHealth.queries.success_rate * 100)}%`}</div><div className="text-[11px] text-[var(--text-secondary)]">累计 {databaseHealth?.queries?.total ?? 0} 次查询</div></div><div className="rounded-xl border border-[var(--border)] p-4"><div className="text-xs font-medium">推荐下一步</div><p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">{!databaseHealth?.checks?.schema ? '先同步 Schema，生成表结构资产。' : !databaseHealth?.checks?.relationships ? '补充并验证表依赖，减少错误 JOIN。' : !databaseHealth?.checks?.metrics ? '发布业务指标口径，提高问数一致性。' : '资产已就绪，可直接从 Query 或主问答发起分析。'}</p></div></div>
+                  <div className="flex items-center justify-between rounded-xl border border-[var(--border)] p-4">
+                    <div>
+                      <div className="text-xs text-[var(--text-secondary)]">数据源健康度</div>
+                      <div className="mt-1 text-3xl font-semibold">
+                        {databaseHealth?.health_score ?? 0}
+                        <span className="text-sm text-[var(--text-secondary)]">/100</span>
+                      </div>
+                    </div>
+                    <button disabled={validating} onClick={() => void validateDatabaseHealth()} className="rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-50">
+                      <ShieldCheck size={13} className="mr-1 inline" />
+                      {validating ? '验证中…' : '执行全链路验证'}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                    {[
+                      ['连接', databaseHealth?.checks?.connection, databaseHealth?.source?.status || 'unknown'],
+                      ['表结构', databaseHealth?.checks?.schema, `${databaseHealth?.schema?.table_count ?? 0} 张表`],
+                      ['依赖关系', databaseHealth?.checks?.relationships, `${databaseHealth?.relationships?.verified ?? 0}/${databaseHealth?.relationships?.total ?? 0} 已验证`],
+                      ['指标资产', databaseHealth?.checks?.metrics, `${databaseHealth?.metrics?.published ?? 0}/${databaseHealth?.metrics?.total ?? 0} 已发布`],
+                    ].map(([label, ok, detail]) => (
+                      <div key={String(label)} className="rounded-xl border border-[var(--border)] p-3">
+                        <div className={`text-xs ${ok ? 'text-emerald-500' : 'text-amber-500'}`}>{ok ? '✓ 正常' : '○ 待完善'}</div>
+                        <div className="mt-2 text-sm font-medium">{label}</div>
+                        <div className="mt-1 text-[11px] text-[var(--text-secondary)]">{detail}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded-xl border border-[var(--border)] p-4">
+                      <div className="text-xs font-medium">AI 问数质量</div>
+                      <div className="mt-3 text-2xl font-semibold">{databaseHealth?.queries?.success_rate == null ? '—' : `${Math.round(databaseHealth.queries.success_rate * 100)}%`}</div>
+                      <div className="text-[11px] text-[var(--text-secondary)]">累计 {databaseHealth?.queries?.total ?? 0} 次查询</div>
+                    </div>
+                    <div className="rounded-xl border border-[var(--border)] p-4">
+                      <div className="text-xs font-medium">推荐下一步</div>
+                      <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">{!databaseHealth?.checks?.schema ? '先同步 Schema，生成表结构资产。' : !databaseHealth?.checks?.relationships ? '补充并验证表依赖，减少错误 JOIN。' : !databaseHealth?.checks?.metrics ? '发布业务指标口径，提高问数一致性。' : '资产已就绪，可直接从 Query 或主问答发起分析。'}</p>
+                    </div>
+                  </div>
                 </div>
               ) : null}
 
@@ -983,35 +1247,238 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                   <div className="flex flex-col gap-2 rounded-xl border border-[var(--border)] p-3 lg:flex-row lg:items-center">
                     <label className="relative min-w-0 flex-1">
                       <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
-                      <input value={schemaSearch} onChange={(event) => setSchemaSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && selected) { setSchemaAppliedSearch(schemaSearch); void loadSchemaPage(selected.id, { search: schemaSearch, database: schemaDatabase }) } }} placeholder="搜索表名、注释或所属库" aria-label="搜索数据库表" className="h-9 w-full rounded-lg border border-[var(--border)] bg-transparent pl-9 pr-3 text-xs outline-none focus:border-[var(--accent)]" />
+                      <input
+                        value={schemaSearch}
+                        onChange={(event) => setSchemaSearch(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' && selected) {
+                            setSchemaAppliedSearch(schemaSearch)
+                            void loadSchemaPage(selected.id, {
+                              search: schemaSearch,
+                              database: schemaDatabase,
+                            })
+                          }
+                        }}
+                        placeholder="搜索表名、注释或所属库"
+                        aria-label="搜索数据库表"
+                        className="h-9 w-full rounded-lg border border-[var(--border)] bg-transparent pl-9 pr-3 text-xs outline-none focus:border-[var(--accent)]"
+                      />
                     </label>
-                    {(schema?.databases || []).length > 1 ? <select value={schemaDatabase} onChange={(event) => { const database = event.target.value; setSchemaDatabase(database); setSchemaAppliedSearch(schemaSearch); if (selected) void loadSchemaPage(selected.id, { search: schemaSearch, database }) }} aria-label="按数据库筛选" className="h-9 rounded-lg border border-[var(--border)] bg-transparent px-3 text-xs"><option value="">全部数据库</option>{(schema?.databases || []).map((database) => <option key={database} value={database}>{database}</option>)}</select> : null}
-                    <button disabled={schemaLoading || !selected} onClick={() => { setSchemaAppliedSearch(schemaSearch); if (selected) void loadSchemaPage(selected.id, { search: schemaSearch, database: schemaDatabase }) }} className="h-9 rounded-lg bg-[var(--accent)] px-4 text-xs font-medium text-[var(--accent-foreground)] disabled:opacity-50">搜索</button>
+                    {(schema?.databases || []).length > 1 ? (
+                      <select
+                        value={schemaDatabase}
+                        onChange={(event) => {
+                          const database = event.target.value
+                          setSchemaDatabase(database)
+                          setSchemaAppliedSearch(schemaSearch)
+                          if (selected)
+                            void loadSchemaPage(selected.id, {
+                              search: schemaSearch,
+                              database,
+                            })
+                        }}
+                        aria-label="按数据库筛选"
+                        className="h-9 rounded-lg border border-[var(--border)] bg-transparent px-3 text-xs"
+                      >
+                        <option value="">全部数据库</option>
+                        {(schema?.databases || []).map((database) => (
+                          <option key={database} value={database}>
+                            {database}
+                          </option>
+                        ))}
+                      </select>
+                    ) : null}
+                    <button
+                      disabled={schemaLoading || !selected}
+                      onClick={() => {
+                        setSchemaAppliedSearch(schemaSearch)
+                        if (selected)
+                          void loadSchemaPage(selected.id, {
+                            search: schemaSearch,
+                            database: schemaDatabase,
+                          })
+                      }}
+                      className="h-9 rounded-lg bg-[var(--accent)] px-4 text-xs font-medium text-[var(--accent-foreground)] disabled:opacity-50"
+                    >
+                      搜索
+                    </button>
                   </div>
 
                   <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--text-secondary)]">
-                    <span>已展示 {(schema?.tables || []).length} / {schemaPagination?.total ?? schema?.table_count ?? 0} 张匹配表{schema?.table_count != null && schemaPagination?.total !== schema.table_count ? ` · 全库 ${schema.tables_truncated ? '至少 ' : ''}${schema.table_count} 张` : ''}</span>
+                    <span>
+                      已展示 {(schema?.tables || []).length} / {schemaPagination?.total ?? schema?.table_count ?? 0} 张匹配表
+                      {schema?.table_count != null && schemaPagination?.total !== schema.table_count ? ` · 全库 ${schema.tables_truncated ? '至少 ' : ''}${schema.table_count} 张` : ''}
+                    </span>
                     <span>每次加载 {SCHEMA_TABLE_PAGE_SIZE} 张，列详情随表返回</span>
                   </div>
-                  {schema?.metadata_warning ? <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-500">{schema.metadata_warning}</div> : null}
-                  {schemaError ? <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-500">{schemaError}</div> : null}
+                  {schema?.metadata_warning ? (
+                    <div role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-amber-500">
+                      {schema.metadata_warning}
+                    </div>
+                  ) : null}
+                  {schemaError ? (
+                    <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-500">
+                      {schemaError}
+                    </div>
+                  ) : null}
                   {schemaLoading && (schema?.tables || []).length === 0 ? <div className="rounded-lg border border-dashed border-[var(--border)] p-8 text-center text-xs text-[var(--text-secondary)]">正在读取表目录…</div> : null}
                   {!schemaLoading && !schemaError && (schema?.tables || []).length === 0 ? <div className="rounded-lg border border-dashed border-[var(--border)] p-8 text-center text-xs text-[var(--text-secondary)]">{schemaAppliedSearch || schemaDatabase ? '没有匹配的表，请调整搜索或数据库筛选。' : '暂无 Schema，请先同步。'}</div> : null}
                   {(schema?.tables || []).map((t) => (
                     <details key={t.qualified_name || `${t.database || ''}.${t.name}`} className="rounded border border-[var(--border)] p-2">
-                      <summary className="cursor-pointer text-sm font-medium"><span>{t.name}</span>{t.database && t.database !== schema?.schema ? <span className="ml-2 rounded bg-[var(--surface-raised)] px-1.5 py-0.5 text-[10px] font-normal text-[var(--text-secondary)]">{t.database}</span> : null}</summary>
+                      <summary className="cursor-pointer text-sm font-medium">
+                        <span>{t.name}</span>
+                        {t.database && t.database !== schema?.schema ? <span className="ml-2 rounded bg-[var(--surface-raised)] px-1.5 py-0.5 text-[10px] font-normal text-[var(--text-secondary)]">{t.database}</span> : null}
+                      </summary>
                       {t.comment ? <div className="mt-1 text-xs text-[var(--text-secondary)]">{t.comment}</div> : null}
-                      {(t.columns || []).length > 0 ? <div className="mt-2 grid grid-cols-1 gap-1 text-xs sm:grid-cols-2">
-                        {(t.columns || []).map((c) => (
-                          <div key={`${t.qualified_name || t.name}_${c.name}`} className="rounded bg-[var(--surface-raised)] px-2 py-1">
-                            {c.name} <span className="text-[var(--text-secondary)]">({c.type})</span>
-                            {c.comment ? <div className="text-[10px] text-[var(--text-secondary)]">{c.comment}</div> : null}
-                          </div>
-                        ))}
-                      </div> : <div className="mt-2 text-[11px] text-[var(--text-secondary)]">暂无列详情{schema?.columns_truncated ? '，列元数据同步已达到安全预算。' : '。'}</div>}
+                      {(t.columns || []).length > 0 ? (
+                        <div className="mt-2 grid grid-cols-1 gap-1 text-xs sm:grid-cols-2">
+                          {(t.columns || []).map((c) => (
+                            <div key={`${t.qualified_name || t.name}_${c.name}`} className="rounded bg-[var(--surface-raised)] px-2 py-1">
+                              {c.name} <span className="text-[var(--text-secondary)]">({c.type})</span>
+                              {c.comment ? <div className="text-[10px] text-[var(--text-secondary)]">{c.comment}</div> : null}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-[11px] text-[var(--text-secondary)]">
+                          暂无列详情
+                          {schema?.columns_truncated ? '，列元数据同步已达到安全预算。' : '。'}
+                        </div>
+                      )}
                     </details>
                   ))}
-                  {schemaPagination?.has_more ? <button disabled={schemaLoading || !selected} onClick={() => { if (selected && schemaPagination.next_offset != null) void loadSchemaPage(selected.id, { search: schemaAppliedSearch, database: schemaDatabase, offset: schemaPagination.next_offset, append: true }) }} className="flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--border)] py-2.5 text-xs hover:border-[var(--accent)] disabled:opacity-50"><RefreshCw size={12} className={schemaLoading ? 'animate-spin' : ''} />{schemaLoading ? '加载中…' : `继续加载（剩余 ${Math.max(0, schemaPagination.total - (schema?.tables || []).length)} 张）`}</button> : null}
+                  {schemaPagination?.has_more ? (
+                    <button
+                      disabled={schemaLoading || !selected}
+                      onClick={() => {
+                        if (selected && schemaPagination.next_offset != null)
+                          void loadSchemaPage(selected.id, {
+                            search: schemaAppliedSearch,
+                            database: schemaDatabase,
+                            offset: schemaPagination.next_offset,
+                            append: true,
+                          })
+                      }}
+                      className="flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--border)] py-2.5 text-xs hover:border-[var(--accent)] disabled:opacity-50"
+                    >
+                      <RefreshCw size={12} className={schemaLoading ? 'animate-spin' : ''} />
+                      {schemaLoading ? '加载中…' : `继续加载（剩余 ${Math.max(0, schemaPagination.total - (schema?.tables || []).length)} 张）`}
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {activeTab === 'quality' ? (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold">企业问数质量与发布门禁</h3>
+                      <p className="mt-1 text-xs text-[var(--text-secondary)]">直接读取 DataAgent 运行事实、失败模式、用户反馈和 Golden Case，不使用旧查询日志。</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button disabled={governanceBusy} onClick={() => void runReleaseGate(false)} className="rounded-lg border border-[var(--border)] px-3 py-2 text-xs disabled:opacity-50">
+                        计划与 SQL 门禁
+                      </button>
+                      <button disabled={governanceBusy} onClick={() => void runReleaseGate(true)} className="rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)] disabled:opacity-50">
+                        真实执行门禁
+                      </button>
+                      <button disabled={governanceBusy} onClick={() => void reloadDataAgentGovernance()} className="rounded-lg border border-[var(--border)] p-2 disabled:opacity-50" title="刷新问数质量">
+                        <RefreshCw size={13} className={governanceBusy ? 'animate-spin' : ''} />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    {[
+                      ['验证答案率', governanceOverview?.runs.verified_answer_rate == null ? '—' : `${Math.round(governanceOverview.runs.verified_answer_rate * 100)}%`, `${governanceOverview?.runs.verified || 0}/${governanceOverview?.runs.analyzed || 0} 个已分析运行${governanceOverview?.runs.truncated ? `（窗口共 ${governanceOverview.runs.total} 个）` : ''}`],
+                      ['证据完整率', governanceOverview?.runs.evidence_complete_rate == null ? '—' : `${Math.round(governanceOverview.runs.evidence_complete_rate * 100)}%`, '指标、选源、规则、SQL、结果'],
+                      ['待处置问题', String((governanceOverview?.governance.open_failure_patterns || 0) + (governanceOverview?.governance.open_feedback || 0)), `${governanceOverview?.governance.open_failure_patterns || 0} 失败模式 · ${governanceOverview?.governance.open_feedback || 0} 反馈`],
+                      ['发布门禁', governanceOverview?.release_gate?.status || '未运行', governanceOverview?.release_gate ? `${governanceOverview.release_gate.passed_count}/${governanceOverview.release_gate.case_count} 通过` : `${evaluationCases.filter((item) => item.status === 'published').length} 个已发布案例`],
+                    ].map(([label, value, detail]) => (
+                      <div key={label} className="rounded-xl border border-[var(--border)] p-4">
+                        <div className="text-xs text-[var(--text-secondary)]">{label}</div>
+                        <div className="mt-2 text-2xl font-semibold">{value}</div>
+                        <div className="mt-1 text-[11px] text-[var(--text-secondary)]">{detail}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <section className="rounded-xl border border-[var(--border)] p-4">
+                      <h4 className="text-sm font-semibold">待处置失败模式 · {failurePatterns.length}</h4>
+                      <div className="mt-3 max-h-96 space-y-2 overflow-auto">
+                        {failurePatterns.map((item) => (
+                          <article key={item.id} className="rounded-lg bg-[var(--bg)] p-3 text-xs">
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <div className="font-medium">
+                                  {item.failure_stage} · 累计 {item.failure_count} 次
+                                </div>
+                                <div className="mt-1 text-[var(--text-secondary)]">{item.question_examples[0] || '无问题示例'}</div>
+                              </div>
+                              <button disabled={governanceBusy} onClick={() => void resolveFailurePattern(item)} className="shrink-0 rounded border border-[var(--border)] px-2 py-1 disabled:opacity-50">
+                                记录修复
+                              </button>
+                            </div>
+                            {item.error_codes.length ? <div className="mt-2 text-amber-500">{item.error_codes.join(' · ')}</div> : null}
+                          </article>
+                        ))}
+                        {!failurePatterns.length ? <p className="py-8 text-center text-xs text-[var(--text-secondary)]">暂无未处置失败模式</p> : null}
+                      </div>
+                    </section>
+                    <section className="rounded-xl border border-[var(--border)] p-4">
+                      <h4 className="text-sm font-semibold">用户纠错反馈 · {dataFeedback.length}</h4>
+                      <div className="mt-3 max-h-96 space-y-2 overflow-auto">
+                        {dataFeedback.map((item) => (
+                          <article key={item.id} className="rounded-lg bg-[var(--bg)] p-3 text-xs">
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <div className={`font-medium ${item.verdict === 'correct' ? 'text-emerald-500' : 'text-amber-500'}`}>{item.verdict}</div>
+                                <div className="mt-1 text-[var(--text-secondary)]">{item.comment || '用户未提供补充说明'}</div>
+                              </div>
+                              <button disabled={governanceBusy} onClick={() => void resolveDataFeedback(item)} className="shrink-0 rounded border border-[var(--border)] px-2 py-1 disabled:opacity-50">
+                                处理
+                              </button>
+                            </div>
+                            {item.corrected_sql ? <pre className="mt-2 max-h-24 overflow-auto whitespace-pre-wrap rounded bg-[var(--surface)] p-2 text-[10px]">{item.corrected_sql}</pre> : null}
+                          </article>
+                        ))}
+                        {!dataFeedback.length ? <p className="py-8 text-center text-xs text-[var(--text-secondary)]">暂无未处理纠错反馈</p> : null}
+                      </div>
+                    </section>
+                  </div>
+
+                  <section className="rounded-xl border border-[var(--border)] p-4">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-semibold">Golden Case · {evaluationCases.length}</h4>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-[var(--text-secondary)]">已发布 {evaluationCases.filter((item) => item.status === 'published').length}</span>
+                        <button disabled={governanceBusy} onClick={() => void createGoldenCase()} className="rounded border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-50">
+                          <Plus size={12} className="mr-1 inline" />
+                          新建
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid gap-2 md:grid-cols-2">
+                      {evaluationCases.map((item) => (
+                        <article key={item.id} className="rounded-lg bg-[var(--bg)] p-3 text-xs">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium">{item.question}</span>
+                            <span className={item.status === 'published' ? 'text-emerald-500' : 'text-amber-500'}>{item.status}</span>
+                          </div>
+                          <div className="mt-2 text-[var(--text-secondary)]">
+                            {item.business_domain || '未分业务域'} · 通过 {item.pass_count} · 失败 {item.failure_count}
+                          </div>
+                          {item.status === 'draft' ? (
+                            <button disabled={governanceBusy} onClick={() => void publishGoldenCase(item)} className="mt-2 rounded border border-[var(--border)] px-2 py-1 disabled:opacity-50">
+                              发布到门禁
+                            </button>
+                          ) : null}
+                        </article>
+                      ))}
+                      {!evaluationCases.length ? <p className="py-8 text-center text-xs text-[var(--text-secondary)] md:col-span-2">暂无 Golden Case，请先同步 Schema，再新建并发布案例。</p> : null}
+                    </div>
+                  </section>
                 </div>
               ) : null}
 
@@ -1020,81 +1487,241 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                       <h3 className="text-sm font-semibold">Schema 业务标注</h3>
-                      <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                        人工审核内容优先级最高；数据库注释、字段名和已发布 SQL 只生成建议，不会覆盖人工标注。
-                      </p>
+                      <p className="mt-1 text-xs text-[var(--text-secondary)]">人工审核内容优先级最高；数据库注释、字段名和已发布 SQL 只生成建议，不会覆盖人工标注。</p>
                     </div>
                     <div className="flex gap-2">
-                      <button className="rounded border border-[var(--border)] px-2 py-1 text-xs" onClick={() => beginSchemaAnnotation('table')}><Plus size={12} className="mr-1 inline" />表标注</button>
-                      <button className="rounded border border-[var(--border)] px-2 py-1 text-xs" onClick={() => beginSchemaAnnotation('column')}><Plus size={12} className="mr-1 inline" />字段标注</button>
-                      <button disabled={schemaAnnotationLoading} className="rounded bg-[var(--accent)] px-2 py-1 text-xs text-[var(--accent-foreground)] disabled:opacity-50" onClick={() => void autoSuggestSchemaAnnotations()}><Zap size={12} className="mr-1 inline" />{schemaAnnotationLoading ? '处理中' : '自动建议'}</button>
+                      <button className="rounded border border-[var(--border)] px-2 py-1 text-xs" onClick={() => beginSchemaAnnotation('table')}>
+                        <Plus size={12} className="mr-1 inline" />
+                        表标注
+                      </button>
+                      <button className="rounded border border-[var(--border)] px-2 py-1 text-xs" onClick={() => beginSchemaAnnotation('column')}>
+                        <Plus size={12} className="mr-1 inline" />
+                        字段标注
+                      </button>
+                      <button disabled={schemaAnnotationLoading} className="rounded bg-[var(--accent)] px-2 py-1 text-xs text-[var(--accent-foreground)] disabled:opacity-50" onClick={() => void autoSuggestSchemaAnnotations()}>
+                        <Zap size={12} className="mr-1 inline" />
+                        {schemaAnnotationLoading ? '处理中' : '自动建议'}
+                      </button>
                     </div>
                   </div>
 
-                  <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void reloadSchemaAnnotations({ search: schemaAnnotationSearch, offset: 0 }) }}>
+                  <form
+                    className="flex gap-2"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      void reloadSchemaAnnotations({
+                        search: schemaAnnotationSearch,
+                        offset: 0,
+                      })
+                    }}
+                  >
                     <label className="relative min-w-0 flex-1">
                       <Search size={13} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
                       <input value={schemaAnnotationSearch} onChange={(event) => setSchemaAnnotationSearch(event.target.value)} className="h-9 w-full rounded border border-[var(--border)] bg-transparent pl-9 pr-3 text-xs" placeholder="搜索物理表、字段或业务说明" />
                     </label>
-                    <button disabled={schemaAnnotationLoading} className="rounded border border-[var(--border)] px-3 text-xs disabled:opacity-50">搜索</button>
+                    <button disabled={schemaAnnotationLoading} className="rounded border border-[var(--border)] px-3 text-xs disabled:opacity-50">
+                      搜索
+                    </button>
                   </form>
 
                   {editingSchemaAnnotation ? (
                     <div className="space-y-3 rounded border border-[var(--accent)]/40 p-3">
                       <div className="flex items-center justify-between">
                         <div className="text-xs font-semibold">{editingSchemaAnnotation.target_type === 'table' ? '表级标注' : '字段级标注'}</div>
-                        <button className="text-xs text-[var(--text-secondary)]" onClick={() => setEditingSchemaAnnotation(null)}>取消</button>
+                        <button className="text-xs text-[var(--text-secondary)]" onClick={() => setEditingSchemaAnnotation(null)}>
+                          取消
+                        </button>
                       </div>
                       <div className="grid gap-2 md:grid-cols-2">
-                        <input disabled={!!editingSchemaAnnotation.id} value={editingSchemaAnnotation.table_name} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, table_name: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs disabled:opacity-60" placeholder="物理表名" />
-                        {editingSchemaAnnotation.target_type === 'column' ? <input disabled={!!editingSchemaAnnotation.id} value={editingSchemaAnnotation.column_name} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, column_name: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs disabled:opacity-60" placeholder="物理字段名" /> : null}
-                        <input value={editingSchemaAnnotation.business_name} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, business_name: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="业务名称" />
-                        <input value={editingSchemaAnnotation.aliases} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, aliases: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="别名，逗号分隔" />
-                        <input value={editingSchemaAnnotation.tags} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, tags: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="标签，逗号分隔" />
-                        {editingSchemaAnnotation.target_type === 'column' ? <input value={editingSchemaAnnotation.semantic_type} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, semantic_type: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="语义类型：dimension / metric / time" /> : null}
+                        <input
+                          disabled={!!editingSchemaAnnotation.id}
+                          value={editingSchemaAnnotation.table_name}
+                          onChange={(event) =>
+                            setEditingSchemaAnnotation({
+                              ...editingSchemaAnnotation,
+                              table_name: event.target.value,
+                            })
+                          }
+                          className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs disabled:opacity-60"
+                          placeholder="物理表名"
+                        />
+                        {editingSchemaAnnotation.target_type === 'column' ? (
+                          <input
+                            disabled={!!editingSchemaAnnotation.id}
+                            value={editingSchemaAnnotation.column_name}
+                            onChange={(event) =>
+                              setEditingSchemaAnnotation({
+                                ...editingSchemaAnnotation,
+                                column_name: event.target.value,
+                              })
+                            }
+                            className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs disabled:opacity-60"
+                            placeholder="物理字段名"
+                          />
+                        ) : null}
+                        <input
+                          value={editingSchemaAnnotation.business_name}
+                          onChange={(event) =>
+                            setEditingSchemaAnnotation({
+                              ...editingSchemaAnnotation,
+                              business_name: event.target.value,
+                            })
+                          }
+                          className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
+                          placeholder="业务名称"
+                        />
+                        <input
+                          value={editingSchemaAnnotation.aliases}
+                          onChange={(event) =>
+                            setEditingSchemaAnnotation({
+                              ...editingSchemaAnnotation,
+                              aliases: event.target.value,
+                            })
+                          }
+                          className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
+                          placeholder="别名，逗号分隔"
+                        />
+                        <input
+                          value={editingSchemaAnnotation.tags}
+                          onChange={(event) =>
+                            setEditingSchemaAnnotation({
+                              ...editingSchemaAnnotation,
+                              tags: event.target.value,
+                            })
+                          }
+                          className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
+                          placeholder="标签，逗号分隔"
+                        />
+                        {editingSchemaAnnotation.target_type === 'column' ? (
+                          <input
+                            value={editingSchemaAnnotation.semantic_type}
+                            onChange={(event) =>
+                              setEditingSchemaAnnotation({
+                                ...editingSchemaAnnotation,
+                                semantic_type: event.target.value,
+                              })
+                            }
+                            className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
+                            placeholder="语义类型：dimension / metric / time"
+                          />
+                        ) : null}
                       </div>
-                      <textarea value={editingSchemaAnnotation.business_description} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, business_description: event.target.value })} className="min-h-20 w-full rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="业务含义、适用范围、统计口径及注意事项" />
+                      <textarea
+                        value={editingSchemaAnnotation.business_description}
+                        onChange={(event) =>
+                          setEditingSchemaAnnotation({
+                            ...editingSchemaAnnotation,
+                            business_description: event.target.value,
+                          })
+                        }
+                        className="min-h-20 w-full rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
+                        placeholder="业务含义、适用范围、统计口径及注意事项"
+                      />
                       {editingSchemaAnnotation.target_type === 'column' ? (
                         <>
-                          <textarea value={editingSchemaAnnotation.value_map} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, value_map: event.target.value })} className="min-h-20 w-full rounded border border-[var(--border)] bg-transparent px-2 py-1.5 font-mono text-xs" placeholder={'枚举映射 JSON，例如 {"2":"已支付"}'} />
+                          <textarea
+                            value={editingSchemaAnnotation.value_map}
+                            onChange={(event) =>
+                              setEditingSchemaAnnotation({
+                                ...editingSchemaAnnotation,
+                                value_map: event.target.value,
+                              })
+                            }
+                            className="min-h-20 w-full rounded border border-[var(--border)] bg-transparent px-2 py-1.5 font-mono text-xs"
+                            placeholder={'枚举映射 JSON，例如 {"2":"已支付"}'}
+                          />
                           <div className="flex flex-wrap gap-4 text-xs">
                             {[
                               ['is_dimension_column', '维度字段'],
                               ['is_metric_column', '指标字段'],
                               ['is_time_column', '时间字段'],
                               ['is_sensitive', '敏感字段'],
-                            ].map(([field, label]) => <label key={field} className="inline-flex items-center gap-1"><input type="checkbox" checked={!!editingSchemaAnnotation[field as 'is_dimension_column']} onChange={(event) => setEditingSchemaAnnotation({ ...editingSchemaAnnotation, [field]: event.target.checked })} />{label}</label>)}
+                            ].map(([field, label]) => (
+                              <label key={field} className="inline-flex items-center gap-1">
+                                <input
+                                  type="checkbox"
+                                  checked={!!editingSchemaAnnotation[field as 'is_dimension_column']}
+                                  onChange={(event) =>
+                                    setEditingSchemaAnnotation({
+                                      ...editingSchemaAnnotation,
+                                      [field]: event.target.checked,
+                                    })
+                                  }
+                                />
+                                {label}
+                              </label>
+                            ))}
                           </div>
                         </>
                       ) : null}
-                      <div className="flex justify-end"><button className="rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]" onClick={() => void saveSchemaAnnotation()}>保存并审核通过</button></div>
+                      <div className="flex justify-end">
+                        <button className="rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]" onClick={() => void saveSchemaAnnotation()}>
+                          保存并审核通过
+                        </button>
+                      </div>
                     </div>
                   ) : null}
 
                   <div className="space-y-2">
-                    {schemaAnnotations.length === 0 ? <div className="rounded border border-dashed border-[var(--border)] p-8 text-center text-xs text-[var(--text-secondary)]">暂无 Schema 标注，请先同步 Schema 或手工添加。</div> : schemaAnnotations.map((annotation) => (
-                      <div key={`${annotation.target_type}:${annotation.id}`} className="rounded border border-[var(--border)] p-3 text-xs">
-                        <div className="flex flex-wrap items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="font-medium">{annotation.business_name || annotation.column_name || annotation.table_name}</div>
-                            <div className="mt-1 font-mono text-[11px] text-[var(--text-secondary)]">{annotation.target_type === 'column' ? `${annotation.table_name}.${annotation.column_name}` : annotation.table_name}</div>
-                            {annotation.business_description ? <div className="mt-2 leading-5 text-[var(--text-secondary)]">{annotation.business_description}</div> : null}
-                            {annotation.aliases.length || annotation.tags.length ? <div className="mt-2 text-[11px] text-[var(--text-secondary)]">{[...annotation.aliases, ...annotation.tags].join(' · ')}</div> : null}
-                            {Object.keys(annotation.suggested_changes?.fields || {}).length ? <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-amber-500/5 p-2 text-[11px] text-amber-500">待合并建议：{JSON.stringify(annotation.suggested_changes.fields, null, 2)}</pre> : null}
-                          </div>
-                          <div className="flex shrink-0 items-center gap-2">
-                            <span className="rounded bg-[var(--surface-raised)] px-2 py-0.5 text-[10px]">{annotation.annotation_source} · {Math.round(annotation.annotation_confidence * 100)}%</span>
-                            <span className={`rounded px-2 py-0.5 text-[10px] ${annotation.annotation_status === 'verified' ? 'bg-emerald-500/10 text-emerald-500' : annotation.annotation_status === 'rejected' ? 'bg-red-500/10 text-red-500' : 'bg-amber-500/10 text-amber-500'}`}>{annotation.annotation_status === 'verified' ? '已审核' : annotation.annotation_status === 'rejected' ? '已驳回' : '待审核'}</span>
-                            <button title="编辑标注" className="rounded border border-[var(--border)] p-1" onClick={() => beginSchemaAnnotation(annotation.target_type, annotation)}><Pencil size={12} /></button>
-                            {annotation.annotation_status === 'suggested' || Object.keys(annotation.suggested_changes?.fields || {}).length ? <button className="rounded bg-emerald-500/10 px-2 py-1 text-emerald-500" onClick={() => void reviewSchemaAnnotation(annotation, 'accept')}>接受</button> : null}
-                            {annotation.annotation_status === 'suggested' || Object.keys(annotation.suggested_changes?.fields || {}).length ? <button className="rounded bg-red-500/10 px-2 py-1 text-red-500" onClick={() => void reviewSchemaAnnotation(annotation, 'reject')}>驳回</button> : null}
-                            <button title="删除标注" className="text-red-500" onClick={() => void removeSchemaAnnotation(annotation)}><Trash2 size={12} /></button>
+                    {schemaAnnotations.length === 0 ? (
+                      <div className="rounded border border-dashed border-[var(--border)] p-8 text-center text-xs text-[var(--text-secondary)]">暂无 Schema 标注，请先同步 Schema 或手工添加。</div>
+                    ) : (
+                      schemaAnnotations.map((annotation) => (
+                        <div key={`${annotation.target_type}:${annotation.id}`} className="rounded border border-[var(--border)] p-3 text-xs">
+                          <div className="flex flex-wrap items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="font-medium">{annotation.business_name || annotation.column_name || annotation.table_name}</div>
+                              <div className="mt-1 font-mono text-[11px] text-[var(--text-secondary)]">{annotation.target_type === 'column' ? `${annotation.table_name}.${annotation.column_name}` : annotation.table_name}</div>
+                              {annotation.business_description ? <div className="mt-2 leading-5 text-[var(--text-secondary)]">{annotation.business_description}</div> : null}
+                              {annotation.aliases.length || annotation.tags.length ? <div className="mt-2 text-[11px] text-[var(--text-secondary)]">{[...annotation.aliases, ...annotation.tags].join(' · ')}</div> : null}
+                              {Object.keys(annotation.suggested_changes?.fields || {}).length ? (
+                                <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-amber-500/5 p-2 text-[11px] text-amber-500">
+                                  待合并建议：
+                                  {JSON.stringify(annotation.suggested_changes.fields, null, 2)}
+                                </pre>
+                              ) : null}
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                              <span className="rounded bg-[var(--surface-raised)] px-2 py-0.5 text-[10px]">
+                                {annotation.annotation_source} · {Math.round(annotation.annotation_confidence * 100)}%
+                              </span>
+                              <span className={`rounded px-2 py-0.5 text-[10px] ${annotation.annotation_status === 'verified' ? 'bg-emerald-500/10 text-emerald-500' : annotation.annotation_status === 'rejected' ? 'bg-red-500/10 text-red-500' : 'bg-amber-500/10 text-amber-500'}`}>{annotation.annotation_status === 'verified' ? '已审核' : annotation.annotation_status === 'rejected' ? '已驳回' : '待审核'}</span>
+                              <button title="编辑标注" className="rounded border border-[var(--border)] p-1" onClick={() => beginSchemaAnnotation(annotation.target_type, annotation)}>
+                                <Pencil size={12} />
+                              </button>
+                              {annotation.annotation_status === 'suggested' || Object.keys(annotation.suggested_changes?.fields || {}).length ? (
+                                <button className="rounded bg-emerald-500/10 px-2 py-1 text-emerald-500" onClick={() => void reviewSchemaAnnotation(annotation, 'accept')}>
+                                  接受
+                                </button>
+                              ) : null}
+                              {annotation.annotation_status === 'suggested' || Object.keys(annotation.suggested_changes?.fields || {}).length ? (
+                                <button className="rounded bg-red-500/10 px-2 py-1 text-red-500" onClick={() => void reviewSchemaAnnotation(annotation, 'reject')}>
+                                  驳回
+                                </button>
+                              ) : null}
+                              <button title="删除标注" className="text-red-500" onClick={() => void removeSchemaAnnotation(annotation)}>
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </div>
-                  {schemaAnnotationHasMore ? <button disabled={schemaAnnotationLoading} className="w-full rounded border border-[var(--border)] py-2 text-xs disabled:opacity-50" onClick={() => void reloadSchemaAnnotations({ offset: schemaAnnotationOffset + 250, append: true })}>{schemaAnnotationLoading ? '加载中…' : '继续加载标注'}</button> : null}
+                  {schemaAnnotationHasMore ? (
+                    <button
+                      disabled={schemaAnnotationLoading}
+                      className="w-full rounded border border-[var(--border)] py-2 text-xs disabled:opacity-50"
+                      onClick={() =>
+                        void reloadSchemaAnnotations({
+                          offset: schemaAnnotationOffset + 250,
+                          append: true,
+                        })
+                      }
+                    >
+                      {schemaAnnotationLoading ? '加载中…' : '继续加载标注'}
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -1140,17 +1767,15 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                     className="flex flex-wrap items-center gap-2"
                     onSubmit={(event) => {
                       event.preventDefault()
-                      void reloadSQLAssets({ search: sqlAssetSearch, offset: 0 })
+                      void reloadSQLAssets({
+                        search: sqlAssetSearch,
+                        offset: 0,
+                      })
                     }}
                   >
                     <div className="relative min-w-52 flex-1">
                       <Search className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={13} />
-                      <input
-                        value={sqlAssetSearch}
-                        onChange={(event) => setSqlAssetSearch(event.target.value)}
-                        className="h-8 w-full rounded border border-[var(--border)] bg-transparent pl-7 pr-2 text-xs"
-                        placeholder="搜索标题、描述或 SQL"
-                      />
+                      <input value={sqlAssetSearch} onChange={(event) => setSqlAssetSearch(event.target.value)} className="h-8 w-full rounded border border-[var(--border)] bg-transparent pl-7 pr-2 text-xs" placeholder="搜索标题、描述或 SQL" />
                     </div>
                     <select
                       value={sqlAssetStatus}
@@ -1181,11 +1806,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                       <option value="evaluation">评测集</option>
                       <option value="quarantine">隔离区</option>
                     </select>
-                    <button
-                      className="flex h-8 w-8 items-center justify-center rounded border border-[var(--border)] hover:bg-[var(--surface-raised)]"
-                      title="搜索 SQL 资产"
-                      type="submit"
-                    >
+                    <button className="flex h-8 w-8 items-center justify-center rounded border border-[var(--border)] hover:bg-[var(--surface-raised)]" title="搜索 SQL 资产" type="submit">
                       <Search size={13} />
                     </button>
                   </form>
@@ -1202,11 +1823,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                               {Number(source.parse_report?.duplicate_count || 0) > 0 ? ` · AST 去重 ${source.parse_report.duplicate_count} 条` : ''}
                             </div>
                           </div>
-                          <button
-                            className="flex h-7 w-7 items-center justify-center rounded hover:bg-red-500/10 hover:text-red-500"
-                            title="删除源文件"
-                            onClick={() => void removeSQLAssetSource(source.id)}
-                          >
+                          <button className="flex h-7 w-7 items-center justify-center rounded hover:bg-red-500/10 hover:text-red-500" title="删除源文件" onClick={() => void removeSQLAssetSource(source.id)}>
                             <Trash2 size={13} />
                           </button>
                         </div>
@@ -1218,129 +1835,205 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                     <div className="text-xs font-medium">解析资产</div>
                     {sqlAssets.length === 0 ? (
                       <div className="border-y border-[var(--border)] py-8 text-center text-xs text-[var(--text-secondary)]">暂无 SQL 资产</div>
-                    ) : sqlAssets.map((asset) => {
-                      const validationPassed = asset.validation_report?.status === 'pass'
-                      return (
-                        <details key={asset.id} className="rounded border border-[var(--border)] p-3">
-                          <summary className="cursor-pointer list-none">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="truncate text-xs font-medium">{asset.title}</div>
-                                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-secondary)]">
-                                  <span>{asset.asset_type}</span>
-                                  <span>{asset.statement_type}</span>
-                                  <span>{SQL_CORPUS_ROLE_LABELS[asset.corpus_role]} · {asset.quality_status}</span>
-                                  {asset.domain ? <span>{asset.domain}</span> : null}
-                                  <span>{asset.tables.join(', ') || '无表引用'}</span>
+                    ) : (
+                      sqlAssets.map((asset) => {
+                        const validationPassed = asset.validation_report?.status === 'pass'
+                        return (
+                          <details key={asset.id} className="rounded border border-[var(--border)] p-3">
+                            <summary className="cursor-pointer list-none">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="truncate text-xs font-medium">{asset.title}</div>
+                                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-[var(--text-secondary)]">
+                                    <span>{asset.asset_type}</span>
+                                    <span>{asset.statement_type}</span>
+                                    <span>
+                                      {SQL_CORPUS_ROLE_LABELS[asset.corpus_role]} · {asset.quality_status}
+                                    </span>
+                                    {asset.domain ? <span>{asset.domain}</span> : null}
+                                    <span>{asset.tables.join(', ') || '无表引用'}</span>
+                                  </div>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-2">
+                                  <span className={`inline-flex items-center gap-1 text-[11px] ${validationPassed ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                    {validationPassed ? <CheckCircle2 size={12} /> : <Circle size={12} />}
+                                    {validationPassed ? '校验通过' : '仅供参考'}
+                                  </span>
+                                  <span className="rounded bg-[var(--surface-raised)] px-2 py-0.5 text-[11px]">{SQL_ASSET_STATUS_LABELS[asset.status]}</span>
                                 </div>
                               </div>
-                              <div className="flex shrink-0 items-center gap-2">
-                                <span className={`inline-flex items-center gap-1 text-[11px] ${validationPassed ? 'text-emerald-500' : 'text-amber-500'}`}>
-                                  {validationPassed ? <CheckCircle2 size={12} /> : <Circle size={12} />}
-                                  {validationPassed ? '校验通过' : '仅供参考'}
-                                </span>
-                                <span className="rounded bg-[var(--surface-raised)] px-2 py-0.5 text-[11px]">{SQL_ASSET_STATUS_LABELS[asset.status]}</span>
-                              </div>
-                            </div>
-                          </summary>
-                          <div className="mt-3 space-y-3 border-t border-[var(--border)] pt-3">
-                            {editingSQLAsset?.id === asset.id ? (
-                              <div className="grid gap-2">
-                                <input
-                                  value={editingSQLAsset.title}
-                                  onChange={(event) => setEditingSQLAsset({ ...editingSQLAsset, title: event.target.value })}
-                                  className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
-                                  maxLength={255}
-                                  placeholder="资产标题"
-                                />
-                                <textarea
-                                  value={editingSQLAsset.description}
-                                  onChange={(event) => setEditingSQLAsset({ ...editingSQLAsset, description: event.target.value })}
-                                  className="min-h-16 resize-y rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
-                                  maxLength={4000}
-                                  placeholder="业务口径与适用范围"
-                                />
-                                <input
-                                  value={editingSQLAsset.tags}
-                                  onChange={(event) => setEditingSQLAsset({ ...editingSQLAsset, tags: event.target.value })}
-                                  className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
-                                  placeholder="标签，使用逗号分隔"
-                                />
-                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                                  <select value={editingSQLAsset.corpus_role} onChange={(event) => setEditingSQLAsset({ ...editingSQLAsset, corpus_role: event.target.value as SQLAssetItem['corpus_role'] })} className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-xs">
-                                    <option value="retrieval">检索库</option>
-                                    <option value="evaluation">评测集</option>
-                                    <option value="quarantine">隔离区</option>
-                                  </select>
-                                  <input value={editingSQLAsset.domain} onChange={(event) => setEditingSQLAsset({ ...editingSQLAsset, domain: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="业务域" />
-                                  <input value={editingSQLAsset.owner} onChange={(event) => setEditingSQLAsset({ ...editingSQLAsset, owner: event.target.value })} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs" placeholder="负责人" />
-                                </div>
-                              </div>
-                            ) : asset.description || asset.tags.length ? (
-                              <div className="space-y-1 text-xs text-[var(--text-secondary)]">
-                                {asset.description ? <div>{asset.description}</div> : null}
-                                {asset.tags.length ? <div>{asset.tags.join(' · ')}</div> : null}
-                              </div>
-                            ) : null}
-                            {asset.knowledge_metadata && Object.values(asset.knowledge_metadata).some((value) => Array.isArray(value) ? value.length > 0 : !!value) ? (
-                              <details className="rounded border border-[var(--border)] p-2 text-xs">
-                                <summary className="cursor-pointer font-medium">从 SQL 注释提取的结构化知识</summary>
-                                <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap text-[11px] text-[var(--text-secondary)]">{JSON.stringify(asset.knowledge_metadata, null, 2)}</pre>
-                              </details>
-                            ) : null}
-                            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded border border-[var(--border)] bg-black/20 p-3 text-xs">{asset.sql}</pre>
-                            {(asset.validation_report?.errors || []).map((error, index) => (
-                              <div key={`${asset.id}_error_${index}`} className="text-xs text-red-400">{error}</div>
-                            ))}
-                            {(asset.validation_report?.warnings || []).map((warning, index) => (
-                              <div key={`${asset.id}_warning_${index}`} className="text-xs text-amber-400">{warning}</div>
-                            ))}
-                            {asset.risk_flags.length ? <div className="text-xs text-amber-400">风险标记：{asset.risk_flags.join(' · ')}</div> : null}
-                            <div className="flex justify-end gap-2">
+                            </summary>
+                            <div className="mt-3 space-y-3 border-t border-[var(--border)] pt-3">
                               {editingSQLAsset?.id === asset.id ? (
-                                <>
-                                  <button className="rounded border border-[var(--border)] px-3 py-1.5 text-xs" onClick={() => setEditingSQLAsset(null)}>取消</button>
-                                  <button className="rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]" onClick={() => void saveSQLAssetMetadata(asset)}>保存</button>
-                                </>
-                              ) : (
-                                <button
-                                  className="flex h-7 w-7 items-center justify-center rounded border border-[var(--border)]"
-                                  title="编辑资产元数据"
-                                  onClick={() => setEditingSQLAsset({ id: asset.id, title: asset.title, description: asset.description, tags: asset.tags.join(', '), corpus_role: asset.corpus_role, domain: asset.domain || '', owner: asset.owner || '' })}
-                                >
-                                  <Pencil size={13} />
-                                </button>
-                              )}
-                              {asset.status !== 'published' && asset.executable && validationPassed && asset.corpus_role !== 'quarantine' ? (
-                                <button className="inline-flex items-center gap-1 rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]" onClick={() => void changeSQLAssetStatus(asset, 'published')}>
-                                  <CheckCircle2 size={13} /> 发布
-                                </button>
+                                <div className="grid gap-2">
+                                  <input
+                                    value={editingSQLAsset.title}
+                                    onChange={(event) =>
+                                      setEditingSQLAsset({
+                                        ...editingSQLAsset,
+                                        title: event.target.value,
+                                      })
+                                    }
+                                    className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
+                                    maxLength={255}
+                                    placeholder="资产标题"
+                                  />
+                                  <textarea
+                                    value={editingSQLAsset.description}
+                                    onChange={(event) =>
+                                      setEditingSQLAsset({
+                                        ...editingSQLAsset,
+                                        description: event.target.value,
+                                      })
+                                    }
+                                    className="min-h-16 resize-y rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
+                                    maxLength={4000}
+                                    placeholder="业务口径与适用范围"
+                                  />
+                                  <input
+                                    value={editingSQLAsset.tags}
+                                    onChange={(event) =>
+                                      setEditingSQLAsset({
+                                        ...editingSQLAsset,
+                                        tags: event.target.value,
+                                      })
+                                    }
+                                    className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
+                                    placeholder="标签，使用逗号分隔"
+                                  />
+                                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                                    <select
+                                      value={editingSQLAsset.corpus_role}
+                                      onChange={(event) =>
+                                        setEditingSQLAsset({
+                                          ...editingSQLAsset,
+                                          corpus_role: event.target.value as SQLAssetItem['corpus_role'],
+                                        })
+                                      }
+                                      className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5 text-xs"
+                                    >
+                                      <option value="retrieval">检索库</option>
+                                      <option value="evaluation">评测集</option>
+                                      <option value="quarantine">隔离区</option>
+                                    </select>
+                                    <input
+                                      value={editingSQLAsset.domain}
+                                      onChange={(event) =>
+                                        setEditingSQLAsset({
+                                          ...editingSQLAsset,
+                                          domain: event.target.value,
+                                        })
+                                      }
+                                      className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
+                                      placeholder="业务域"
+                                    />
+                                    <input
+                                      value={editingSQLAsset.owner}
+                                      onChange={(event) =>
+                                        setEditingSQLAsset({
+                                          ...editingSQLAsset,
+                                          owner: event.target.value,
+                                        })
+                                      }
+                                      className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"
+                                      placeholder="负责人"
+                                    />
+                                  </div>
+                                </div>
+                              ) : asset.description || asset.tags.length ? (
+                                <div className="space-y-1 text-xs text-[var(--text-secondary)]">
+                                  {asset.description ? <div>{asset.description}</div> : null}
+                                  {asset.tags.length ? <div>{asset.tags.join(' · ')}</div> : null}
+                                </div>
                               ) : null}
-                              {asset.status === 'published' ? (
-                                <button className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-3 py-1.5 text-xs" onClick={() => void changeSQLAssetStatus(asset, 'deprecated')}>
-                                  <Archive size={13} /> 废弃
-                                </button>
+                              {asset.knowledge_metadata && Object.values(asset.knowledge_metadata).some((value) => (Array.isArray(value) ? value.length > 0 : !!value)) ? (
+                                <details className="rounded border border-[var(--border)] p-2 text-xs">
+                                  <summary className="cursor-pointer font-medium">从 SQL 注释提取的结构化知识</summary>
+                                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap text-[11px] text-[var(--text-secondary)]">{JSON.stringify(asset.knowledge_metadata, null, 2)}</pre>
+                                </details>
                               ) : null}
+                              <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded border border-[var(--border)] bg-black/20 p-3 text-xs">{asset.sql}</pre>
+                              {(asset.validation_report?.errors || []).map((error, index) => (
+                                <div key={`${asset.id}_error_${index}`} className="text-xs text-red-400">
+                                  {error}
+                                </div>
+                              ))}
+                              {(asset.validation_report?.warnings || []).map((warning, index) => (
+                                <div key={`${asset.id}_warning_${index}`} className="text-xs text-amber-400">
+                                  {warning}
+                                </div>
+                              ))}
+                              {asset.risk_flags.length ? <div className="text-xs text-amber-400">风险标记：{asset.risk_flags.join(' · ')}</div> : null}
+                              <div className="flex justify-end gap-2">
+                                {editingSQLAsset?.id === asset.id ? (
+                                  <>
+                                    <button className="rounded border border-[var(--border)] px-3 py-1.5 text-xs" onClick={() => setEditingSQLAsset(null)}>
+                                      取消
+                                    </button>
+                                    <button className="rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]" onClick={() => void saveSQLAssetMetadata(asset)}>
+                                      保存
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    className="flex h-7 w-7 items-center justify-center rounded border border-[var(--border)]"
+                                    title="编辑资产元数据"
+                                    onClick={() =>
+                                      setEditingSQLAsset({
+                                        id: asset.id,
+                                        title: asset.title,
+                                        description: asset.description,
+                                        tags: asset.tags.join(', '),
+                                        corpus_role: asset.corpus_role,
+                                        domain: asset.domain || '',
+                                        owner: asset.owner || '',
+                                      })
+                                    }
+                                  >
+                                    <Pencil size={13} />
+                                  </button>
+                                )}
+                                {asset.status !== 'published' && asset.executable && validationPassed && asset.corpus_role !== 'quarantine' ? (
+                                  <button className="inline-flex items-center gap-1 rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]" onClick={() => void changeSQLAssetStatus(asset, 'published')}>
+                                    <CheckCircle2 size={13} /> 发布
+                                  </button>
+                                ) : null}
+                                {asset.status === 'published' ? (
+                                  <button className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-3 py-1.5 text-xs" onClick={() => void changeSQLAssetStatus(asset, 'deprecated')}>
+                                    <Archive size={13} /> 废弃
+                                  </button>
+                                ) : null}
+                              </div>
                             </div>
-                          </div>
-                        </details>
-                      )
-                    })}
+                          </details>
+                        )
+                      })
+                    )}
                     {sqlAssetTotal > SQL_ASSET_PAGE_SIZE ? (
                       <div className="flex items-center justify-between border-t border-[var(--border)] pt-2 text-xs text-[var(--text-secondary)]">
-                        <span>{sqlAssetOffset + 1}-{Math.min(sqlAssetOffset + sqlAssets.length, sqlAssetTotal)} / {sqlAssetTotal}</span>
+                        <span>
+                          {sqlAssetOffset + 1}-{Math.min(sqlAssetOffset + sqlAssets.length, sqlAssetTotal)} / {sqlAssetTotal}
+                        </span>
                         <div className="flex gap-1">
                           <button
                             className="rounded border border-[var(--border)] px-2 py-1 disabled:opacity-40"
                             disabled={sqlAssetOffset === 0}
-                            onClick={() => void reloadSQLAssets({ offset: Math.max(0, sqlAssetOffset - SQL_ASSET_PAGE_SIZE) })}
+                            onClick={() =>
+                              void reloadSQLAssets({
+                                offset: Math.max(0, sqlAssetOffset - SQL_ASSET_PAGE_SIZE),
+                              })
+                            }
                           >
                             上一页
                           </button>
                           <button
                             className="rounded border border-[var(--border)] px-2 py-1 disabled:opacity-40"
                             disabled={sqlAssetOffset + sqlAssets.length >= sqlAssetTotal}
-                            onClick={() => void reloadSQLAssets({ offset: sqlAssetOffset + SQL_ASSET_PAGE_SIZE })}
+                            onClick={() =>
+                              void reloadSQLAssets({
+                                offset: sqlAssetOffset + SQL_ASSET_PAGE_SIZE,
+                              })
+                            }
                           >
                             下一页
                           </button>
@@ -1408,13 +2101,13 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                             <div className="flex items-center gap-1 flex-wrap">
                               <span className="text-xs text-[var(--text-secondary)]">缺失信息：</span>
                               {queryOutput.clarification.missing_entities.map((e: string, i: number) => (
-                                <span key={i} className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--surface-raised)] border border-[var(--border)]">{e}</span>
+                                <span key={i} className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--surface-raised)] border border-[var(--border)]">
+                                  {e}
+                                </span>
                               ))}
                             </div>
                           ) : null}
-                          <div className="text-xs text-[var(--text-secondary)]">
-                            你也可以在输入框中修改问题后重新提交
-                          </div>
+                          <div className="text-xs text-[var(--text-secondary)]">你也可以在输入框中修改问题后重新提交</div>
                         </div>
                       ) : null}
 
@@ -1429,19 +2122,19 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                         <div className="rounded border border-cyan-500/30 bg-cyan-500/5 p-3">
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="text-xs font-medium text-cyan-400">可信数据源决策</div>
-                            <span className="text-[11px] text-[var(--text-secondary)]">
-                              置信度 {Math.round((sourceDecision.confidence || 0) * 100)}%
-                            </span>
+                            <span className="text-[11px] text-[var(--text-secondary)]">置信度 {Math.round((sourceDecision.confidence || 0) * 100)}%</span>
                           </div>
-                          <div className="mt-1 text-xs">
-                            {sourceDecision.selected_data_source_name || selected?.name || '尚未选择数据源'}
-                          </div>
+                          <div className="mt-1 text-xs">{sourceDecision.selected_data_source_name || selected?.name || '尚未选择数据源'}</div>
                           <div className="mt-1 text-[11px] text-[var(--text-secondary)]">{sourceDecision.reason}</div>
                           {sourceDecision.candidates?.find((item) => item.data_source_id === sourceDecision.selected_data_source_id)?.reasons?.length ? (
                             <div className="mt-2 flex flex-wrap gap-1">
-                              {sourceDecision.candidates.find((item) => item.data_source_id === sourceDecision.selected_data_source_id)!.reasons.map((reason) => (
-                                <span key={reason} className="rounded-full border border-cyan-500/20 px-2 py-0.5 text-[10px] text-cyan-300">{reason}</span>
-                              ))}
+                              {sourceDecision.candidates
+                                .find((item) => item.data_source_id === sourceDecision.selected_data_source_id)!
+                                .reasons.map((reason) => (
+                                  <span key={reason} className="rounded-full border border-cyan-500/20 px-2 py-0.5 text-[10px] text-cyan-300">
+                                    {reason}
+                                  </span>
+                                ))}
                             </div>
                           ) : null}
                         </div>
@@ -1450,7 +2143,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                       {/* 1. 草案或执行状态 */}
                       {queryOutput.answer ? (
                         <div className="rounded border border-[var(--border)] p-3 bg-[var(--surface-raised)]">
-                          <div className="text-xs font-medium mb-2" style={{ color: 'var(--accent)' }}>状态</div>
+                          <div className="text-xs font-medium mb-2" style={{ color: 'var(--accent)' }}>
+                            状态
+                          </div>
                           <MarkdownMessage content={queryOutput.answer} />
                         </div>
                       ) : (
@@ -1466,7 +2161,10 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                                 <div className="flex flex-wrap items-center gap-2">
                                   <span className="font-mono font-semibold text-[var(--accent)]">[{citation.label}]</span>
                                   <span className="font-medium">{citation.title}</span>
-                                  <span className="text-[var(--text-secondary)]">{citation.authority}{citation.version ? ` · ${citation.version}` : ''}</span>
+                                  <span className="text-[var(--text-secondary)]">
+                                    {citation.authority}
+                                    {citation.version ? ` · ${citation.version}` : ''}
+                                  </span>
                                 </div>
                                 {citation.excerpt ? <div className="mt-1 break-words text-[var(--text-secondary)]">{citation.excerpt}</div> : null}
                               </div>
@@ -1479,7 +2177,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                         <div className={`rounded border p-3 ${learning.status === 'trusted' ? 'border-emerald-500/30 bg-emerald-500/5' : learning.status === 'rejected' || learning.status === 'ineligible' ? 'border-amber-500/30 bg-amber-500/5' : 'border-sky-500/30 bg-sky-500/5'}`}>
                           <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                             <span className="font-medium">受控执行学习：{learning.status}</span>
-                            <span className="text-[var(--text-secondary)]">成功 {learning.success_count} 次 · 失败 {learning.failure_count} 次</span>
+                            <span className="text-[var(--text-secondary)]">
+                              成功 {learning.success_count} 次 · 失败 {learning.failure_count} 次
+                            </span>
                           </div>
                           <div className="mt-1 text-[11px] text-[var(--text-secondary)]">{learning.reasons?.join('；')}</div>
                         </div>
@@ -1499,20 +2199,12 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                             <div className="text-xs font-medium">SQL 候选</div>
                             <div className="flex items-center gap-1">
                               {queryOutput.draft_status === 'executing' ? (
-                                <button
-                                  className="flex h-7 w-7 items-center justify-center rounded border border-[var(--border)]"
-                                  title="刷新执行状态"
-                                  onClick={() => void refreshDraft()}
-                                >
+                                <button className="flex h-7 w-7 items-center justify-center rounded border border-[var(--border)]" title="刷新执行状态" onClick={() => void refreshDraft()}>
                                   <RefreshCw size={12} />
                                 </button>
                               ) : null}
                               {queryOutput.candidates.length > 1 ? (
-                                <button
-                                  className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-50"
-                                  disabled={executingCandidate !== null}
-                                  onClick={() => void executeDraft([], true, !!queryOutput.candidates?.some((item) => item.execution_status === 'failed'))}
-                                >
+                                <button className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-50" disabled={executingCandidate !== null} onClick={() => void executeDraft([], true, !!queryOutput.candidates?.some((item) => item.execution_status === 'failed'))}>
                                   <PlayCircle size={12} /> {executingCandidate === 'all' ? '执行中' : queryOutput.candidates.some((item) => item.execution_status === 'failed') ? '重试失败项' : '执行全部'}
                                 </button>
                               ) : null}
@@ -1527,22 +2219,13 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                                 </div>
                                 <div className="flex items-center gap-2">
                                   <span className="text-[11px] text-[var(--text-secondary)]">{SQL_EXECUTION_STATUS_LABELS[candidate.execution_status]}</span>
-                                  <button
-                                    className="flex h-7 w-7 items-center justify-center rounded bg-[var(--accent)] text-[var(--accent-foreground)] disabled:opacity-50"
-                                    title={candidate.execution_status === 'failed' ? `重试候选 ${candidate.position}` : `执行候选 ${candidate.position}`}
-                                    disabled={executingCandidate !== null || candidate.execution_status === 'completed'}
-                                    onClick={() => void executeDraft([candidate.id], false, candidate.execution_status === 'failed')}
-                                  >
+                                  <button className="flex h-7 w-7 items-center justify-center rounded bg-[var(--accent)] text-[var(--accent-foreground)] disabled:opacity-50" title={candidate.execution_status === 'failed' ? `重试候选 ${candidate.position}` : `执行候选 ${candidate.position}`} disabled={executingCandidate !== null || candidate.execution_status === 'completed'} onClick={() => void executeDraft([candidate.id], false, candidate.execution_status === 'failed')}>
                                     <PlayCircle size={13} />
                                   </button>
                                 </div>
                               </div>
                               <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded border border-[var(--border)] bg-black/20 p-2 text-xs">{candidate.sql}</pre>
-                              {candidate.validation_report?.supporting_memory_ids?.length ? (
-                                <div className="mt-2 text-[11px] text-sky-400">
-                                  已由 {candidate.validation_report.supporting_memory_ids.length} 条可信执行经验支持排序
-                                </div>
-                              ) : null}
+                              {candidate.validation_report?.supporting_memory_ids?.length ? <div className="mt-2 text-[11px] text-sky-400">已由 {candidate.validation_report.supporting_memory_ids.length} 条可信执行经验支持排序</div> : null}
                               {candidate.validation_report?.preflight && Object.keys(candidate.validation_report.preflight).length ? (
                                 <details className="mt-2 rounded border border-[var(--border)] p-2">
                                   <summary className="cursor-pointer text-[11px] font-medium">执行前 EXPLAIN 预检</summary>
@@ -1566,39 +2249,55 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                         </div>
                       ) : queryOutput.sql ? (
                         <details open>
-                          <summary className="cursor-pointer text-xs font-medium" style={{ color: 'var(--accent)' }}>SQL</summary>
+                          <summary className="cursor-pointer text-xs font-medium" style={{ color: 'var(--accent)' }}>
+                            SQL
+                          </summary>
                           <pre className="text-xs whitespace-pre-wrap rounded border border-[var(--border)] p-2 bg-black/20 mt-1">{queryOutput.sql}</pre>
                         </details>
                       ) : null}
 
                       {/* 3. 结果表格 */}
-                      {queryOutput.rows.length > 0 ? <div className="overflow-x-auto rounded border border-[var(--border)]">
-                        <table className="min-w-full text-xs">
-                          <thead className="bg-[var(--surface-raised)]">
-                            <tr>{columns.map((c) => <th key={c} className="px-2 py-1 text-left">{c}</th>)}</tr>
-                          </thead>
-                          <tbody>
-                            {queryOutput.rows.slice(0, 20).map((r, idx) => (
-                              <tr key={idx} className="border-t border-[var(--border)]">
-                                {columns.map((c) => <td key={`${idx}_${c}`} className="px-2 py-1">{String((r as any)[c] ?? '')}</td>)}
+                      {queryOutput.rows.length > 0 ? (
+                        <div className="overflow-x-auto rounded border border-[var(--border)]">
+                          <table className="min-w-full text-xs">
+                            <thead className="bg-[var(--surface-raised)]">
+                              <tr>
+                                {columns.map((c) => (
+                                  <th key={c} className="px-2 py-1 text-left">
+                                    {c}
+                                  </th>
+                                ))}
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div> : null}
-                      {queryOutput.rows.length > 20 ? (
-                        <div className="text-xs text-[var(--text-secondary)]">仅显示前 20 行，共 {queryOutput.rows.length} 行</div>
+                            </thead>
+                            <tbody>
+                              {queryOutput.rows.slice(0, 20).map((r, idx) => (
+                                <tr key={idx} className="border-t border-[var(--border)]">
+                                  {columns.map((c) => (
+                                    <td key={`${idx}_${c}`} className="px-2 py-1">
+                                      {String((r as any)[c] ?? '')}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                       ) : null}
+                      {queryOutput.rows.length > 20 ? <div className="text-xs text-[var(--text-secondary)]">仅显示前 20 行，共 {queryOutput.rows.length} 行</div> : null}
 
                       {/* 4. 洞察区 */}
                       {queryOutput.insights ? (
                         <div className="rounded border border-[var(--border)] p-3 space-y-2">
-                          <div className="text-xs font-medium" style={{ color: 'var(--accent)' }}>数据洞察</div>
+                          <div className="text-xs font-medium" style={{ color: 'var(--accent)' }}>
+                            数据洞察
+                          </div>
                           {queryOutput.insights.observations?.length > 0 ? (
                             <div className="space-y-1">
                               <div className="text-xs text-[var(--text-secondary)]">关键发现</div>
                               {queryOutput.insights.observations.map((o: string, i: number) => (
-                                <div key={i} className="text-xs">• {o}</div>
+                                <div key={i} className="text-xs">
+                                  • {o}
+                                </div>
                               ))}
                             </div>
                           ) : null}
@@ -1606,7 +2305,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                             <div className="space-y-1">
                               <div className="text-xs text-[var(--text-secondary)]">建议</div>
                               {queryOutput.insights.recommendations.map((r: string, i: number) => (
-                                <div key={i} className="text-xs">→ {r}</div>
+                                <div key={i} className="text-xs">
+                                  → {r}
+                                </div>
                               ))}
                             </div>
                           ) : null}
@@ -1614,7 +2315,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                             <div className="space-y-1">
                               <div className="text-xs text-[var(--text-secondary)]">模式</div>
                               {queryOutput.insights.patterns.map((p: string, i: number) => (
-                                <div key={i} className="text-xs">• {p}</div>
+                                <div key={i} className="text-xs">
+                                  • {p}
+                                </div>
                               ))}
                             </div>
                           ) : null}
@@ -1624,7 +2327,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                       {/* 5. 统计分析区 */}
                       {queryOutput.statistical_report ? (
                         <div className="rounded border border-[var(--border)] p-3 space-y-2">
-                          <div className="text-xs font-medium" style={{ color: 'var(--accent)' }}>统计分析</div>
+                          <div className="text-xs font-medium" style={{ color: 'var(--accent)' }}>
+                            统计分析
+                          </div>
                           {queryOutput.statistical_report.trends && Object.keys(queryOutput.statistical_report.trends).length > 0 ? (
                             <div className="space-y-1">
                               <div className="text-xs text-[var(--text-secondary)]">趋势</div>
@@ -1635,42 +2340,32 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                               ))}
                             </div>
                           ) : null}
-                          {queryOutput.statistical_report.outliers ? (
-                            (() => {
-                              const totalOutliers = Object.values(queryOutput.statistical_report.outliers as Record<string, any[]>).reduce((sum: number, v: any[]) => sum + v.length, 0)
-                              return totalOutliers > 0 ? (
-                                <div className="text-xs">• 检测到 {totalOutliers} 个异常值</div>
-                              ) : null
-                            })()
-                          ) : null}
+                          {queryOutput.statistical_report.outliers
+                            ? (() => {
+                                const totalOutliers = Object.values(queryOutput.statistical_report.outliers as Record<string, any[]>).reduce((sum: number, v: any[]) => sum + v.length, 0)
+                                return totalOutliers > 0 ? <div className="text-xs">• 检测到 {totalOutliers} 个异常值</div> : null
+                              })()
+                            : null}
                         </div>
                       ) : null}
 
                       {/* 6. 图表建议 */}
                       {queryOutput.visualization_config ? (
                         <div className="rounded border border-[var(--border)] p-3 space-y-1">
-                          <div className="text-xs font-medium" style={{ color: 'var(--accent)' }}>图表建议</div>
+                          <div className="text-xs font-medium" style={{ color: 'var(--accent)' }}>
+                            图表建议
+                          </div>
                           <div className="text-xs">
                             推荐图表: {queryOutput.visualization_config.chart_type}
                             {queryOutput.visualization_config.title ? ` - ${queryOutput.visualization_config.title}` : ''}
                           </div>
-                          {queryOutput.visualization_config.alternatives?.length > 0 ? (
-                            <div className="text-xs text-[var(--text-secondary)]">
-                              备选: {queryOutput.visualization_config.alternatives.join(', ')}
-                            </div>
-                          ) : null}
-                          <button
-                            className="px-3 py-1 rounded border text-xs mt-1"
-                            onClick={() => requestPrefill(`请基于以下数据绘制图表并分析：\n${JSON.stringify(queryOutput.rows.slice(0, 20), null, 2)}`)}
-                          >
+                          {queryOutput.visualization_config.alternatives?.length > 0 ? <div className="text-xs text-[var(--text-secondary)]">备选: {queryOutput.visualization_config.alternatives.join(', ')}</div> : null}
+                          <button className="px-3 py-1 rounded border text-xs mt-1" onClick={() => requestPrefill(`请基于以下数据绘制图表并分析：\n${JSON.stringify(queryOutput.rows.slice(0, 20), null, 2)}`)}>
                             在对话中生成图表
                           </button>
                         </div>
                       ) : (
-                        <button
-                          className="px-3 py-1 rounded border text-xs"
-                          onClick={() => requestPrefill(`请基于以下数据绘制图表并分析：\n${JSON.stringify(queryOutput.rows.slice(0, 20), null, 2)}`)}
-                        >
+                        <button className="px-3 py-1 rounded border text-xs" onClick={() => requestPrefill(`请基于以下数据绘制图表并分析：\n${JSON.stringify(queryOutput.rows.slice(0, 20), null, 2)}`)}>
                           生成图表
                         </button>
                       )}
@@ -1679,9 +2374,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                       {queryOutput.confidence != null ? (
                         <div className="flex items-center gap-4 text-xs text-[var(--text-secondary)]">
                           <span>置信度: {(queryOutput.confidence * 100).toFixed(0)}%</span>
-                          {queryOutput.verification_report ? (
-                            <span>校验: {queryOutput.verification_report.status || queryOutput.verification_report}</span>
-                          ) : null}
+                          {queryOutput.verification_report ? <span>校验: {queryOutput.verification_report.status || queryOutput.verification_report}</span> : null}
                         </div>
                       ) : null}
                     </>
@@ -1693,7 +2386,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
 
               {activeTab === 'analysis' ? (
                 <div className="rounded border border-[var(--border)] p-3 space-y-3">
-                  <button className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs" onClick={() => void runAnalysis()}>运行分析</button>
+                  <button className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs" onClick={() => void runAnalysis()}>
+                    运行分析
+                  </button>
 
                   <div className="text-sm font-medium">{analysis?.summary || '点击运行分析'}</div>
 
@@ -1710,7 +2405,9 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
 
                   {(analysis?.insights || []).length > 0 ? (
                     <ul className="list-disc pl-5 text-xs text-[var(--text-secondary)] space-y-1">
-                      {(analysis?.insights || []).map((x, idx) => <li key={idx}>{x}</li>)}
+                      {(analysis?.insights || []).map((x, idx) => (
+                        <li key={idx}>{x}</li>
+                      ))}
                     </ul>
                   ) : null}
 
@@ -1779,9 +2476,13 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                       {relationshipsList.map((r: any, idx: number) => (
                         <div key={r.id || idx} className="rounded border border-[var(--border)] p-2 text-xs space-y-1">
                           <div className="flex items-center gap-2">
-                            <span className="font-mono font-medium">{r.left_table}.{r.left_column}</span>
+                            <span className="font-mono font-medium">
+                              {r.left_table}.{r.left_column}
+                            </span>
                             <span className="text-[var(--accent)]">&rarr;</span>
-                            <span className="font-mono font-medium">{r.right_table}.{r.right_column}</span>
+                            <span className="font-mono font-medium">
+                              {r.right_table}.{r.right_column}
+                            </span>
                             <span className="text-[var(--text-secondary)]">({r.join_type || 'LEFT'})</span>
                           </div>
                           <div className="flex gap-3">
@@ -1831,21 +2532,65 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                     <div>类型：{selected.type}</div>
                     <div>主机：{selected.host}</div>
                     <div>端口：{selected.port}</div>
-                    <div>数据库：{selected.database || (selected.type === 'clickhouse' ? '全部可访问库' : '未指定')}</div>
+                    <div>
+                      数据库：
+                      {selected.database || (selected.type === 'clickhouse' ? '全部可访问库' : '未指定')}
+                    </div>
                     <div>用户名：{selected.username}</div>
                   </div>
 
                   <div className="rounded border border-[var(--border)] p-4 space-y-3">
-                    <h3 className="inline-flex items-center gap-2 text-sm font-semibold"><Users size={14} />共享与权限</h3>
+                    <h3 className="inline-flex items-center gap-2 text-sm font-semibold">
+                      <Users size={14} />
+                      共享与权限
+                    </h3>
                     <p className="text-xs text-[var(--text-secondary)]">view 仅查看资产；query 可执行问数；edit 可维护 Schema、指标和关系；admin 可继续授权。</p>
-                    <div className="grid gap-2 sm:grid-cols-[1fr_120px_auto]"><select value={grantUserId} onChange={(e) => setGrantUserId(e.target.value)} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"><option value="">选择用户</option>{subjects.map((user) => <option key={user.id} value={user.id}>{user.display_name || user.email} · {user.email}</option>)}</select><select value={grantLevel} onChange={(e) => setGrantLevel(e.target.value as typeof grantLevel)} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs"><option value="view">view</option><option value="query">query</option><option value="edit">edit</option><option value="admin">admin</option></select><button onClick={() => void grantPermission()} className="rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]">授权</button></div>
-                    <div className="space-y-2">{permissions.map((permission) => <div key={permission.id} className="flex items-center rounded bg-[var(--surface-raised)] px-3 py-2 text-xs"><span className="min-w-0 flex-1 truncate">{permission.subject_email}</span><span className="mr-3 rounded-full border border-[var(--border)] px-2 py-0.5">{permission.permission}</span><button onClick={async () => { await apiRevokeResourcePermission(token, permission.id); setPermissions((items) => items.filter((item) => item.id !== permission.id)) }} className="text-red-500"><Trash2 size={12} /></button></div>)}</div>
+                    <div className="grid gap-2 sm:grid-cols-[1fr_120px_auto]">
+                      <select value={grantUserId} onChange={(e) => setGrantUserId(e.target.value)} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs">
+                        <option value="">选择用户</option>
+                        {subjects.map((user) => (
+                          <option key={user.id} value={user.id}>
+                            {user.display_name || user.email} · {user.email}
+                          </option>
+                        ))}
+                      </select>
+                      <select value={grantLevel} onChange={(e) => setGrantLevel(e.target.value as typeof grantLevel)} className="rounded border border-[var(--border)] bg-transparent px-2 py-1.5 text-xs">
+                        <option value="view">view</option>
+                        <option value="query">query</option>
+                        <option value="edit">edit</option>
+                        <option value="admin">admin</option>
+                      </select>
+                      <button onClick={() => void grantPermission()} className="rounded bg-[var(--accent)] px-3 py-1.5 text-xs text-[var(--accent-foreground)]">
+                        授权
+                      </button>
+                    </div>
+                    <div className="space-y-2">
+                      {permissions.map((permission) => (
+                        <div key={permission.id} className="flex items-center rounded bg-[var(--surface-raised)] px-3 py-2 text-xs">
+                          <span className="min-w-0 flex-1 truncate">{permission.subject_email}</span>
+                          <span className="mr-3 rounded-full border border-[var(--border)] px-2 py-0.5">{permission.permission}</span>
+                          <button
+                            onClick={async () => {
+                              await apiRevokeResourcePermission(token, permission.id)
+                              setPermissions((items) => items.filter((item) => item.id !== permission.id))
+                            }}
+                            className="text-red-500"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="rounded border border-[var(--border)] p-4 space-y-3">
                     <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-semibold inline-flex items-center gap-1.5"><Zap size={14} /> 语义层配置</h3>
-                      <button onClick={() => void handleAutoExtractSemantic()} className="px-2 py-1 rounded bg-[var(--accent-dim)] text-[var(--accent)] text-xs inline-flex items-center gap-1"><Zap size={12} /> 自动提取</button>
+                      <h3 className="text-sm font-semibold inline-flex items-center gap-1.5">
+                        <Zap size={14} /> 语义层配置
+                      </h3>
+                      <button onClick={() => void handleAutoExtractSemantic()} className="px-2 py-1 rounded bg-[var(--accent-dim)] text-[var(--accent)] text-xs inline-flex items-center gap-1">
+                        <Zap size={12} /> 自动提取
+                      </button>
                     </div>
                     <p className="text-xs text-[var(--text-secondary)]">配置业务术语到数据库字段的映射，提升 DataAgent 准确度。</p>
 
@@ -1859,18 +2604,54 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                           {Object.entries(semanticConfig.dimensions).map(([key, dim]) => (
                             <div key={key} className="flex items-center gap-2 text-xs rounded bg-[var(--surface-raised)] px-2 py-1">
                               <span className="font-medium">{key}</span>
-                              <span className="text-[var(--text-secondary)]">&rarr; {dim.table}.{dim.column}</span>
-                              <button onClick={() => removeDimension(key)} className="ml-auto text-red-500"><Trash2 size={11} /></button>
+                              <span className="text-[var(--text-secondary)]">
+                                &rarr; {dim.table}.{dim.column}
+                              </span>
+                              <button onClick={() => removeDimension(key)} className="ml-auto text-red-500">
+                                <Trash2 size={11} />
+                              </button>
                             </div>
                           ))}
                         </div>
                       )}
                       <div className="grid grid-cols-3 gap-1">
-                        <input value={editingDimension.name} onChange={(e) => setEditingDimension({ ...editingDimension, name: e.target.value })} placeholder="维度名" className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs" />
-                        <input value={editingDimension.column} onChange={(e) => setEditingDimension({ ...editingDimension, column: e.target.value })} placeholder="列名" className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs" />
+                        <input
+                          value={editingDimension.name}
+                          onChange={(e) =>
+                            setEditingDimension({
+                              ...editingDimension,
+                              name: e.target.value,
+                            })
+                          }
+                          placeholder="维度名"
+                          className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs"
+                        />
+                        <input
+                          value={editingDimension.column}
+                          onChange={(e) =>
+                            setEditingDimension({
+                              ...editingDimension,
+                              column: e.target.value,
+                            })
+                          }
+                          placeholder="列名"
+                          className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs"
+                        />
                         <div className="flex gap-1">
-                          <input value={editingDimension.table} onChange={(e) => setEditingDimension({ ...editingDimension, table: e.target.value })} placeholder="表名" className="flex-1 rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs" />
-                          <button onClick={addDimension} className="px-2 py-1 rounded border text-xs"><Plus size={12} /></button>
+                          <input
+                            value={editingDimension.table}
+                            onChange={(e) =>
+                              setEditingDimension({
+                                ...editingDimension,
+                                table: e.target.value,
+                              })
+                            }
+                            placeholder="表名"
+                            className="flex-1 rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs"
+                          />
+                          <button onClick={addDimension} className="px-2 py-1 rounded border text-xs">
+                            <Plus size={12} />
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -1886,15 +2667,39 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                             <div key={key} className="flex items-center gap-2 text-xs rounded bg-[var(--surface-raised)] px-2 py-1">
                               <span className="font-medium">{key}</span>
                               <span className="text-[var(--text-secondary)]">&rarr; {expr}</span>
-                              <button onClick={() => removeMetric(key)} className="ml-auto text-red-500"><Trash2 size={11} /></button>
+                              <button onClick={() => removeMetric(key)} className="ml-auto text-red-500">
+                                <Trash2 size={11} />
+                              </button>
                             </div>
                           ))}
                         </div>
                       )}
                       <div className="grid grid-cols-3 gap-1">
-                        <input value={editingMetric.name} onChange={(e) => setEditingMetric({ ...editingMetric, name: e.target.value })} placeholder="度量名" className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs" />
-                        <input value={editingMetric.expression} onChange={(e) => setEditingMetric({ ...editingMetric, expression: e.target.value })} placeholder="SQL 表达式" className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs font-mono" />
-                        <button onClick={addMetric} className="px-2 py-1 rounded border text-xs"><Plus size={12} /></button>
+                        <input
+                          value={editingMetric.name}
+                          onChange={(e) =>
+                            setEditingMetric({
+                              ...editingMetric,
+                              name: e.target.value,
+                            })
+                          }
+                          placeholder="度量名"
+                          className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs"
+                        />
+                        <input
+                          value={editingMetric.expression}
+                          onChange={(e) =>
+                            setEditingMetric({
+                              ...editingMetric,
+                              expression: e.target.value,
+                            })
+                          }
+                          placeholder="SQL 表达式"
+                          className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs font-mono"
+                        />
+                        <button onClick={addMetric} className="px-2 py-1 rounded border text-xs">
+                          <Plus size={12} />
+                        </button>
                       </div>
                     </div>
 
@@ -1908,21 +2713,60 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                           {semanticConfig.time_macros.map((tm, idx) => (
                             <div key={idx} className="flex items-center gap-2 text-xs rounded bg-[var(--surface-raised)] px-2 py-1">
                               <span className="font-medium">{tm.keyword}</span>
-                              <span className="text-[var(--text-secondary)]">&rarr; {tm.column} &le; {tm.days}天</span>
-                              <button onClick={() => removeTimeMacro(idx)} className="ml-auto text-red-500"><Trash2 size={11} /></button>
+                              <span className="text-[var(--text-secondary)]">
+                                &rarr; {tm.column} &le; {tm.days}天
+                              </span>
+                              <button onClick={() => removeTimeMacro(idx)} className="ml-auto text-red-500">
+                                <Trash2 size={11} />
+                              </button>
                             </div>
                           ))}
                         </div>
                       )}
                       <div className="grid grid-cols-4 gap-1">
-                        <input value={editingTimeMacro.keyword} onChange={(e) => setEditingTimeMacro({ ...editingTimeMacro, keyword: e.target.value })} placeholder="关键词" className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs" />
-                        <input value={editingTimeMacro.column} onChange={(e) => setEditingTimeMacro({ ...editingTimeMacro, column: e.target.value })} placeholder="时间列" className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs" />
-                        <input value={String(editingTimeMacro.days)} onChange={(e) => setEditingTimeMacro({ ...editingTimeMacro, days: Number(e.target.value) })} placeholder="天数" type="number" className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs" />
-                        <button onClick={addTimeMacro} className="px-2 py-1 rounded border text-xs"><Plus size={12} /></button>
+                        <input
+                          value={editingTimeMacro.keyword}
+                          onChange={(e) =>
+                            setEditingTimeMacro({
+                              ...editingTimeMacro,
+                              keyword: e.target.value,
+                            })
+                          }
+                          placeholder="关键词"
+                          className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs"
+                        />
+                        <input
+                          value={editingTimeMacro.column}
+                          onChange={(e) =>
+                            setEditingTimeMacro({
+                              ...editingTimeMacro,
+                              column: e.target.value,
+                            })
+                          }
+                          placeholder="时间列"
+                          className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs"
+                        />
+                        <input
+                          value={String(editingTimeMacro.days)}
+                          onChange={(e) =>
+                            setEditingTimeMacro({
+                              ...editingTimeMacro,
+                              days: Number(e.target.value),
+                            })
+                          }
+                          placeholder="天数"
+                          type="number"
+                          className="rounded border border-[var(--border)] bg-transparent px-2 py-1 text-xs"
+                        />
+                        <button onClick={addTimeMacro} className="px-2 py-1 rounded border text-xs">
+                          <Plus size={12} />
+                        </button>
                       </div>
                     </div>
 
-                    <button onClick={() => void handleSaveSemanticConfig()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs">保存语义配置</button>
+                    <button onClick={() => void handleSaveSemanticConfig()} className="px-3 py-1.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)] text-xs">
+                      保存语义配置
+                    </button>
                   </div>
                 </div>
               ) : null}
@@ -1936,10 +2780,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
 
 function TabButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
   return (
-    <button
-      onClick={onClick}
-      className={`px-3 py-1 rounded text-xs inline-flex items-center gap-1 ${active ? 'bg-[var(--accent)] text-[var(--accent-foreground)]' : 'border border-[var(--border)]'}`}
-    >
+    <button onClick={onClick} className={`px-3 py-1 rounded text-xs inline-flex items-center gap-1 ${active ? 'bg-[var(--accent)] text-[var(--accent-foreground)]' : 'border border-[var(--border)]'}`}>
       {icon}
       {label}
     </button>
@@ -1947,7 +2788,9 @@ function TabButton({ active, onClick, icon, label }: { active: boolean; onClick:
 }
 
 async function apiFetch(url: string, token: string): Promise<any> {
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
   if (!res.ok) throw new Error(`API ${res.status}`)
   return res.json()
 }

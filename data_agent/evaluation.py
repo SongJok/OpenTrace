@@ -8,10 +8,12 @@ from typing import Any
 
 
 def _normalize(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
     if isinstance(value, Decimal):
         return round(float(value), 8)
-    if isinstance(value, float):
-        return round(value, 8)
+    if isinstance(value, int | float):
+        return round(float(value), 8)
     if isinstance(value, dict):
         return {str(key): _normalize(item) for key, item in sorted(value.items())}
     if isinstance(value, list):

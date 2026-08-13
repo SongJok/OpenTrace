@@ -480,6 +480,7 @@ class CandidateRanker:
         evidence: EvidenceBundle | None = None,
     ) -> list[CandidateSQL]:
         memory_support: dict[str, tuple[float, list[str]]] = {}
+        failure_penalties: dict[str, tuple[float, list[str]]] = {}
         if evidence is not None:
             pattern_key = plan_pattern_key(plan)
             for item in evidence.of_type(EvidenceType.EXECUTION_MEMORY):
@@ -497,6 +498,20 @@ class CandidateRanker:
                     max(current_bonus, bonus),
                     [*ids, item.source_id],
                 )
+            for item in evidence.of_type(EvidenceType.FAILURE_MEMORY):
+                payload = item.payload
+                if payload.get("status") != "open" or payload.get("pattern_key") != pattern_key:
+                    continue
+                structure = str(payload.get("sql_structure_hash") or "")
+                if not structure:
+                    continue
+                failure_count = max(1, int(payload.get("failure_count") or 1))
+                penalty = min(8.0, 2.5 + failure_count * 1.25)
+                current_penalty, ids = failure_penalties.get(structure, (0.0, []))
+                failure_penalties[structure] = (
+                    max(current_penalty, penalty),
+                    [*ids, item.source_id],
+                )
         for candidate in candidates:
             report = candidate.validation
             error_penalty = len(report.errors) * 10
@@ -507,17 +522,26 @@ class CandidateRanker:
                 "model": 0.0,
             }.get(candidate.source, 0.0)
             memory_bonus = 0.0
+            failure_penalty = 0.0
             if evidence is not None:
                 structure = sql_structure_hash(candidate.sql, dialect=evidence.dialect)
                 memory_bonus, memory_ids = memory_support.get(structure, (0.0, []))
-                candidate.supporting_memory_ids = list(dict.fromkeys(memory_ids))
+                failure_penalty, failure_ids = failure_penalties.get(structure, (0.0, []))
+                candidate.supporting_memory_ids = list(dict.fromkeys([*memory_ids, *failure_ids]))
+                if failure_ids:
+                    failure_assumption = "相同 SQL 结构存在未处置失败模式，已降低候选优先级"
+                    if failure_assumption not in candidate.assumptions:
+                        candidate.assumptions.append(failure_assumption)
             candidate.score = max(
                 0.0,
-                plan.confidence * 10
-                + source_bonus
-                + memory_bonus
-                - error_penalty
-                - warning_penalty,
+                (
+                    plan.confidence * 10
+                    + source_bonus
+                    + memory_bonus
+                    - error_penalty
+                    - warning_penalty
+                    - failure_penalty
+                ),
             )
         ranked = sorted(candidates, key=lambda item: (-item.score, item.id))
         for index, candidate in enumerate(ranked, start=1):

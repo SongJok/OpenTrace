@@ -41,6 +41,7 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
   -> AnswerEvidenceBuilder 生成 R1/E1... 白名单证据包
   -> 答案、证据、预检、结果校验和事件轨迹持久化
   -> ExecutionLearningEngine 记录成功经验或独立失败模式，重复成功后晋升 trusted
+  -> 下一次同 Scope、Schema 和语义版本查询对 trusted 结构加权、对未处置失败结构降权
 ```
 
 `agents/data_agent.py` 只进入上述治理草案链路。`agents/data_agent_v2/` 和
@@ -179,14 +180,15 @@ SQL AST 结构提供排序加权，不能绕过编译和执行验证。
 
 | 模型 | 作用 |
 | --- | --- |
-| `data_agent_runs` | 请求、证据、计划、候选、策略、预检、结果、校验和答案 |
+| `data_agent_runs` | 请求、证据、计划、候选、策略、预检、结果、校验和答案；`run_purpose` 隔离在线问数与评测回放统计 |
 | `data_agent_run_events` | 顺序化阶段事件和审计轨迹 |
 | `data_agent_semantic_assets` | 业务过程、规则、政策、报表、血缘、质量和来源策略 |
 | `data_agent_profiles` | 表级与字段级有界数据画像 |
 | `data_agent_evaluation_cases` | Golden Case 和冻结结果 |
 | `data_agent_feedback` | 用户纠错，不自动晋升治理知识 |
-| `data_agent_result_artifacts` | R1 不可变执行证据，仅保存哈希、版本、列、行数和校验摘要；按企业默认保留期清理 |
-| `data_agent_failure_patterns` | 按完整 Scope、Schema、语义版本和失败阶段隔离的失败模式 |
+| `data_agent_result_artifacts` | R1 不可变执行证据；到期只清除可能暴露结构的列名，结果哈希、版本、行数、校验与新鲜度审计事实永久保留 |
+| `data_agent_failure_patterns` | 按完整 Scope、Schema、语义版本和失败阶段隔离的失败模式；未处置模式参与候选降权 |
+| `data_agent_evaluation_suite_runs` | 批量 Golden Case 发布门禁结果和通过率 |
 | `sql_query_drafts` | 现有 UI 的确认执行投影，通过 `data_agent_run_id` 关联事实源 |
 | `data_agent_learning_patterns` | 按完整 Scope、Schema 和语义版本隔离的 observed/trusted/rejected 执行经验 |
 
@@ -206,7 +208,12 @@ PostgreSQL 是事实来源。草案状态不能代替 DataAgentRun 的证据、�
 | POST/GET | `/api/v1/data-agent/profiles/refresh` / `profiles` | 刷新或读取数据画像 |
 | POST | `/api/v1/data-agent/evaluation-cases` | 创建 Golden Case |
 | POST | `/api/v1/data-agent/evaluation-cases/{id}/evaluate` | 运行 SQL/结果回归 |
+| GET/POST | `/api/v1/data-agent/evaluation-cases` / `{id}/publish` | 查询并发布冻结 Golden Case |
+| POST/GET | `/api/v1/data-agent/evaluation-suites/run` / `evaluation-suites` | 批量运行或查询发布门禁 |
 | POST | `/api/v1/data-agent/queries/{run_id}/feedback` | 保存结构化反馈 |
+| GET | `/api/v1/data-agent/governance/overview` | 管理员读取问数质量、学习和门禁总览 |
+| GET/POST | `/api/v1/data-agent/governance/failure-patterns` / `{id}/resolve` | 查询并处置失败模式 |
+| GET/POST | `/api/v1/data-agent/governance/feedback` / `{id}/resolve` | 查询并处置纠错反馈 |
 
 `/api/v2/responses`、`/api/v1/data/query` 和管理员数据库 Query 页面都通过
 `services.sql_assets.generate_sql_query_draft()` 进入同一治理运行。
@@ -268,6 +275,10 @@ Golden Case 同时比较计划子集、SQL AST 结构和实际结果，并持久
 次数。发布指标应同时观察：逻辑计划正确率、可执行 SQL 正确率、结果一致率、澄清命中率、
 越权率、敏感字段误放行率、Schema 漂移阻断率和 P95 延迟。准确率未达标的业务域应保持
 SQL-only 或必须确认模式，不能通过降低校验阈值换取表面成功率。
+
+管理员可在数据库“问数质量”页查看 DataAgent 事实源统计、待处置失败模式、用户反馈和
+Golden Case，并分别运行“计划与 SQL 门禁”或“真实执行门禁”。套件只运行已发布案例，必须
+满足设定通过率才标记为 passed；冻结 Schema 不匹配会直接失败，避免在目录漂移后误报通过。
 
 ## 实施顺序
 

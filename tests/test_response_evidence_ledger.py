@@ -62,7 +62,16 @@ def test_evidence_ledger_accepts_verified_data_execution() -> None:
                     "data_agent_run_id": "run-1",
                     "state": "completed",
                     "result_validation": {"status": "pass"},
-                    "answer_metadata": {"snapshot_id": "snapshot-1"},
+                    "answer_metadata": {
+                        "snapshot_id": "snapshot-1",
+                        "evidence_requirements": {
+                            "metric_definition": True,
+                            "trusted_data_source": True,
+                            "business_rules": True,
+                            "validated_sql": True,
+                            "executed_result": True,
+                        },
+                    },
                     "answer_citations": [{"label": "R1"}],
                 }
             },
@@ -74,6 +83,65 @@ def test_evidence_ledger_accepts_verified_data_execution() -> None:
     assert content == "复购率为 42% [R1]。"
     assert gate["status"] == "pass"
     assert ledger.to_dict()["source_counts"]["data"] == 1
+
+
+def test_execution_does_not_claim_unproven_governance_requirements() -> None:
+    ledger = ResponseEvidenceLedger.from_context(
+        _intent(
+            EvidenceRequirement.METRIC_DEFINITION,
+            EvidenceRequirement.TRUSTED_DATA_SOURCE,
+            EvidenceRequirement.BUSINESS_RULES,
+            EvidenceRequirement.EXECUTED_RESULT,
+            stage=DataIntentStage.EXECUTE_AND_VERIFY,
+        ),
+        context_manifest={},
+        memory_ids=[],
+    )
+    ledger.observe_tool(
+        "execute_sql_draft",
+        {
+            "status": "success",
+            "result": {
+                "execution_summary": {
+                    "data_agent_run_id": "run-1",
+                    "state": "completed",
+                    "result_validation": {"status": "pass"},
+                    "answer_metadata": {
+                        "snapshot_id": "snapshot-1",
+                        "data_source": {
+                            "id": "source-1",
+                            "decision": {"status": "selected"},
+                        },
+                        "metrics": [
+                            {
+                                "name": "复购率",
+                                "evidence_id": "metric:repurchase-rate",
+                            }
+                        ],
+                        "evidence_requirements": {
+                            "metric_definition": False,
+                            "trusted_data_source": False,
+                            "business_rules": False,
+                            "validated_sql": True,
+                            "executed_result": True,
+                        },
+                    },
+                    "answer_citations": [{"label": "R1", "evidence_type": "execution_result"}],
+                }
+            },
+        },
+    )
+
+    content, gate = ledger.govern_answer("结果为 42 [R1]。")
+
+    assert gate["status"] == "blocked"
+    assert gate["answer_replaced"] is True
+    assert "治理证据仍不完整" in content
+    assert set(gate["missing"]) == {
+        "metric_definition",
+        "trusted_data_source",
+        "business_rules",
+    }
 
 
 def test_result_snapshot_is_content_addressed_and_stable() -> None:

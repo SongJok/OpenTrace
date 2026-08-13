@@ -32,7 +32,7 @@ context, and read-only DataAgent.
   organizational context without turning employee chat into company facts.
 - **Focused question workflow:** every question is routed through the same durable Responses
   path. RAG supplies citations, the enterprise brain supplies authorized company context, and
-  DataAgent supplies validated read-only data answers.
+  DataAgent supplies validated read-only data answers, governed failure learning, and Golden Case release gates.
 - **Observable, testable, and replaceable:** all model calls pass through the Model Gateway,
   while architecture boundaries, Responses, RAG, DataAgent, approvals, and scheduling are
   protected by contract tests.

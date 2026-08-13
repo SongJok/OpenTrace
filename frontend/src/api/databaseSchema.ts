@@ -16,6 +16,7 @@ export interface DatabaseSchemaTable {
 
 export interface DatabaseSchemaPayload {
   schema?: string
+  schema_fingerprint?: string
   database_scope?: string
   databases?: string[]
   database_count?: number

@@ -17,6 +17,13 @@ def test_runtime_verifiers_do_not_call_retired_chat_api():
         assert "/api/v1/chat" not in text, relative
 
 
+def test_agent_bus_verifier_targets_an_online_tier_one_agent():
+    script = (ROOT / "scripts/verify_agent_bus_e2e.sh").read_text(encoding="utf-8")
+
+    assert 'agent_type="rag"' in script
+    assert 'agent_type="tool"' not in script
+
+
 def test_vnext_suite_only_references_existing_test_files():
     script = (ROOT / "scripts/run_vnext_final_tests.sh").read_text(encoding="utf-8")
     paths = [token.strip(" \\") for token in script.splitlines() if "tests/" in token]
