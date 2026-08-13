@@ -31,3 +31,11 @@ def test_reconciler_refuses_non_empty_or_mixed_schema_by_contract() -> None:
     assert "检测到企业知识迁移混合状态，拒绝自动清理" in text
     assert "pg_advisory_xact_lock" in text
     assert "DROP TABLE" in text
+
+
+def test_reconciler_preserves_legacy_approval_class_before_evidence_migration() -> None:
+    text = (ROOT / "scripts/reconcile_pre_migration_schema.py").read_text(encoding="utf-8")
+
+    assert "PRE_EVIDENCE_CLOSURE_REVISION" in text
+    assert "operation_class_legacy" in text
+    assert "RENAME COLUMN operation_class TO operation_class_legacy" in text

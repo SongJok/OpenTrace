@@ -407,8 +407,6 @@ async def _ensure_unified_runtime_columns(conn) -> None:
         "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS goal_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.response_tool_executions ADD COLUMN IF NOT EXISTS side_effect_level VARCHAR(20) NOT NULL DEFAULT 'read'",
-        "ALTER TABLE IF EXISTS public.response_approvals ADD COLUMN IF NOT EXISTS operation_class VARCHAR(32) NOT NULL DEFAULT 'write'",
-        "UPDATE public.response_approvals SET operation_class = 'governed_read' WHERE tool_name = 'execute_sql_draft' AND operation_class = 'write'",
         "ALTER TABLE IF EXISTS public.data_agent_result_artifacts ADD COLUMN IF NOT EXISTS details_purged_at TIMESTAMP WITH TIME ZONE",
         "ALTER TABLE IF EXISTS public.data_agent_failure_patterns ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'open'",
         "ALTER TABLE IF EXISTS public.data_agent_failure_patterns ADD COLUMN IF NOT EXISTS resolution_note TEXT",

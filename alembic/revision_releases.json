@@ -81,6 +81,9 @@
     },
     "r0027_add_data_agent_run_purpose": {
       "release": "unreleased"
+    },
+    "r0028_reconcile_legacy_approval_class": {
+      "release": "unreleased"
     }
   }
 }

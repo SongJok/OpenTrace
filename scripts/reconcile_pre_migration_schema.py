@@ -21,6 +21,7 @@ from infra.config.settings import settings
 
 ENTERPRISE_BASE_REVISION = "20260803_chatgpt_five_pillars"
 ENTERPRISE_REVISION = "r0001_enterprise_knowledge_base"
+PRE_EVIDENCE_CLOSURE_REVISION = "r0021_text2sql_governed_assets"
 
 R0001_RUNTIME_TABLES = (
     "knowledge_sync_items",
@@ -216,6 +217,30 @@ def _non_empty_tables(cursor, tables: Iterable[str]) -> set[str]:
     return non_empty
 
 
+def _preserve_pre_evidence_closure_columns(cursor, revision: str | None) -> bool:
+    """让旧版兼容 DDL 创建的列安全交给 r0025，保留其已有值。"""
+    if revision != PRE_EVIDENCE_CLOSURE_REVISION:
+        return False
+    cursor.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'response_approvals'
+          AND column_name IN ('operation_class', 'operation_class_legacy')
+        """
+    )
+    columns = {str(row[0]) for row in cursor.fetchall()}
+    if "operation_class" not in columns:
+        return False
+    if "operation_class_legacy" in columns:
+        raise RuntimeError("response_approvals 同时存在 operation_class 与兼容备份列，拒绝自动处理")
+    cursor.execute(
+        "ALTER TABLE public.response_approvals RENAME COLUMN operation_class TO operation_class_legacy"
+    )
+    print("✓ 已保留旧版 response_approvals.operation_class，迁移将创建正式字段并回填")
+    return True
+
+
 def _reconcile_empty_revision(
     cursor,
     *,
@@ -293,6 +318,7 @@ def reconcile() -> bool:
             revision = str(row[0]) if row else None
             if revision is None:
                 return _reconcile_empty_revision(cursor)
+            _preserve_pre_evidence_closure_columns(cursor, revision)
             if revision in {ENTERPRISE_BASE_REVISION, ENTERPRISE_REVISION}:
                 # 这两个版本之后的旧启动流程可能已用当前 ORM 抢建了整批新表；
                 # 统一走依赖感知清理，避免只清理部分表后留下新的撞表点。
