@@ -31,6 +31,7 @@ from infra.storage.data_agent_models import (
     DataAgentEvaluationCase,
     DataAgentFeedback,
     DataAgentProfile,
+    DataAgentResultArtifact,
     DataAgentSemanticAsset,
 )
 from infra.storage.database import db_session_dependency as get_db
@@ -293,6 +294,47 @@ async def get_data_agent_query(
     if run is None:
         raise HTTPException(status_code=404, detail="DataAgent run not found")
     return _payload(run)
+
+
+@router.get("/data-agent/queries/{run_id}/result-artifact")
+async def get_data_agent_result_artifact(
+    request: Request,
+    run_id: str,
+    data_source_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    scope, _ = await _source_for_scope(request, current_user, db, data_source_id, "view")
+    artifact = await db.scalar(
+        select(DataAgentResultArtifact)
+        .where(
+            DataAgentResultArtifact.run_id == run_id,
+            DataAgentResultArtifact.user_id == scope.user_id,
+            DataAgentResultArtifact.tenant_id == scope.tenant_id,
+            DataAgentResultArtifact.workspace_id == scope.workspace_id,
+            DataAgentResultArtifact.data_source_id == scope.data_source_id,
+        )
+        .order_by(DataAgentResultArtifact.created_at.desc())
+    )
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="DataAgent result artifact not found")
+    return {
+        "id": artifact.id,
+        "run_id": artifact.run_id,
+        "data_source_id": artifact.data_source_id,
+        "sql_structure_hash": artifact.sql_structure_hash,
+        "result_signature": artifact.result_signature,
+        "schema_fingerprint": artifact.schema_fingerprint,
+        "semantic_version": artifact.semantic_version,
+        "returned_rows": artifact.returned_rows,
+        "total_rows": artifact.total_rows,
+        "truncated": artifact.truncated,
+        "columns": list(artifact.columns_json or []),
+        "validation": dict(artifact.validation_json or {}),
+        "freshness": dict(artifact.freshness_json or {}),
+        "created_at": artifact.created_at.isoformat() if artifact.created_at else None,
+        "expires_at": artifact.expires_at.isoformat() if artifact.expires_at else None,
+    }
 
 
 @router.post("/data-agent/queries/{run_id}/execute")

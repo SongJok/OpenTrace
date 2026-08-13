@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from data_agent.contracts import CandidateSQL, LearningRecord, QueryRun
 from data_agent.learning import plan_pattern_key, result_signature, sql_structure_hash
 from infra.config.settings import settings
-from infra.storage.data_agent_models import DataAgentLearningPattern
+from infra.storage.data_agent_models import DataAgentFailurePattern, DataAgentLearningPattern
 
 
 class OpenTraceLearningRepository:
@@ -179,6 +179,89 @@ class OpenTraceLearningRepository:
             pattern.confidence = max(0.0, float(pattern.confidence or 0.0) - 0.25)
         await self.db.flush()
         return self._contract(pattern, ["人工反馈已更新经验可信状态"])
+
+    async def record_failure(
+        self,
+        run: QueryRun,
+        candidate: CandidateSQL,
+        *,
+        stage: str,
+        error_codes: list[str],
+    ) -> LearningRecord:
+        if run.logical_plan is None or run.evidence is None:
+            return LearningRecord(
+                pattern_key="missing-plan",
+                status="ineligible",
+                failure_count=1,
+                reasons=["失败运行缺少逻辑计划或版本化证据，未形成模式"],
+            )
+        pattern_key = plan_pattern_key(run.logical_plan)
+        scope = run.request.scope
+        schema_fingerprint = str(run.evidence.schema_fingerprint or "")
+        semantic_version = str(run.evidence.semantic_version or "")
+        normalized_stage = str(stage or "failed")[:64]
+        statement = select(DataAgentFailurePattern).where(
+            DataAgentFailurePattern.user_id == scope.user_id,
+            DataAgentFailurePattern.tenant_id == scope.tenant_id,
+            DataAgentFailurePattern.workspace_id == scope.workspace_id,
+            DataAgentFailurePattern.data_source_id == scope.data_source_id,
+            DataAgentFailurePattern.pattern_key == pattern_key,
+            DataAgentFailurePattern.schema_fingerprint == schema_fingerprint,
+            DataAgentFailurePattern.semantic_version == semantic_version,
+            DataAgentFailurePattern.failure_stage == normalized_stage,
+        )
+        pattern = await self.db.scalar(statement.with_for_update())
+        created = False
+        if pattern is None:
+            pattern = DataAgentFailurePattern(
+                user_id=scope.user_id,
+                tenant_id=scope.tenant_id,
+                workspace_id=scope.workspace_id,
+                data_source_id=scope.data_source_id,
+                pattern_key=pattern_key,
+                schema_fingerprint=schema_fingerprint,
+                semantic_version=semantic_version,
+                failure_stage=normalized_stage,
+                error_codes=list(dict.fromkeys(error_codes))[:20],
+                question_examples=[run.request.question],
+                candidate_sql_hash=sql_structure_hash(candidate.sql, dialect=run.evidence.dialect),
+                failure_count=1,
+                last_run_id=run.id,
+                last_failure_at=datetime.now(UTC),
+            )
+            try:
+                async with self.db.begin_nested():
+                    self.db.add(pattern)
+                    await self.db.flush()
+                created = True
+            except IntegrityError:
+                pattern = await self.db.scalar(statement.with_for_update())
+                if pattern is None:
+                    raise
+        if not created and pattern.last_run_id != run.id:
+            pattern.failure_count += 1
+            pattern.error_codes = list(dict.fromkeys([*(pattern.error_codes or []), *error_codes]))[
+                :20
+            ]
+            pattern.question_examples = list(
+                dict.fromkeys([*(pattern.question_examples or []), run.request.question])
+            )[-10:]
+            pattern.candidate_sql_hash = sql_structure_hash(
+                candidate.sql, dialect=run.evidence.dialect
+            )
+            pattern.last_run_id = run.id
+            pattern.last_failure_at = datetime.now(UTC)
+        await self.db.flush()
+        return LearningRecord(
+            pattern_key=pattern_key,
+            status="rejected",
+            confidence=0.0,
+            observation_count=pattern.failure_count,
+            failure_count=pattern.failure_count,
+            reusable=False,
+            reasons=[f"已记录 {normalized_stage} 失败模式，禁止作为成功经验复用"],
+            evidence_ids=list(run.logical_plan.evidence_ids),
+        )
 
     @staticmethod
     def _validation_summary(run: QueryRun, candidate: CandidateSQL) -> dict:

@@ -117,6 +117,7 @@ def _approval_payloads(approvals: list[ResponseApproval]) -> list[dict]:
             "call_id": item.call_id,
             "tool_name": item.tool_name,
             "side_effect": item.side_effect_level,
+            "operation_class": item.operation_class,
             "arguments": dict(item.arguments or {}),
         }
         for item in approvals

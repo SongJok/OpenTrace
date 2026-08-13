@@ -21,7 +21,7 @@ from data_agent.contracts import (
     deterministic_run_id,
     utc_now,
 )
-from data_agent.learning import ExecutionLearningEngine
+from data_agent.learning import ExecutionLearningEngine, bind_result_snapshot
 from data_agent.policy import ExecutionPolicy
 from data_agent.ports import (
     AnswerSynthesizer,
@@ -259,21 +259,30 @@ class DataAgentService:
             run.completed_at = datetime.now(UTC)
             run.warnings.append(f"执行前证据重检失败：{str(exc)[:2000]}")
             run.trace.append({"stage": "evidence_refresh_failed", "error": str(exc)[:2000]})
-            return await self.repository.update(run)
+            return await self._record_terminal_failure(
+                run, candidate, stage="evidence_refresh_failed", error_codes=["evidence_refresh"]
+            )
         if run.evidence.schema_fingerprint != current_evidence.schema_fingerprint and (
             run.evidence.schema_fingerprint or current_evidence.schema_fingerprint
         ):
             run.state = RunState.BLOCKED
             run.warnings.append("Schema 已变化，必须重新生成 SQL 后才能执行")
             run.trace.append({"stage": "blocked", "reason": "schema_changed"})
-            return await self.repository.update(run)
+            return await self._record_terminal_failure(
+                run, candidate, stage="schema_changed", error_codes=["schema_changed"]
+            )
         if run.evidence.semantic_version != current_evidence.semantic_version and (
             run.evidence.semantic_version or current_evidence.semantic_version
         ):
             run.state = RunState.BLOCKED
             run.warnings.append("指标、业务规则或关系版本已变化，必须重新规划后才能执行")
             run.trace.append({"stage": "blocked", "reason": "semantic_version_changed"})
-            return await self.repository.update(run)
+            return await self._record_terminal_failure(
+                run,
+                candidate,
+                stage="semantic_version_changed",
+                error_codes=["semantic_version_changed"],
+            )
         candidate.validation = self.sql_guard.validate(
             candidate.sql,
             request=run.request,
@@ -284,7 +293,12 @@ class DataAgentService:
             run.state = RunState.BLOCKED
             run.warnings.append("最新数据目录下候选 SQL 未通过安全和语义编译")
             run.trace.append({"stage": "blocked", "reason": "revalidation_failed"})
-            return await self.repository.update(run)
+            return await self._record_terminal_failure(
+                run,
+                candidate,
+                stage="revalidation_failed",
+                error_codes=[str(item.code) for item in candidate.validation.errors],
+            )
         if candidate.validation.normalized_sql:
             candidate.sql = candidate.validation.normalized_sql
         run.evidence = current_evidence
@@ -308,12 +322,22 @@ class DataAgentService:
                     "reasons": decision.reasons,
                 }
             )
-            return await self.repository.update(run)
+            return await self._record_terminal_failure(
+                run,
+                candidate,
+                stage="policy_denied",
+                error_codes=["policy_denied"],
+            )
         if self.query_executor is None:
             run.state = RunState.BLOCKED
             run.warnings.append("平台未配置 QueryExecutor，不能执行 SQL")
             run.trace.append({"stage": "blocked", "reason": "executor_unavailable"})
-            return await self.repository.update(run)
+            return await self._record_terminal_failure(
+                run,
+                candidate,
+                stage="executor_unavailable",
+                error_codes=["executor_unavailable"],
+            )
         preflight = getattr(self.query_executor, "preflight", None)
         if callable(preflight):
             try:
@@ -330,7 +354,12 @@ class DataAgentService:
                 run.completed_at = datetime.now(UTC)
                 run.warnings.append(f"执行前 EXPLAIN 预检失败：{str(exc)[:2000]}")
                 run.trace.append({"stage": "preflight_failed", "error": str(exc)[:2000]})
-                return await self.repository.update(run)
+                return await self._record_terminal_failure(
+                    run,
+                    candidate,
+                    stage="preflight_failed",
+                    error_codes=["preflight_failed"],
+                )
             candidate.validation.estimated_cost = dict(run.preflight.estimated_cost)
             run.trace.append(
                 {
@@ -344,7 +373,13 @@ class DataAgentService:
             if run.preflight.errors:
                 run.state = RunState.BLOCKED
                 run.warnings.extend(item.message for item in run.preflight.errors)
-                return await self.repository.update(run)
+                run.trace.append({"stage": "blocked", "reason": "preflight_blocked"})
+                return await self._record_terminal_failure(
+                    run,
+                    candidate,
+                    stage="preflight_blocked",
+                    error_codes=[str(item.code) for item in run.preflight.errors],
+                )
         run.selected_candidate_id = candidate.id
         if not await self.repository.claim_execution(run.id, scope):
             latest = await self.repository.get(run.id, scope)
@@ -362,6 +397,7 @@ class DataAgentService:
             run.result_validation = self.result_validator.validate(
                 run.logical_plan, result, run.evidence
             )
+            bind_result_snapshot(run, candidate)
             run.trace.append(
                 {
                     "stage": "result_validation",
@@ -409,7 +445,11 @@ class DataAgentService:
             run.warnings.append(f"SQL 执行失败：{str(exc)[:2000]}")
             run.trace.append({"stage": "execute_failed", "error": str(exc)[:2000]})
         run.learning = self.learning_engine.evaluate(run, candidate)
-        if self.learning_repository is not None and run.learning.status != "ineligible":
+        if (
+            self.learning_repository is not None
+            and run.state == RunState.COMPLETED
+            and run.learning.status != "ineligible"
+        ):
             try:
                 run.learning = await self.learning_repository.record_success(
                     run, candidate, run.learning
@@ -423,6 +463,24 @@ class DataAgentService:
             ) as exc:
                 run.warnings.append(f"执行成功，但经验学习记录失败：{str(exc)[:500]}")
                 run.trace.append({"stage": "learning_failed", "error": str(exc)[:500]})
+        elif self.learning_repository is not None and run.state == RunState.FAILED:
+            try:
+                failure_stage = str((run.trace[-1] if run.trace else {}).get("stage") or "failed")
+                run.learning = await self.learning_repository.record_failure(
+                    run,
+                    candidate,
+                    stage=failure_stage,
+                    error_codes=self._failure_codes(run),
+                )
+            except (
+                OSError,
+                RuntimeError,
+                TimeoutError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                run.warnings.append(f"失败模式记录失败：{str(exc)[:500]}")
+                run.trace.append({"stage": "failure_learning_failed", "error": str(exc)[:500]})
         run.trace.append(
             {
                 "stage": "learning",
@@ -430,6 +488,53 @@ class DataAgentService:
                 "confidence": run.learning.confidence,
                 "reusable": run.learning.reusable,
                 "reasons": run.learning.reasons,
+            }
+        )
+        run.updated_at = utc_now()
+        return await self.repository.update(run)
+
+    @staticmethod
+    def _failure_codes(run: QueryRun) -> list[str]:
+        codes: list[str] = []
+        if run.result_validation is not None:
+            codes.extend(
+                str(item.code)
+                for item in run.result_validation.issues
+                if str(item.code or "").strip()
+            )
+        if run.preflight is not None:
+            codes.extend(
+                str(item.code) for item in run.preflight.issues if str(item.code or "").strip()
+            )
+        return list(dict.fromkeys(codes))[:20] or ["runtime_failure"]
+
+    async def _record_terminal_failure(
+        self,
+        run: QueryRun,
+        candidate: CandidateSQL,
+        *,
+        stage: str,
+        error_codes: list[str],
+    ) -> QueryRun:
+        run.learning = self.learning_engine.evaluate(run, candidate)
+        if self.learning_repository is not None:
+            try:
+                run.learning = await self.learning_repository.record_failure(
+                    run,
+                    candidate,
+                    stage=stage,
+                    error_codes=list(dict.fromkeys(error_codes))[:20] or [stage],
+                )
+            except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as exc:
+                run.warnings.append(f"失败模式记录失败：{str(exc)[:500]}")
+                run.trace.append({"stage": "failure_learning_failed", "error": str(exc)[:500]})
+        run.trace.append(
+            {
+                "stage": "failure_learning",
+                "failure_stage": stage,
+                "status": run.learning.status,
+                "failure_count": run.learning.failure_count,
+                "reusable": False,
             }
         )
         run.updated_at = utc_now()

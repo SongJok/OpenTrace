@@ -96,6 +96,104 @@ class DataAgentRunEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class DataAgentResultArtifact(Base):
+    """不复制结果明细的不可变执行证据，用于答案 R1 审计。"""
+
+    __tablename__ = "data_agent_result_artifacts"
+    __table_args__ = (
+        Index("ix_data_agent_result_artifact_run", "run_id"),
+        Index(
+            "ix_data_agent_result_artifact_scope",
+            "user_id",
+            "tenant_id",
+            "workspace_id",
+            "data_source_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("data_agent_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    data_source_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    sql_structure_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    result_signature: Mapped[str] = mapped_column(String(64), nullable=False)
+    schema_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    semantic_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    returned_rows: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    truncated: Mapped[bool] = mapped_column(nullable=False, default=False)
+    columns_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    validation_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    freshness_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
+
+class DataAgentFailurePattern(Base):
+    """独立于成功经验的失败模式，按完整治理范围和版本隔离。"""
+
+    __tablename__ = "data_agent_failure_patterns"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "tenant_id",
+            "workspace_id",
+            "data_source_id",
+            "pattern_key",
+            "schema_fingerprint",
+            "semantic_version",
+            "failure_stage",
+            name="uq_data_agent_failure_pattern_version",
+        ),
+        Index(
+            "ix_data_agent_failure_pattern_scope",
+            "user_id",
+            "tenant_id",
+            "workspace_id",
+            "data_source_id",
+            "failure_stage",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    data_source_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    pattern_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    schema_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    semantic_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    failure_stage: Mapped[str] = mapped_column(String(64), nullable=False)
+    error_codes: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    question_examples: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    candidate_sql_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_run_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("data_agent_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    last_failure_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class DataAgentSemanticAsset(Base):
     """业务过程、数据质量、实体和维度等治理资产。"""
 

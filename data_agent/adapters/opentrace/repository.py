@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from data_agent.contracts import DataScope, QueryRun, RunState
-from infra.storage.data_agent_models import DataAgentRunEvent, DataAgentRunRecord
+from data_agent.learning import result_signature, sql_structure_hash
+from infra.config.settings import settings
+from infra.storage.data_agent_models import (
+    DataAgentResultArtifact,
+    DataAgentRunEvent,
+    DataAgentRunRecord,
+)
 
 
 class OpenTraceRunRepository:
@@ -147,8 +155,48 @@ class OpenTraceRunRepository:
         previous_count = len(record.trace_json or [])
         self._apply(run, record)
         await self.db.flush()
+        await self._persist_result_artifact(run)
         await self._append_events(run, previous_count)
         return run
+
+    async def _persist_result_artifact(self, run: QueryRun) -> None:
+        """快照只首次写入，后续恢复不能覆盖既有审计事实。"""
+
+        result = run.result
+        candidate = run.selected_candidate()
+        if result is None or candidate is None or not result.snapshot_id:
+            return
+        existing = await self.db.get(DataAgentResultArtifact, result.snapshot_id)
+        if existing is not None:
+            return
+        evidence = run.evidence
+        self.db.add(
+            DataAgentResultArtifact(
+                id=result.snapshot_id,
+                run_id=run.id,
+                user_id=run.request.scope.user_id,
+                tenant_id=run.request.scope.tenant_id,
+                workspace_id=run.request.scope.workspace_id,
+                data_source_id=run.request.scope.data_source_id,
+                sql_structure_hash=sql_structure_hash(
+                    candidate.sql, dialect=evidence.dialect if evidence else ""
+                ),
+                result_signature=result_signature(result.rows),
+                schema_fingerprint=evidence.schema_fingerprint if evidence else None,
+                semantic_version=evidence.semantic_version if evidence else None,
+                returned_rows=result.returned_rows,
+                total_rows=result.total_rows,
+                truncated=result.truncated,
+                columns_json=list(result.columns),
+                validation_json=(
+                    run.result_validation.model_dump(mode="json") if run.result_validation else {}
+                ),
+                freshness_json=dict(result.freshness),
+                expires_at=datetime.now(UTC)
+                + timedelta(days=max(1, int(settings.enterprise_default_retention_days))),
+            )
+        )
+        await self.db.flush()
 
     async def claim_execution(self, run_id: str, scope: DataScope) -> bool:
         statement = (

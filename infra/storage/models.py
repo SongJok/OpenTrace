@@ -35,9 +35,11 @@ from sqlalchemy.sql import func
 from infra.config.constants import DEFAULT_TIMEZONE
 from infra.config.settings import settings
 from infra.storage.data_agent_models import DataAgentEvaluationCase as DataAgentEvaluationCase
+from infra.storage.data_agent_models import DataAgentFailurePattern as DataAgentFailurePattern
 from infra.storage.data_agent_models import DataAgentFeedback as DataAgentFeedback
 from infra.storage.data_agent_models import DataAgentLearningPattern as DataAgentLearningPattern
 from infra.storage.data_agent_models import DataAgentProfile as DataAgentProfile
+from infra.storage.data_agent_models import DataAgentResultArtifact as DataAgentResultArtifact
 from infra.storage.data_agent_models import DataAgentRunEvent as DataAgentRunEvent
 from infra.storage.data_agent_models import DataAgentRunRecord as DataAgentRunRecord
 from infra.storage.data_agent_models import DataAgentSemanticAsset as DataAgentSemanticAsset
@@ -1637,6 +1639,7 @@ class ResponseApproval(Base):
     call_id: Mapped[str] = mapped_column(String(128), nullable=False)
     tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
     side_effect_level: Mapped[str] = mapped_column(String(20), nullable=False, default="write")
+    operation_class: Mapped[str] = mapped_column(String(32), nullable=False, default="write")
     arguments: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)

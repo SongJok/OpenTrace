@@ -22,6 +22,7 @@ export interface ApprovalRequest {
   call_id: string
   tool_name: string
   side_effect: 'write' | 'destructive'
+  operation_class?: 'governed_read' | 'write' | 'destructive' | string
   arguments: Record<string, unknown>
 }
 

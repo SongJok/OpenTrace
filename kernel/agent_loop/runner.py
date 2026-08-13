@@ -39,6 +39,7 @@ from kernel.agent_loop.contracts import (
     parse_tool_specs,
 )
 from kernel.agent_loop.discovery import CapabilityDiscovery
+from kernel.agent_loop.evidence import ResponseEvidenceLedger
 from kernel.agent_loop.intent_policy import apply_enterprise_intent_policy, intent_answer_contract
 from kernel.agent_loop.rag_routing import RagRoutingDecision, resolve_rag_routing
 from kernel.agent_loop.write_intent import (
@@ -483,6 +484,12 @@ class AgentLoop:
             ),
         )
         intent = decision.intent
+        evidence_ledger = ResponseEvidenceLedger.from_context(
+            intent,
+            context_manifest=context.context_manifest,
+            memory_ids=context.memory_ids,
+        )
+        context.context_manifest["evidence_ledger"] = evidence_ledger.to_dict()
         execution_plan = await self._restore_or_persist_execution_plan(
             db,
             response=response,
@@ -562,6 +569,9 @@ class AgentLoop:
         ):
             direct_memory_answer = self._direct_memory_answer(query, context.recalled_memories)
         if direct_memory_answer:
+            direct_memory_answer, gate = evidence_ledger.govern_answer(direct_memory_answer)
+            context.context_manifest["evidence_ledger"] = evidence_ledger.to_dict()
+            await emit("opentrace.evidence.gate", gate)
             await self._emit_text(emit, direct_memory_answer)
             await self._complete_remaining_plan(emit, execution_plan, plan_statuses)
             await self._persist_execution_plan_runtime(
@@ -643,6 +653,7 @@ class AgentLoop:
         data_answer_projection: dict[str, Any] = {}
         for tool_name, result in restored_tools:
             data_answer_projection.update(self._data_answer_projection(tool_name, result))
+            evidence_ledger.observe_tool(tool_name, result)
             step = self._plan_step_for_capability(
                 execution_plan,
                 plan_statuses,
@@ -663,6 +674,7 @@ class AgentLoop:
                 },
             )
         if restored_tools:
+            context.context_manifest["evidence_ledger"] = evidence_ledger.to_dict()
             await self._persist_execution_plan_runtime(
                 db,
                 response=response,
@@ -683,6 +695,9 @@ class AgentLoop:
 
         verified_data_answer = str(data_answer_projection.get("answer") or "").strip()
         if verified_data_answer and set(intent.capabilities).issubset({"execute_sql_draft"}):
+            verified_data_answer, gate = evidence_ledger.govern_answer(verified_data_answer)
+            context.context_manifest["evidence_ledger"] = evidence_ledger.to_dict()
+            await emit("opentrace.evidence.gate", gate)
             await self._emit_text(emit, verified_data_answer)
             await self._complete_remaining_plan(emit, execution_plan, plan_statuses)
             await self._persist_execution_plan_runtime(
@@ -726,6 +741,8 @@ class AgentLoop:
                 messages=messages,
                 emit=emit,
             )
+            evidence_ledger.observe_tool("rag", rag_result)
+            context.context_manifest["evidence_ledger"] = evidence_ledger.to_dict()
             prefetched_rag = self._tool_result_succeeded(rag_result)
             rag_step = self._plan_step_for_capability(
                 execution_plan,
@@ -782,6 +799,37 @@ class AgentLoop:
         # product displays genuine incremental generation instead of replaying
         # an already-completed answer in artificial chunks.
         if not public_tools:
+            governed_empty, gate = evidence_ledger.govern_answer("")
+            if governed_empty:
+                context.context_manifest["evidence_ledger"] = evidence_ledger.to_dict()
+                await emit("opentrace.evidence.gate", gate)
+                await self._emit_text(emit, governed_empty)
+                await self._complete_remaining_plan(emit, execution_plan, plan_statuses)
+                await self._persist_execution_plan_runtime(
+                    db,
+                    response=response,
+                    statuses=plan_statuses,
+                    replan_count=replan_count,
+                )
+                return AgentLoopResult(
+                    status="completed",
+                    content=governed_empty,
+                    model="opentrace-evidence-gate",
+                    intent=intent,
+                    metadata={
+                        "model_calls": model_calls,
+                        "model_call_count": len(model_calls),
+                        "memory_ids": context.memory_ids,
+                        "attachment_ids": context.attachment_ids,
+                        "execution_profile": profile.value,
+                        "execution_plan": execution_plan.to_dict(),
+                        "execution_plan_status": dict(plan_statuses),
+                        "execution_plan_replan_count": replan_count,
+                        "context_manifest": context.context_manifest,
+                        "data_answer": data_answer_projection,
+                        "direct_evidence_gate_answer": True,
+                    },
+                )
             await emit("opentrace.model.started", {"round": 1, "model": model_name})
             chunks: list[str] = []
             with capture_model_calls() as calls:
@@ -797,6 +845,9 @@ class AgentLoop:
                     await emit("response.output_text.delta", {"delta": chunk})
             model_calls.extend(calls)
             content = "".join(chunks)
+            content, gate = evidence_ledger.govern_answer(content)
+            context.context_manifest["evidence_ledger"] = evidence_ledger.to_dict()
+            await emit("opentrace.evidence.gate", gate)
             resolved_call = calls[-1] if calls else {}
             resolved_model = str(resolved_call.get("model") or model_name)
             prompt_tokens = int(resolved_call.get("prompt_tokens") or 0)
@@ -949,6 +1000,9 @@ class AgentLoop:
                     context_manifest=context.context_manifest,
                     model_content=str(model_response.content or ""),
                 )
+                content, gate = evidence_ledger.govern_answer(content)
+                context.context_manifest["evidence_ledger"] = evidence_ledger.to_dict()
+                await emit("opentrace.evidence.gate", gate)
                 await self._emit_text(emit, content)
                 await self._complete_remaining_plan(emit, execution_plan, plan_statuses)
                 await self._persist_execution_plan_runtime(
@@ -1210,6 +1264,8 @@ class AgentLoop:
             for call, spec, result in executed:
                 round_results.append(result)
                 data_answer_projection.update(self._data_answer_projection(spec.name, result))
+                evidence_ledger.observe_tool(spec.name, result)
+                context.context_manifest["evidence_ledger"] = evidence_ledger.to_dict()
                 messages.append(
                     LLMMessage(
                         role="tool",
@@ -1275,6 +1331,7 @@ class AgentLoop:
             )
 
             if approvals:
+                context.context_manifest["evidence_ledger"] = evidence_ledger.to_dict()
                 response.status = "requires_action"
                 await emit(
                     "response.requires_action",
@@ -1286,6 +1343,7 @@ class AgentLoop:
                                 "call_id": item.call_id,
                                 "tool_name": item.tool_name,
                                 "side_effect": item.side_effect_level,
+                                "operation_class": item.operation_class,
                                 "arguments": item.arguments,
                             }
                             for item in approvals
@@ -1371,6 +1429,9 @@ class AgentLoop:
                     "当前可用工具未能取得完成请求所需的可靠数据。请检查外部数据源配置或"
                     "补充更明确的数据口径后重试；我不会用未经验证的信息代替结果。"
                 )
+            content, gate = evidence_ledger.govern_answer(content)
+            context.context_manifest["evidence_ledger"] = evidence_ledger.to_dict()
+            await emit("opentrace.evidence.gate", gate)
             await emit(
                 "opentrace.model.completed",
                 {
@@ -3059,6 +3120,7 @@ class AgentLoop:
             call_id=call_id,
             tool_name=spec.name,
             side_effect_level=spec.side_effect.value,
+            operation_class=spec.operation_class or spec.side_effect.value,
             arguments=_tool_args(call),
         )
         db.add(row)
@@ -3262,9 +3324,15 @@ class AgentLoop:
                 if scope_error is not None:
                     return {"status": "failed", **scope_error}
                 if spec.name == "rag":
-                    agent_params.setdefault(
-                        "sources", ["knowledge", "documents", "semantic_memory"]
-                    )
+                    # Responses 主路径中的个人记忆只由 ContextAssembler 注入，避免 RAG
+                    # 再次读取 UserMemory 并把同一事实错误分类为文档证据。
+                    agent_params.setdefault("sources", ["knowledge", "documents"])
+                    agent_params["sources"] = [
+                        source
+                        for source in agent_params["sources"]
+                        if source in {"knowledge", "documents"}
+                    ] or ["knowledge", "documents"]
+                    agent_params["memory_enabled"] = False
                 agent_result = await capability_registry.get_agent(spec.name).execute(
                     TaskMessage(
                         task_id=f"{response.id}:{_call_id(call)}",

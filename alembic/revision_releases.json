@@ -72,6 +72,9 @@
     },
     "r0024_remove_projects": {
       "release": "unreleased"
+    },
+    "r0025_evidence_closure": {
+      "release": "unreleased"
     }
   }
 }

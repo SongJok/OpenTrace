@@ -308,7 +308,7 @@ bash scripts/preflight_release.sh --full
 gateway/          FastAPI application and API routers
 infra/            Configuration, databases, Responses, messaging, security, and observability
 kernel/           Manager Agent Loop, context assembly, runtime, and data cognition
-agents/           Expert agents, DataAgent V2, RAG Agent, and Worker
+agents/           Online DataAgent/RAG experts, offline compatibility agents, and Worker
 knowledge/        Enterprise knowledge orchestration and retrieval
 memory/           Memory infrastructure and governance
 model/            Model Gateway, provider adapters, embeddings, and reranking

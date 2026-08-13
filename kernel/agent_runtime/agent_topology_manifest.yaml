@@ -1,6 +1,6 @@
 # Agent Topology Manifest — single source of truth for capability/agent topology.
 # Version bumps require contract test updates (test_agent_runtime_v3_contract.py).
-version: "4.0.0"
+version: "4.1.0"
 
 runtimes:
   tier0_kernel:
@@ -8,7 +8,7 @@ runtimes:
   tier1_executive:
     description: cognitive_executive capability dispatch
   tier1_data:
-    description: data_intelligence runtime (DataAgent V2 supervisor + DAG)
+    description: governed DataAgent runtime (online draft and verified read execution)
   tier2_nodes:
     description: Internal DAG / pipeline nodes (not direct capability dispatch)
 
@@ -40,7 +40,7 @@ entries:
       max_latency_ms: 60000
       dependencies: []
 
-  # ── Tier-2 Data V2 DAG nodes (manifest only; not CapabilityRegistry agents) ──
+  # ── Tier-2 离线兼容节点（仅保留 manifest；不进入在线 CapabilityRegistry） ──
   data_knowledge:
     runtime: tier2
     owner_runtime: tier1_data

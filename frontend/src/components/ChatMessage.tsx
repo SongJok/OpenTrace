@@ -142,6 +142,106 @@ function ToolCardView({ toolCard }: { toolCard: ToolCard | null }) {
   return <div className="mt-2 overflow-x-auto rounded-xl border border-[var(--border)]"><div className="px-3 py-2 text-sm font-medium">{toolCard.data.title ?? '数据结果'}</div><table className="w-full text-sm"><thead><tr>{toolCard.data.columns.map((column) => <th className="px-3 py-2 text-left" key={column}>{column}</th>)}</tr></thead><tbody>{toolCard.data.rows.slice(0, 50).map((row, index) => <tr key={index}>{toolCard.data.columns.map((column) => <td className="px-3 py-2" key={column}>{String(row[column] ?? '')}</td>)}</tr>)}</tbody></table></div>
 }
 
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function DataEvidenceCard({ metadata }: { metadata: Record<string, unknown> }) {
+  const dataAnswer = objectValue(metadata.data_answer)
+  const answerMetadata = objectValue(dataAnswer.answer_metadata)
+  const source = objectValue(answerMetadata.data_source)
+  const validation = objectValue(dataAnswer.result_validation)
+  const learning = objectValue(dataAnswer.learning)
+  const contextManifest = objectValue(metadata.context_manifest)
+  const ledger = objectValue(contextManifest.evidence_ledger)
+  const gate = objectValue(ledger.gate)
+  const sourceCounts = objectValue(ledger.source_counts)
+  const metrics = Array.isArray(answerMetadata.metrics)
+    ? answerMetadata.metrics.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    : []
+  const citations = Array.isArray(dataAnswer.answer_citations)
+    ? dataAnswer.answer_citations.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    : []
+  const warnings = Array.isArray(dataAnswer.warnings) ? dataAnswer.warnings.map(String) : []
+  const hasDataAnswer = Boolean(dataAnswer.data_agent_run_id || dataAnswer.state || metrics.length)
+  const ledgerSources = Array.isArray(ledger.sources) ? ledger.sources : []
+  const ledgerEntries = Array.isArray(ledger.entries) ? ledger.entries : []
+  const ledgerMissing = Array.isArray(gate.missing) ? gate.missing : []
+  const hasLedger = Boolean(
+    ledger.schema_version && (ledgerSources.length || ledgerEntries.length || ledgerMissing.length),
+  )
+  if (!hasDataAnswer && !hasLedger) return null
+  const snapshotId = String(answerMetadata.snapshot_id || '')
+  const status = String(validation.status || dataAnswer.state || gate.status || 'unknown')
+  const statusTone = status === 'pass' || status === 'completed'
+    ? 'text-emerald-600'
+    : status === 'warn' || status === 'incomplete'
+      ? 'text-amber-600'
+      : 'text-red-500'
+
+  return (
+    <details className="mt-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-3 py-2 text-xs">
+      <summary className="flex cursor-pointer list-none items-center gap-2 select-none [&::-webkit-details-marker]:hidden">
+        <span className={`font-medium ${statusTone}`}>证据校验：{status}</span>
+        {snapshotId && <span className="text-[var(--text-secondary)]">R1 快照已固化</span>}
+        <ChevronDown size={13} className="ml-auto opacity-60" />
+      </summary>
+      <div className="mt-3 space-y-3 text-[var(--text-secondary)]">
+        {hasLedger && (
+          <div>
+            <div className="font-medium text-[var(--text)]">四源证据账本</div>
+            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+              <span>个人记忆 {Number(sourceCounts.personal_memory || 0)}</span>
+              <span>企业大脑 {Number(sourceCounts.company_brain || 0)}</span>
+              <span>RAG {Number(sourceCounts.rag || 0)}</span>
+              <span>问数 {Number(sourceCounts.data || 0)}</span>
+            </div>
+            {Array.isArray(gate.missing) && gate.missing.length > 0 && (
+              <div className="mt-1 text-amber-600">仍缺：{gate.missing.map(String).join('、')}</div>
+            )}
+          </div>
+        )}
+        {hasDataAnswer && (
+          <div className="grid gap-1 sm:grid-cols-2">
+            <div>运行 ID：{String(dataAnswer.data_agent_run_id || '—')}</div>
+            <div>数据源：{String(source.name || source.id || '—')}</div>
+            <div>时间窗口：{String(answerMetadata.time_window || '—')}</div>
+            <div>学习状态：{String(learning.status || '未形成经验')}</div>
+          </div>
+        )}
+        {metrics.length > 0 && (
+          <div>
+            <div className="font-medium text-[var(--text)]">公司口径</div>
+            {metrics.map((metric, index) => (
+              <div className="mt-1" key={`${String(metric.name || 'metric')}-${index}`}>
+                {String(metric.name || '未命名指标')}
+                {metric.version ? ` · v${String(metric.version)}` : ''}
+                {metric.owner ? ` · ${String(metric.owner)}` : ''}
+              </div>
+            ))}
+          </div>
+        )}
+        {citations.length > 0 && (
+          <div>
+            <div className="font-medium text-[var(--text)]">答案证据</div>
+            {citations.map((citation, index) => (
+              <div className="mt-1" key={`${String(citation.label || 'E')}-${index}`}>
+                [{String(citation.label || index + 1)}] {String(citation.title || citation.evidence_id || '证据')}
+              </div>
+            ))}
+          </div>
+        )}
+        {warnings.length > 0 && <div className="text-amber-600">提示：{warnings.slice(0, 3).join('；')}</div>}
+        {typeof answerMetadata.sql === 'string' && answerMetadata.sql && (
+          <pre className="max-h-48 overflow-auto rounded-lg bg-[var(--bg)] p-3 text-[11px] text-[var(--text-secondary)]">{answerMetadata.sql}</pre>
+        )}
+      </div>
+    </details>
+  )
+}
+
 export default function ChatMessage({ message, role, content, isStreaming = false, reasoningSteps, citations, onBranch }: ChatMessageProps) {
   const brandName = useCompanyStore((state) => state.brandName)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -161,6 +261,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
   const resolvedCitations = (message?.citations ?? citations ?? []) as Citation[]
   const annotations = message?.annotations
   const evidenceRefs = message?.turn_meta?.evidence_refs ?? []
+  const turnMetadata = objectValue(message?.turn_meta?.metadata)
   const progress = message?.progress ?? []
   const messageAttachments = message?.attachments ?? []
   const toolCard = useMemo(() => resolvedRole === 'assistant' ? tryParseToolCard(resolvedContent) : null, [resolvedContent, resolvedRole])
@@ -218,6 +319,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
         onFinalAnswer: (envelope) => {
           if (!isCurrentApproval()) return
           store.finishAssistantMessage(conversationId, messageId, envelope.content || '（空响应）')
+          store.setLastAssistantTurnMeta(conversationId, envelope)
           store.setStreaming(false)
           store.setActiveResponseId(null)
         },
@@ -361,13 +463,18 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
               {resolvedStreaming && !isUser && <span className="ml-1 inline-block h-4 w-1.5 animate-pulse bg-[var(--accent)] align-middle" />}
             </div>
             {!isUser && toolCard && <ToolCardView toolCard={toolCard} />}
+            {!isUser && <DataEvidenceCard metadata={turnMetadata} />}
             {!isUser && Boolean(message?.approvals?.length) && (
               <div className="mt-3 space-y-3">
                 {message!.approvals!.map((approval) => (
                   <div key={approval.id} className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4">
                     <div className="text-sm font-medium">需要授权：{approval.tool_name}</div>
                     <div className="mt-1 text-xs text-[var(--text-secondary)]">
-                      {approval.side_effect === 'destructive' ? '此操作可能删除或覆盖数据。' : '此操作会写入或修改外部状态。'}
+                      {approval.operation_class === 'governed_read'
+                        ? '此操作只读查询已确认的 SQL 草案，不会修改源数据库；确认后将执行预检、结果校验并生成证据快照。'
+                        : approval.side_effect === 'destructive'
+                          ? '此操作可能删除或覆盖数据。'
+                          : '此操作会写入或修改外部状态。'}
                     </div>
                     <pre className="mt-3 max-h-40 overflow-auto rounded-xl bg-[var(--surface)] p-3 text-xs">{JSON.stringify(approval.arguments, null, 2)}</pre>
                     <div className="mt-3 flex gap-2">

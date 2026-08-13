@@ -104,7 +104,7 @@ class AnswerEvidenceBuilder:
 
         result_citation = AnswerCitation(
             label="R1",
-            evidence_id=f"execution-result:{run.id}",
+            evidence_id=run.result.snapshot_id or f"execution-result:{run.id}",
             evidence_type="execution_result",
             title="本次数据库只读执行结果",
             authority="live_system",
@@ -175,6 +175,7 @@ class AnswerEvidenceBuilder:
             ),
             "schema_fingerprint": evidence.schema_fingerprint,
             "semantic_version": evidence.semantic_version,
+            "snapshot_id": run.result.snapshot_id,
             "citation_count": len(citations),
             "evidence_coverage": len(covered_plan_ids) / max(1, len(set(plan.evidence_ids))),
         }

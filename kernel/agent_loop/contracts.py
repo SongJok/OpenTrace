@@ -267,6 +267,7 @@ class ToolSpec:
     description: str
     parameters: dict[str, Any]
     side_effect: SideEffect = SideEffect.READ
+    operation_class: str = ""
     required_permissions: tuple[str, ...] = ()
     timeout_seconds: float = 30.0
     max_retries: int = 2
@@ -328,6 +329,7 @@ def parse_tool_specs(raw_tools: list[dict[str, Any]]) -> list[ToolSpec]:
                 description=str(function.get("description") or name),
                 parameters=dict(function.get("parameters") or {}),
                 side_effect=side_effect,
+                operation_class=str(extension.get("operation_class") or side_effect.value),
                 required_permissions=tuple(extension.get("required_permissions") or ()),
                 timeout_seconds=(
                     float(extension["timeout_seconds"]) if "timeout_seconds" in extension else 30.0

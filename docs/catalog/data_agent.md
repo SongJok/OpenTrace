@@ -37,9 +37,10 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
   -> 数据库 EXPLAIN 成本预检
   -> 只读执行
   -> ResultValidator 校验完整性、质量和历史基线
+  -> DataAgentResultArtifact 固化内容寻址的 R1 执行证据（不复制敏感明细）
   -> AnswerEvidenceBuilder 生成 R1/E1... 白名单证据包
   -> 答案、证据、预检、结果校验和事件轨迹持久化
-  -> ExecutionLearningEngine 记录 observed，重复成功后晋升 trusted
+  -> ExecutionLearningEngine 记录成功经验或独立失败模式，重复成功后晋升 trusted
 ```
 
 `agents/data_agent.py` 只进入上述治理草案链路。`agents/data_agent_v2/` 和
@@ -171,7 +172,8 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
 
 相同完整 Scope、计划模式、Schema 指纹和语义版本重复成功后才晋升 `trusted`。负反馈立即
 将模式标记为 `rejected`；纠正 SQL 只进入待审核记录，不自动改写认证指标、业务规则或物理
-Schema。经验仅对相同 SQL AST 结构提供排序加权，不能绕过编译和执行验证。
+Schema。运行失败写入独立的 `data_agent_failure_patterns`，不会污染成功经验；经验仅对相同
+SQL AST 结构提供排序加权，不能绕过编译和执行验证。
 
 ## 持久化事实源
 
@@ -183,6 +185,8 @@ Schema。经验仅对相同 SQL AST 结构提供排序加权，不能绕过编�
 | `data_agent_profiles` | 表级与字段级有界数据画像 |
 | `data_agent_evaluation_cases` | Golden Case 和冻结结果 |
 | `data_agent_feedback` | 用户纠错，不自动晋升治理知识 |
+| `data_agent_result_artifacts` | R1 不可变执行证据，仅保存哈希、版本、列、行数和校验摘要；按企业默认保留期清理 |
+| `data_agent_failure_patterns` | 按完整 Scope、Schema、语义版本和失败阶段隔离的失败模式 |
 | `sql_query_drafts` | 现有 UI 的确认执行投影，通过 `data_agent_run_id` 关联事实源 |
 | `data_agent_learning_patterns` | 按完整 Scope、Schema 和语义版本隔离的 observed/trusted/rejected 执行经验 |
 
@@ -195,6 +199,7 @@ PostgreSQL 是事实来源。草案状态不能代替 DataAgentRun 的证据、�
 | POST | `/api/v1/data-agent/queries` | 创建治理运行并生成候选 |
 | POST | `/api/v1/data-agent/source-resolution` | 预览可信数据源评分和歧义判定 |
 | GET | `/api/v1/data-agent/queries/{run_id}` | 读取完整 Scope 内的运行记录 |
+| GET | `/api/v1/data-agent/queries/{run_id}/result-artifact` | 读取不含结果明细的 R1 审计证据 |
 | POST | `/api/v1/data-agent/queries/{run_id}/execute` | 显式确认后执行 |
 | POST/GET | `/api/v1/data-agent/semantic-assets` | 创建或查询治理资产 |
 | POST | `/api/v1/data-agent/semantic-assets/{id}/publish` | 管理员发布治理资产 |
@@ -218,6 +223,16 @@ Responses 的 `IntentPlan` 会在普通能力名之外记录：`information_sour
 确定性策略负责安全校正：明显要求实际业务数字的问题不会因词面发现漏掉 `data`；纯指标口径解释
 不会被强制升级成数据库查询；显式文档证据和实际数据可以组合使用；当调用方禁用工具时仍保留
 信息与证据缺口，但不会偷偷执行能力。恢复后的计划沿用相同结构化意图，避免阶段漂移。
+
+每个 Response 同时维护 `response_evidence_ledger.v1` 四源证据账本，个人记忆、企业大脑、
+RAG 与问数各自记录来源、版本、权威级别和满足的证据要求。最终答案通过确定性门禁；需要真实
+业务数字但没有 `executed_result`、需要文档依据但没有已发布引用时，平台会替换不受支持的答案，
+而不是依赖模型自行声明限制。Responses 主路径中的个人记忆只由 `ContextAssembler` 注入，RAG
+默认只检索知识与文档，避免同一记忆被重复读取并错误归类为文档证据。
+
+`execute_sql_draft` 在恢复和幂等层仍按副作用工具处理，以阻止自动重试；产品语义标记为
+`governed_read`，审批界面明确说明它不会修改源数据库。普通聊天反馈若关联 DataAgentRun，会在
+完整 user/tenant/workspace 范围校验后同步写入结构化问数反馈和学习状态。
 
 ## 配置
 

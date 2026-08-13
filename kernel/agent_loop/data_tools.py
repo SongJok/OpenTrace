@@ -39,6 +39,7 @@ def governed_sql_execution_spec() -> ToolSpec:
             "additionalProperties": False,
         },
         side_effect=SideEffect.WRITE,
+        operation_class="governed_read",
         timeout_seconds=60.0,
         max_retries=0,
         supports_parallel=False,

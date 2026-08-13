@@ -63,6 +63,27 @@ def result_signature(rows: list[dict[str, Any]]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def bind_result_snapshot(run: QueryRun, candidate: CandidateSQL) -> str | None:
+    """为执行结果生成内容寻址的不可变快照 ID，不把结果明细写入 ID。"""
+
+    if run.result is None or run.evidence is None:
+        return None
+    payload = {
+        "run_id": run.id,
+        "sql_structure_hash": sql_structure_hash(candidate.sql, dialect=run.evidence.dialect),
+        "result_signature": result_signature(run.result.rows),
+        "returned_rows": run.result.returned_rows,
+        "total_rows": run.result.total_rows,
+        "truncated": run.result.truncated,
+        "schema_fingerprint": run.evidence.schema_fingerprint,
+        "semantic_version": run.evidence.semantic_version,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    snapshot_id = f"snapshot_{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:48]}"
+    run.result.snapshot_id = snapshot_id
+    return snapshot_id
+
+
 class ExecutionLearningEngine:
     def __init__(self, *, minimum_confidence: float = 0.85) -> None:
         self.minimum_confidence = minimum_confidence

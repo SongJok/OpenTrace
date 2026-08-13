@@ -3,7 +3,7 @@
   "policy_effective_date": "2026-07-24",
   "production_baseline_revision": "20260724_chatgpt_runtime_completion",
   "new_revision_format": "^r[0-9]{4}_[a-z0-9_]+$",
-  "next_sequence": 25,
+  "next_sequence": 26,
   "frozen_migrations": [
     {
       "revision": "20260400_core_baseline",
@@ -457,6 +457,13 @@
       "sha256": "dffef78a15083cdd9ced66212f9a527a7fbee885fe3d571b836a0c85f01de54c",
       "governed_format": "r-sequence",
       "frozen_on": "2026-08-11"
+    },
+    {
+      "revision": "r0025_evidence_closure",
+      "file": "alembic/versions/r0025_evidence_closure.py",
+      "sha256": "ded15802882a5f9d12244fa188db49ec42a772a71ba82cea366f65f65d3b7d34",
+      "governed_format": "r-sequence",
+      "frozen_on": "2026-08-13"
     }
   ],
   "notes": [

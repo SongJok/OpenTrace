@@ -14,11 +14,15 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from data_agent.adapters.opentrace.learning import OpenTraceLearningRepository
+from data_agent.adapters.opentrace.repository import OpenTraceRunRepository
+from data_agent.contracts import DataScope
 from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
 from infra.responses.repository import TERMINAL_STATUSES, append_event
+from infra.storage.data_agent_models import DataAgentFeedback, DataAgentRunRecord
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
     Attachment,
@@ -540,6 +544,11 @@ async def _resolve_response_tool_approval(
             "call_id": approval.call_id,
             "approved": approved,
             "status": approval.status,
+            "operation_class": getattr(
+                approval,
+                "operation_class",
+                getattr(approval, "side_effect_level", "write"),
+            ),
         },
     )
     # 批准和拒绝都恢复 Manager；拒绝会作为类型化工具结果进入后续解释。
@@ -695,5 +704,78 @@ async def response_feedback(
             ),
         )
     )
+    data_feedback_id = None
+    assistant_item = next(
+        (row for row in reversed(response_items) if row.item_type == "message"), None
+    )
+    assistant_payload = dict(assistant_item.payload or {}) if assistant_item else {}
+    data_answer = dict(assistant_payload.get("data_answer") or {})
+    run_id = str(data_answer.get("data_agent_run_id") or "").strip()
+    if run_id:
+        run_record = await db.scalar(
+            select(DataAgentRunRecord).where(
+                DataAgentRunRecord.id == run_id,
+                DataAgentRunRecord.user_id == current_user.id,
+                DataAgentRunRecord.tenant_id == response.tenant_id,
+                DataAgentRunRecord.workspace_id == response.workspace_id,
+            )
+        )
+        if run_record is not None:
+            feedback_type = str(payload.get("feedback_type") or "none").lower()
+            score = payload.get("score")
+            verdict = None
+            if feedback_type in {"like", "helpful", "correct"}:
+                verdict = "correct"
+            elif feedback_type in {"dislike", "unhelpful", "incorrect"}:
+                verdict = "incorrect"
+            elif isinstance(score, int | float):
+                verdict = "correct" if score >= 0.5 else "incorrect"
+            if verdict is None:
+                await db.commit()
+                return {
+                    "status": "accepted",
+                    "response_id": response.id,
+                    "data_agent_feedback_id": None,
+                }
+            data_feedback_id = str(uuid.uuid4())
+            db.add(
+                DataAgentFeedback(
+                    id=data_feedback_id,
+                    run_id=run_id,
+                    user_id=current_user.id,
+                    tenant_id=response.tenant_id,
+                    workspace_id=response.workspace_id,
+                    verdict=verdict,
+                    candidate_id=run_record.selected_candidate_id,
+                    corrected_sql=str(payload.get("corrected_sql") or "") or None,
+                    comment=str(payload.get("correction") or "") or None,
+                    metadata_json={
+                        "source": "responses_feedback_bridge",
+                        "response_id": response.id,
+                        "response_item_id": assistant_item.id if assistant_item else None,
+                        "feedback_type": feedback_type,
+                        "score": score,
+                    },
+                )
+            )
+            if settings.data_agent_learning_enabled:
+                scope = DataScope(
+                    user_id=current_user.id,
+                    tenant_id=response.tenant_id,
+                    workspace_id=response.workspace_id,
+                    data_source_id=run_record.data_source_id,
+                )
+                run = await OpenTraceRunRepository(db).get(run_id, scope)
+                if run is not None:
+                    await OpenTraceLearningRepository(db).record_feedback(
+                        run,
+                        verdict=verdict,
+                        candidate_id=run_record.selected_candidate_id,
+                        corrected_sql=str(payload.get("corrected_sql") or "") or None,
+                    )
     await db.commit()
-    return {"status": "accepted", "response_id": response.id}
+    return {
+        "status": "accepted",
+        "response_id": response.id,
+        "data_agent_feedback_id": data_feedback_id,
+    }

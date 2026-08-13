@@ -497,3 +497,58 @@ def test_frontend_exposes_source_evidence_and_learning_state() -> None:
     assert "答案证据链" in source
     assert "受控执行学习" in source
     assert "supporting_memory_ids" in source
+
+
+@pytest.mark.asyncio
+async def test_semantic_drift_records_failure_pattern_when_learning_is_enabled() -> None:
+    class Provider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def collect(self, scope, question, research_plan):
+            self.calls += 1
+            return _evidence(semantic_version=f"semantic-v{self.calls}")
+
+    class Planner:
+        def plan(self, request, evidence):
+            return _plan()
+
+    class Generator:
+        async def generate(self, request, plan, evidence):
+            return [
+                CandidateSQL(
+                    sql="SELECT COUNT(DISTINCT orders.user_id) FROM orders LIMIT 100",
+                    source="semantic_compiler",
+                )
+            ]
+
+    learning = SimpleNamespace(
+        record_failure=AsyncMock(
+            return_value=LearningRecord(
+                pattern_key="failure-pattern",
+                status="rejected",
+                observation_count=1,
+                failure_count=1,
+                reusable=False,
+            )
+        ),
+        record_success=AsyncMock(),
+        record_feedback=AsyncMock(),
+    )
+    service = DataAgentService(
+        evidence_provider=Provider(),
+        logical_planner=cast(LogicalPlanner, Planner()),
+        sql_generator=Generator(),
+        query_executor=SimpleNamespace(execute=AsyncMock()),
+        learning_repository=learning,
+    )
+    run = await service.create(
+        QueryRequest(question="昨天付费用户数", scope=_scope(), minimum_confidence=0.5)
+    )
+
+    blocked = await service.execute(run.id, _scope(), confirmed=True)
+
+    assert blocked.state == RunState.BLOCKED
+    learning.record_failure.assert_awaited_once()
+    assert learning.record_failure.await_args.kwargs["stage"] == "semantic_version_changed"
+    assert blocked.learning is not None and blocked.learning.status == "rejected"

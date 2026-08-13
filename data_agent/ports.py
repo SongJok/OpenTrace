@@ -96,6 +96,15 @@ class LearningRepository(Protocol):
         corrected_sql: str | None,
     ) -> LearningRecord | None: ...
 
+    async def record_failure(
+        self,
+        run: QueryRun,
+        candidate: CandidateSQL,
+        *,
+        stage: str,
+        error_codes: list[str],
+    ) -> LearningRecord: ...
+
 
 class NullAnswerSynthesizer:
     async def synthesize(

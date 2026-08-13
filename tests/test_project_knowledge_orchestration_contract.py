@@ -52,7 +52,8 @@ def test_worker_reconciles_uploads_and_main_rag_receives_workspace_scope():
     assert "KNOWLEDGE_RECONCILE_SECONDS" in jobs
     assert 'hydrated["workspace_id"] = response.workspace_id' in runner
     assert "agent_params.setdefault(" in runner
-    assert '"sources", ["knowledge", "documents", "semantic_memory"]' in runner
+    assert '"sources", ["knowledge", "documents"]' in runner
+    assert 'agent_params["memory_enabled"] = False' in runner
     assert '"workspace_id": workspace_id' in rag
 
 

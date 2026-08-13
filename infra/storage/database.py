@@ -272,6 +272,7 @@ async def _verify_runtime_schema(conn) -> None:
             "execution_status",
             "result_rows",
         },
+        "response_approvals": {"operation_class"},
     }
     missing: list[str] = []
     for table, columns in required_columns.items():
@@ -341,6 +342,8 @@ async def _verify_runtime_schema(conn) -> None:
         "sql_query_candidates",
         "schema_metadata",
         "schema_table_metadata",
+        "data_agent_result_artifacts",
+        "data_agent_failure_patterns",
     }
     table_rows = await conn.execute(
         text(
@@ -384,6 +387,8 @@ async def _ensure_unified_runtime_columns(conn) -> None:
         "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE IF EXISTS public.responses ADD COLUMN IF NOT EXISTS goal_id VARCHAR(36)",
         "ALTER TABLE IF EXISTS public.response_tool_executions ADD COLUMN IF NOT EXISTS side_effect_level VARCHAR(20) NOT NULL DEFAULT 'read'",
+        "ALTER TABLE IF EXISTS public.response_approvals ADD COLUMN IF NOT EXISTS operation_class VARCHAR(32) NOT NULL DEFAULT 'write'",
+        "UPDATE public.response_approvals SET operation_class = 'governed_read' WHERE tool_name = 'execute_sql_draft' AND operation_class = 'write'",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS score DOUBLE PRECISION NOT NULL DEFAULT 0.5",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS personal_category VARCHAR(30) NOT NULL DEFAULT 'profile'",
         "ALTER TABLE IF EXISTS public.user_memories ADD COLUMN IF NOT EXISTS scope_type VARCHAR(20) NOT NULL DEFAULT 'user'",

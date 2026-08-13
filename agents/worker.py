@@ -206,6 +206,7 @@ class AgentWorker:
 
     async def run_forever(self) -> None:
         consumers = self._bus_consumer_agent_types()
+        from data_agent.maintenance import data_agent_evidence_maintenance_loop
         from infra.message_bus.subscribers import memory_event_subscriber
         from infra.response_worker import response_job_loop
         from infra.responses.scheduler import scheduler_loop
@@ -226,6 +227,7 @@ class AgentWorker:
                     scheduler_loop(),
                     company_brain_worker_loop(),
                     deletion_job_loop(),
+                    data_agent_evidence_maintenance_loop(),
                 )
             )
         if role in {"all", "agents"}:
