@@ -2099,13 +2099,14 @@ export interface EnterpriseSkillItem {
   name: string
   description: string
   value_summary: string
-  instructions: string
+  version: string
   source_files: Array<{ path: string; sha256: string; size: number; content_type: string }>
   use_cases: string[]
   classification: 'public' | 'internal' | 'confidential'
   status: 'published' | 'archived'
   published_at?: string | null
   publication: 'company'
+  origin: 'uploaded' | 'legacy_distilled'
   local_available: boolean
 }
 
@@ -2117,16 +2118,15 @@ export async function apiSetCatalogSkillAvailability(token: string, catalogSkill
 export async function apiInstallCatalogSkill(token: string, catalogSkillId: string): Promise<any> { const res = await apiFetch('/skills/catalog/install', { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ catalog_skill_id: catalogSkillId }) }); if (!res.ok) throw new Error(await readApiError(res, '安装 Skill 失败')); return res.json() }
 export async function apiUninstallCatalogSkill(token: string, installationId: string): Promise<any> { const res = await apiFetch(`/skills/installations/${encodeURIComponent(installationId)}`, { method: 'DELETE', headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '卸载 Skill 失败')); return res.json() }
 export async function apiListCompanySkills(token: string): Promise<EnterpriseSkillItem[]> { const res = await apiFetch('/skills/company', { headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '读取公司 Skills 失败')); return (await res.json()).items ?? [] }
-export async function apiDistillCompanySkill(token: string, payload: { name: string; description: string; classification: EnterpriseSkillItem['classification']; files: File[]; paths: string[] }): Promise<{ skill: EnterpriseSkillItem; deduplicated: boolean }> {
+export async function apiUploadCompanySkill(token: string, payload: { classification: EnterpriseSkillItem['classification']; files: File[]; paths: string[] }): Promise<{ skill: EnterpriseSkillItem; deduplicated: boolean; republished: boolean }> {
   const form = new FormData()
-  form.append('name', payload.name)
-  form.append('description', payload.description)
   form.append('classification', payload.classification)
   payload.files.forEach((file, index) => { form.append('files', file); form.append('paths', payload.paths[index] || file.name) })
-  const res = await apiFetch('/skills/company/distill', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form })
-  if (!res.ok) throw new Error(await readApiError(res, '蒸馏企业 Skill 失败'))
+  const res = await apiFetch('/skills/company/upload', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form })
+  if (!res.ok) throw new Error(await readApiError(res, '上传公司 Skill 失败'))
   return res.json()
 }
+export async function apiArchiveCompanySkill(token: string, skillId: string): Promise<void> { const res = await apiFetch(`/skills/company/${encodeURIComponent(skillId)}`, { method: 'DELETE', headers: authHeaders(token) }); if (!res.ok) throw new Error(await readApiError(res, '移除公司 Skill 失败')) }
 
 export async function apiListSkills(token: string): Promise<SkillItem[]> {
   const res = await apiFetch('/skills', { headers: authHeaders(token) })

@@ -9,7 +9,7 @@ POST /api/v2/responses
   → API 校验身份、租户/工作区/项目范围和幂等键
   → PostgreSQL 同一事务写入 Response / Item / Event / Outbox
   → Agent Worker 投递 Redis Streams，并通过数据库租约领取 Response
-  → IntentPlan → ContextAssembler → Manager model/tool loop
+  → IntentPlan → ContextAssembler（企业认知 / 公司 Skill / 个人记忆）→ Manager model/tool loop
   → typed tools / expert agents / RAG / DataAgent
   → 写或破坏性操作进入持久化审批暂停点
   → PostgreSQL 持久化输出、事件、模型计量和工具账本
@@ -27,6 +27,7 @@ PostgreSQL 是在线执行事实来源；Redis 只承担投递、唤醒和可重
 | 事实存储 | `infra/storage/models.py`、`infra/responses/repository.py` | Response/Item/Event/Outbox/Approval/Tool ledger 为在线事实 |
 | 执行面 | `agents/worker.py`、`infra/responses/worker.py` | 通过数据库租约恢复，不依赖 Redis 消息完整性 |
 | Manager Loop | `kernel/agent_loop/` | 模型统一经过 Model Gateway；副作用必须审批和幂等 |
+| 公司 Skill | `skills/company.py`、`gateway/api_gateway/routers/skills.py` | 只接收外部预先蒸馏的文本包；按租户、工作区和密级召回，不执行包内代码 |
 | 模型入口 | `model/model_gateway/gateway.py` | 业务模块不得直接创建 provider client |
 | 流式读取 | `/api/v2/responses/{id}/events` | 从持久化事件投影，可断点续传 |
 

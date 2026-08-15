@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -27,7 +25,13 @@ from infra.storage.models import (
 )
 from knowledge.access import classification_allows, resolve_access_context
 from skills.catalog import _catalog_item, install_catalog_skill, sync_skillhub_catalog
-from skills.distillation import DistillationSource, distill_enterprise_skill
+from skills.company import (
+    MAX_FILE_BYTES,
+    MAX_PACKAGE_FILES,
+    CompanySkillUploadFile,
+    public_source_files,
+    validate_company_skill_package,
+)
 from skills.local_store import local_skill_store
 from skills.store.marketplace import marketplace
 
@@ -67,19 +71,6 @@ class SkillCatalogAvailabilityRequest(BaseModel):
     reason: str = Field(default="", max_length=500)
 
 
-_DISTILLABLE_SUFFIXES = {
-    ".csv",
-    ".docx",
-    ".json",
-    ".md",
-    ".pdf",
-    ".text",
-    ".txt",
-    ".yaml",
-    ".yml",
-}
-
-
 def _ensure_enterprise_skill_local(row: EnterpriseSkill) -> bool:
     tenant_id = str(getattr(row, "tenant_id", ""))
     workspace_id = str(getattr(row, "workspace_id", ""))
@@ -93,35 +84,59 @@ def _ensure_enterprise_skill_local(row: EnterpriseSkill) -> bool:
             runtime_id=row.runtime_id,
             source_digest=source_digest,
         ):
-            local_skill_store.write_company_skill(
-                tenant_id=tenant_id,
-                workspace_id=workspace_id,
-                runtime_id=row.runtime_id,
-                name=row.name,
-                description=row.value_summary or row.description,
-                instructions=row.instructions,
-                classification=row.classification,
-                source_digest=source_digest,
-            )
+            stored_files = [
+                item
+                for item in list(row.source_files or [])
+                if isinstance(item, dict) and isinstance(item.get("content"), str)
+            ]
+            if stored_files:
+                local_skill_store.write_company_skill_package(
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                    runtime_id=row.runtime_id,
+                    name=row.name,
+                    description=row.value_summary or row.description,
+                    classification=row.classification,
+                    source_digest=source_digest,
+                    files=stored_files,
+                )
+            else:
+                # 兼容历史上由平台蒸馏的单文件记录；新入口只接收用户已蒸馏的 Skill 包。
+                local_skill_store.write_company_skill(
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                    runtime_id=row.runtime_id,
+                    name=row.name,
+                    description=row.value_summary or row.description,
+                    instructions=row.instructions,
+                    classification=row.classification,
+                    source_digest=source_digest,
+                )
     except (AttributeError, OSError, ValueError):
         return False
     return True
 
 
 def _enterprise_skill_item(row: EnterpriseSkill) -> dict[str, Any]:
+    version = row.runtime_id.rsplit("@", 1)[-1] if "@" in row.runtime_id else "1.0.0"
+    uploaded = any(
+        isinstance(item, dict) and isinstance(item.get("content"), str)
+        for item in list(row.source_files or [])
+    )
     return {
         "id": row.id,
         "runtime_id": row.runtime_id,
         "name": row.name,
         "description": row.value_summary or row.description,
         "value_summary": row.value_summary,
-        "instructions": row.instructions,
-        "source_files": list(row.source_files or []),
+        "version": version,
+        "source_files": public_source_files(row.source_files),
         "use_cases": list(row.use_cases or []),
         "classification": row.classification,
         "status": row.status,
         "published_at": row.published_at.isoformat() if row.published_at else None,
         "publication": "company",
+        "origin": "uploaded" if uploaded else "legacy_distilled",
         "local_available": _ensure_enterprise_skill_local(row),
     }
 
@@ -344,108 +359,110 @@ async def list_company_skills(
     }
 
 
-@router.post("/skills/company/distill", status_code=201)
-async def distill_company_skill(
+@router.post("/skills/company/upload", status_code=201)
+async def upload_company_skill(
     request: Request,
-    name: str = Form(..., min_length=1, max_length=128),
-    description: str = Form(default="", max_length=4000),
     classification: str = Form(default="internal", pattern="^(public|internal|confidential)$"),
     paths: list[str] | None = Form(default=None),
     files: list[UploadFile] = File(...),
     current_user: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """从文件或文件夹生成公司发布的指令型 Skill；不执行任何上传代码。"""
-    if not files or len(files) > 30:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message="请选择 1 至 30 个文件")
+    """发布用户已蒸馏的公司 Skill 包；平台只校验和存储，不执行主动蒸馏。"""
+    if not files or len(files) > MAX_PACKAGE_FILES:
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message=f"请选择 1 至 {MAX_PACKAGE_FILES} 个 Skill 包文件",
+        )
     tenant_id, workspace_id = normalized_tenant_scope(
         build_tenant_metadata(request, user_id=current_user.id)
     )
-    max_file_bytes = max(1, int(settings.attachment_max_size_mb)) * 1024 * 1024
-    max_total_bytes = min(max_file_bytes * 3, 60 * 1024 * 1024)
-    total_bytes = 0
-    sources: list[DistillationSource] = []
-    source_files: list[dict[str, Any]] = []
-    from gateway.api_gateway.routers.documents import _extract_text
-
+    uploads: list[CompanySkillUploadFile] = []
     for index, upload in enumerate(files):
         filename = str(upload.filename or f"file-{index + 1}")
         relative_path = str(paths[index] if paths and index < len(paths) else filename)
-        relative_path = re.sub(r"(^|/)\.\.?(/|$)", "/", relative_path).strip("/")[:512]
-        suffix = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-        if suffix not in _DISTILLABLE_SUFFIXES:
-            raise AppException(
-                ErrorCodes.PARAM_INVALID.code,
-                message=f"暂不支持蒸馏文件“{filename}”",
-            )
-        raw = await upload.read(max_file_bytes + 1)
-        if not raw:
-            raise AppException(ErrorCodes.PARAM_INVALID.code, message=f"文件“{filename}”为空")
-        if len(raw) > max_file_bytes:
-            raise AppException(
-                ErrorCodes.PARAM_INVALID.code,
-                message=f"文件“{filename}”不能超过 {settings.attachment_max_size_mb}MB",
-            )
-        total_bytes += len(raw)
-        if total_bytes > max_total_bytes:
-            raise AppException(ErrorCodes.PARAM_INVALID.code, message="蒸馏文件总大小不能超过 60MB")
-        content = (await _extract_text(raw, filename)).strip()
-        if not content:
-            raise AppException(
-                ErrorCodes.PARAM_INVALID.code,
-                message=f"未能从“{filename}”提取可读文字",
-            )
-        digest = hashlib.sha256(raw).hexdigest()
-        sources.append(
-            DistillationSource(
+        raw = await upload.read(MAX_FILE_BYTES + 1)
+        uploads.append(
+            CompanySkillUploadFile(
                 path=relative_path or filename,
-                content=content,
-                sha256=digest,
-                size=len(raw),
+                content=raw,
+                content_type=upload.content_type or "text/plain",
             )
         )
-        source_files.append(
-            {
-                "path": relative_path or filename,
-                "sha256": digest,
-                "size": len(raw),
-                "content_type": upload.content_type or "application/octet-stream",
-            }
-        )
-
     try:
-        distilled = distill_enterprise_skill(
-            name=name.strip(), description=description.strip(), sources=sources
-        )
+        package = validate_company_skill_package(uploads)
     except ValueError as exc:
-        raise AppException(ErrorCodes.PARAM_INVALID.code, message=str(exc)) from exc
+        messages = {
+            "company_skill_frontmatter_required": "SKILL.md 必须包含 name 和 description 的 YAML frontmatter",
+            "company_skill_requires_exactly_one_skill_md": "Skill 包必须且只能包含一个 SKILL.md",
+            "company_skill_package_too_large": "Skill 包总大小不能超过 12MB",
+            "company_skill_md_content_invalid": "SKILL.md 内容过短、为空或超过限制",
+            "company_skill_secret_detected": "Skill 包疑似包含密钥或私钥，请移除敏感信息后重试",
+        }
+        code = str(exc).split(":", 1)[0]
+        raise AppException(
+            ErrorCodes.PARAM_INVALID.code,
+            message=messages.get(code, f"Skill 包校验失败：{exc}"),
+        ) from exc
     existing = await db.scalar(
         select(EnterpriseSkill).where(
             EnterpriseSkill.tenant_id == tenant_id,
             EnterpriseSkill.workspace_id == workspace_id,
-            EnterpriseSkill.source_digest == distilled.source_digest,
+            EnterpriseSkill.source_digest == package.source_digest,
         )
     )
     if existing is not None:
+        republished = existing.status != "published"
+        classification_changed = existing.classification != classification
+        if republished:
+            existing.status = "published"
+            existing.published_by = current_user.id
+            existing.published_at = datetime.now(UTC)
+        if classification_changed:
+            existing.classification = classification
+        if republished or classification_changed:
+            await db.commit()
+            await db.refresh(existing)
         if not _ensure_enterprise_skill_local(existing):
             raise AppException(
                 ErrorCodes.INTERNAL_ERROR.code, message="公司 Skill 写入本地镜像失败"
             )
-        return {"skill": _enterprise_skill_item(existing), "deduplicated": True}
+        if republished or classification_changed:
+            await write_audit_log(
+                user_id=current_user.id,
+                action=(
+                    "enterprise_skill.republish"
+                    if republished
+                    else "enterprise_skill.classification_update"
+                ),
+                resource_type="enterprise_skill",
+                resource_id=existing.id,
+                payload={
+                    "tenant_id": tenant_id,
+                    "workspace_id": workspace_id,
+                    "classification": existing.classification,
+                    "package_digest": existing.source_digest,
+                },
+            )
+        return {
+            "skill": _enterprise_skill_item(existing),
+            "deduplicated": not (republished or classification_changed),
+            "republished": republished,
+        }
 
     skill_id = str(uuid.uuid4())
     row = EnterpriseSkill(
         id=skill_id,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
-        runtime_id=f"company-{skill_id}@1.0.0",
-        name=name.strip(),
-        description=distilled.value_summary,
-        value_summary=distilled.value_summary,
-        instructions=distilled.instructions,
-        source_digest=distilled.source_digest,
-        source_files=source_files,
-        use_cases=distilled.use_cases,
+        runtime_id=f"company-{skill_id}@{package.version}",
+        name=package.name,
+        description=package.description,
+        value_summary=package.description,
+        instructions=package.instructions,
+        source_digest=package.source_digest,
+        source_files=package.files,
+        use_cases=package.use_cases,
         classification=classification,
         status="published",
         created_by=current_user.id,
@@ -458,18 +475,52 @@ async def distill_company_skill(
     await db.refresh(row)
     await write_audit_log(
         user_id=current_user.id,
-        action="enterprise_skill.distill_publish",
+        action="enterprise_skill.upload_publish",
         resource_type="enterprise_skill",
         resource_id=row.id,
         payload={
             "tenant_id": tenant_id,
             "workspace_id": workspace_id,
             "classification": classification,
-            "source_count": len(source_files),
-            "source_digest": distilled.source_digest,
+            "package_file_count": len(package.files),
+            "package_digest": package.source_digest,
+            "version": package.version,
+            "active_distillation": False,
         },
     )
-    return {"skill": _enterprise_skill_item(row), "deduplicated": False}
+    return {"skill": _enterprise_skill_item(row), "deduplicated": False, "republished": False}
+
+
+@router.delete("/skills/company/{skill_id}")
+async def archive_company_skill(
+    skill_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """从问答上下文中移除公司 Skill；保留记录和审计以支持重新发布。"""
+    tenant_id, workspace_id = normalized_tenant_scope(
+        build_tenant_metadata(request, user_id=current_user.id)
+    )
+    row = await db.scalar(
+        select(EnterpriseSkill).where(
+            EnterpriseSkill.id == skill_id,
+            EnterpriseSkill.tenant_id == tenant_id,
+            EnterpriseSkill.workspace_id == workspace_id,
+        )
+    )
+    if row is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="公司 Skill 不存在")
+    row.status = "archived"
+    await db.commit()
+    await write_audit_log(
+        user_id=current_user.id,
+        action="enterprise_skill.archive",
+        resource_type="enterprise_skill",
+        resource_id=row.id,
+        payload={"tenant_id": tenant_id, "workspace_id": workspace_id},
+    )
+    return {"removed": True, "skill_id": row.id}
 
 
 @router.delete("/skills/installations/{installation_id}")

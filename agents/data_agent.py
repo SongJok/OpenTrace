@@ -94,6 +94,13 @@ class DataAgent(BaseAgent):
             source_decision = task.params.get("source_decision")
             if isinstance(source_decision, dict):
                 payload["source_decision"] = source_decision
+            company_skill_evidence = [
+                dict(item)
+                for item in task.params.get("company_skill_evidence") or []
+                if isinstance(item, dict)
+            ][:3]
+            if company_skill_evidence:
+                payload["company_skill_evidence"] = company_skill_evidence
         if draft.status == "needs_clarification":
             question_text = str(payload["clarification"].get("question_text") or "请补充查询口径。")
             return AgentResult(
@@ -109,6 +116,7 @@ class DataAgent(BaseAgent):
                     "draft_id": draft.id,
                     "draft": payload,
                     "source_decision": payload.get("source_decision", {}),
+                    "company_skill_evidence": payload.get("company_skill_evidence", []),
                     "executed": False,
                 },
             )
@@ -139,6 +147,7 @@ class DataAgent(BaseAgent):
                 "candidates": payload["candidates"],
                 "draft": payload,
                 "source_decision": payload.get("source_decision", {}),
+                "company_skill_evidence": payload.get("company_skill_evidence", []),
                 "query_plan": payload["query_plan"],
             },
         )

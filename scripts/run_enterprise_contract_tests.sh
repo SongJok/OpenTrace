@@ -11,7 +11,7 @@ python -m pytest \
   tests/test_enterprise_knowledge_base.py \
   tests/test_enterprise_p0_security.py \
   tests/test_enterprise_evaluation_contract.py \
-  tests/test_enterprise_skill_distillation.py \
+  tests/test_enterprise_skill_upload.py \
   tests/test_rag_agent_contract.py \
   tests/test_data_agent_v2_extended_contract.py \
   tests/test_task_notifications.py \

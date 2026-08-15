@@ -1806,12 +1806,19 @@ class AgentLoop:
         """只向规划器暴露命中状态，避免其误判“无能力读取”已装配的内部上下文。"""
 
         company = dict(context_manifest.get("company_brain") or {})
+        company_skills = dict(context_manifest.get("company_skills") or {})
         memory_count = int(context_manifest.get("memory_count") or 0)
         lines: list[str] = []
         if company.get("answer_context_available"):
             lines.append(
                 "当前回合已经命中并注入与问题相关的企业大脑资料，可直接依据上下文回答；"
                 "不得声称无法访问企业大脑，也不得仅因缺少工具而要求用户重复提供资料。"
+            )
+        if company_skills.get("answer_context_available"):
+            lines.append(
+                f"当前回合已经命中并注入 {int(company_skills.get('skill_count') or 0)} 个"
+                "公司上传 Skill 的相关业务片段，可直接解释其中明确的流程、表和字段；"
+                "不得声称无法访问公司 Skill，也不要要求用户重复确认 Skill 已明确的信息。"
             )
         if memory_count:
             lines.append(
@@ -1829,7 +1836,11 @@ class AgentLoop:
         """已有相关企业证据时，阻止规划器用“能力不支持”提前结束问答。"""
 
         company = dict(context_manifest.get("company_brain") or {})
-        if not company.get("answer_context_available"):
+        company_skills = dict(context_manifest.get("company_skills") or {})
+        if not (
+            company.get("answer_context_available")
+            or company_skills.get("answer_context_available")
+        ):
             return decision
         intent = decision.intent
         if (
@@ -2865,8 +2876,10 @@ class AgentLoop:
         prompt = (
             "识别用户真实目标并选择完成它所需的最小能力集合。不要用关键词路由。"
             "有歧义且会显著改变结果时给出 clarification_question。"
-            "同时判断最终答案需要哪些受治理信息来源：personal_memory、company_brain、rag、data；"
-            "个人记忆和企业大脑由上下文注入，不是工具。rag 用于已发布知识或文档证据，data 用于"
+            "同时判断最终答案需要哪些受治理信息来源：personal_memory、company_brain、"
+            "company_skill、rag、data；个人记忆、企业大脑和公司 Skill 由上下文注入，不是工具。"
+            "company_skill 用于已发布的业务流程、表结构、字段语义和代码规则；rag 用于已发布知识"
+            "或文档证据，data 用于"
             "需要实际企业数据计算的业务问题，两者可以组合。不要用 data 回答纯指标释义，也不要用"
             "RAG 文档中的旧数字冒充实时查询结果。"
             "freshness_requirement 必须表达 stable、published、current、historical 或 unspecified；"
@@ -3499,6 +3512,32 @@ class AgentLoop:
             hydrated["data_source_id"] = source_decision.selected_data_source_id
             hydrated["data_source_name"] = source_decision.selected_data_source_name
             hydrated["source_decision"] = source_decision.model_dump(mode="json")
+            # 公司 Skill 中的表、字段和业务规则必须进入 DataAgent 计划，而不只停留在
+            # Manager 最终回答上下文；仍由 DataAgent 的 Schema/SQLGuard 验证，不能覆盖实时结构。
+            from skills.company import retrieve_company_skills
+
+            company_skill_recall = await retrieve_company_skills(
+                scope_db,
+                user_id=response.user_id,
+                tenant_id=response.tenant_id,
+                workspace_id=response.workspace_id,
+                query=query,
+            )
+            if company_skill_recall.entries:
+                hydrated["clarify_context"] = (
+                    "公司上传 Skill 提供的受治理业务语义（仅用于计划和 SQL 草案，"
+                    "实际结构以当前 Schema 校验为准）：\n"
+                    + "\n\n".join(company_skill_recall.entries)
+                )[:4_000]
+                hydrated["company_skill_evidence"] = [
+                    {
+                        "id": item.get("id"),
+                        "runtime_id": item.get("runtime_id"),
+                        "source_digest": item.get("source_digest"),
+                        "matched_paths": item.get("matched_paths"),
+                    }
+                    for item in company_skill_recall.skills
+                ]
             # 交互式 Responses 问数只能生成草案；后台报告和预警走各自显式受信执行入口。
             hydrated["generation_only"] = True
             hydrated["group_type"] = "alternative"

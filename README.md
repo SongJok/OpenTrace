@@ -333,6 +333,7 @@ tests/            Unit, integration, and architecture contract tests
 - [Responses cutover and rollback](docs/runbooks/chatgpt_cutover.md)
 - [DataAgent](docs/catalog/data_agent.md)
 - [RAG retrieval](docs/catalog/rag_retrieval.md)
+- [Company Skills](docs/catalog/company_skills.md)
 - [Agent Runtime](docs/catalog/agent_runtime.md)
 - [Configuration truth](docs/CONFIG_TRUTH.md)
 - [Environment profiles](docs/ENV_PROFILES.md)

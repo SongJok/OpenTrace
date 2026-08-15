@@ -18,10 +18,11 @@ class ExecutionProfile(StrEnum):
 
 
 class InformationSource(StrEnum):
-    """问答可使用的四类受治理信息来源。"""
+    """问答可使用的五类受治理信息来源。"""
 
     PERSONAL_MEMORY = "personal_memory"
     COMPANY_BRAIN = "company_brain"
+    COMPANY_SKILL = "company_skill"
     RAG = "rag"
     DATA = "data"
 
@@ -41,6 +42,7 @@ class EvidenceRequirement(StrEnum):
 
     PERSONAL_CONTEXT = "personal_context"
     ENTERPRISE_CONTEXT = "enterprise_context"
+    COMPANY_SKILL_CONTEXT = "company_skill_context"
     PUBLISHED_CITATIONS = "published_citations"
     METRIC_DEFINITION = "metric_definition"
     TRUSTED_DATA_SOURCE = "trusted_data_source"

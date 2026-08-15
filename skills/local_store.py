@@ -1,6 +1,6 @@
 """Skill 本地镜像仓库。
 
-公共目录 Skill 与企业蒸馏 Skill 都先落盘，再由运行时从本地文件安装或读取。
+公共目录 Skill 与公司上传 Skill 都先落盘，再由运行时从本地文件安装或读取。
 """
 
 from __future__ import annotations
@@ -169,10 +169,55 @@ class LocalSkillStore:
         classification: str,
         source_digest: str,
     ) -> LocalSkillArtifact:
-        raw = instructions.encode("utf-8")
-        if not raw or len(raw) > _MAX_SKILL_BYTES:
-            raise ValueError("invalid_company_skill_content")
-        content_sha256 = hashlib.sha256(raw).hexdigest()
+        return self.write_company_skill_package(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            runtime_id=runtime_id,
+            name=name,
+            description=description,
+            classification=classification,
+            source_digest=source_digest,
+            files=[
+                {
+                    "path": "SKILL.md",
+                    "content": instructions,
+                    "content_type": "text/markdown",
+                }
+            ],
+        )
+
+    def write_company_skill_package(
+        self,
+        *,
+        tenant_id: str,
+        workspace_id: str,
+        runtime_id: str,
+        name: str,
+        description: str,
+        classification: str,
+        source_digest: str,
+        files: list[dict[str, Any]],
+    ) -> LocalSkillArtifact:
+        skill_md: bytes | None = None
+        prepared: list[tuple[str, bytes, str]] = []
+        for item in files:
+            relative_path = str(item.get("path") or "").replace("\\", "/").strip("/")
+            content = item.get("content")
+            if not relative_path or not isinstance(content, str):
+                raise ValueError("invalid_company_skill_package")
+            raw = content.encode("utf-8")
+            if not raw or len(raw) > _MAX_SKILL_BYTES:
+                raise ValueError("invalid_company_skill_content")
+            # 复用同一个安全路径解析器，拒绝包内路径穿越镜像根目录。
+            resolved = self._resolve_relative(relative_path)
+            if resolved == self.root() or ".." in Path(relative_path).parts:
+                raise ValueError("invalid_company_skill_path")
+            prepared.append((relative_path, raw, str(item.get("content_type") or "text/plain")))
+            if relative_path.casefold() == "skill.md":
+                skill_md = raw
+        if skill_md is None:
+            raise ValueError("company_skill_md_required")
+        content_sha256 = hashlib.sha256(skill_md).hexdigest()
         relative_dir = (
             Path("company")
             / self._scope_key(tenant_id)
@@ -182,7 +227,18 @@ class LocalSkillStore:
         )
         skill_path = relative_dir / "SKILL.md"
         cached_at = datetime.now(UTC).isoformat()
-        self._atomic_write(self._resolve_relative(skill_path.as_posix()), raw)
+        file_manifest: list[dict[str, Any]] = []
+        for relative_path, raw, content_type in prepared:
+            target = relative_dir / relative_path
+            self._atomic_write(self._resolve_relative(target.as_posix()), raw)
+            file_manifest.append(
+                {
+                    "path": relative_path,
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "size": len(raw),
+                    "content_type": content_type,
+                }
+            )
         self._atomic_write(
             self._resolve_relative((relative_dir / "metadata.json").as_posix()),
             json.dumps(
@@ -197,6 +253,7 @@ class LocalSkillStore:
                     "classification": classification,
                     "source_revision": source_digest,
                     "content_sha256": content_sha256,
+                    "files": file_manifest,
                     "cached_at": cached_at,
                 },
                 ensure_ascii=False,

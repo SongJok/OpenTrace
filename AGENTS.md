@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## 项目与当前主路径
 
-OpenTrace 是一个以 Responses API 和可恢复 Agent Loop 为核心的企业提问系统，在线能力收敛为 RAG、企业大脑上下文和 DataAgent，并保留资料、数据库、记忆、任务、Skills、设置及管理员治理页面。后端使用 Python 3.11、FastAPI、PostgreSQL/pgvector、Redis；前端使用 React、TypeScript 和 Vite。默认部署方式是 Docker Compose。
+OpenTrace 是一个以 Responses API 和可恢复 Agent Loop 为核心的企业提问系统，在线信息源收敛为 RAG、企业大脑上下文、公司上传 Skill、个人记忆和 DataAgent，并保留资料、数据库、记忆、任务、Skills、设置及管理员治理页面。后端使用 Python 3.11、FastAPI、PostgreSQL/pgvector、Redis；前端使用 React、TypeScript 和 Vite。默认部署方式是 Docker Compose。
 
 当前在线对话主路径不是旧的 `CognitiveKernel → CognitiveSupervisor → RuntimeGateway`，而是：
 
@@ -13,7 +13,7 @@ POST /api/v2/responses
   → API 校验租户、资源范围和幂等键
   → PostgreSQL Response / Item / Event / Outbox（同一事务提交）
   → Agent Worker 将 Outbox 投递到 Redis Streams，并以数据库租约领取 Response
-  → AgentLoop：IntentPlan → ContextAssembler → Manager model/tool loop
+  → AgentLoop：IntentPlan → ContextAssembler（企业认知/公司 Skill/个人记忆）→ Manager model/tool loop
   → typed tools / expert agents（写操作进入持久化审批暂停点）
   → PostgreSQL 持久化输出、事件与工具账本
   → SSE 从持久化事件投影，可按 sequence_number 断点续传
@@ -152,7 +152,7 @@ bash scripts/verify_migration_idempotent.sh
 ### Capability、Agent 与后台 Worker
 
 - `kernel/runtime/capability.py` 的 registry 负责在线专家 Agent 调度。内置 Agent 由 `agents/bootstrap.py` 按 `kernel/agent_runtime/agent_topology_manifest.yaml` 注册。
-- Tier-1 在线能力只包括 `data` 和 `rag`；企业大脑由 `ContextAssembler` 注入上下文，不作为可调用 Agent。拓扑 manifest 是 bootstrap/worker/bus eligibility 的单一真相；变更时同步其版本和 Agent Runtime 合约测试。
+- Tier-1 在线可调用能力只包括 `data` 和 `rag`；企业大脑、公司 Skill 和个人记忆由 `ContextAssembler` 注入上下文，不作为可调用 Agent。拓扑 manifest 是 bootstrap/worker/bus eligibility 的单一真相；变更时同步其版本和 Agent Runtime 合约测试。
 - `agents/worker.py` 同时运行 Responses worker、scheduler、knowledge jobs、memory subscriber 和 Agent Bus consumers。Responses Stream 与通用 `AgentMessageBus` 是不同通道，不要混用其可靠性语义。
 - Agent 不得反向导入 Gateway 或 Cognitive Kernel；`scripts/check_import_boundaries.sh` 和 import-linter 维护这些边界。
 

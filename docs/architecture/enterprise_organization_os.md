@@ -13,6 +13,8 @@ flowchart LR
   O --> W[Agent Worker]
   W --> C[ContextAssembler]
   C --> B[企业大脑上下文]
+  C --> K[公司上传 Skill]
+  C --> M[个人记忆]
   C --> L[Manager Agent Loop]
   L --> R[RAG / 已发布知识]
   L --> D[DataAgent / DataAgent]
@@ -26,6 +28,8 @@ flowchart LR
 | 能力 | 用途 | 在线暴露方式 |
 |---|---|---|
 | 企业大脑 | 公司、部门、术语和组织语境 | ContextAssembler 注入，不作为工具 |
+| 公司 Skill | 线上实现预先蒸馏的流程、表结构、字段语义和代码规则 | ContextAssembler 按问题召回，不作为工具 |
+| 个人记忆 | 当前用户的稳定偏好与已确认背景 | ContextAssembler 按 user/conversation 注入 |
 | RAG | 从有权限的已发布知识检索证据 | `rag` Agent |
 | DataAgent | 在授权数据源上生成、校验和执行只读 SQL | `data` Agent |
 

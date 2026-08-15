@@ -43,6 +43,7 @@ from memory.quality import memory_quality_issue
 from services.company_brain import retrieve_company_brain
 from services.enterprise_cognition import load_enterprise_context
 from services.retrieval_matching import expand_retrieval_terms, semantic_relevance_score
+from skills.company import retrieve_company_skills
 
 
 @dataclass
@@ -141,6 +142,13 @@ class ContextAssembler:
         )
         company_brain_recall = await retrieve_company_brain(
             db,
+            query=retrieval_query,
+            tenant_id=response.tenant_id,
+            workspace_id=response.workspace_id,
+        )
+        company_skill_recall = await retrieve_company_skills(
+            db,
+            user_id=response.user_id,
             query=retrieval_query,
             tenant_id=response.tenant_id,
             workspace_id=response.workspace_id,
@@ -440,6 +448,8 @@ class ContextAssembler:
                     memory.salience = min(1.0, float(memory.salience or 0.0) + 0.01)
 
         fusion_blocks: list[str] = []
+        if company_skill_recall.prompt:
+            fusion_blocks.append(company_skill_recall.prompt)
         if company_brain_recall.prompt:
             fusion_blocks.append(company_brain_recall.prompt)
         if recalled_memories:
@@ -464,10 +474,10 @@ class ContextAssembler:
             )
         if fusion_blocks:
             system_blocks.append(
-                "企业大脑 + 个人记忆融合检索上下文：\n\n"
+                "公司 Skill + 企业大脑 + 个人记忆融合检索上下文：\n\n"
                 + "\n\n".join(fusion_blocks)
                 + "\n只注入了与当前问题相关的信息；不得调用任何文件、代码、连接器、Web 或"
-                "其它工具对企业大脑和个人记忆进行蒸馏、收集、训练或另行持久化。"
+                "其它工具对公司 Skill、企业大脑和个人记忆进行蒸馏、收集、训练或另行持久化。"
             )
 
         messages: list[dict[str, Any]] = [{"role": "system", "content": "\n\n".join(system_blocks)}]
@@ -506,6 +516,7 @@ class ContextAssembler:
                 "attachment_count": len(attachment_ids),
                 "timezone": timezone_name,
                 "enterprise_context": enterprise_context.manifest(),
+                "company_skills": company_skill_recall.manifest(),
                 "company_brain": company_brain_recall.manifest(),
                 "personal_business_context": business_manifest,
                 "memory_retrieval_query_expanded": retrieval_query_expanded,
@@ -528,6 +539,7 @@ class ContextAssembler:
             current_message_count=len(current_messages),
             recalled_memories=recalled_memories,
             protected_memory_fragments=[
+                *company_skill_recall.entries,
                 *company_brain_recall.entries,
                 *(str(memory.get("content") or "") for memory in recalled_memories),
             ],

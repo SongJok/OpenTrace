@@ -1,7 +1,7 @@
 # OpenTrace 项目摘要
 
 OpenTrace 当前定位为 **面向企业数据与知识的提问系统**。产品主路径整体进入受控企业 Beta，
-覆盖 `/api/v2/responses`、RAG、企业大脑和 DataAgent；这表示可进入受治理租户
+覆盖 `/api/v2/responses`、RAG、企业大脑、公司上传 Skill 和 DataAgent；这表示可进入受治理租户
 试点，不代表 GA。近期工程优先级是提升提问主链的正确性、安全和可交付性。
 
 ## 当前产品闭环

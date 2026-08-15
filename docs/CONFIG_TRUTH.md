@@ -73,7 +73,7 @@ Schema 同步不得复用 `DATA_AGENT_MAX_RESULT_ROWS=500`：后者只保护业�
 | `SKILLS_SUBPROCESS_EXECUTION_ENABLED` | `false` | 是否允许受限子进程执行 Python Skill |
 | `SKILLS_EXECUTION_TIMEOUT_SECONDS` | `10` | 单次动态 Skill 执行超时（最大 60 秒） |
 
-`staging` 与 `production` 会强制关闭动态 Skill 安装、创建、进程内执行和子进程执行。Knowledge Worker 启动时会检测公共 Skill 本地镜像，仅在没有可用 Skill 时立即补齐一次，并按 `SKILLHUB_SYNC_TIMEZONE` 每天 06:30 下载更新到共享本地镜像；API 和 Skills 页面只读取该镜像，不在用户请求中访问 GitHub 或 SkillHub。Docker Compose 会先修复共享卷权限，再启动 API 与 Worker；页面会在首次同步期间自动刷新。公司 Skill 由管理员蒸馏时写入同一共享卷下的租户/工作区隔离目录。生产部署应为 `skills/catalog_mirror` 配置 API/Worker 共享持久卷。
+`staging` 与 `production` 会强制关闭动态 Skill 安装、创建、进程内执行和子进程执行。Knowledge Worker 启动时会检测公共 Skill 本地镜像，仅在没有可用 Skill 时立即补齐一次，并按 `SKILLHUB_SYNC_TIMEZONE` 每天 06:30 下载更新到共享本地镜像；API 和 Skills 页面只读取该镜像，不在用户请求中访问 GitHub 或 SkillHub。Docker Compose 会先修复共享卷权限，再启动 API 与 Worker；页面会在首次同步期间自动刷新。公司 Skill 必须由管理员在项目外完成蒸馏和审核，再从 Skills 页面上传标准 `SKILL.md` 或完整纯文本 Skill 包；项目只校验、存储和按问题召回，不主动蒸馏或执行包内代码。公司 Skill 写入同一共享卷下的租户/工作区隔离目录，并按用户密级过滤。生产部署应为 `skills/catalog_mirror` 配置 API/Worker 共享持久卷。
 
 ## LLM 配置组命名与用户模型选择
 

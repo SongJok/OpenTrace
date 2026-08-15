@@ -1931,7 +1931,7 @@ class UserSkillInstallation(Base):
 
 
 class EnterpriseSkill(Base):
-    """由企业资料蒸馏并在租户工作区内发布的指令型 Skill。"""
+    """用户预先蒸馏并在租户工作区内发布的公司 Skill 包。"""
 
     __tablename__ = "enterprise_skills"
     __table_args__ = (

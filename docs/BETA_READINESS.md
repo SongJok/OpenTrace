@@ -3,7 +3,7 @@
 ## 结论与范围
 
 OpenTrace 产品主路径自 2026-08-08 起进入 **受控企业 Beta**。Beta 范围是以 `/chat` 为入口的
-`/api/v2/responses` 持久化执行、企业大脑上下文、企业知识与 RAG、DataAgent、数据库、
+`/api/v2/responses` 持久化执行、企业大脑上下文、公司上传 Skill、企业知识与 RAG、DataAgent、数据库、
 个人记忆、任务、Skills、设置，以及管理员治理页面。它表示代码和运维合同可以支持受控租户
 试点，不等同于无条件生产承诺或 GA。
 

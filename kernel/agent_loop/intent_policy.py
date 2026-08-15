@@ -1,4 +1,4 @@
-"""Responses 四源意图的确定性校正与规划模型故障回退。"""
+"""Responses 五源意图的确定性校正与规划模型故障回退。"""
 
 from __future__ import annotations
 
@@ -185,7 +185,7 @@ def apply_enterprise_intent_policy(
     tools_enabled: bool = True,
     data_stage_override: DataIntentStage | None = None,
 ) -> PlanningDecision:
-    """把模型语义意图约束为四源、证据和问数阶段的可审计决策。"""
+    """把模型语义意图约束为五源、证据和问数阶段的可审计决策。"""
 
     intent = decision.intent
     specs = {spec.name: spec for spec in tool_specs}
@@ -201,6 +201,9 @@ def apply_enterprise_intent_policy(
     company = dict(context_manifest.get("company_brain") or {})
     if company.get("answer_context_available"):
         _append_unique(sources, InformationSource.COMPANY_BRAIN)
+    company_skills = dict(context_manifest.get("company_skills") or {})
+    if company_skills.get("answer_context_available"):
+        _append_unique(sources, InformationSource.COMPANY_SKILL)
     if int(context_manifest.get("memory_count") or 0) and _PERSONAL_CONTEXT_RE.search(query or ""):
         _append_unique(sources, InformationSource.PERSONAL_MEMORY)
 
@@ -241,6 +244,8 @@ def apply_enterprise_intent_policy(
         allowed_evidence.add(EvidenceRequirement.PERSONAL_CONTEXT)
     if InformationSource.COMPANY_BRAIN in sources:
         allowed_evidence.add(EvidenceRequirement.ENTERPRISE_CONTEXT)
+    if InformationSource.COMPANY_SKILL in sources:
+        allowed_evidence.add(EvidenceRequirement.COMPANY_SKILL_CONTEXT)
     if InformationSource.RAG in sources:
         allowed_evidence.add(EvidenceRequirement.PUBLISHED_CITATIONS)
     if InformationSource.DATA in sources:
@@ -253,6 +258,8 @@ def apply_enterprise_intent_policy(
         _append_unique(evidence, EvidenceRequirement.PERSONAL_CONTEXT)
     if InformationSource.COMPANY_BRAIN in sources:
         _append_unique(evidence, EvidenceRequirement.ENTERPRISE_CONTEXT)
+    if InformationSource.COMPANY_SKILL in sources:
+        _append_unique(evidence, EvidenceRequirement.COMPANY_SKILL_CONTEXT)
     if InformationSource.RAG in sources:
         _append_unique(evidence, EvidenceRequirement.PUBLISHED_CITATIONS)
     if InformationSource.DATA in sources:

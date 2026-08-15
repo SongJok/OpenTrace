@@ -15,7 +15,8 @@ import {
   apiUninstallCatalogSkill,
   apiSyncSkillCatalog,
   apiSetCatalogSkillAvailability,
-  apiDistillCompanySkill,
+  apiUploadCompanySkill,
+  apiArchiveCompanySkill,
   apiListCompanySkills,
   type SkillItem,
   type SkillCatalogItem,
@@ -23,7 +24,7 @@ import {
   type EnterpriseSkillItem,
 } from '../api/client'
 
-type ViewMode = 'list' | 'create' | 'detail' | 'test' | 'distill'
+type ViewMode = 'list' | 'create' | 'detail' | 'test' | 'upload'
 type MarketplaceTab = 'discover' | 'search' | 'installed' | 'developer'
 type CatalogCategory = '全部' | '办公效率' | '数据分析' | '开发工具' | '搜索研究' | '内容创作' | '自动化'
 
@@ -47,10 +48,8 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
   const [marketplaceTab, setMarketplaceTab] = useState<MarketplaceTab>('discover')
   const [category, setCategory] = useState<CatalogCategory>('全部')
   const [companySkills, setCompanySkills] = useState<EnterpriseSkillItem[]>([])
-  const [distillName, setDistillName] = useState('')
-  const [distillDescription, setDistillDescription] = useState('')
-  const [distillClassification, setDistillClassification] = useState<EnterpriseSkillItem['classification']>('internal')
-  const [distillFiles, setDistillFiles] = useState<File[]>([])
+  const [uploadClassification, setUploadClassification] = useState<EnterpriseSkillItem['classification']>('internal')
+  const [uploadFiles, setUploadFiles] = useState<File[]>([])
 
   // Create form
   const [name, setName] = useState('')
@@ -196,27 +195,36 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
     }
   }
 
-  const handleDistill = async () => {
-    if (!distillName.trim() || !distillFiles.length) return
+  const handleCompanySkillUpload = async () => {
+    if (!uploadFiles.length) return
     setLoading(true)
     setOutput('')
     try {
-      const result = await apiDistillCompanySkill(token, {
-        name: distillName.trim(),
-        description: distillDescription.trim(),
-        classification: distillClassification,
-        files: distillFiles,
-        paths: distillFiles.map((file) => file.webkitRelativePath || file.name),
+      const result = await apiUploadCompanySkill(token, {
+        classification: uploadClassification,
+        files: uploadFiles,
+        paths: uploadFiles.map((file) => file.webkitRelativePath || file.name),
       })
-      setOutput(result.deduplicated ? '相同来源已蒸馏过，已返回现有公司 Skill。' : '蒸馏完成，新的 Skill 已作为“公司发布”展示。')
-      setDistillName('')
-      setDistillDescription('')
-      setDistillFiles([])
+      setOutput(result.republished ? '公司 Skill 已重新发布并恢复问答使用。' : result.deduplicated ? '相同版本已经发布，无需重复上传。' : '公司 Skill 上传并发布成功，相关业务问题将自动召回。')
+      setUploadFiles([])
       await load()
       setView('list')
       setMarketplaceTab('discover')
     } catch (e: any) {
-      setOutput(`蒸馏失败：${e?.message || e}`)
+      setOutput(`上传失败：${e?.message || e}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleCompanySkillArchive = async (skill: EnterpriseSkillItem) => {
+    setLoading(true)
+    try {
+      await apiArchiveCompanySkill(token, skill.id)
+      setOutput(`${skill.name} 已从公司问答上下文中移除，审计记录仍保留。`)
+      await load()
+    } catch (e: any) {
+      setOutput(`移除失败：${e?.message || e}`)
     } finally {
       setLoading(false)
     }
@@ -344,25 +352,24 @@ export default function SkillsPage({ onBack }: { onBack: () => void }) {
 
             {marketplaceTab === 'developer' && role === 'admin' && <section className="space-y-5"><SectionTitle title="开发者工具" subtitle="创建、测试和管理平台自有的可执行 Skills" action={<button onClick={() => { resetCreateForm(); setCode(defaultCodeTemplate); setView('create') }} className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3 py-2 text-xs text-[var(--accent-foreground)]"><Plus size={13} />创建 Skill</button>} /><div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5"><div className="flex items-center gap-2 text-sm font-medium"><PackageCheck size={14} className="text-emerald-500" />本地镜像安装策略</div><p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">外部 Git 即时安装已停用。后台 Worker 每天 06:30 收集新增或更新的 Skill，先下载到本地共享存储；用户安装时只复制本地镜像，不再访问 GitHub 或其他 SkillHub。</p></div>{skills.length === 0 ? <div className="rounded-2xl border border-dashed border-[var(--border)] p-12 text-center text-xs text-[var(--text-secondary)]">暂无平台自有 Skill</div> : <div className="space-y-2">{skills.map((skill) => <div key={skill.skill_id || skill.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4"><div className="grid h-9 w-9 place-items-center rounded-lg bg-[var(--accent-dim)] text-[var(--accent)]"><Boxes size={16} /></div><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{skill.name || skill.id}</p><p className="text-[11px] text-[var(--text-secondary)]">v{skill.version} · {skill.skill_type || 'generic'} · {skill.entrypoint || 'main.py'}</p></div><button onClick={() => void handleSelectSkill(skill)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs"><FileText size={12} className="mr-1 inline" />详情</button><button onClick={() => void handleUninstall(skill.skill_id || skill.id)} className="rounded-lg border border-red-500/20 px-3 py-1.5 text-xs text-red-500"><Trash2 size={12} className="mr-1 inline" />移除</button></div>)}</div>}</section>}
 
-            <CompanySkillsSection skills={companySkills} role={role} onDistill={() => setView('distill')} />
+            <CompanySkillsSection skills={companySkills} role={role} onUpload={() => setView('upload')} onArchive={handleCompanySkillArchive} />
           </main>
         )}
 
-        {view === 'distill' && role === 'admin' && (
+        {view === 'upload' && role === 'admin' && (
           <main className="mx-auto max-w-3xl space-y-6 px-4 py-10 sm:px-6">
-            <div className="flex items-center gap-3"><button onClick={() => setView('list')} className="text-xs text-[var(--text-secondary)] hover:text-[var(--text)]">&larr; 返回</button><div><h2 className="text-xl font-semibold">蒸馏企业 Skill</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">从文件或文件夹提炼流程、规则与检查项，发布为企业内可复用能力。</p></div></div>
+            <div className="flex items-center gap-3"><button onClick={() => setView('list')} className="text-xs text-[var(--text-secondary)] hover:text-[var(--text)]">&larr; 返回</button><div><h2 className="text-xl font-semibold">上传公司 Skill</h2><p className="mt-1 text-xs text-[var(--text-secondary)]">发布公司已在外部蒸馏和审核完成的 Skill；本项目不会再次蒸馏。</p></div></div>
             {output && <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 text-xs">{output}</div>}
             <section className="space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6">
-              <input value={distillName} onChange={(event) => setDistillName(event.target.value)} placeholder="Skill 名称，例如：客户交付验收规范" className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
-              <textarea value={distillDescription} onChange={(event) => setDistillDescription(event.target.value)} rows={3} placeholder="说明它解决什么企业问题；留空时系统会根据资料生成企业价值说明。" className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm" />
-              <select value={distillClassification} onChange={(event) => setDistillClassification(event.target.value as EnterpriseSkillItem['classification'])} className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm"><option value="public">公开</option><option value="internal">内部</option><option value="confidential">机密</option></select>
+              <div className="rounded-xl border border-sky-500/20 bg-sky-500/5 p-4 text-xs leading-5 text-sky-700"><p className="font-medium">Skill 包要求</p><p className="mt-1">必须包含一个带 <code>name</code>、<code>description</code> YAML frontmatter 的 SKILL.md；可同时包含 Markdown、SQL、字段字典和源码等 UTF-8 纯文本参考文件。</p></div>
+              <label className="block space-y-1.5 text-xs text-[var(--text-secondary)]"><span>公司密级</span><select value={uploadClassification} onChange={(event) => setUploadClassification(event.target.value as EnterpriseSkillItem['classification'])} className="block rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm text-[var(--text)]"><option value="public">公开</option><option value="internal">内部</option><option value="confidential">机密</option></select></label>
               <div className="grid gap-3 sm:grid-cols-2">
-                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--border)] p-5 text-sm hover:border-[var(--accent)]"><UploadCloud size={17} />选择文件<input type="file" multiple accept=".pdf,.docx,.md,.txt,.text,.csv,.json,.yaml,.yml" className="hidden" onChange={(event) => setDistillFiles(Array.from(event.target.files || []))} /></label>
-                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--border)] p-5 text-sm hover:border-[var(--accent)]"><FolderOpen size={17} />选择文件夹<input type="file" multiple accept=".pdf,.docx,.md,.txt,.text,.csv,.json,.yaml,.yml" className="hidden" ref={(element) => { if (element) element.setAttribute('webkitdirectory', '') }} onChange={(event) => setDistillFiles(Array.from(event.target.files || []))} /></label>
+                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--border)] p-5 text-sm hover:border-[var(--accent)]"><UploadCloud size={17} />选择 SKILL.md<input type="file" multiple accept=".md,.markdown,.txt,.text,.csv,.tsv,.json,.yaml,.yml,.sql,.py,.js,.jsx,.ts,.tsx,.java,.kt,.go,.rs,.cs,.php,.rb,.sh,.toml,.ini,.cfg,.conf,.xml,.graphql,.proto" className="hidden" onChange={(event) => setUploadFiles(Array.from(event.target.files || []))} /></label>
+                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--border)] p-5 text-sm hover:border-[var(--accent)]"><FolderOpen size={17} />选择 Skill 文件夹<input type="file" multiple accept=".md,.markdown,.txt,.text,.csv,.tsv,.json,.yaml,.yml,.sql,.py,.js,.jsx,.ts,.tsx,.java,.kt,.go,.rs,.cs,.php,.rb,.sh,.toml,.ini,.cfg,.conf,.xml,.graphql,.proto" className="hidden" ref={(element) => { if (element) element.setAttribute('webkitdirectory', '') }} onChange={(event) => setUploadFiles(Array.from(event.target.files || []))} /></label>
               </div>
-              <div className="rounded-xl bg-[var(--bg)] p-3 text-xs text-[var(--text-secondary)]">已选择 {distillFiles.length} 个文件{distillFiles.length > 0 && `：${distillFiles.slice(0, 4).map((file) => file.webkitRelativePath || file.name).join('、')}${distillFiles.length > 4 ? '…' : ''}`}</div>
-              <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-600">公司发布由管理员执行。系统只提炼文字和工作方法，不运行文件中的代码、宏或脚本；发布后仍受租户、工作区、会话启用、审批与审计约束。</div>
-              <button disabled={loading || !distillName.trim() || !distillFiles.length} onClick={() => void handleDistill()} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm text-[var(--accent-foreground)] disabled:opacity-40"><Building2 size={15} />{loading ? '蒸馏中…' : '蒸馏并公司发布'}</button>
+              <div className="rounded-xl bg-[var(--bg)] p-3 text-xs text-[var(--text-secondary)]">已选择 {uploadFiles.length} 个文件{uploadFiles.length > 0 && `：${uploadFiles.slice(0, 4).map((file) => file.webkitRelativePath || file.name).join('、')}${uploadFiles.length > 4 ? '…' : ''}`}</div>
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-600">公司发布由管理员执行。系统只校验、存储和按问题召回文件，不调用模型蒸馏，也不执行包内代码、命令或外部链接；发布后继续受租户、工作区、密级、审批与审计约束。</div>
+              <button disabled={loading || !uploadFiles.length} onClick={() => void handleCompanySkillUpload()} className="inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] px-4 py-2.5 text-sm text-[var(--accent-foreground)] disabled:opacity-40"><Building2 size={15} />{loading ? '上传中…' : '校验并公司发布'}</button>
             </section>
           </main>
         )}
@@ -518,18 +525,19 @@ export function CatalogGovernancePanel({ items, policy, busyId, syncing, onSync,
   </section>
 }
 
-function CompanySkillsSection({ skills, role, onDistill }: {
+function CompanySkillsSection({ skills, role, onUpload, onArchive }: {
   skills: EnterpriseSkillItem[]
   role: string | null
-  onDistill: () => void
+  onUpload: () => void
+  onArchive: (skill: EnterpriseSkillItem) => Promise<void>
 }) {
   return <section className="mt-20 space-y-6 border-t border-[var(--border)] pt-10">
-    <SectionTitle title="公司 Skills" subtitle="由管理员主动蒸馏并保存到本地系统的公司工作方法，沉淀组织经验并服务实际业务" action={role === 'admin' ? <button onClick={onDistill} className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] px-4 py-2 text-xs text-[var(--accent-foreground)]"><UploadCloud size={14} />蒸馏 Skill</button> : undefined} />
+    <SectionTitle title="公司 Skills" subtitle="公司在外部蒸馏并审核完成的业务 Skill，自动补充流程、表结构、字段语义和核心代码规则" action={role === 'admin' ? <button onClick={onUpload} className="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] px-4 py-2 text-xs text-[var(--accent-foreground)]"><UploadCloud size={14} />上传公司 Skill</button> : undefined} />
     {skills.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{skills.map((skill) => <article key={skill.id} className="flex min-h-56 flex-col rounded-2xl border border-emerald-500/20 bg-[var(--surface)] p-5 shadow-sm">
-        <div className="flex items-start gap-3"><div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-emerald-500/10 text-emerald-500"><Building2 size={18} /></div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{skill.name}</h3><span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600">公司发布</span></div><p className="mt-1 text-[10px] text-[var(--text-secondary)]">{skill.classification === 'public' ? '公开' : skill.classification === 'confidential' ? '机密' : '内部'} · {skill.source_files.length} 个来源文件</p></div></div>
+        <div className="flex items-start gap-3"><div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-emerald-500/10 text-emerald-500"><Building2 size={18} /></div><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><h3 className="truncate text-sm font-semibold">{skill.name}</h3><span className="shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600">公司发布</span></div><p className="mt-1 text-[10px] text-[var(--text-secondary)]">v{skill.version} · {skill.classification === 'public' ? '公开' : skill.classification === 'confidential' ? '机密' : '内部'} · {skill.source_files.length} 个包文件</p></div></div>
         <p className="mt-4 line-clamp-3 text-xs leading-5 text-[var(--text-secondary)]">{skill.value_summary}</p>
-        <div className="mt-auto border-t border-[var(--border)] pt-4"><span className="text-[10px] text-[var(--text-secondary)]">本地保存 · 可追溯 · 不执行文件代码</span></div>
-      </article>)}</div> : <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] py-14 text-center"><Building2 size={28} className="mx-auto text-[var(--text-secondary)]" /><p className="mt-3 text-sm font-medium">还没有公司发布的 Skill</p><p className="mt-1 text-xs text-[var(--text-secondary)]">管理员可以选择企业文件或文件夹，将高价值工作经验蒸馏为可复用能力。</p></div>}
+        <div className="mt-auto flex items-center gap-2 border-t border-[var(--border)] pt-4"><span className="mr-auto text-[10px] text-[var(--text-secondary)]">本地保存 · 问题相关召回 · 不执行包内代码</span>{role === 'admin' && <button onClick={() => void onArchive(skill)} className="rounded-lg border border-red-500/20 px-2.5 py-1 text-[10px] text-red-500">移除</button>}</div>
+      </article>)}</div> : <div className="rounded-2xl border border-dashed border-[var(--border)] bg-[var(--surface)] py-14 text-center"><Building2 size={28} className="mx-auto text-[var(--text-secondary)]" /><p className="mt-3 text-sm font-medium">还没有公司发布的 Skill</p><p className="mt-1 text-xs text-[var(--text-secondary)]">管理员可上传已经蒸馏完成的 SKILL.md 或完整 Skill 文件夹。</p></div>}
   </section>
 }
 

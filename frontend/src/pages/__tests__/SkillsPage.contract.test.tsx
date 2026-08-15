@@ -53,12 +53,16 @@ describe('SkillsPage marketplace contract', () => {
     expect(source).not.toContain('apiSetSessionSkills')
   })
 
-  it('supports governed file and folder distillation with company publication', async () => {
+  it('uploads pre-distilled company skill packages without active project distillation', async () => {
     const page = await import('../SkillsPage')
     const source = page.default.toString()
-    expect(source).toContain('蒸馏企业 Skill')
-    expect(source).toContain('选择文件夹')
+    expect(source).toContain('上传公司 Skill')
+    expect(source).toContain('选择 Skill 文件夹')
+    expect(source).toContain('SKILL.md')
     expect(source).toContain('公司发布')
-    expect(source).toContain('不运行文件中的代码')
+    expect(source).toContain('不调用模型蒸馏')
+    expect(source).toContain('不执行包内代码')
+    expect(source).not.toContain('蒸馏企业 Skill')
+    expect(source).not.toContain('蒸馏并公司发布')
   })
 })

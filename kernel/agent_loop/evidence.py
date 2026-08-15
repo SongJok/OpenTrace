@@ -1,4 +1,4 @@
-"""Response 级四源证据账本与确定性答案门禁。"""
+"""Response 级五源证据账本与确定性答案门禁。"""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from kernel.agent_loop.contracts import (
 _REQUIREMENT_SOURCE = {
     EvidenceRequirement.PERSONAL_CONTEXT: InformationSource.PERSONAL_MEMORY,
     EvidenceRequirement.ENTERPRISE_CONTEXT: InformationSource.COMPANY_BRAIN,
+    EvidenceRequirement.COMPANY_SKILL_CONTEXT: InformationSource.COMPANY_SKILL,
     EvidenceRequirement.PUBLISHED_CITATIONS: InformationSource.RAG,
     EvidenceRequirement.METRIC_DEFINITION: InformationSource.DATA,
     EvidenceRequirement.TRUSTED_DATA_SOURCE: InformationSource.DATA,
@@ -104,6 +105,33 @@ class ResponseEvidenceLedger:
                         "entry_count": int(company_brain.get("entry_count") or 0),
                         "top_score": float(company_brain.get("top_score") or 0.0),
                         "match_strategy": company_brain.get("match_strategy"),
+                    },
+                )
+            )
+
+        company_skills = dict(context_manifest.get("company_skills") or {})
+        for skill in company_skills.get("skills") or []:
+            if not isinstance(skill, dict):
+                continue
+            skill_id = str(skill.get("id") or "").strip()
+            source_digest = str(skill.get("source_digest") or "").strip()
+            if not skill_id or not source_digest:
+                continue
+            ledger.add(
+                EvidenceLedgerEntry(
+                    source=InformationSource.COMPANY_SKILL,
+                    evidence_id=f"company-skill:{skill_id}:{source_digest}",
+                    evidence_type="company_uploaded_distilled_skill",
+                    title=str(skill.get("name") or skill_id),
+                    authority="enterprise_published",
+                    version=str(skill.get("version") or "") or None,
+                    citation=f"company-skill://{skill_id}@{source_digest[:12]}",
+                    requirements={EvidenceRequirement.COMPANY_SKILL_CONTEXT},
+                    metadata={
+                        "runtime_id": skill.get("runtime_id"),
+                        "classification": skill.get("classification"),
+                        "top_score": float(skill.get("top_score") or 0.0),
+                        "matched_paths": list(skill.get("matched_paths") or []),
                     },
                 )
             )
