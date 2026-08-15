@@ -40,7 +40,11 @@ from kernel.agent_loop.contracts import (
 )
 from kernel.agent_loop.discovery import CapabilityDiscovery
 from kernel.agent_loop.evidence import ResponseEvidenceLedger
-from kernel.agent_loop.intent_policy import apply_enterprise_intent_policy, intent_answer_contract
+from kernel.agent_loop.intent_policy import (
+    apply_enterprise_intent_policy,
+    intent_answer_contract,
+    resolve_intent_clarification,
+)
 from kernel.agent_loop.rag_routing import RagRoutingDecision, resolve_rag_routing
 from kernel.agent_loop.write_intent import (
     is_affirmative_follow_up,
@@ -388,7 +392,12 @@ class AgentLoop:
             context.messages,
             current_message_count=context.current_message_count,
         )
-        grounding_context = self._planning_grounding_context(context.context_manifest)
+        conversation_context_available = bool(planning_context)
+        grounding_context = self._planning_grounding_context(
+            context.context_manifest,
+            query=query,
+            conversation_context_available=conversation_context_available,
+        )
         if grounding_context:
             planning_context = "\n".join(
                 part for part in (grounding_context, planning_context) if part
@@ -456,10 +465,6 @@ class AgentLoop:
             model_calls.extend(planning_calls)
         if sql_draft_request:
             decision = self._apply_pending_sql_draft_policy(decision, sql_draft_request)
-        decision = self._apply_grounded_context_policy(
-            decision,
-            context_manifest=context.context_manifest,
-        )
         if (
             rag_routing.required
             and str(payload.get("tool_choice") or "auto") != "none"
@@ -483,6 +488,15 @@ class AgentLoop:
                 )
             ),
         )
+        decision, intent_resolution = resolve_intent_clarification(
+            decision,
+            query=str((sql_draft_request or {}).get("original_question") or rag_routing.query),
+            context_manifest=context.context_manifest,
+            tool_specs=available_specs,
+            tools_enabled=str(payload.get("tool_choice") or "auto") != "none",
+            conversation_context_available=conversation_context_available,
+        )
+        context.context_manifest["intent_resolution"] = intent_resolution
         intent = decision.intent
         evidence_ledger = ResponseEvidenceLedger.from_context(
             intent,
@@ -1802,13 +1816,25 @@ class AgentLoop:
         return sanitized
 
     @staticmethod
-    def _planning_grounding_context(context_manifest: dict[str, Any]) -> str:
+    def _planning_grounding_context(
+        context_manifest: dict[str, Any],
+        *,
+        query: str = "",
+        conversation_context_available: bool = False,
+    ) -> str:
         """只向规划器暴露命中状态，避免其误判“无能力读取”已装配的内部上下文。"""
 
         company = dict(context_manifest.get("company_brain") or {})
         company_skills = dict(context_manifest.get("company_skills") or {})
+        enterprise = dict(context_manifest.get("enterprise_context") or {})
+        personal_business = dict(context_manifest.get("personal_business_context") or {})
         memory_count = int(context_manifest.get("memory_count") or 0)
         lines: list[str] = []
+        if enterprise.get("requires_grounding"):
+            lines.append(
+                "当前回合已注入有权限的企业认知实体，可用于理解公司、部门、职责和术语；"
+                "不要要求用户重复提供其中已有的企业背景。"
+            )
         if company.get("answer_context_available"):
             lines.append(
                 "当前回合已经命中并注入与问题相关的企业大脑资料，可直接依据上下文回答；"
@@ -1825,6 +1851,22 @@ class AgentLoop:
                 f"当前回合已经命中 {memory_count} 条当前用户的受治理个人记忆；"
                 "直接询问命中事实时无需外部能力。"
             )
+        if personal_business.get("query_matched"):
+            lines.append(
+                "当前回合已经注入当前用户的周期任务、待确认操作和近期成功操作状态；"
+                "状态问题应直接总结这些权威投影，不要要求用户重新描述。"
+            )
+        attachment_count = int(context_manifest.get("attachment_count") or 0)
+        if attachment_count:
+            lines.append(
+                f"当前回合已有 {attachment_count} 个附件内容直接注入；应先总结附件回答，"
+                "不得要求用户再次上传或粘贴同一资料。"
+            )
+        if conversation_context_available and is_contextual_follow_up(query):
+            lines.append(
+                "当前请求是短追问，父链最近对话已提供指代对象；应继承最近有效目标和约束，"
+                "不要要求用户重复上一轮内容。"
+            )
         return "\n".join(lines)
 
     @staticmethod
@@ -1833,38 +1875,15 @@ class AgentLoop:
         *,
         context_manifest: dict[str, Any],
     ) -> PlanningDecision:
-        """已有相关企业证据时，阻止规划器用“能力不支持”提前结束问答。"""
+        """兼容入口：复用统一的已有信息意图消解策略。"""
 
-        company = dict(context_manifest.get("company_brain") or {})
-        company_skills = dict(context_manifest.get("company_skills") or {})
-        if not (
-            company.get("answer_context_available")
-            or company_skills.get("answer_context_available")
-        ):
-            return decision
-        intent = decision.intent
-        if (
-            intent.risk != SideEffect.READ
-            or intent.capabilities
-            or not intent.clarification_question
-        ):
-            return decision
-        grounded_intent = IntentPlan(
-            goal=intent.goal,
-            task_type=intent.task_type,
-            capabilities=intent.capabilities,
-            ambiguity=None,
-            risk=intent.risk,
-            execution_profile=intent.execution_profile,
-            execution_mode=intent.execution_mode,
-            expected_outputs=intent.expected_outputs,
-            clarification_question=None,
-            information_sources=intent.information_sources,
-            freshness_requirement=intent.freshness_requirement,
-            evidence_requirements=intent.evidence_requirements,
-            data_stage=intent.data_stage,
+        resolved, _ = resolve_intent_clarification(
+            decision,
+            query="",
+            context_manifest=context_manifest,
+            tool_specs=[],
         )
-        return PlanningDecision(intent=grounded_intent, execution_plan=decision.execution_plan)
+        return resolved
 
     @staticmethod
     def _apply_required_rag_policy(decision: PlanningDecision) -> PlanningDecision:
@@ -2875,7 +2894,11 @@ class AgentLoop:
     ) -> str:
         prompt = (
             "识别用户真实目标并选择完成它所需的最小能力集合。不要用关键词路由。"
-            "有歧义且会显著改变结果时给出 clarification_question。"
+            "先综合当前请求、父链最近有效目标、已确认个人记忆、企业大脑、公司 Skill 和附件，"
+            "采用证据最强且能满足请求的合理解释。可由已有上下文或只读 RAG/DataAgent 研究得到的"
+            "信息不得转问用户；可选的格式、详略和非关键偏好采用稳妥默认值并在答案中简短说明。"
+            "只有互斥候选必须由用户选择、关键目标/范围确实缺失、来源冲突、权限不足，或写入/"
+            "破坏性操作不安全时才给出一个 clarification_question。"
             "同时判断最终答案需要哪些受治理信息来源：personal_memory、company_brain、"
             "company_skill、rag、data；个人记忆、企业大脑和公司 Skill 由上下文注入，不是工具。"
             "company_skill 用于已发布的业务流程、表结构、字段语义和代码规则；rag 用于已发布知识"
