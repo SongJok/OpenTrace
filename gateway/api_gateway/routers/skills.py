@@ -137,6 +137,8 @@ def _enterprise_skill_item(row: EnterpriseSkill) -> dict[str, Any]:
         "published_at": row.published_at.isoformat() if row.published_at else None,
         "publication": "company",
         "origin": "uploaded" if uploaded else "legacy_distilled",
+        "execution_policy": "context_only",
+        "active_distillation": False,
         "local_available": _ensure_enterprise_skill_local(row),
     }
 
@@ -393,7 +395,6 @@ async def upload_company_skill(
         package = validate_company_skill_package(uploads)
     except ValueError as exc:
         messages = {
-            "company_skill_frontmatter_required": "SKILL.md 必须包含 name 和 description 的 YAML frontmatter",
             "company_skill_requires_exactly_one_skill_md": "Skill 包必须且只能包含一个 SKILL.md",
             "company_skill_package_too_large": "Skill 包总大小不能超过 12MB",
             "company_skill_md_content_invalid": "SKILL.md 内容过短、为空或超过限制",

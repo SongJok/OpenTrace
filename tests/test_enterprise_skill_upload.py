@@ -104,7 +104,7 @@ def test_uploaded_package_preserves_pre_distilled_business_logic_without_rewriti
         ]
     )
 
-    assert package.name == "订单线上业务字典"
+    assert package.name == "order-skill"
     assert package.version == "2.3.1"
     assert package.source_digest
     assert "PAID 表示已支付但不代表已经发货" in package.instructions
@@ -116,6 +116,34 @@ def test_uploaded_package_preserves_pre_distilled_business_logic_without_rewriti
     ]
     assert all("content" not in item for item in company.public_source_files(package.files))
     assert all(item["path"] != ".DS_Store" for item in package.files)
+
+
+def test_real_world_folder_without_frontmatter_uses_directory_name_and_stays_inert() -> None:
+    package = validate_company_skill_package(
+        [
+            CompanySkillUploadFile(
+                path="php_table_schema/SKILL.md",
+                content=(
+                    "# PHP 项目表结构梳理（php_table_schema）\n\n"
+                    "为没有 SQL 迁移文件的 PHP 项目梳理表结构和字段业务逻辑。\n\n"
+                    "## 何时使用\n\n- 用户询问 PHP 表结构\n"
+                ).encode(),
+            ),
+            CompanySkillUploadFile(
+                path="php_table_schema/references/scanner.py",
+                content=b"print('this uploaded reference must never execute')\n",
+                content_type="text/x-python",
+            ),
+        ]
+    )
+
+    assert package.name == "php_table_schema"
+    assert package.version == "1.0.0"
+    assert package.description.startswith("为没有 SQL 迁移文件")
+    assert package.use_cases == ["用户询问 PHP 表结构"]
+    assert "print('this uploaded reference must never execute')" in next(
+        item["content"] for item in package.files if item["path"].endswith("scanner.py")
+    )
 
 
 @pytest.mark.parametrize(
@@ -239,6 +267,8 @@ async def test_company_skill_list_filters_items_above_employee_clearance(monkeyp
     )
 
     assert [item["runtime_id"] for item in response["items"]] == [internal.runtime_id]
+    assert response["items"][0]["execution_policy"] == "context_only"
+    assert response["items"][0]["active_distillation"] is False
 
 
 @pytest.mark.asyncio

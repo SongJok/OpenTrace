@@ -12,7 +12,9 @@
 
 管理员在 Skills 页面上传一个 `SKILL.md` 或包含它的文件夹。项目不会调用模型再次蒸馏，也不会执行包内代码、命令、宏或外部链接。
 
-`SKILL.md` 必须是 UTF-8 文本，并包含 YAML frontmatter：
+`SKILL.md` 必须是 UTF-8 文本。上传完整文件夹时，文件夹名是公司 Skill 的发布名称；YAML
+frontmatter 可选，没有时系统仅提取一级标题后的首段作为列表摘要，不改写正文，也不调用模型。
+只上传单个 `SKILL.md` 时应提供 frontmatter 中的 `name`，以便确定发布名称：
 
 ```yaml
 ---
@@ -24,7 +26,7 @@ use_cases:
 ---
 ```
 
-包内可携带 Markdown、SQL、CSV/TSV、JSON/YAML 和常见源码纯文本文件。单文件最大 2MB，整个包最大 12MB，最多 80 个文件；路径穿越、隐藏目录、二进制内容和检测到的私钥/密钥会被拒绝，macOS/Windows 自动生成的 `.DS_Store`、`Thumbs.db` 和 `__MACOSX` 元数据会被忽略。文件内容和摘要持久化到 PostgreSQL，同时投影到 API/Worker 共享本地镜像；列表接口只返回来源元数据，不返回企业 Skill 原文。
+包内可携带 Markdown、SQL、CSV/TSV、JSON/YAML 和常见源码纯文本文件。单文件最大 2MB，整个包最大 12MB，最多 80 个文件；路径穿越、隐藏目录、二进制内容和检测到的私钥/密钥会被拒绝，macOS/Windows 自动生成的 `.DS_Store`、`Thumbs.db` 和 `__MACOSX` 元数据会被忽略。文件内容和摘要持久化到 PostgreSQL，同时投影到 API/Worker 共享本地镜像；列表接口只返回来源元数据，不返回企业 Skill 原文。所有包均固定为 `context_only`：reference 中即使包含 Python、Shell 或 SQL，也只参与文本检索，平台永不加载或执行。
 
 ## 问答与冲突规则
 

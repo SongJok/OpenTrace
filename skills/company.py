@@ -159,10 +159,10 @@ def _decode_text(raw: bytes, *, path: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _frontmatter(content: str) -> dict[str, Any]:
+def _frontmatter(content: str) -> dict[str, Any] | None:
     match = _FRONTMATTER_PATTERN.search(content)
     if match is None:
-        raise ValueError("company_skill_frontmatter_required")
+        return None
     try:
         parsed = yaml.safe_load(match.group("body")) or {}
     except yaml.YAMLError as exc:
@@ -170,6 +170,44 @@ def _frontmatter(content: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("company_skill_frontmatter_invalid")
     return parsed
+
+
+def _plain_markdown(value: str) -> str:
+    text = re.sub(r"\[([^]]+)]\([^)]+\)", r"\1", value)
+    text = re.sub(r"(?m)^\s*>+\s?", "", text)
+    text = re.sub(r"[`*_]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _infer_description(content: str) -> str:
+    """兼容没有 frontmatter 的已蒸馏 Skill，以标题后的首段作为摘要。"""
+
+    body = _FRONTMATTER_PATTERN.sub("", content, count=1).strip()
+    body = re.sub(r"^#{1,6}\s+.+?(?:\n|$)", "", body, count=1).strip()
+    paragraphs = re.split(r"\n\s*\n", body)
+    for paragraph in paragraphs:
+        lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
+        if not lines or all(line.startswith(("#", "- ", "* ", ">", "```")) for line in lines):
+            continue
+        description = _plain_markdown(" ".join(lines))
+        if description:
+            return description[:4000]
+    return "公司管理员上传并审核发布的只读业务 Skill。"
+
+
+def _infer_use_cases(content: str) -> list[str]:
+    match = re.search(
+        r"^#{1,6}\s+(?:何时使用|使用场景|适用场景)\s*$\n(?P<body>.*?)(?=^#{1,6}\s|\Z)",
+        content,
+        re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        return []
+    return [
+        _plain_markdown(item)[:240]
+        for item in re.findall(r"^\s*[-*]\s+(.+?)\s*$", match.group("body"), re.MULTILINE)
+        if _plain_markdown(item)
+    ][:12]
 
 
 def validate_company_skill_package(
@@ -230,9 +268,12 @@ def validate_company_skill_package(
 
     if not 80 <= len(instructions) <= MAX_SKILL_MD_CHARS:
         raise ValueError("company_skill_md_content_invalid")
-    metadata = _frontmatter(instructions)
-    name = str(metadata.get("name") or "").strip()
-    description = str(metadata.get("description") or "").strip()
+    metadata = _frontmatter(instructions) or {}
+    # 文件夹上传时以目录名为发布名称，避免包内展示标题与治理标识不一致；
+    # 仅上传单个 SKILL.md 时继续使用 frontmatter 中的名称。
+    directory_name = skill_root.name if skill_root != PurePosixPath(".") else ""
+    name = directory_name or str(metadata.get("name") or "").strip()
+    description = str(metadata.get("description") or "").strip() or _infer_description(instructions)
     version = str(metadata.get("version") or "1.0.0").strip()
     if not name or len(name) > 128:
         raise ValueError("company_skill_name_invalid")
@@ -240,7 +281,9 @@ def validate_company_skill_package(
         raise ValueError("company_skill_description_invalid")
     if not _VERSION_PATTERN.fullmatch(version):
         raise ValueError("company_skill_version_invalid")
-    raw_use_cases = metadata.get("use_cases") or metadata.get("use-cases") or []
+    raw_use_cases = (
+        metadata.get("use_cases") or metadata.get("use-cases") or _infer_use_cases(instructions)
+    )
     if isinstance(raw_use_cases, str):
         raw_use_cases = [raw_use_cases]
     use_cases = [str(item).strip()[:240] for item in raw_use_cases if str(item).strip()][:12]

@@ -2107,6 +2107,8 @@ export interface EnterpriseSkillItem {
   published_at?: string | null
   publication: 'company'
   origin: 'uploaded' | 'legacy_distilled'
+  execution_policy: 'context_only'
+  active_distillation: false
   local_available: boolean
 }
 
