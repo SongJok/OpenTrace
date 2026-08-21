@@ -4,6 +4,7 @@ x-opentrace-build: &opentrace-build
   args:
     PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
     OPENTRACE_BUILD_FINGERPRINT: ${OPENTRACE_BUILD_FINGERPRINT:-unknown}
+    OPENTRACE_RELEASE_REVISION: ${OPENTRACE_RELEASE_REVISION:-unknown}
     UV_VERSION: ${UV_VERSION:-0.8.24}
     UV_BOOTSTRAP_INDEX_URL: ${UV_BOOTSTRAP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
     UV_BOOTSTRAP_FALLBACK_INDEX_URL: ${UV_BOOTSTRAP_FALLBACK_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}

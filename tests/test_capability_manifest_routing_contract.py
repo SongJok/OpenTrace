@@ -7,7 +7,10 @@ from kernel.agent_runtime.manifest import get_manifest, reload_manifest
 from kernel.runtime.capability import capability_registry
 
 
-def test_registry_resolve_matches_manifest_for_tier1_bootstrap():
+def test_registry_resolve_matches_manifest_for_tier1_bootstrap(monkeypatch):
+    from infra.config.settings import settings
+
+    monkeypatch.setattr(settings, "capability_profile", "production_intelligence")
     reload_manifest()
     register_builtin_agents(force=True)
     m = get_manifest()

@@ -36,7 +36,7 @@ def test_tier0_governance_envelope_fields():
     assert meta["tier0_fast_path"] is True
     assert meta["capability_type"] == "data_query"
     assert meta["registry_agent"] == "data"
-    assert meta["manifest_version"].startswith("4.")
+    assert meta["manifest_version"].startswith("5.")
     assert "semantic_observability" in meta
 
 

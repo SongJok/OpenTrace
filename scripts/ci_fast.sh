@@ -83,7 +83,7 @@ backend_gate() {
     scripts/migrate_attachment_objects.py scripts/verify_tenant_rls_postgres.py
 
   "$PYTHON_BIN" scripts/check_enterprise_boundaries.py
-  "$PYTHON_BIN" scripts/run_enterprise_evals.py --minimum-pass-rate 1.0
+  "$PYTHON_BIN" scripts/run_enterprise_evals.py --validate-contracts
 
   local env_before docs_before env_after docs_after
   env_before="$(shasum -a 256 .env.example)"

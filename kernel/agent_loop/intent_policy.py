@@ -1,4 +1,4 @@
-"""Responses 五源意图的确定性校正与规划模型故障回退。"""
+"""Responses 七类受治理来源意图的确定性校正与规划模型故障回退。"""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ _DATA_MEASURE_RE = re.compile(
 )
 _DATA_OPERATION_RE = re.compile(
     r"多少|几(?:个|人|笔|单)|查询|统计|计算|分析|对比|比较|趋势|同比|环比|排名|"
-    r"top\s*\d*|明细|列出|分布|占比|平均|合计|总计|最高|最低|异常|实际数据|"
+    r"top\s*\d*|明细|列出|分布|占比|平均|合计|总计|最高|最低|异常|原因|实际数据|"
     r"how many|count|calculate|compare|trend|breakdown|list",
     re.IGNORECASE,
 )
@@ -53,6 +53,29 @@ _DEFINITION_ONLY_RE = re.compile(
 _PERSONAL_CONTEXT_RE = re.compile(
     r"我的|我叫|记得我|称呼我|我偏好|我喜欢|我通常|我习惯|关于我|"
     r"my preference|remember me|about me",
+    re.IGNORECASE,
+)
+_CONFIG_INTELLIGENCE_RE = re.compile(
+    r"(?:配置|参数|开关|阈值|config).{0,24}(?:校验|验证|检查|冲突|容量|历史|dry[- ]?run|"
+    r"是否合理|风险|影响)|(?:校验|验证|检查|dry[- ]?run).{0,24}(?:配置|参数|config)",
+    re.IGNORECASE,
+)
+_PRODUCTION_INTELLIGENCE_RE = re.compile(
+    r"生产|线上|prod(?:uction)?|故障|告警|异常|超时|延迟|错误率|日志|指标|调用链|"
+    r"trace|metric|apm|cmdb|服务拓扑|服务依赖|负责人|仓库|pull request|部署|发布|回滚|"
+    r"流水线|kubernetes|\bk8s\b",
+    re.IGNORECASE,
+)
+_BUSINESS_INCIDENT_RE = re.compile(
+    r"(?:用户|客户|订单|支付|充值|退款|余额|奖励|资格|领取|活动|交易|库存|账户|业务)"
+    r".{0,40}(?:失败|无法|未到账|未增加|未生效|没达到|异常|报错|问题|原因|定位)|"
+    r"(?:失败|无法|未到账|未增加|未生效|异常|报错).{0,40}"
+    r"(?:用户|客户|订单|支付|充值|退款|余额|奖励|资格|领取|活动|交易|库存|账户|业务)",
+    re.IGNORECASE,
+)
+_DATA_RECORD_INCIDENT_RE = re.compile(
+    r"(?:用户|客户|订单|支付|充值|退款|余额|奖励|资格|领取|活动|交易|账户)"
+    r".{0,40}(?:失败|无法|未到账|未增加|未生效|异常|记录|状态|原因|定位)",
     re.IGNORECASE,
 )
 _HISTORICAL_RE = re.compile(
@@ -101,10 +124,21 @@ def is_enterprise_data_question(query: str) -> bool:
         return False
     if _DATA_EXPLICIT_RE.search(text):
         return True
+    if _DATA_RECORD_INCIDENT_RE.search(text):
+        return True
     return bool(
         _DATA_MEASURE_RE.search(text)
         and (_DATA_OPERATION_RE.search(text) or _DATA_TIME_RE.search(text))
     )
+
+
+def is_config_intelligence_question(query: str) -> bool:
+    return bool(_CONFIG_INTELLIGENCE_RE.search(str(query or "")))
+
+
+def is_production_intelligence_question(query: str) -> bool:
+    text = str(query or "")
+    return bool(_PRODUCTION_INTELLIGENCE_RE.search(text) or _BUSINESS_INCIDENT_RE.search(text))
 
 
 def _append_unique(target: list[T], *items: T) -> None:
@@ -123,7 +157,6 @@ def _available_grounding_sources(
     enterprise = dict(context_manifest.get("enterprise_context") or {})
     company = dict(context_manifest.get("company_brain") or {})
     company_skills = dict(context_manifest.get("company_skills") or {})
-    personal_business = dict(context_manifest.get("personal_business_context") or {})
     if enterprise.get("requires_grounding"):
         sources.append("enterprise_context")
     if company.get("answer_context_available"):
@@ -134,10 +167,6 @@ def _available_grounding_sources(
         _PERSONAL_CONTEXT_RE.search(query or "") or is_contextual_follow_up(query)
     ):
         sources.append(InformationSource.PERSONAL_MEMORY.value)
-    if personal_business.get("query_matched"):
-        sources.append("personal_business_context")
-    if int(context_manifest.get("attachment_count") or 0):
-        sources.append("attachments")
     if conversation_context_available and is_contextual_follow_up(query):
         sources.append("conversation_parent_chain")
     return list(dict.fromkeys(sources))
@@ -254,6 +283,20 @@ def resolve_intent_clarification(
 
 
 def _default_step(capability: str) -> ExecutionStep:
+    if capability == "production":
+        return ExecutionStep(
+            id="production-evidence",
+            objective="解析生产资产并从已授权系统采集当前只读证据",
+            capability="production",
+            success_criteria="返回带环境、时间、权限和来源的证据，并由 Critic 标记冲突与缺口",
+        )
+    if capability == "config":
+        return ExecutionStep(
+            id="config-validation",
+            objective="按已发布策略校验配置 Schema、引用、规则、历史、容量、冲突与 dry-run",
+            capability="config",
+            success_criteria="持久化确定性校验运行，不向配置中心写入任何变更",
+        )
     if capability == "rag":
         return ExecutionStep(
             id="rag-grounding",
@@ -315,6 +358,39 @@ def _reconcile_plan(
             suffix += 1
         retained.append(step)
         known_ids.add(step.id)
+    capability_steps = {
+        step.capability: step.id for step in retained if step.capability is not None
+    }
+    dependencies = {
+        "production": tuple(item for item in (capability_steps.get("data"),) if item is not None),
+        "config": tuple(item for item in (capability_steps.get("production"),) if item is not None),
+    }
+    capability_order = {"data": 0, "production": 1, "config": 2}
+    capability_by_step_id = {step.id: step.capability for step in retained}
+
+    def ordered_dependencies(step: ExecutionStep) -> tuple[str, ...]:
+        current_rank = capability_order.get(step.capability or "")
+        retained_dependencies: list[str] = []
+        for dependency in step.depends_on:
+            dependency_rank = capability_order.get(capability_by_step_id.get(dependency) or "")
+            if (
+                current_rank is not None
+                and dependency_rank is not None
+                and dependency_rank > current_rank
+            ):
+                continue
+            retained_dependencies.append(dependency)
+        return tuple(
+            dict.fromkeys([*retained_dependencies, *dependencies.get(step.capability, ())])
+        )
+
+    retained = [
+        replace(
+            step,
+            depends_on=ordered_dependencies(step),
+        )
+        for step in retained
+    ]
     if not retained:
         retained.append(
             ExecutionStep(
@@ -347,7 +423,7 @@ def apply_enterprise_intent_policy(
     tools_enabled: bool = True,
     data_stage_override: DataIntentStage | None = None,
 ) -> PlanningDecision:
-    """把模型语义意图约束为五源、证据和问数阶段的可审计决策。"""
+    """把模型语义意图约束为七类受治理来源、证据和问数阶段的可审计决策。"""
 
     intent = decision.intent
     specs = {spec.name: spec for spec in tool_specs}
@@ -359,6 +435,10 @@ def apply_enterprise_intent_policy(
         _append_unique(sources, InformationSource.RAG)
     if "data" in capabilities or "execute_sql_draft" in capabilities:
         _append_unique(sources, InformationSource.DATA)
+    if "production" in capabilities:
+        _append_unique(sources, InformationSource.PRODUCTION)
+    if "config" in capabilities:
+        _append_unique(sources, InformationSource.CONFIG)
 
     company = dict(context_manifest.get("company_brain") or {})
     enterprise = dict(context_manifest.get("enterprise_context") or {})
@@ -387,10 +467,34 @@ def apply_enterprise_intent_policy(
         ):
             _append_unique(capabilities, "data")
 
+    config_requested = is_config_intelligence_question(query)
+    if config_requested:
+        _append_unique(sources, InformationSource.CONFIG)
+        if tools_enabled and "config" in specs:
+            _append_unique(capabilities, "config")
+
+    production_requested = is_production_intelligence_question(query)
+    if production_requested and not config_requested:
+        _append_unique(sources, InformationSource.PRODUCTION)
+        if tools_enabled and "production" in specs:
+            _append_unique(capabilities, "production")
+
+    # 默认拒绝模型常识作为额外事实源。规划器没有选出已命中的
+    # 个人/企业上下文或问数时，所有信息问题统一进入受治理 RAG。
+    # 工具被客户关闭时仍保留 RAG 证据需求，最终门禁会 fail closed。
+    if not sources:
+        _append_unique(sources, InformationSource.RAG)
+        if tools_enabled and "rag" in specs:
+            _append_unique(capabilities, "rag")
+
     if not tools_enabled:
         capabilities = []
     if InformationSource.RAG in sources and tools_enabled and "rag" in specs:
         _append_unique(capabilities, "rag")
+    if InformationSource.PRODUCTION in sources and tools_enabled and "production" in specs:
+        _append_unique(capabilities, "production")
+    if InformationSource.CONFIG in sources and tools_enabled and "config" in specs:
+        _append_unique(capabilities, "config")
     if (
         InformationSource.DATA in sources
         and tools_enabled
@@ -415,6 +519,28 @@ def apply_enterprise_intent_policy(
         allowed_evidence.update(_DATA_DRAFT_EVIDENCE)
         if data_stage_override == DataIntentStage.EXECUTE_AND_VERIFY:
             allowed_evidence.add(EvidenceRequirement.EXECUTED_RESULT)
+    if InformationSource.PRODUCTION in sources:
+        allowed_evidence.update(
+            {
+                EvidenceRequirement.ASSET_CONTEXT,
+                EvidenceRequirement.LIVE_OBSERVATION,
+                EvidenceRequirement.CROSS_SOURCE_CORROBORATION,
+            }
+        )
+    if InformationSource.CONFIG in sources:
+        allowed_evidence.update(
+            {
+                EvidenceRequirement.ASSET_CONTEXT,
+                EvidenceRequirement.CONFIG_VALIDATION,
+                EvidenceRequirement.CONFIG_SCHEMA,
+                EvidenceRequirement.CONFIG_REFERENCES,
+                EvidenceRequirement.CONFIG_BUSINESS_RULES,
+                EvidenceRequirement.CONFIG_HISTORY,
+                EvidenceRequirement.CONFIG_CAPACITY,
+                EvidenceRequirement.CONFIG_CONFLICTS,
+                EvidenceRequirement.CONFIG_DRY_RUN,
+            }
+        )
     evidence = [item for item in evidence if item in allowed_evidence]
 
     if InformationSource.PERSONAL_MEMORY in sources:
@@ -427,6 +553,26 @@ def apply_enterprise_intent_policy(
         _append_unique(evidence, EvidenceRequirement.PUBLISHED_CITATIONS)
     if InformationSource.DATA in sources:
         _append_unique(evidence, *_DATA_DRAFT_EVIDENCE)
+    if InformationSource.PRODUCTION in sources:
+        _append_unique(evidence, EvidenceRequirement.ASSET_CONTEXT)
+        if production_requested:
+            _append_unique(
+                evidence,
+                EvidenceRequirement.LIVE_OBSERVATION,
+                EvidenceRequirement.CROSS_SOURCE_CORROBORATION,
+            )
+    if InformationSource.CONFIG in sources:
+        _append_unique(
+            evidence,
+            EvidenceRequirement.ASSET_CONTEXT,
+            EvidenceRequirement.CONFIG_VALIDATION,
+            EvidenceRequirement.CONFIG_SCHEMA,
+            EvidenceRequirement.CONFIG_REFERENCES,
+            EvidenceRequirement.CONFIG_BUSINESS_RULES,
+            EvidenceRequirement.CONFIG_HISTORY,
+            EvidenceRequirement.CONFIG_CAPACITY,
+            EvidenceRequirement.CONFIG_CONFLICTS,
+        )
 
     if data_stage_override is not None:
         data_stage = data_stage_override
@@ -440,12 +586,14 @@ def apply_enterprise_intent_policy(
         _append_unique(evidence, EvidenceRequirement.EXECUTED_RESULT)
 
     freshness = intent.freshness_requirement
-    if InformationSource.DATA in sources:
+    if InformationSource.DATA in sources or InformationSource.PRODUCTION in sources:
         freshness = (
             FreshnessRequirement.HISTORICAL
             if _HISTORICAL_RE.search(query or "")
             else FreshnessRequirement.CURRENT
         )
+    elif InformationSource.CONFIG in sources:
+        freshness = FreshnessRequirement.CURRENT
     elif InformationSource.RAG in sources and freshness == FreshnessRequirement.UNSPECIFIED:
         freshness = FreshnessRequirement.PUBLISHED
     elif sources and freshness == FreshnessRequirement.UNSPECIFIED:
@@ -464,6 +612,10 @@ def apply_enterprise_intent_policy(
     task_type = intent.task_type
     if data_stage == DataIntentStage.RESEARCH_AND_DRAFT and task_type == "chat":
         task_type = "data_query"
+    elif InformationSource.CONFIG in sources and task_type == "chat":
+        task_type = "config_intelligence"
+    elif InformationSource.PRODUCTION in sources and task_type == "chat":
+        task_type = "production_intelligence"
     normalized_intent = replace(
         intent,
         task_type=task_type,
@@ -493,12 +645,23 @@ def apply_enterprise_intent_policy(
 def intent_answer_contract(intent: IntentPlan) -> str:
     """把结构化意图转换为最终回答模型可执行的证据约束。"""
 
+    platform_contract = ""
+    if set(intent.information_sources).intersection(
+        {InformationSource.PRODUCTION, InformationSource.CONFIG}
+    ):
+        platform_contract = (
+            "生产与配置智能回答必须依次包含‘结论、证据、置信度、影响、建议’五个部分。"
+            "结论只能来自工具证据；相关性不得表述为因果性；环境、版本或时间不一致以及 Critic "
+            "冲突必须显式披露。Config Agent 的通过只代表验证通过，不代表配置已发布。"
+        )
     return (
         "当前 Response 的受治理信息意图如下。只把实际命中或工具成功返回的来源用于事实陈述；"
         "来源未命中、工具失败或证据不足时必须明确说明，不得补造。DataAgent 的 research_and_draft "
         "阶段只能展示研究结论与待确认 SQL 草案，不能声称已有查询结果；execute_and_verify 阶段"
         "只能采用实际执行和结果验证返回的数据。父链或已命中上下文能够高置信补全的省略信息，"
         "应按证据最强的解释完成回答；非关键格式和详略偏好采用稳妥默认值，必要时简短说明假设，"
-        "不要在最终回答中重新提出已被意图策略消解的问题。\n"
+        "不要在最终回答中重新提出已被意图策略消解的问题。"
+        + platform_contract
+        + "\n"
         + json.dumps(intent.to_dict(), ensure_ascii=False)
     )

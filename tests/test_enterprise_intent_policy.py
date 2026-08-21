@@ -14,6 +14,7 @@ from kernel.agent_loop.intent_policy import (
     apply_enterprise_intent_policy,
     intent_answer_contract,
     is_enterprise_data_question,
+    is_production_intelligence_question,
 )
 from kernel.agent_loop.runner import AgentLoop
 
@@ -76,6 +77,80 @@ def test_business_measure_with_time_is_deterministic_data_intent() -> None:
     assert EvidenceRequirement.VALIDATED_SQL in governed.intent.evidence_requirements
     assert EvidenceRequirement.EXECUTED_RESULT not in governed.intent.evidence_requirements
     assert [step.capability for step in governed.execution_plan.steps] == ["data"]
+
+
+def test_business_incident_routes_to_data_then_production_evidence_graph() -> None:
+    query = "用户 882719 充值成功但余额未增加，请定位原因"
+    assert is_enterprise_data_question(query)
+    assert is_production_intelligence_question(query)
+
+    governed = apply_enterprise_intent_policy(
+        _decision(),
+        query=query,
+        context_manifest={},
+        tool_specs=[_spec("data"), _spec("production"), _spec("rag")],
+    )
+
+    assert governed.intent.capabilities == ("data", "production")
+    assert governed.intent.information_sources == (
+        InformationSource.DATA,
+        InformationSource.PRODUCTION,
+    )
+    steps = {step.capability: step for step in governed.execution_plan.steps}
+    assert steps["production"].depends_on == (steps["data"].id,)
+    assert EvidenceRequirement.TRUSTED_DATA_SOURCE in governed.intent.evidence_requirements
+    assert EvidenceRequirement.LIVE_OBSERVATION in governed.intent.evidence_requirements
+
+
+def test_unclassified_question_defaults_to_governed_rag_instead_of_model_knowledge() -> None:
+    governed = apply_enterprise_intent_policy(
+        _decision(),
+        query="今天有什么外部新闻？",
+        context_manifest={},
+        tool_specs=[_spec("data"), _spec("rag")],
+    )
+
+    assert governed.intent.capabilities == ("rag",)
+    assert governed.intent.information_sources == (InformationSource.RAG,)
+    assert governed.intent.evidence_requirements == (EvidenceRequirement.PUBLISHED_CITATIONS,)
+    assert [step.capability for step in governed.execution_plan.steps] == ["rag"]
+
+
+def test_disabled_tools_keep_default_rag_requirement_for_fail_closed_gate() -> None:
+    governed = apply_enterprise_intent_policy(
+        _decision(),
+        query="介绍一下市场最新趋势",
+        context_manifest={},
+        tool_specs=[_spec("rag")],
+        tools_enabled=False,
+    )
+
+    assert governed.intent.capabilities == ()
+    assert governed.intent.information_sources == (InformationSource.RAG,)
+    assert EvidenceRequirement.PUBLISHED_CITATIONS in governed.intent.evidence_requirements
+
+
+def test_runtime_source_policy_allows_only_governed_sources_and_blocks_raw_attachments() -> None:
+    manifest = AgentLoop._five_source_policy_manifest(
+        selected_sources=(InformationSource.COMPANY_BRAIN, InformationSource.RAG)
+    )
+
+    assert manifest["allowed_sources"] == [source.value for source in InformationSource]
+    assert manifest["selected_sources"] == ["company_brain", "rag"]
+    assert manifest["model_knowledge_allowed"] is False
+    assert manifest["web_allowed"] is False
+    assert manifest["external_connectors_allowed"] is True
+    assert manifest["external_connector_policy"] == "catalogued_via_governed_gateway_and_critic"
+    assert manifest["raw_attachment_evidence_allowed"] is False
+    assert AgentLoop._five_source_input_violation(attachment_ids=[], modality_counts={}) is None
+    violation = AgentLoop._five_source_input_violation(
+        attachment_ids=["attachment-1"], modality_counts={"image": 1}
+    )
+    assert violation == {
+        "reason": "raw_attachment_not_governed",
+        "attachment_count": 1,
+        "media_count": 1,
+    }
 
 
 def test_four_sources_can_be_combined_without_turning_context_into_tools() -> None:

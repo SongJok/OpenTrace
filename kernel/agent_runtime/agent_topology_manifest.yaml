@@ -1,6 +1,6 @@
 # Agent Topology Manifest — single source of truth for capability/agent topology.
 # Version bumps require contract test updates (test_agent_runtime_v3_contract.py).
-version: "4.1.0"
+version: "5.0.0"
 
 runtimes:
   tier0_kernel:
@@ -9,6 +9,10 @@ runtimes:
     description: cognitive_executive capability dispatch
   tier1_data:
     description: governed DataAgent runtime (online draft and verified read execution)
+  tier1_production:
+    description: governed Production Agent runtime (asset graph and read-only evidence)
+  tier1_config:
+    description: deterministic Config Agent runtime (validation and dry-run only)
   tier2_nodes:
     description: Internal DAG / pipeline nodes (not direct capability dispatch)
 
@@ -39,6 +43,32 @@ entries:
       risk_tier: low
       max_latency_ms: 60000
       dependencies: []
+
+  production:
+    runtime: tier1
+    owner_runtime: tier1_production
+    capability_type: production_intelligence
+    registry_name: production
+    bootstrap: true
+    worker: true
+    bus_eligible: true
+    contract:
+      risk_tier: medium
+      max_latency_ms: 120000
+      dependencies: []
+
+  config:
+    runtime: tier1
+    owner_runtime: tier1_config
+    capability_type: config_intelligence
+    registry_name: config
+    bootstrap: true
+    worker: true
+    bus_eligible: true
+    contract:
+      risk_tier: medium
+      max_latency_ms: 120000
+      dependencies: [production_intelligence]
 
   # ── Tier-2 离线兼容节点（仅保留 manifest；不进入在线 CapabilityRegistry） ──
   data_knowledge:
@@ -134,15 +164,23 @@ entries:
     worker: false
 
 topology_edges:
+  - from: production_intelligence
+    to: fusion
   - from: data_query
     to: fusion
   - from: document_retrieval
     to: fusion
+  - from: config_intelligence
+    to: fusion
 
 bootstrap_agent_types:
+  - production
   - data
+  - config
   - rag
 
 worker_agent_types:
+  - production
   - data
+  - config
   - rag

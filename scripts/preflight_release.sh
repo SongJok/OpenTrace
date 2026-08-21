@@ -13,6 +13,9 @@ cd "$PROJECT_DIR"
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:14100}"
 MODE="${1:---full}"
+RESULTS_DIR="${ENTERPRISE_EVAL_RESULTS_DIR:-}"
+CAPACITY_REPORT="${ENTERPRISE_CAPACITY_REPORT:-}"
+RELEASE_SUBJECT=""
 
 check_cmd() {
   local c="$1"
@@ -30,8 +33,8 @@ Usage:
   bash scripts/preflight_release.sh [--quick|--full]
 
 Options:
-  --quick   仅执行: .env/端口检查 + health + runtime health + stage9 最小合同测试
-  --full    执行: verify_all + health + runtime health + stage6~stage9 合同测试（默认）
+  --quick   执行合同结构校验、健康检查和 stage9 最小合同测试
+  --full    另执行 verify_all、真实主链 Golden Results 和 stage6~stage9（默认）
 EOF
 }
 
@@ -69,13 +72,36 @@ if ! lsof -i :14108 >/dev/null 2>&1; then
 fi
 
 if [ "$MODE" = "--full" ]; then
+  if [ -z "$CAPACITY_REPORT" ]; then
+    echo "✗ full 发布检查需要 ENTERPRISE_CAPACITY_REPORT（真实端到端容量证据）。"
+    exit 2
+  fi
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "✗ full 发布检查拒绝未提交工作区；容量证据必须绑定确定的候选提交。"
+    exit 2
+  fi
+  RELEASE_SUBJECT="$(git rev-parse HEAD)"
   echo "▸ 运行全量验证"
   bash scripts/verify_all.sh
 fi
 
 echo "▸ 企业边界与 Golden Dataset"
 python scripts/check_enterprise_boundaries.py
-python scripts/run_enterprise_evals.py --minimum-pass-rate 1.0
+if [ "$MODE" = "--full" ]; then
+  if [ -z "$RESULTS_DIR" ]; then
+    echo "✗ full 发布检查需要 ENTERPRISE_EVAL_RESULTS_DIR（真实 Responses v2 结果）。"
+    exit 2
+  fi
+  python scripts/load_responses.py \
+    --verify-report "$CAPACITY_REPORT" \
+    --release-subject "$RELEASE_SUBJECT"
+  python scripts/run_enterprise_evals.py \
+    --require-results \
+    --results-dir "$RESULTS_DIR" \
+    --minimum-pass-rate 1.0
+else
+  python scripts/run_enterprise_evals.py --validate-contracts
+fi
 
 echo "▸ API 健康检查"
 if ! curl -sf "$BASE_URL/api/v1/health" >/dev/null; then

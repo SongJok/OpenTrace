@@ -10,6 +10,7 @@
 | `data` | data | DataAgent |
 | `knowledge` | rag | 企业知识 RAG |
 | `data_knowledge` | data + rag | 默认提问闭环 |
+| `production_intelligence` | production + data + config + rag | 企业生产智能平台（默认） |
 
 ## 公开高影响开关（自动生成）
 
@@ -56,6 +57,10 @@
 | `DATA_AGENT_SOURCE_AMBIGUITY_DELTA` | 0.08 | 前两名评分差低于该值时要求用户澄清 |
 | `DATA_AGENT_LEARNING_TRUST_MIN_SUCCESS` | 2 | 执行经验晋升 trusted 前所需成功次数 |
 | `DATA_AGENT_LEARNING_MIN_CONFIDENCE` | 0.85 | 执行经验进入学习和晋升的最低计划置信度 |
+| `RAG_LANE_TIMEOUT_SECONDS` | 5 | 知识、文档、LLMWiki 和记忆单次检索的最长等待秒数 |
+| `CONNECTOR_ADAPTER_ENTRYPOINTS` | 空 | 已安装 Connector Adapter 的启动期供应链 allowlist；不是在线功能开关 |
+| `CONNECTOR_SECRET_RESOLVER_ENTRYPOINT` | 空 | 内置 MCP 的单一 Secret Resolver allowlist；不是在线功能开关 |
+| `OPENTRACE_RELEASE_REVISION` | `unknown` | 构建期注入且只读投影的源码修订；用于发布证据绑定，不是运行时能力开关 |
 
 这些数值控制不是能力开关。表目录 API 固定采用有界分页响应，不能通过提高同步预算改回一次性
 返回完整 Schema；生产调整预算前必须先验证 API 内存、目标数据库元数据查询和 PostgreSQL

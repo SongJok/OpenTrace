@@ -21,8 +21,8 @@ from kernel.runtime.objects import Evidence, Provenance
 def test_manifest_version_and_tier_lists():
     reload_manifest()
     m = get_manifest()
-    assert m.version.startswith("4.")
-    assert set(m.bootstrap_agent_types) == {"data", "rag"}
+    assert m.version.startswith("5.")
+    assert set(m.bootstrap_agent_types) == {"production", "data", "config", "rag"}
     assert "web" not in m.bootstrap_agent_types
     assert m.get("web") is None
     tier2 = set(m.tier2_node_keys())
@@ -45,12 +45,16 @@ def test_manifest_integrity():
 def test_removed_capabilities_are_not_in_worker_or_bus():
     reload_manifest()
     m = get_manifest()
-    assert set(m.worker_agent_types) == {"data", "rag"}
-    assert set(m.bus_eligible_agent_types()) == {"data", "rag"}
+    expected = {"production", "data", "config", "rag"}
+    assert set(m.worker_agent_types) == expected
+    assert set(m.bus_eligible_agent_types()) == expected
 
 
-def test_instantiate_builtin_matches_manifest():
+def test_instantiate_builtin_matches_manifest(monkeypatch):
     reload_manifest()
+    from infra.config.settings import settings
+
+    monkeypatch.setattr(settings, "capability_profile", "production_intelligence")
     agents = instantiate_builtin_agents()
     assert tuple(sorted(agents.keys())) == tuple(sorted(expected_builtin_agent_types()))
 

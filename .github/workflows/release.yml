@@ -8,6 +8,12 @@ permissions:
   contents: write
   packages: write
   id-token: write
+  attestations: write
+  artifact-metadata: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   release:
@@ -21,14 +27,39 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - name: Build and push digest-addressed image
+        id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/docker/Dockerfile
           push: true
-          tags: ghcr.io/songjok/opentrace:${{ github.ref_name }}
-          provenance: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+          build-args: |
+            OPENTRACE_BUILD_FINGERPRINT=${{ github.sha }}
+            OPENTRACE_RELEASE_REVISION=${{ github.sha }}
+          provenance: mode=max
           sbom: true
+      - name: Create GitHub build provenance attestation
+        uses: actions/attest@v4
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.1.2
+      - name: Keyless-sign and verify the immutable image
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          IMAGE_REF="${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}"
+          cosign sign --yes "$IMAGE_REF"
+          cosign verify \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/v" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "$IMAGE_REF"
+          printf '%s\n' "$IMAGE_REF" > image-ref.txt
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          files: image-ref.txt

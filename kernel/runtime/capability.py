@@ -145,6 +145,8 @@ class CapabilityRegistry:
         aliases = {
             "data": "data_query",
             "rag": "document_retrieval",
+            "production": "production_intelligence",
+            "config": "config_intelligence",
         }
         return aliases.get(key, key)
 
@@ -168,6 +170,10 @@ class CapabilityRegistry:
             "document_retrieval": "rag",
             "data": "data",
             "rag": "rag",
+            "production_intelligence": "production",
+            "config_intelligence": "config",
+            "production": "production",
+            "config": "config",
         }
         alt = fallbacks.get(key)
         if alt and self.has_agent(alt):

@@ -27,6 +27,7 @@ const SQL_EXECUTION_STATUS_LABELS: Record<SQLQueryCandidateItem['execution_statu
   executing: '执行中',
   completed: '已完成',
   failed: '失败',
+  unknown: '结果待核对',
 }
 
 export default function DatabasesPage({ onBack }: { onBack: () => void }) {
@@ -2195,6 +2196,11 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                       {/* 2. 持久化 SQL 候选 */}
                       {queryOutput.candidates?.length ? (
                         <div className="space-y-2">
+                          {queryOutput.draft_status === 'requires_reconciliation' ? (
+                            <div className="rounded border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200">
+                              上次 SQL 执行请求已发出，但平台未能确认最终结果。为避免重复查询，系统已停止自动重试；请先核对数据库侧执行记录或重新生成草案。
+                            </div>
+                          ) : null}
                           <div className="flex items-center justify-between gap-2">
                             <div className="text-xs font-medium">SQL 候选</div>
                             <div className="flex items-center gap-1">
@@ -2204,7 +2210,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                                 </button>
                               ) : null}
                               {queryOutput.candidates.length > 1 ? (
-                                <button className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-50" disabled={executingCandidate !== null} onClick={() => void executeDraft([], true, !!queryOutput.candidates?.some((item) => item.execution_status === 'failed'))}>
+                                <button className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-1 text-xs disabled:opacity-50" disabled={executingCandidate !== null || queryOutput.draft_status === 'requires_reconciliation'} onClick={() => void executeDraft([], true, !!queryOutput.candidates?.some((item) => item.execution_status === 'failed'))}>
                                   <PlayCircle size={12} /> {executingCandidate === 'all' ? '执行中' : queryOutput.candidates.some((item) => item.execution_status === 'failed') ? '重试失败项' : '执行全部'}
                                 </button>
                               ) : null}
@@ -2219,7 +2225,7 @@ export default function DatabasesPage({ onBack }: { onBack: () => void }) {
                                 </div>
                                 <div className="flex items-center gap-2">
                                   <span className="text-[11px] text-[var(--text-secondary)]">{SQL_EXECUTION_STATUS_LABELS[candidate.execution_status]}</span>
-                                  <button className="flex h-7 w-7 items-center justify-center rounded bg-[var(--accent)] text-[var(--accent-foreground)] disabled:opacity-50" title={candidate.execution_status === 'failed' ? `重试候选 ${candidate.position}` : `执行候选 ${candidate.position}`} disabled={executingCandidate !== null || candidate.execution_status === 'completed'} onClick={() => void executeDraft([candidate.id], false, candidate.execution_status === 'failed')}>
+                                  <button className="flex h-7 w-7 items-center justify-center rounded bg-[var(--accent)] text-[var(--accent-foreground)] disabled:opacity-50" title={candidate.execution_status === 'failed' ? `重试候选 ${candidate.position}` : `执行候选 ${candidate.position}`} disabled={executingCandidate !== null || candidate.execution_status === 'completed' || candidate.execution_status === 'unknown' || queryOutput.draft_status === 'requires_reconciliation'} onClick={() => void executeDraft([candidate.id], false, candidate.execution_status === 'failed')}>
                                     <PlayCircle size={13} />
                                   </button>
                                 </div>

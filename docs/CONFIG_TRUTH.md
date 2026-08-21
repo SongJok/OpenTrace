@@ -11,6 +11,7 @@
 | 生产前端 | **14108** | `FRONTEND_PORT` / Compose `frontend`（Nginx） |
 | 前端 dev | **14108** | 仅本地 HMR；需先停止 Compose `frontend`，由 Vite 占用端口 |
 | `VITE_API_URL` | `http://localhost:14100` | 仅本地 Vite 开发模式的直连回退；生产环境优先同源 `/api` Nginx 反代 |
+| `OPENTRACE_RELEASE_REVISION` | `unknown`（本地） | 官方镜像构建时注入 Git 提交摘要，并由 `/api/v1/health` 投影；容量发布证据必须与候选提交一致 |
 
 **已废弃/易混淆**：`.env` 中的 `GATEWAY_PORT=14101` 若存在，**不参与**当前 Dockerfile/Compose/健康检查；请勿将 `preflight` 或前端指向 14101，除非全栈已同步改端口。`development` 会给出 warning；`staging` / `production` 中 `GATEWAY_PORT != APP_PORT` 会启动失败。
 
@@ -26,6 +27,7 @@
 | 变量 | 定义位置 | 说明 |
 |------|----------|------|
 | `RAG_MIN_EVIDENCE_SCORE` | `settings.rag_min_evidence_score` | 证据门禁（默认 0.65） |
+| `RAG_LANE_TIMEOUT_SECONDS` | `settings.rag_lane_timeout_seconds` | 单个检索通道调用的截止时间（默认 5 秒，范围 0.5–60 秒） |
 | `RAG_MIN_SCORE` | 仅部分遗留代码 | **未**在 `settings.py` 定义；新配置请用 `RAG_MIN_EVIDENCE_SCORE` |
 
 ## 数据库 Schema 元数据
@@ -129,6 +131,19 @@ Schema 同步不得复用 `DATA_AGENT_MAX_RESULT_ROWS=500`：后者只保护业�
 每轮实际上下文用量、裁剪数、摘要命中、媒体数量和工具 schema 估算会写入
 `opentrace.context.ready.manifest` 及最终 Response metadata。
 
+## Enterprise Connector 扩展
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `CONNECTOR_ADAPTER_ENTRYPOINTS` | 空 | 逗号分隔的 `opentrace.connectors` Python entry point allowlist |
+| `CONNECTOR_SECRET_RESOLVER_ENTRYPOINT` | 空 | 内置 MCP Adapter 使用的唯一 Secret Resolver entry point；空值仅支持 `env://` |
+
+只有部署镜像中已安装且名字被显式列入 allowlist 的 Adapter 会在 API/Worker 启动时加载；缺少
+entry point、重复名称、非法对象或 adapter key 冲突都会使进程启动失败。该配置不是在线插件
+市场，也不允许用户上传代码。生产环境必须锁定扩展包版本并纳入 SBOM、签名和漏洞扫描。
+Vault、KMS 或 Kubernetes Secret 必须通过 `CONNECTOR_SECRET_RESOLVER_ENTRYPOINT` 注入解析器；
+未配置解析器时，`vault://` 等引用会明确失败，绝不回退到明文或环境变量同名猜测。
+
 Agent Loop 会把重复工具参数、重复有效结果、连续失败和无结果识别为“无进展”。连续两轮
 无进展时写入 `opentrace.loop.no_progress`，停止继续调用工具，并执行一次禁用工具的最终
 合成；终止原因和成功/失败工具计数写入 `loop_termination`。只有持续产生新结果仍未完成的
@@ -178,7 +193,7 @@ CDN 文件偶发超时时不会直接导致整个镜像构建失败。
 ## P0 配置收敛
 
 - 产品只支持 `development`、`staging`、`production` 三种环境 Profile。
-- 内置 Agent 只支持 `core`、`data`、`knowledge`、`data_knowledge` 四种 `CAPABILITY_PROFILE`。
+- 内置 Agent 只支持 `core`、`data`、`knowledge`、`data_knowledge`、`production_intelligence` 五种 `CAPABILITY_PROFILE`。
 - 公开高影响布尔开关以 `infra/config/flag_registry.py` 为准；实验开关缺 owner、引入版本、退出条件或最晚删除版本时 CI 失败。
 - 旧 Cognitive Runtime 细粒度字段继续兼容读取，但不进入 `.env.example` 的推荐配置面。
 

@@ -311,7 +311,7 @@ export default function ChatInput({ variant = 'default' }: { variant?: ChatInput
         </div>
       </div>
       {error && <p role="alert" className="mt-2 px-3 text-xs text-red-500">{error}</p>}
-      <p className="mt-2 text-center text-[11px] text-[var(--text-secondary)]">回答仅使用 RAG、企业大脑和授权数据库；重要结果请结合引用与数据核对。</p>
+      <p className="mt-2 text-center text-[11px] text-[var(--text-secondary)]">回答仅使用受治理的企业知识、授权数据、生产观测与配置证据；重要结果请结合引用核对。</p>
     </div>
   )
 }

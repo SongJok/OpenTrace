@@ -29,6 +29,7 @@ _PROFILE_AGENT_TYPES: dict[str, frozenset[str]] = {
     "data": frozenset({"data"}),
     "knowledge": frozenset({"rag"}),
     "data_knowledge": frozenset({"data", "rag"}),
+    "production_intelligence": frozenset({"production", "data", "config", "rag"}),
 }
 
 
@@ -56,12 +57,16 @@ def is_builtin_agent_enabled(agent_type: str) -> bool:
 def _load_factories() -> dict[str, Callable[[], BuiltinAgent]]:
     if _BUILTIN_FACTORIES:
         return _BUILTIN_FACTORIES
+    from agents.config_agent import ConfigAgent
     from agents.data_agent import DataAgent
+    from agents.production_agent import ProductionAgent
     from agents.rag_agent import RagAgent
 
     _BUILTIN_FACTORIES.update(
         {
+            "production": ProductionAgent,
             "data": DataAgent,
+            "config": ConfigAgent,
             "rag": RagAgent,
         }
     )

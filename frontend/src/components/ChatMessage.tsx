@@ -169,6 +169,9 @@ function DataEvidenceCard({ metadata }: { metadata: Record<string, unknown> }) {
   const ledgerSources = Array.isArray(ledger.sources) ? ledger.sources : []
   const ledgerEntries = Array.isArray(ledger.entries) ? ledger.entries : []
   const ledgerMissing = Array.isArray(gate.missing) ? gate.missing : []
+  const criticFailures = Array.isArray(gate.critic_failures)
+    ? gate.critic_failures.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    : []
   const hasLedger = Boolean(
     ledger.schema_version && (ledgerSources.length || ledgerEntries.length || ledgerMissing.length),
   )
@@ -191,15 +194,23 @@ function DataEvidenceCard({ metadata }: { metadata: Record<string, unknown> }) {
       <div className="mt-3 space-y-3 text-[var(--text-secondary)]">
         {hasLedger && (
           <div>
-            <div className="font-medium text-[var(--text)]">四源证据账本</div>
+            <div className="font-medium text-[var(--text)]">受治理证据账本</div>
             <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
               <span>个人记忆 {Number(sourceCounts.personal_memory || 0)}</span>
               <span>企业大脑 {Number(sourceCounts.company_brain || 0)}</span>
+              <span>企业 Skill {Number(sourceCounts.company_skill || 0)}</span>
               <span>RAG {Number(sourceCounts.rag || 0)}</span>
               <span>问数 {Number(sourceCounts.data || 0)}</span>
+              <span>生产观测 {Number(sourceCounts.production || 0)}</span>
+              <span>配置校验 {Number(sourceCounts.config || 0)}</span>
             </div>
             {Array.isArray(gate.missing) && gate.missing.length > 0 && (
               <div className="mt-1 text-amber-600">仍缺：{gate.missing.map(String).join('、')}</div>
+            )}
+            {criticFailures.length > 0 && (
+              <div className="mt-1 text-red-500">
+                Critic 已阻断：{criticFailures.flatMap((item) => Array.isArray(item.gaps) ? item.gaps.map(String) : []).slice(0, 4).join('；') || '证据冲突或关键缺口'}
+              </div>
             )}
           </div>
         )}
@@ -250,6 +261,7 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
   const [copied, setCopied] = useState(false)
   const [resolvingApproval, setResolvingApproval] = useState<string | null>(null)
   const [approvalError, setApprovalError] = useState<string | null>(null)
+  const [approvalNotice, setApprovalNotice] = useState<string | null>(null)
   const token = useAuthStore((state) => state.token)
   const activeConversationId = useChatStore((state) => state.activeId)
   const store = useChatStore()
@@ -277,6 +289,12 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
 
   const resolveApproval = async (approvalId: string, approved: boolean) => {
     if (!token || !message?.response_id || !message?.id || !activeConversationId) return
+    const approval = message.approvals?.find((item) => item.id === approvalId)
+    if (
+      approved
+      && approval?.side_effect === 'destructive'
+      && !confirm('这是生产变更或破坏性操作。请再次确认：执行后系统不会自动重试，结果未知时将转人工核对。')
+    ) return
     const conversationId = activeConversationId
     const responseId = message.response_id
     const messageId = message.id
@@ -293,9 +311,21 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
     let approvalResolved = false
     setResolvingApproval(approvalId)
     setApprovalError(null)
+    setApprovalNotice(null)
     try {
       const resolution = await apiResolveResponseApproval(token, responseId, approvalId, approved)
       if (!isCurrentConversation()) return
+      if (String(resolution.status) === 'pending_secondary') {
+        const required = Number(resolution.required_approvals || approval?.required_approvals || 2)
+        const received = Number(resolution.received_approvals || 1)
+        store.setMessageApprovals(conversationId, messageId, (message.approvals || []).map((item) => (
+          item.id === approvalId
+            ? { ...item, required_approvals: required, received_approvals: received, current_user_decision: 'approved' }
+            : item
+        )))
+        setApprovalNotice(`已记录第 ${received}/${required} 份批准，等待另一位 SRE 或管理员独立复核。`)
+        return
+      }
       approvalResolved = true
       store.resumeAssistantMessage(conversationId, messageId)
       store.setActiveResponseId(responseId)
@@ -476,11 +506,13 @@ export default function ChatMessage({ message, role, content, isStreaming = fals
                           ? '此操作可能删除或覆盖数据。'
                           : '此操作会写入或修改外部状态。'}
                     </div>
+                    {(approval.required_approvals || 1) > 1 && <div className="mt-2 text-xs font-medium text-amber-600 dark:text-amber-300">四眼审批：已批准 {approval.received_approvals || 0}/{approval.required_approvals}；同一账号不能重复计数。</div>}
                     <pre className="mt-3 max-h-40 overflow-auto rounded-xl bg-[var(--surface)] p-3 text-xs">{JSON.stringify(approval.arguments, null, 2)}</pre>
                     <div className="mt-3 flex gap-2">
-                      <button disabled={Boolean(resolvingApproval)} onClick={() => void resolveApproval(approval.id, true)} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm text-[var(--accent-foreground)] disabled:opacity-50">允许</button>
+                      <button disabled={Boolean(resolvingApproval) || approval.current_user_decision === 'approved'} onClick={() => void resolveApproval(approval.id, true)} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm text-[var(--accent-foreground)] disabled:opacity-50">{approval.current_user_decision === 'approved' ? '已批准' : '允许'}</button>
                       <button disabled={Boolean(resolvingApproval)} onClick={() => void resolveApproval(approval.id, false)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm disabled:opacity-50">拒绝</button>
                     </div>
+                    {approvalNotice && <p role="status" className="mt-3 text-xs text-amber-600 dark:text-amber-300">{approvalNotice}</p>}
                     {approvalError && <p role="alert" className="mt-3 text-xs text-red-500">{approvalError}</p>}
                   </div>
                 ))}

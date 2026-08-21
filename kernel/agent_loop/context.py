@@ -153,14 +153,15 @@ class ContextAssembler:
             tenant_id=response.tenant_id,
             workspace_id=response.workspace_id,
         )
-        business_context, business_manifest = await self._personal_business_context(
-            db,
-            response=response,
-            query=retrieval_query,
-            timezone_name=timezone_name,
-        )
-        if business_context:
-            system_blocks.append(business_context)
+        # 周期任务、审批和工具操作投影不属于七类受治理问答来源，
+        # Responses 主链不再把它们作为可回答事实直接注入模型。
+        business_manifest = {
+            "query_matched": False,
+            "scheduled_task_count": 0,
+            "pending_approval_count": 0,
+            "recent_operation_count": 0,
+            "source_policy": "excluded_by_governed_source_policy",
+        }
         profile: AssistantProfile | None = None
         profile_execution_default = "auto"
         tool_policy: dict[str, Any] = {}

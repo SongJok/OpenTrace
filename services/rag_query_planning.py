@@ -218,7 +218,10 @@ def normalize_rag_evidence(
 
     source_type = str(item.get("source_type") or "document")
     score = float(item.get("score", 0.0) or 0.0)
-    weighted_score = min(0.999, score * lane_weight(plan, source_type))
+    raw_score = float(item.get("raw_score", score) or 0.0)
+    weighted_score = float(
+        item.get("weighted_score", min(0.999, raw_score * lane_weight(plan, source_type))) or 0.0
+    )
     text = str(item.get("text") or item.get("answer") or item.get("content") or "")
     evidence_id = str(item.get("id") or item.get("chunk_id") or f"{source_type}:{rank or 0}")
     return {
@@ -230,6 +233,7 @@ def normalize_rag_evidence(
         "title": str(item.get("title") or ""),
         "text": text,
         "score": round(score, 4),
+        "raw_score": round(raw_score, 4),
         "weighted_score": round(weighted_score, 4),
         "document_id": item.get("document_id"),
         "chunk_id": item.get("chunk_id") or item.get("id"),
@@ -262,6 +266,10 @@ def normalize_rag_evidence(
             "query_type": plan.query_type,
             "rerank_score": item.get("_rerank_score"),
             "rrf_score": item.get("rrf_score"),
+            "rrf_raw_score": item.get("rrf_raw_score"),
+            "retrieval_hit_count": item.get("retrieval_hit_count"),
+            "retrieval_ranks": item.get("retrieval_ranks"),
+            "matched_queries": item.get("matched_queries"),
             "memory_type": item.get("memory_type"),
             "authority": item.get("authority"),
             "knowledge_status": item.get("knowledge_status"),
@@ -337,8 +345,59 @@ def build_rag_trace(
     final_count: int,
     quality: dict[str, Any],
     dropped: list[dict[str, Any]] | None = None,
+    retrieval_attempts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Compact retrieval trace for observability and eval replay."""
+
+    attempts = [dict(item) for item in retrieval_attempts or []]
+    lane_stats: dict[str, dict[str, Any]] = {}
+    failures: list[dict[str, Any]] = []
+    for attempt in attempts:
+        lane = str(attempt.get("lane") or "unknown")
+        status = str(attempt.get("status") or "error")
+        stats = lane_stats.setdefault(
+            lane,
+            {
+                "attempts": 0,
+                "succeeded": 0,
+                "timed_out": 0,
+                "errors": 0,
+                "result_count": 0,
+                "max_elapsed_ms": 0,
+            },
+        )
+        stats["attempts"] += 1
+        stats["result_count"] += max(0, int(attempt.get("result_count") or 0))
+        stats["max_elapsed_ms"] = max(
+            stats["max_elapsed_ms"], max(0, int(attempt.get("elapsed_ms") or 0))
+        )
+        if status == "success":
+            stats["succeeded"] += 1
+            continue
+        if status == "timeout":
+            stats["timed_out"] += 1
+        else:
+            stats["errors"] += 1
+        failures.append(
+            {
+                "lane": lane,
+                "phase": str(attempt.get("phase") or "primary"),
+                "query_variant": max(0, int(attempt.get("query_variant") or 0)),
+                "reason": "deadline_exceeded" if status == "timeout" else "retrieval_error",
+                "retryable": True,
+                "elapsed_ms": max(0, int(attempt.get("elapsed_ms") or 0)),
+            }
+        )
+
+    succeeded = sum(int(item["succeeded"]) for item in lane_stats.values())
+    if attempts and succeeded == 0:
+        availability = "unavailable"
+    elif failures:
+        availability = "degraded"
+    elif attempts:
+        availability = "available"
+    else:
+        availability = "not_attempted"
 
     return {
         "version": "rag_trace_v1",
@@ -348,6 +407,10 @@ def build_rag_trace(
             "deduped_count": deduped_count,
             "final_count": final_count,
             "dropped": dropped or [],
+            "availability": availability,
+            "degraded": bool(failures),
+            "lanes": lane_stats,
+            "failures": failures,
         },
         "quality": dict(quality or {}),
     }

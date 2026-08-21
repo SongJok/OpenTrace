@@ -145,3 +145,64 @@ def test_weighted_rrf_is_calibrated_and_keeps_knowledge_provenance():
     assert all(0.0 <= row["rrf_score"] <= 1.0 for row in merged)
     assert all("raw_score" in row for row in merged)
     assert any(row.get("claim_id") == "claim-1" for row in merged)
+
+
+def test_rrf_promotes_evidence_repeated_across_query_variants_without_score_inflation():
+    merged = reciprocal_rank_fusion(
+        [
+            {
+                "source_type": "document",
+                "id": "stable",
+                "document_id": "doc-1",
+                "chunk_index": 1,
+                "text": "退款政策原文",
+                "score": 0.72,
+                "matched_query": "退款政策",
+            },
+            {
+                "source_type": "document",
+                "id": "stable-again",
+                "document_id": "doc-1",
+                "chunk_index": 1,
+                "text": "退款政策原文",
+                "score": 0.70,
+                "matched_query": "退款申请规则",
+            },
+            {
+                "source_type": "document",
+                "id": "one-off",
+                "document_id": "doc-2",
+                "chunk_index": 1,
+                "text": "退款相关说明",
+                "score": 0.75,
+                "matched_query": "退款政策",
+            },
+        ],
+        top_n=3,
+    )
+
+    assert len(merged) == 2
+    assert merged[0]["document_id"] == "doc-1"
+    assert merged[0]["retrieval_hit_count"] == 2
+    assert merged[0]["matched_queries"] == ["退款政策", "退款申请规则"]
+    assert merged[0]["raw_score"] == 0.72
+    assert merged[0]["score"] <= merged[0]["weighted_score"]
+
+
+def test_rrf_applies_lane_weight_once_and_preserves_low_relevance_gate():
+    merged = reciprocal_rank_fusion(
+        [
+            {
+                "source_type": "document",
+                "id": "low",
+                "text": "弱相关片段",
+                "score": 0.1,
+                "matched_query": "目标问题",
+            }
+        ],
+        lane_weights={"document": 1.0},
+    )
+
+    assert merged[0]["raw_score"] == 0.1
+    assert merged[0]["weighted_score"] == 0.1
+    assert merged[0]["score"] == 0.1

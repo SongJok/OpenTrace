@@ -35,6 +35,7 @@ from gateway.api_gateway.routers import (
     memories,
     metrics,
     personalization,
+    production_intelligence,
     prometheus,
     resource_permissions,
     response_aux,
@@ -60,8 +61,10 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     from agents.bootstrap import register_builtin_agents
+    from connectors.bootstrap import register_builtin_connectors
 
     register_builtin_agents()
+    register_builtin_connectors()
     if settings.trace_enabled:
         setup_tracing(
             service_name=settings.otel_service_name,
@@ -188,6 +191,11 @@ app.include_router(response_aux.router, prefix="/api/v2", tags=["response-resour
 app.include_router(agent_resources.router, prefix="/api/v2", tags=["agent-resources"])
 app.include_router(company_brain.router, prefix="/api/v2", tags=["company-brain"])
 app.include_router(enterprise_context.router, prefix="/api/v2", tags=["enterprise-context"])
+app.include_router(
+    production_intelligence.router,
+    prefix="/api/v2",
+    tags=["production-intelligence"],
+)
 app.include_router(resource_permissions.router, prefix="/api/v2", tags=["resource-permissions"])
 app.include_router(conversations.router, prefix="/api/v2", tags=["conversations-v2"])
 app.include_router(memories.router, prefix="/api/v2", tags=["memories-v2"])

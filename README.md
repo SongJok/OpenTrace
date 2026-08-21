@@ -9,8 +9,9 @@
 
 OpenTrace is a self-hosted enterprise AgentOS. Built around an OpenAI-compatible Responses
 API, a recoverable Agent Loop, and durable PostgreSQL events, it gives users one focused
-question experience backed by three capabilities: RAG retrieval, governed enterprise brain
-context, and read-only DataAgent.
+question experience backed by four governed runtime capabilities: Production Intelligence,
+read-only DataAgent, Config Intelligence, and RAG. Enterprise-brain context, company Skills, and
+personal memory remain scoped context rather than freely callable agents.
 
 > **Project status: Controlled enterprise Beta.** The supported product path is ready for
 > governed tenant pilots and is protected by product-wide Beta gates. This is not GA: production
@@ -21,6 +22,9 @@ context, and read-only DataAgent.
 
 - **Joint reasoning over enterprise data and knowledge:** connect MySQL, Doris, ClickHouse, or
   PostgreSQL within a governed workspace and combine data with published knowledge and citations.
+- **Production intelligence with evidence:** connect business assets to services, repositories,
+  deployments, configuration, observability, data, and owners; conclusions pass deterministic
+  evidence and critic gates before they are presented.
 - **Durable execution instead of request-bound jobs:** the API only submits commands. Workers
   execute through an Outbox, Redis Streams, and database leases. Browser disconnects do not
   cancel work, and SSE streams can resume from a sequence number.
@@ -46,20 +50,23 @@ pages are limited to personal data, databases, memory, tasks, Skills, and settin
 brain, enterprise knowledge, knowledge quality, and permissions are administrator-only pages.
 
 ```text
-Question page
+Question page / enterprise channel
   `-- IntentPlan -> ContextAssembler -> Manager loop
-       |-- Enterprise brain: authorized company context
+       |-- Production: assets + governed connector evidence
+       |-- Data: authorized database -> validated read-only SQL -> evidence
+       |-- Config: policy + history + capacity + dry-run validation
        |-- RAG: reviewed knowledge with citations
-       `-- DataAgent: authorized database -> validated read-only SQL -> evidence
+       `-- Enterprise brain / company Skills / memory: authorized context
 ```
 
 A typical workflow looks like this:
 
-1. An administrator configures enterprise knowledge, company-brain profiles, permissions, and
-   authorized database sources.
+1. An administrator configures enterprise knowledge, company-brain profiles, permissions,
+   authorized database sources, the Production Asset Graph, and disabled-by-default connectors.
 2. A user opens `/chat` and asks a question within their authorized workspace scope.
-3. The Manager loop chooses only RAG or DataAgent capabilities; enterprise-brain
-   context is injected by the ContextAssembler and is never exposed as a user-callable tool.
+3. The Manager loop chooses the smallest set among Production, Data, Config, and RAG;
+   enterprise-brain, company-Skill, and personal-memory context is injected by the
+   ContextAssembler and is never exposed as a freely callable agent.
 
 ## Core Architecture
 
@@ -69,7 +76,9 @@ POST /api/v2/responses
   -> Commit PostgreSQL Response / Item / Event / Outbox in one transaction
   -> Worker publishes Redis Streams messages and claims Responses with database leases
   -> IntentPlan -> ContextAssembler -> Manager model/tool loop
-  -> RAG / enterprise-brain context / DataAgent (DataAgent)
+  -> Production / Data / Config / RAG plus authorized enterprise context
+  -> Governed Connector Gateway -> MCP / Native / REST / RPC
+  -> Evidence ledger -> fusion -> deterministic critic
   -> Persist output, events, model calls, and tool ledger in PostgreSQL
   -> Resume SSE by sequence_number
   -> Continue with summaries and memory learning
@@ -87,6 +96,9 @@ return `410 Gone`.
 | Agent Loop | IntentPlan, minimum-capability selection, tool loop, expert agents, evidence synthesis, and step limits |
 | Enterprise databases | MySQL, Doris, ClickHouse, and PostgreSQL; connection tests, schemas, semantic mappings, governed SQL assets, and confirmed read-only execution |
 | DataAgent | DataAgent drafts, asset grounding, stable candidates, metric/entity/time/join reasoning, validation, confirmation, and result interpretation |
+| Production Intelligence | Scoped asset graph, observability/code/deployment/business evidence, production diagnosis, impact analysis, and evidence critic |
+| Config Intelligence | Versioned policy, snapshots, Schema/reference/business/history/capacity/conflict checks, and governed dry-run |
+| Enterprise connectors | Disabled-by-default MCP/Native/REST/RPC catalog, operation allowlists, secret references, policy, sanitization, timeout, audit, and evidence persistence |
 | Enterprise Knowledge | Company/department/role/workspace/personal spaces, source ACL sync, review publishing, validity, classification, governed retrieval, graphs, and citations |
 | Governance | Multi-tenant/workspace boundaries, resource permissions, durable approvals, quotas, and policy interfaces |
 | User support | Personal profile, databases, memory, tasks, Skills, and settings |
@@ -239,6 +251,8 @@ configuration entries, sensitive template values, and runtime dependency drift.
 - Conversations, Assistant Profiles, and Goals
 - Scheduled Tasks, Active Alerts, and Notifications
 - Resource Permissions, Memories, and Personalization
+- Production assets, graph import, enterprise connectors, capability policy, configuration
+  policies/snapshots/validation, and the administrator Production Intelligence workbench
 
 ### `/api/v1`: business resources and compatibility APIs
 
@@ -309,6 +323,7 @@ gateway/          FastAPI application and API routers
 infra/            Configuration, databases, Responses, messaging, security, and observability
 kernel/           Manager Agent Loop, context assembly, runtime, and data cognition
 agents/           Online DataAgent/RAG experts, offline compatibility agents, and Worker
+connectors/       Governed MCP/Native connector contracts, gateway, registry, and SDK
 knowledge/        Enterprise knowledge orchestration and retrieval
 memory/           Memory infrastructure and governance
 model/            Model Gateway, provider adapters, embeddings, and reranking
@@ -326,6 +341,10 @@ tests/            Unit, integration, and architecture contract tests
 ## Documentation
 
 - [Product vision: enterprise organization OS](docs/PRODUCT_VISION.md)
+- [Production Intelligence architecture](docs/architecture/production_intelligence_platform.md)
+- [Enterprise Connector development](docs/CONNECTOR_DEVELOPMENT.md)
+- [Production Intelligence threat model](docs/security/production_intelligence_threat_model.md)
+- [Production Intelligence rollout](docs/runbooks/production_intelligence_rollout.md)
 - [Enterprise organization OS architecture](docs/architecture/enterprise_organization_os.md)
 - [Responses enterprise Beta runbook](docs/runbooks/responses_enterprise_beta.md)
 - [Product-wide controlled Beta readiness](docs/BETA_READINESS.md)

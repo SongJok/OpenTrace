@@ -64,6 +64,19 @@ from memory.constitution import (
 logger = get_logger(__name__)
 router = APIRouter()
 
+PRODUCTION_INTELLIGENCE_ROLES = {
+    "customer_service",
+    "operations",
+    "product",
+    "developer",
+    "sre",
+    "admin",
+}
+
+
+class UserRoleUpdateRequest(BaseModel):
+    role: str = Field(pattern="^(customer_service|operations|product|developer|sre|admin)$")
+
 
 class MemoryConstitutionRulesRequest(BaseModel):
     prohibited_categories: list[str] = Field(default_factory=list, max_length=20)
@@ -491,6 +504,54 @@ async def enable_user(
     await db.commit()
     logger.info("User enabled", user_id=user.id, by=current_user.email)
     return {"message": "用户已启用"}
+
+
+@router.patch("/admin/users/{user_id}/role")
+async def update_user_role(
+    user_id: str,
+    req: UserRoleUpdateRequest,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """更新生产智能角色并使目标用户已有令牌立即失效。"""
+
+    user = await db.scalar(select(User).where(User.id == user_id))
+    if user is None:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="User not found")
+    if req.role not in PRODUCTION_INTELLIGENCE_ROLES:
+        raise AppException(ErrorCodes.PARAM_INVALID.code, message="不支持的用户角色")
+    if user.role == "admin" and req.role != "admin" and not user.is_superuser:
+        other_admins = await db.scalar(
+            select(func.count(User.id)).where(
+                User.id != user.id,
+                User.status == "active",
+                (User.role == "admin") | User.is_superuser.is_(True),
+            )
+        )
+        if int(other_admins or 0) == 0:
+            raise AppException(ErrorCodes.PARAM_INVALID.code, message="不能移除最后一个管理员")
+
+    previous_role = user.role
+    user.role = req.role
+    user.token_version = int(user.token_version or 0) + 1
+    from services.production_intelligence.audit import append_audit
+
+    append_audit(
+        db,
+        user_id=current_user.id,
+        action="user.production_role.updated",
+        resource_type="user",
+        resource_id=user.id,
+        payload={"previous_role": previous_role, "role": user.role},
+    )
+    await db.commit()
+    logger.info(
+        "User production intelligence role updated",
+        user_id=user.id,
+        role=user.role,
+        by=current_user.email,
+    )
+    return {"user_id": user.id, "role": user.role}
 
 
 @router.post("/admin/users/{user_id}/reset-password")

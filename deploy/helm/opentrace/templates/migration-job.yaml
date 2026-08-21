@@ -9,17 +9,29 @@ metadata:
 spec:
   backoffLimit: {{ .Values.migration.backoffLimit }}
   template:
+    metadata:
+      labels: {app.kubernetes.io/name: {{ include "opentrace.name" . }}, app.kubernetes.io/component: migration, opentrace.io/network-role: migration}
     spec:
       restartPolicy: Never
       serviceAccountName: {{ include "opentrace.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext: {runAsNonRoot: true, runAsUser: 10001, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: migrate
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "opentrace.image" . | quote }}
           command: ["python", "-m", "alembic", "upgrade", "head"]
           env:
             - name: DATABASE_URL
               valueFrom: {secretKeyRef: {name: {{ .Values.secret.existingSecret }}, key: {{ .Values.config.migrationDatabaseUrlSecretKey }}}}
-            {{- include "opentrace.env" . | nindent 12 }}
+            - {name: APP_ENV, value: {{ .Values.config.appEnv | quote }}}
+            - {name: ENTERPRISE_TENANT_RLS_ENABLED, value: {{ .Values.config.tenantRlsEnabled | quote }}}
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
 {{- end }}

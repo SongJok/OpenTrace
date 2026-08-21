@@ -8,19 +8,30 @@ metadata:
     app.kubernetes.io/component: worker-{{ $role }}
 spec:
   replicas: {{ $pool.replicas }}
+  revisionHistoryLimit: {{ $.Values.revisionHistoryLimit }}
+  progressDeadlineSeconds: {{ $.Values.progressDeadlineSeconds }}
   selector:
     matchLabels: {app.kubernetes.io/name: {{ include "opentrace.name" $ }}, app.kubernetes.io/component: worker-{{ $role }}}
   template:
     metadata:
-      labels: {app.kubernetes.io/name: {{ include "opentrace.name" $ }}, app.kubernetes.io/component: worker-{{ $role }}}
+      labels: {app.kubernetes.io/name: {{ include "opentrace.name" $ }}, app.kubernetes.io/component: worker-{{ $role }}, opentrace.io/network-role: runtime}
       annotations: {prometheus.io/scrape: "true", prometheus.io/port: "9464", prometheus.io/path: "/metrics"}
     spec:
       serviceAccountName: {{ include "opentrace.serviceAccountName" $ }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       terminationGracePeriodSeconds: 120
       securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: worker
-          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          image: {{ include "opentrace.image" $ | quote }}
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           command: ["python", "-m", "agents.worker"]
           ports: [{name: metrics, containerPort: 9464, protocol: TCP}]

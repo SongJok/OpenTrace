@@ -28,6 +28,9 @@ complete startup flow and port map.
 5. Route write/destructive tools through persisted approval and idempotency records.
 6. Update `.env.example` and configuration documentation when adding settings.
 7. Do not commit secrets, local state, generated artifacts, or dependency directories.
+8. Connector contributions must declare closed input schemas, risk, permissions, timeout, output
+   budget, and evidence types. Add denial, redaction, timeout, and approval tests as applicable;
+   see `docs/CONNECTOR_DEVELOPMENT.md`.
 
 ## Required checks
 

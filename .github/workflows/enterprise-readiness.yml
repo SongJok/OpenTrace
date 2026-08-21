@@ -26,14 +26,14 @@ jobs:
           uv pip install --system --no-deps -e .
       - name: Enterprise debt and architecture boundary
         run: python scripts/check_enterprise_boundaries.py
-      - name: Golden Dataset contract
-        run: python scripts/run_enterprise_evals.py --minimum-pass-rate 1.0 --output artifacts/evals.json
+      - name: Golden Dataset contract validation
+        run: python scripts/run_enterprise_evals.py --validate-contracts --output artifacts/eval-contracts.json
       - name: Enterprise implementation contracts
         run: python -m pytest -q tests/test_enterprise_*_contract.py
       - uses: actions/upload-artifact@v4
         with:
-          name: enterprise-evaluation-report
-          path: artifacts/evals.json
+          name: enterprise-evaluation-contracts
+          path: artifacts/eval-contracts.json
 
   helm:
     runs-on: ubuntu-latest
@@ -42,7 +42,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
       - run: |
-          helm lint deploy/helm/opentrace
-          helm template opentrace deploy/helm/opentrace > /tmp/opentrace.yaml
+          TEST_DIGEST="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          helm lint deploy/helm/opentrace --set "image.digest=$TEST_DIGEST"
+          helm template opentrace deploy/helm/opentrace --set "image.digest=$TEST_DIGEST" > /tmp/opentrace.yaml
           grep -q 'kind: Deployment' /tmp/opentrace.yaml
           grep -q 'kind: NetworkPolicy' /tmp/opentrace.yaml

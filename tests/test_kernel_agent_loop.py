@@ -2,7 +2,7 @@ import asyncio
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from agents.bootstrap import register_builtin_agents
 from kernel.agent_loop.contracts import (
@@ -93,12 +93,17 @@ class KernelFlowContractTests(unittest.TestCase):
             names = {spec.name for spec in AgentLoop._available_tool_specs({})}
         self.assertTrue({"data", "rag"}.isdisjoint(names))
 
-    def test_responses_exposes_only_governed_data_execution_write_tool(self):
+    def test_responses_exposes_only_governed_execution_write_tools(self):
         register_builtin_agents(force=True)
         specs = {spec.name: spec for spec in AgentLoop._available_tool_specs({})}
         self.assertIn("execute_sql_draft", specs)
         self.assertEqual(specs["execute_sql_draft"].side_effect, SideEffect.WRITE)
         self.assertEqual(specs["execute_sql_draft"].max_retries, 0)
+        self.assertEqual(
+            specs["execute_production_action"].side_effect,
+            SideEffect.DESTRUCTIVE,
+        )
+        self.assertEqual(specs["execute_production_action"].max_retries, 0)
         self.assertTrue({"code_interpreter", "file_sandbox", "data_analysis"}.isdisjoint(specs))
 
     def test_tier_one_semantic_candidates_can_be_pinned_without_keyword_overlap(self):
@@ -241,6 +246,111 @@ class KernelFlowContractTests(unittest.TestCase):
         self.assertEqual(captured["spec"].max_retries, 0)
         self.assertEqual(captured["spec"].timeout_seconds, 60.0)
         self.assertEqual(captured["spec"].side_effect, SideEffect.WRITE)
+
+    def test_terminal_production_side_effect_is_never_retried(self):
+        ledger = SimpleNamespace(
+            status="incomplete",
+            result={
+                "status": "incomplete",
+                "requires_reconciliation": True,
+                "error": "verification_evidence_missing",
+            },
+        )
+        db = SimpleNamespace(
+            scalar=AsyncMock(return_value=ledger),
+            flush=AsyncMock(),
+        )
+        loop = AgentLoop()
+        loop._invoke_tool = AsyncMock(return_value={"status": "completed"})
+        spec = next(
+            item
+            for item in loop._available_tool_specs({})
+            if item.name == "execute_production_action"
+        )
+
+        result = asyncio.run(
+            loop._execute_tools(
+                db,
+                response=SimpleNamespace(id="response-1"),
+                calls=[
+                    (
+                        {
+                            "call_id": "call-1",
+                            "name": spec.name,
+                            "arguments": {"action_ref": "action-1"},
+                        },
+                        spec,
+                    )
+                ],
+                emit=AsyncMock(),
+            )
+        )
+
+        self.assertEqual(result[0]["status"], "incomplete")
+        loop._invoke_tool.assert_not_awaited()
+
+    def test_destructive_production_action_requires_two_distinct_approval_facts(self):
+        loop = AgentLoop()
+        spec = next(
+            item
+            for item in loop._available_tool_specs({})
+            if item.name == "execute_production_action"
+        )
+        db = SimpleNamespace(
+            scalar=AsyncMock(side_effect=[None, None]),
+            add=Mock(),
+            flush=AsyncMock(),
+        )
+
+        approval = asyncio.run(
+            loop._ensure_approval(
+                db,
+                response=SimpleNamespace(id="response-four-eye"),
+                call={
+                    "call_id": "call-four-eye",
+                    "name": spec.name,
+                    "arguments": {"action_ref": "production-action-v1:test"},
+                },
+                spec=spec,
+            )
+        )
+
+        self.assertEqual(spec.side_effect, SideEffect.DESTRUCTIVE)
+        self.assertEqual(approval.required_approvals, 2)
+        self.assertEqual(approval.approval_decisions, [])
+        db.flush.assert_awaited_once()
+
+    def test_production_side_effect_timeout_requires_reconciliation(self):
+        loop = AgentLoop()
+        spec = next(
+            item
+            for item in loop._available_tool_specs({})
+            if item.name == "execute_production_action"
+        )
+        call = {
+            "call_id": "call-timeout",
+            "name": spec.name,
+            "arguments": {
+                "action_ref": "production-action-v1:connector:rollback:asset:prod",
+                "justification": "verified evidence",
+                "expected_outcome": "healthy",
+            },
+        }
+        with patch(
+            "kernel.agent_loop.production_tools.execute_governed_production_action",
+            AsyncMock(side_effect=TimeoutError),
+        ):
+            result = asyncio.run(
+                loop._invoke_tool(
+                    response=SimpleNamespace(),
+                    call=call,
+                    spec=spec,
+                )
+            )
+
+        self.assertEqual(result["status"], "incomplete")
+        self.assertTrue(result["requires_reconciliation"])
+        self.assertEqual(result["error"], "side_effect_outcome_unknown")
 
     def test_existing_plan_is_upgraded_after_deterministic_intent_reconciliation(self):
         existing = SimpleNamespace(

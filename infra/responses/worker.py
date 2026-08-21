@@ -14,6 +14,8 @@ from infra.config.settings import settings
 from infra.model_settings import load_runtime_llm_profile
 from infra.observability.logger import get_logger
 from infra.observability.metrics import (
+    RESPONSE_APPROVAL_OLDEST_AGE,
+    RESPONSE_APPROVAL_PENDING,
     RESPONSE_COMPLETED_TOTAL,
     RESPONSE_END_TO_END_DURATION,
     RESPONSE_FIRST_EVENT_DURATION,
@@ -37,6 +39,7 @@ from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import (
     GoalCheckpoint,
     GoalRun,
+    ResponseApproval,
     ResponseItem,
     ResponseModelCall,
     ResponseOutbox,
@@ -179,6 +182,33 @@ async def dispatch_outbox(*, limit: int = 100) -> int:
             )
             or 0
         )
+        approval_rows = (
+            await db.execute(
+                select(
+                    ResponseApproval.status,
+                    func.count(ResponseApproval.id),
+                    func.min(ResponseApproval.created_at),
+                )
+                .where(
+                    ResponseApproval.status.in_(("pending", "pending_secondary")),
+                    ResponseApproval.required_approvals >= 2,
+                )
+                .group_by(ResponseApproval.status)
+            )
+        ).all()
+        approval_metrics = {
+            str(status): (int(count or 0), oldest) for status, count, oldest in approval_rows
+        }
+        for stage in ("pending", "pending_secondary"):
+            count, oldest = approval_metrics.get(stage, (0, None))
+            RESPONSE_APPROVAL_PENDING.labels(stage=stage).set(count)
+            age_seconds = 0.0
+            if oldest is not None:
+                normalized_oldest = (
+                    oldest.replace(tzinfo=UTC) if oldest.tzinfo is None else oldest.astimezone(UTC)
+                )
+                age_seconds = max(0.0, (now - normalized_oldest).total_seconds())
+            RESPONSE_APPROVAL_OLDEST_AGE.labels(stage=stage).set(age_seconds)
         RESPONSE_QUEUE_DEPTH.set(queue_depth)
         RESPONSE_OUTBOX_PENDING.set(pending_outbox)
         if queue_depth >= max(1, int(settings.response_worker_max_queue_depth)):

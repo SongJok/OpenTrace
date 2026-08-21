@@ -27,6 +27,9 @@ class _Noop:
     def dec(self, amount: float = 1) -> None:
         pass
 
+    def set(self, value: float) -> None:
+        pass
+
     def observe(self, amount: float) -> None:
         pass
 
@@ -197,6 +200,119 @@ RESPONSE_RECONCILIATION_TOTAL = _counter(
     "opentrace_response_reconciliation_total",
     "Unknown side-effect results requiring reconciliation",
     ["tool_name"],
+)
+RESPONSE_APPROVAL_DECISIONS_TOTAL = _counter(
+    "opentrace_response_approval_decisions_total",
+    "Durable approval decisions by bounded outcome and required approval count",
+    ["outcome", "required_approvals"],
+)
+RESPONSE_APPROVAL_RESOLUTION_DURATION = _histogram(
+    "opentrace_response_approval_resolution_duration_seconds",
+    "Time from durable approval creation to final resolution",
+    ["outcome", "required_approvals"],
+    [1, 5, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 28800],
+)
+RESPONSE_APPROVAL_PENDING = _gauge(
+    "opentrace_response_approval_pending",
+    "Pending destructive four-eye approvals observed by a worker",
+    ["stage"],
+)
+RESPONSE_APPROVAL_OLDEST_AGE = _gauge(
+    "opentrace_response_approval_oldest_age_seconds",
+    "Age of the oldest pending destructive four-eye approval",
+    ["stage"],
+)
+
+# RAG 与 DataAgent 质量 SLI。标签必须保持低基数，禁止 user/request/tenant ID。
+RAG_RETRIEVAL_TOTAL = _counter(
+    "opentrace_rag_retrieval_total",
+    "RAG retrieval outcomes after deterministic answerability gating",
+    ["state", "query_type", "enterprise_grounding"],
+)
+RAG_RETRIEVAL_DURATION = _histogram(
+    "opentrace_rag_retrieval_duration_seconds",
+    "End-to-end RAG retrieval and evidence processing duration",
+    ["state"],
+    [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60],
+)
+RAG_EVIDENCE_COUNT = _histogram(
+    "opentrace_rag_evidence_count",
+    "Final deduplicated RAG evidence count",
+    ["state"],
+    [0, 1, 2, 3, 5, 8, 10, 15, 20],
+)
+RAG_MAX_SCORE = _histogram(
+    "opentrace_rag_max_score",
+    "Maximum calibrated retrieval score",
+    ["state"],
+    [0.1, 0.2, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+)
+RAG_ANCHOR_SCORE = _histogram(
+    "opentrace_rag_anchor_score",
+    "Query-to-evidence anchor score",
+    ["state"],
+    [0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0],
+)
+RAG_LANE_REQUESTS_TOTAL = _counter(
+    "opentrace_rag_lane_requests_total",
+    "RAG retrieval lane calls by bounded outcome",
+    ["lane", "status"],
+)
+RAG_LANE_DURATION = _histogram(
+    "opentrace_rag_lane_duration_seconds",
+    "Duration of each bounded RAG retrieval lane call",
+    ["lane", "status"],
+    [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 30, 60],
+)
+DATA_AGENT_RECONCILIATION_TOTAL = _counter(
+    "opentrace_data_agent_reconciliation_total",
+    "DataAgent SQL executions with an unknown outcome that must not be retried automatically",
+    ["reason"],
+)
+
+# 生产智能 Control Plane 指标；只使用低基数领域标签。
+CONNECTOR_EXECUTIONS_TOTAL = _counter(
+    "opentrace_connector_executions_total",
+    "Governed enterprise connector executions",
+    ["connector_kind", "transport", "domain", "risk", "status"],
+)
+CONNECTOR_EXECUTION_DURATION = _histogram(
+    "opentrace_connector_execution_duration_seconds",
+    "Governed enterprise connector adapter duration",
+    ["connector_kind", "transport", "domain", "status"],
+    [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120],
+)
+CONNECTOR_EVIDENCE_COUNT = _histogram(
+    "opentrace_connector_evidence_count",
+    "Normalized evidence items returned by a governed connector",
+    ["connector_kind", "domain"],
+    [0, 1, 2, 3, 5, 10, 20, 50, 100],
+)
+CONNECTOR_RUNTIME_DECISIONS_TOTAL = _counter(
+    "opentrace_connector_runtime_decisions_total",
+    "Connector distributed rate-limit, concurrency and circuit-breaker decisions",
+    ["risk", "outcome", "reason"],
+)
+CONFIG_VALIDATION_TOTAL = _counter(
+    "opentrace_config_validation_total",
+    "Deterministic config validation outcomes",
+    ["status", "risk_level"],
+)
+PRODUCTION_EVIDENCE_CRITIC_TOTAL = _counter(
+    "opentrace_production_evidence_critic_total",
+    "Production evidence critic outcomes",
+    ["status", "causal_strength"],
+)
+PRODUCTION_ASSET_SYNC_TOTAL = _counter(
+    "opentrace_production_asset_sync_total",
+    "Durable production asset graph sync outcomes",
+    ["status", "authoritative"],
+)
+PRODUCTION_ASSET_SYNC_DURATION = _histogram(
+    "opentrace_production_asset_sync_duration_seconds",
+    "Duration of a durable production asset graph sync attempt",
+    ["status", "authoritative"],
+    [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900],
 )
 WORKER_ITERATION_FAILURES_TOTAL = _counter(
     "opentrace_worker_iteration_failures_total",

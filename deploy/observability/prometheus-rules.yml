@@ -58,3 +58,169 @@ groups:
         annotations:
           summary: Worker 循环错误突增
           runbook: docs/runbooks/slo-incident-response.md
+
+  - name: opentrace.rag-data.quality
+    interval: 30s
+    rules:
+      - record: opentrace:rag_error_rate_5m
+        expr: >-
+          sum(rate(opentrace_rag_retrieval_total{state="error"}[5m]))
+          / clamp_min(sum(rate(opentrace_rag_retrieval_total[5m])), 0.000001)
+      - record: opentrace:rag_p95_seconds_5m
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (rate(opentrace_rag_retrieval_duration_seconds_bucket[5m])))
+      - record: opentrace:rag_lane_timeout_rate_5m
+        expr: >-
+          sum(rate(opentrace_rag_lane_requests_total{status="timeout"}[5m]))
+          / clamp_min(sum(rate(opentrace_rag_lane_requests_total[5m])), 0.000001)
+      - alert: OpenTraceRagErrorRateHigh
+        expr: opentrace:rag_error_rate_5m > 0.05
+        for: 10m
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: RAG 检索错误率持续高于 5%
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceRagLatencyHigh
+        expr: opentrace:rag_p95_seconds_5m > 10
+        for: 15m
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: RAG 检索 P95 持续超过 10 秒
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceRagLaneTimeoutRateHigh
+        expr: opentrace:rag_lane_timeout_rate_5m > 0.05
+        for: 10m
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: RAG 单通道超时率持续高于 5%
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceDataAgentReconciliationRequired
+        expr: increase(opentrace_data_agent_reconciliation_total[5m]) > 0
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: 问数执行出现结果未知，必须人工核对且不得自动重试
+          runbook: docs/runbooks/slo-incident-response.md
+
+  - name: opentrace.production-intelligence.quality
+    interval: 30s
+    rules:
+      - record: opentrace:connector_error_rate_5m
+        expr: >-
+          sum(rate(opentrace_connector_executions_total{status=~"error|failed|timeout|invalid_output|postprocess_error"}[5m]))
+          / clamp_min(sum(rate(opentrace_connector_executions_total[5m])), 0.000001)
+      - record: opentrace:connector_p95_seconds_5m
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (rate(opentrace_connector_execution_duration_seconds_bucket[5m])))
+      - record: opentrace:connector_runtime_unavailable_rate_5m
+        expr: >-
+          sum(rate(opentrace_connector_runtime_decisions_total{reason="runtime_control_unavailable"}[5m]))
+          / clamp_min(sum(rate(opentrace_connector_runtime_decisions_total[5m])), 0.000001)
+      - alert: OpenTraceConnectorErrorRateHigh
+        expr: opentrace:connector_error_rate_5m > 0.1
+        for: 10m
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: 受治理 Connector 错误率持续高于 10%
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceConnectorLatencyHigh
+        expr: opentrace:connector_p95_seconds_5m > 60
+        for: 15m
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: 受治理 Connector P95 持续超过 60 秒
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceConnectorRuntimeControlUnavailable
+        expr: >-
+          increase(opentrace_connector_runtime_decisions_total{reason="runtime_control_unavailable"}[5m]) > 0
+        labels:
+          severity: page
+          service: opentrace
+        annotations:
+          summary: Connector 分布式运行控制不可用，写操作已失败关闭
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceConnectorCircuitOpen
+        expr: >-
+          increase(opentrace_connector_runtime_decisions_total{outcome="denied",reason="circuit_open"}[10m]) > 5
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: Connector 下游熔断持续打开
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceProductionEvidenceBlocked
+        expr: >-
+          increase(opentrace_production_evidence_critic_total{status=~"blocked|incomplete"}[10m]) > 10
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: 生产证据冲突或缺口导致 Critic 阻断突增
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceProductionActionReconciliationRequired
+        expr: >-
+          increase(opentrace_response_reconciliation_total{tool_name="execute_production_action"}[5m]) > 0
+        labels:
+          severity: page
+          service: opentrace
+        annotations:
+          summary: 生产动作结果未知或执行后验证失败，必须人工核对且不得自动重试
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceFourEyeApprovalBacklog
+        expr: opentrace_response_approval_pending{stage="pending_secondary"} > 20
+        for: 10m
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: 破坏性生产操作的二次审批持续积压
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceFourEyeApprovalStalled
+        expr: opentrace_response_approval_oldest_age_seconds{stage="pending_secondary"} > 1800
+        for: 5m
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: 最早的破坏性生产操作等待第二审批人已超过 30 分钟
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceConfigValidationCritical
+        expr: increase(opentrace_config_validation_total{risk_level="critical"}[10m]) > 0
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: 检测到关键配置验证失败
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceProductionAssetSyncFailed
+        expr: increase(opentrace_production_asset_sync_total{status="failed"}[10m]) > 0
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: Production Asset Graph 持久同步失败
+          runbook: docs/runbooks/slo-incident-response.md
+      - alert: OpenTraceProductionAssetSyncLatencyHigh
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (rate(opentrace_production_asset_sync_duration_seconds_bucket[15m]))) > 300
+        for: 15m
+        labels:
+          severity: ticket
+          service: opentrace
+        annotations:
+          summary: Production Asset Graph 同步 P95 持续超过 300 秒
+          runbook: docs/runbooks/slo-incident-response.md

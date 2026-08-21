@@ -12,6 +12,7 @@ from agents.bootstrap import (
     is_builtin_agent_enabled,
     register_builtin_agents,
 )
+from connectors.bootstrap import register_builtin_connectors
 from infra.config.settings import settings
 from infra.message_bus.agent_bus import AgentMessageBus
 
@@ -21,6 +22,7 @@ class AgentWorker:
         self.bus = AgentMessageBus(namespace=str(settings.kernel_agent_bus_namespace))
 
         register_builtin_agents(force=True)
+        register_builtin_connectors(force=True)
         self.agents: dict[str, Any] = instantiate_builtin_agents()
 
         from kernel.runtime.capability import capability_registry

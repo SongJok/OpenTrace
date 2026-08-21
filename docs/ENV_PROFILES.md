@@ -21,6 +21,7 @@
 | 开关 | 行为 |
 |------|------|
 | `APP_ENV` | `staging` |
+| `OPENTRACE_RELEASE_REVISION` | **由候选镜像构建注入，禁止保持 `unknown`** |
 | `APP_SECRET_KEY` / `JWT_SECRET` / `DATA_SECRET_KEY` | **必须为非占位值** |
 | `GATEWAY_PORT` / `APP_PORT` | **必须一致** |
 | `kernel_memory_fabric_primary_only` | **强制 true**（即使 .env 写 false） |
@@ -55,6 +56,7 @@ Worker 与 in-process dispatch 在 `kernel_agent_runtime_v3_enabled=true` 时走
 | 开关 | 行为 |
 |------|------|
 | `APP_ENV` | `production` |
+| `OPENTRACE_RELEASE_REVISION` | **由签名镜像构建注入，必须与发布提交一致** |
 | `DEBUG` | **false** |
 | `APP_SECRET_KEY` / `JWT_SECRET` / `DATA_SECRET_KEY` | **必须为非占位值** |
 | `GATEWAY_PORT` / `APP_PORT` | **必须一致** |
@@ -82,14 +84,15 @@ Worker 与 in-process dispatch 在 `kernel_agent_runtime_v3_enabled=true` 时走
 
 ## P0 能力 Profile
 
-环境 Profile 负责安全强度，`CAPABILITY_PROFILE` 负责内置 Agent 集合。新部署只选择以下四套之一，避免组合爆炸：
+环境 Profile 负责安全强度，`CAPABILITY_PROFILE` 负责内置 Agent 集合。新部署只选择以下五套之一，避免组合爆炸：
 
 | `CAPABILITY_PROFILE` | 能力集合 |
 |---|---|
 | `core` | 仅 Manager 模型问答 |
 | `data` | DataAgent |
 | `knowledge` | RAG |
-| `data_knowledge` | DataAgent + RAG（默认） |
+| `data_knowledge` | DataAgent + RAG（兼容提问闭环） |
+| `production_intelligence` | Production + Data + Config + RAG（默认） |
 
 旧 `KERNEL_AGENT_*_ENABLED` 字段只为滚动升级和紧急熔断保留，不再作为推荐配置面。实验例外见 `docs/FEATURE_FLAG_REGISTRY.md`。
 
@@ -101,5 +104,7 @@ Worker 与 in-process dispatch 在 `kernel_agent_runtime_v3_enabled=true` 时走
 | `ENTERPRISE_TENANT_RLS_ENABLED` | false | 灰度 true | true（非 owner 应用角色） |
 | `WORKER_ROLE` | `all` | 按四类能力池拆分 | 按四类能力池拆分并独立 HPA |
 | `IDENTITY_OIDC_ENABLED` | false | 企业 IdP 验证 | 企业 IdP + 撤销/轮换演练 |
+| `CONNECTOR_ADAPTER_ENTRYPOINTS` | 可为空 | 仅测试签名/固定版本扩展 | 仅 allowlist、固定版本并纳入 SBOM |
+| `CONNECTOR_SECRET_RESOLVER_ENTRYPOINT` | 可为空（仅 `env://`） | 接入测试 Vault/KMS | 固定版本的短期凭据解析器 |
 
 受管环境使用对象存储、KMS/Vault 和独立数据库角色；Compose 仅用于开发，不代表生产高可用拓扑。

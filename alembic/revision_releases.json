@@ -84,6 +84,21 @@
     },
     "r0028_reconcile_legacy_approval_class": {
       "release": "unreleased"
+    },
+    "r0029_production_intelligence_foundation": {
+      "release": "unreleased"
+    },
+    "r0030_config_intelligence": {
+      "release": "unreleased"
+    },
+    "r0031_production_asset_sync_runtime": {
+      "release": "unreleased"
+    },
+    "r0032_four_eye_production_approvals": {
+      "release": "unreleased"
+    },
+    "r0033_config_intelligence_invariants": {
+      "release": "unreleased"
     }
   }
 }

@@ -7,17 +7,29 @@ metadata:
     app.kubernetes.io/component: api
 spec:
   replicas: {{ .Values.replicaCount.api }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds }}
   selector:
     matchLabels: {app.kubernetes.io/name: {{ include "opentrace.name" . }}, app.kubernetes.io/component: api}
   template:
     metadata:
-      labels: {app.kubernetes.io/name: {{ include "opentrace.name" . }}, app.kubernetes.io/component: api}
+      labels: {app.kubernetes.io/name: {{ include "opentrace.name" . }}, app.kubernetes.io/component: api, opentrace.io/network-role: runtime}
+      annotations: {prometheus.io/scrape: "true", prometheus.io/port: "14100", prometheus.io/path: "/api/v1/metrics/prometheus"}
     spec:
       serviceAccountName: {{ include "opentrace.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext: {runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
       containers:
         - name: api
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "opentrace.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: ["python", "-m", "uvicorn", "gateway.api_gateway.main:app", "--host", "0.0.0.0", "--port", "14100"]
           env:

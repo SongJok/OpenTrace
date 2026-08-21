@@ -22,6 +22,7 @@ from execution.data.sql_executor import SQLExecutor
 from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes, NotFoundException, ValidationException
 from infra.metadata.schema_inspector import build_schema_hint, load_schema_inspection
+from infra.observability.metrics import DATA_AGENT_RECONCILIATION_TOTAL
 from infra.security.data_source_secrets import decrypt_data_source_secret
 from infra.security.resource_scope import get_accessible_data_source
 from infra.storage.models import (
@@ -2759,25 +2760,50 @@ async def execute_sql_query_draft(
         raise ValidationException(f"单次最多执行 {MAX_DRAFT_CANDIDATES} 条 SQL")
 
     selected_ids = [item.id for item in selected]
+    if draft.status == "requires_reconciliation":
+        raise ValidationException(
+            "上次 SQL 执行结果未知，必须先完成核对，系统不会自动重试",
+            details={
+                "reason": "execution_outcome_unknown",
+                "requires_reconciliation": True,
+                "candidate_ids": list(
+                    (draft.execution_summary or {}).get("unknown_candidate_ids") or []
+                ),
+            },
+        )
     if draft.status == "executing":
         started_at = draft.execution_started_at
         if started_at is not None and started_at.tzinfo is None:
             started_at = started_at.replace(tzinfo=UTC)
         if started_at is not None and datetime.now(UTC) - started_at <= EXECUTION_STALE_AFTER:
             raise ValidationException("SQL 查询草案正在执行，请稍后查看结果")
+        unknown_candidate_ids: list[str] = []
         for candidate in candidates:
             if candidate.execution_status == "executing":
-                candidate.execution_status = "pending"
-                candidate.error_message = "上次执行进程中断，已恢复为可重试状态"
+                candidate.execution_status = "unknown"
+                candidate.error_message = "执行请求已发出但结果未知，必须核对后再决定后续操作"
+                unknown_candidate_ids.append(candidate.id)
         previous_summary = dict(draft.execution_summary or {})
         draft.execution_summary = {
             **previous_summary,
-            "recovery_count": int(previous_summary.get("recovery_count") or 0) + 1,
-            "last_recovered_at": datetime.now(UTC).isoformat(),
+            "requires_reconciliation": True,
+            "reconciliation_count": int(previous_summary.get("reconciliation_count") or 0) + 1,
+            "unknown_candidate_ids": unknown_candidate_ids,
+            "last_execution_started_at": started_at.isoformat() if started_at else None,
+            "reconciliation_required_at": datetime.now(UTC).isoformat(),
         }
-        draft.status = "awaiting_confirmation"
+        draft.status = "requires_reconciliation"
         draft.execution_started_at = None
         await db.commit()
+        DATA_AGENT_RECONCILIATION_TOTAL.labels(reason="execution_outcome_unknown").inc()
+        raise ValidationException(
+            "SQL 执行已超过租约窗口且结果未知，已停止自动重试并等待人工核对",
+            details={
+                "reason": "execution_outcome_unknown",
+                "requires_reconciliation": True,
+                "candidate_ids": unknown_candidate_ids,
+            },
+        )
 
     executable_statuses = {"pending"}
     if retry_failed:

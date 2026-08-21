@@ -119,4 +119,35 @@ describe('ChatMessage tool cards', () => {
     // The intro text should still be visible
     expect(screen.getByText(/查询已执行/)).toBeInTheDocument()
   })
+
+  it('shows production and config evidence with a blocked critic result', () => {
+    const message = {
+      ...baseAssistant,
+      finalText: '当前证据不足，未执行任何生产写入。',
+      turn_meta: {
+        metadata: {
+          context_manifest: {
+            evidence_ledger: {
+              schema_version: 'response_evidence_ledger.v1',
+              sources: ['production', 'config'],
+              entries: [{ evidence_id: 'ev-1' }],
+              source_counts: { production: 2, config: 1 },
+              gate: {
+                status: 'blocked',
+                missing: ['live_observation'],
+                critic_failures: [{ gaps: ['实时观测已过期'] }],
+              },
+            },
+          },
+        },
+      },
+    }
+
+    render(<ChatMessage message={message as any} />)
+
+    expect(screen.getByText('受治理证据账本')).toBeInTheDocument()
+    expect(screen.getByText('生产观测 2')).toBeInTheDocument()
+    expect(screen.getByText('配置校验 1')).toBeInTheDocument()
+    expect(screen.getByText(/Critic 已阻断：实时观测已过期/)).toBeInTheDocument()
+  })
 })

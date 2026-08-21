@@ -18,13 +18,15 @@ class ExecutionProfile(StrEnum):
 
 
 class InformationSource(StrEnum):
-    """问答可使用的五类受治理信息来源。"""
+    """问答可使用的受治理信息来源；模型常识不属于事实来源。"""
 
     PERSONAL_MEMORY = "personal_memory"
     COMPANY_BRAIN = "company_brain"
     COMPANY_SKILL = "company_skill"
     RAG = "rag"
     DATA = "data"
+    PRODUCTION = "production"
+    CONFIG = "config"
 
 
 class FreshnessRequirement(StrEnum):
@@ -49,6 +51,17 @@ class EvidenceRequirement(StrEnum):
     BUSINESS_RULES = "business_rules"
     VALIDATED_SQL = "validated_sql"
     EXECUTED_RESULT = "executed_result"
+    ASSET_CONTEXT = "asset_context"
+    LIVE_OBSERVATION = "live_observation"
+    CROSS_SOURCE_CORROBORATION = "cross_source_corroboration"
+    CONFIG_VALIDATION = "config_validation"
+    CONFIG_SCHEMA = "config_schema"
+    CONFIG_REFERENCES = "config_references"
+    CONFIG_BUSINESS_RULES = "config_business_rules"
+    CONFIG_HISTORY = "config_history"
+    CONFIG_CAPACITY = "config_capacity"
+    CONFIG_CONFLICTS = "config_conflicts"
+    CONFIG_DRY_RUN = "config_dry_run"
 
 
 class DataIntentStage(StrEnum):

@@ -115,6 +115,11 @@ export interface SQLQueryExecutionSummary {
   requested?: number
   succeeded?: number
   failed?: number
+  requires_reconciliation?: boolean
+  reconciliation_count?: number
+  unknown_candidate_ids?: string[]
+  last_execution_started_at?: string | null
+  reconciliation_required_at?: string
 }
 
 export interface SQLQueryCandidateItem {
@@ -134,7 +139,7 @@ export interface SQLQueryCandidateItem {
     result_validation?: Record<string, unknown>
     supporting_memory_ids?: string[]
   }
-  execution_status: 'pending' | 'executing' | 'completed' | 'failed'
+  execution_status: 'pending' | 'executing' | 'completed' | 'failed' | 'unknown'
   rows: Array<Record<string, unknown>>
   row_count: number
   returned_row_count: number

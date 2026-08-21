@@ -92,7 +92,12 @@ class SQLGuard:
         issues.extend(self._validate_joins(expression, evidence))
         issues.extend(self._validate_time(expression, plan))
         issues.extend(self._validate_aggregation(expression, plan))
-        if expression.find(exp.Star):
+        if any(
+            isinstance(projection, exp.Star)
+            or (isinstance(projection, exp.Column) and projection.name == "*")
+            for select in expression.find_all(exp.Select)
+            for projection in select.expressions
+        ):
             issues.append(
                 ValidationIssue(
                     code="select_star",
@@ -223,46 +228,83 @@ class SQLGuard:
             str(table).lower(): {str(column).lower() for column in values}
             for table, values in evidence.table_columns.items()
         }
-        aliases = {
-            str(table.alias_or_name).lower(): str(table.name).lower()
-            for table in expression.find_all(exp.Table)
-        }
-        sensitive: set[str] = set()
+        sensitive: set[tuple[str, str]] = set()
         for item in evidence.of_type(EvidenceType.SCHEMA) + evidence.of_type(
             EvidenceType.COLUMN_PROFILE
         ):
-            if item.payload.get("sensitive") or item.payload.get("is_sensitive"):
+            if item.sensitive or item.payload.get("sensitive") or item.payload.get("is_sensitive"):
                 table = str(
                     item.payload.get("table") or item.payload.get("table_name") or ""
                 ).lower()
                 column = str(
                     item.payload.get("column") or item.payload.get("column_name") or ""
                 ).lower()
-                sensitive.add(f"{table}.{column}")
-        query_tables: list[tuple[str, str, set[str]]] = []
+                if column:
+                    sensitive.add((table, column))
+
+        # alias、Schema 限定名和裸表名必须归一到同一个目录键，否则
+        # public.users.email 可能在 SQL 使用 u.email 时绕过敏感字段门禁。
+        query_tables: list[dict[str, Any]] = []
         for table_node in expression.find_all(exp.Table):
             table_name = str(table_node.name or "").lower()
-            actual = aliases.get(str(table_node.alias_or_name).lower(), table_name)
-            table_columns = known.get(actual) or known.get(
-                next((key for key in known if key.rsplit(".", 1)[-1] == actual), ""),
+            database = str(table_node.db or "").lower()
+            qualified = f"{database}.{table_name}" if database else table_name
+            matching_keys = [
+                key for key in known if key == qualified or key.rsplit(".", 1)[-1] == table_name
+            ]
+            actual = (
+                qualified
+                if qualified in known
+                else (matching_keys[0] if len(matching_keys) == 1 else qualified)
             )
+            table_columns = known.get(actual)
             if table_columns:
-                query_tables.append((str(table_node.alias_or_name).lower(), actual, table_columns))
+                query_tables.append(
+                    {
+                        "alias": str(table_node.alias_or_name).lower(),
+                        "actual": actual,
+                        "bare": table_name,
+                        "columns": table_columns,
+                    }
+                )
+
+        def sensitive_columns(table: dict[str, Any]) -> set[str]:
+            identities = {str(table["actual"]), str(table["bare"]), ""}
+            return {
+                column
+                for sensitive_table, column in sensitive
+                if sensitive_table in identities
+                or sensitive_table.rsplit(".", 1)[-1] == str(table["bare"])
+            }
+
+        def table_for_qualifier(qualifier: str) -> dict[str, Any] | None:
+            normalized = qualifier.lower()
+            return next(
+                (
+                    table
+                    for table in query_tables
+                    if normalized in {str(table["alias"]), str(table["actual"]), str(table["bare"])}
+                ),
+                None,
+            )
+
         for value in columns:
+            if value == "*" or value.endswith(".*"):
+                continue
             if "." not in value:
                 column_name = value.lower()
-                if query_tables and not any(column_name in values for _, _, values in query_tables):
+                if query_tables and not any(
+                    column_name in table["columns"] for table in query_tables
+                ):
                     issues.append(
                         ValidationIssue(
                             code="column_scope", message=f"字段不在当前 Schema：{value}"
                         )
                     )
-                matching_sensitive = {
-                    f"{actual}.{column_name}"
-                    for _, actual, values in query_tables
-                    if column_name in values
-                }
-                if matching_sensitive & sensitive:
+                if any(
+                    column_name in table["columns"] and column_name in sensitive_columns(table)
+                    for table in query_tables
+                ):
                     issues.append(
                         ValidationIssue(
                             code="sensitive_column",
@@ -271,19 +313,14 @@ class SQLGuard:
                         )
                     )
                 continue
-            table, column = value.split(".", 1)
-            actual = aliases.get(table.lower(), table.lower())
-            matches = known.get(actual) or known.get(
-                next((key for key in known if key.rsplit(".", 1)[-1] == actual), ""), set()
-            )
+            table_qualifier, column = value.split(".", 1)
+            resolved = table_for_qualifier(table_qualifier)
+            matches = set(resolved["columns"]) if resolved is not None else set()
             if matches and column.lower() not in matches:
                 issues.append(
                     ValidationIssue(code="column_scope", message=f"字段不在当前 Schema：{value}")
                 )
-            if (
-                f"{actual}.{column.lower()}" in sensitive
-                or f"{table.lower()}.{column.lower()}" in sensitive
-            ):
+            if resolved is not None and column.lower() in sensitive_columns(resolved):
                 issues.append(
                     ValidationIssue(
                         code="sensitive_column",
@@ -291,6 +328,34 @@ class SQLGuard:
                         severity="warning",
                     )
                 )
+
+        # SELECT * 与 alias.* 会真实读取对应表的全部字段；COUNT(*) 不会。
+        # 只对投影星号做敏感字段展开，避免把聚合计数误判为数据泄露。
+        for select in expression.find_all(exp.Select):
+            for projection in select.expressions:
+                if isinstance(projection, exp.Star):
+                    selected_tables = query_tables
+                elif isinstance(projection, exp.Column) and projection.name == "*":
+                    resolved = table_for_qualifier(str(projection.table or ""))
+                    selected_tables = [resolved] if resolved is not None else []
+                else:
+                    continue
+                for query_table in selected_tables:
+                    selected_sensitive = sorted(sensitive_columns(query_table))
+                    if not selected_sensitive:
+                        continue
+                    preview = "、".join(selected_sensitive[:5])
+                    suffix = " 等" if len(selected_sensitive) > 5 else ""
+                    issues.append(
+                        ValidationIssue(
+                            code="sensitive_column",
+                            message=(
+                                f"SELECT * 会读取表 {query_table['actual']} 的敏感字段："
+                                f"{preview}{suffix}"
+                            ),
+                            severity="warning",
+                        )
+                    )
         return issues
 
     @staticmethod

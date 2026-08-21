@@ -15,7 +15,8 @@ SLO、容量压测、备份恢复演练、安全评审、跨版本升级与至�
 1. 在线命令只进入 `/api/v2/responses`；API 不执行模型和工具。
 2. PostgreSQL 是 Response、事件、审批和工具账本的事实来源，Redis 仅负责投递与唤醒。
 3. 所有资源访问同时限定 user、tenant、workspace，并继续执行数据源授权。
-4. 在线问答仅允许 RAG 与 DataAgent；企业大脑只作为授权上下文注入，不暴露为工具。
+4. `production_intelligence` Profile 只允许 Manifest 声明的 Production、Data、Config 与
+   RAG 四类 Tier-1 能力；企业大脑、公司 Skill 和个人记忆只作为授权上下文注入。
 5. 数据库 Schema 元数据与业务 SQL 结果使用不同预算：同步端分批读取最多 100,000 张表和
    1,000,000 个列记录，页面按 100 张分页并支持搜索与按库筛选，不再被 DataAgent 的 500 行
    上限静默截断。
@@ -29,12 +30,23 @@ SLO、容量压测、备份恢复演练、安全评审、跨版本升级与至�
 bash scripts/run_product_beta_gate.sh --contract
 ```
 
-受控租户放量必须提供真实 Responses 主链 Golden Results；fixture 只验证评测器合同：
+受控租户放量必须提供绑定 `response_id`、采集时间和 `responses_v2` 来源的真实主链 Golden
+Results，以及绑定当前候选提交的真实端到端容量报告；合同模式只验证数据集结构，不执行
+case，也不产生质量通过率：
 
 ```bash
+ENTERPRISE_CAPACITY_REPORT=/secure/capacity-<revision>.json \
 ENTERPRISE_EVAL_RESULTS_DIR=/secure/real-results \
   bash scripts/run_product_beta_gate.sh --release
 ```
 
+容量报告必须按 [Responses 容量手册](runbooks/responses_capacity.md) 从 HTTPS staging 的多场景
+工作负载采集，且正式门禁拒绝未提交工作区、过期报告、宽松阈值和单场景数据。
+
 发布负责人还应归档 PostgreSQL/Redis 故障恢复、Worker 接管、SSE 续传、审批恢复、迁移、备份
 恢复与 Schema 大目录容量验证证据。任何租户越权、事实丢失或重复副作用问题都必须停止放量。
+
+Production Intelligence 放量还必须遵循
+[Connector 开发契约](CONNECTOR_DEVELOPMENT.md)、
+[威胁模型](security/production_intelligence_threat_model.md) 和
+[受控上线手册](runbooks/production_intelligence_rollout.md)。

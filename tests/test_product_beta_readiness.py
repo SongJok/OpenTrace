@@ -41,8 +41,13 @@ def test_product_beta_gate_requires_real_results_for_release() -> None:
     ):
         assert command in gate
     assert "ENTERPRISE_EVAL_RESULTS_DIR" in gate
+    assert "ENTERPRISE_CAPACITY_REPORT" in gate
+    assert "--verify-report" in gate
+    assert "--release-subject" in gate
+    assert "git status --porcelain" in gate
     assert "--require-results" in gate
-    assert "fixture" in gate
+    assert "--validate-contracts" in gate
+    assert "_fixture_executor" not in gate
 
     generator = (ROOT / "scripts/generate_feature_flag_docs.py").read_text(encoding="utf-8")
     assert "受控企业 Beta" in generator

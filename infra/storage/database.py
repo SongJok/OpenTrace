@@ -272,7 +272,11 @@ async def _verify_runtime_schema(conn) -> None:
             "execution_status",
             "result_rows",
         },
-        "response_approvals": {"operation_class"},
+        "response_approvals": {
+            "operation_class",
+            "required_approvals",
+            "approval_decisions",
+        },
         "data_agent_runs": {"run_purpose"},
         "data_agent_result_artifacts": {"details_purged_at"},
         "data_agent_failure_patterns": {
@@ -292,17 +296,106 @@ async def _verify_runtime_schema(conn) -> None:
             "published_by",
             "published_at",
         },
+        "enterprise_connectors": {
+            "tenant_id",
+            "workspace_id",
+            "connector_kind",
+            "transport",
+            "secret_ref",
+            "allowed_operations",
+            "allowed_environments",
+            "data_classification",
+        },
+        "production_assets": {
+            "tenant_id",
+            "workspace_id",
+            "asset_type",
+            "external_key",
+            "environment",
+            "connector_id",
+            "classification",
+            "source_key",
+            "last_seen_at",
+            "last_sync_run_id",
+        },
+        "production_asset_relations": {
+            "tenant_id",
+            "workspace_id",
+            "source_asset_id",
+            "target_asset_id",
+            "relation_type",
+            "confidence",
+            "source_key",
+            "last_seen_at",
+            "last_sync_run_id",
+        },
+        "production_asset_sync_runs": {
+            "tenant_id",
+            "workspace_id",
+            "source_key",
+            "connector_id",
+            "status",
+            "idempotency_key",
+            "input_hash",
+            "cursor_before",
+            "cursor_after",
+            "authoritative",
+            "attempt_count",
+            "lease_owner",
+            "lease_expires_at",
+            "heartbeat_at",
+            "stats",
+        },
+        "production_evidence": {
+            "tenant_id",
+            "workspace_id",
+            "response_id",
+            "connector_id",
+            "asset_id",
+            "evidence_type",
+            "source_ref",
+            "content_hash",
+            "observed_at",
+        },
+        "production_config_policies": {
+            "tenant_id",
+            "workspace_id",
+            "asset_id",
+            "version",
+            "status",
+            "schema",
+            "dry_run_operation",
+        },
+        "production_config_snapshots": {
+            "tenant_id",
+            "workspace_id",
+            "response_id",
+            "asset_id",
+            "policy_id",
+            "environment",
+            "content_hash",
+            "observed_at",
+        },
+        "production_config_validation_runs": {
+            "tenant_id",
+            "workspace_id",
+            "response_id",
+            "asset_id",
+            "policy_id",
+            "candidate_hash",
+            "status",
+            "checks",
+            "dry_run",
+        },
     }
     missing: list[str] = []
     for table, columns in required_columns.items():
         rows = await conn.execute(
-            text(
-                """
+            text("""
                 SELECT column_name
                 FROM information_schema.columns
                 WHERE table_schema = 'public' AND table_name = :table
-                """
-            ),
+                """),
             {"table": table},
         )
         present = {str(row[0]) for row in rows}
@@ -359,21 +452,25 @@ async def _verify_runtime_schema(conn) -> None:
         "sql_assets",
         "sql_query_drafts",
         "sql_query_candidates",
+        "enterprise_connectors",
+        "production_assets",
+        "production_asset_relations",
+        "production_asset_sync_runs",
+        "production_evidence",
+        "production_config_policies",
+        "production_config_snapshots",
+        "production_config_validation_runs",
         "schema_metadata",
         "schema_table_metadata",
         "data_agent_result_artifacts",
         "data_agent_failure_patterns",
         "data_agent_evaluation_suite_runs",
     }
-    table_rows = await conn.execute(
-        text(
-            """
+    table_rows = await conn.execute(text("""
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public'
-            """
-        )
-    )
+            """))
     present_tables = {str(row[0]) for row in table_rows}
     for table in sorted(required_tables - present_tables):
         missing.append(table)
@@ -473,9 +570,7 @@ async def _ensure_ui_settings_columns(conn) -> None:
 
 async def _ensure_user_model_settings_table(conn) -> None:
     """本地开发兼容：正式环境仍必须执行 Alembic。"""
-    await conn.execute(
-        text(
-            """
+    await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS public.user_model_settings (
                 id VARCHAR(36) PRIMARY KEY,
                 user_id VARCHAR(36) NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
@@ -499,9 +594,7 @@ async def _ensure_user_model_settings_table(conn) -> None:
                 CONSTRAINT uq_user_model_settings_scope
                     UNIQUE (user_id, tenant_id, workspace_id)
             )
-            """
-        )
-    )
+            """))
     for statement in (
         "CREATE INDEX IF NOT EXISTS ix_user_model_settings_user_id ON public.user_model_settings (user_id)",
         "CREATE INDEX IF NOT EXISTS ix_user_model_settings_tenant_id ON public.user_model_settings (tenant_id)",

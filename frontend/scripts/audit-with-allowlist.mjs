@@ -16,7 +16,8 @@ for (const item of allowlist.exceptions ?? []) {
   allowed.set(item.id, item);
 }
 
-const result = spawnSync("npm", ["audit", "--json", "--omit=dev"], {
+// 构建工具同样属于发布供应链，不能因 devDependency 身份绕过漏洞门禁。
+const result = spawnSync("npm", ["audit", "--json"], {
   cwd: resolve(root, "frontend"),
   encoding: "utf8",
 });
@@ -46,7 +47,7 @@ function advisoryIds(name, stack = new Set()) {
 const blocked = [];
 const accepted = [];
 for (const [name, vulnerability] of Object.entries(vulnerabilities)) {
-  if (!["high", "critical"].includes(vulnerability.severity)) continue;
+  if (!["moderate", "high", "critical"].includes(vulnerability.severity)) continue;
   const ids = advisoryIds(name);
   for (const id of ids) {
     const exception = allowed.get(id);

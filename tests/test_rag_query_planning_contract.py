@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from agents.base import TaskMessage
@@ -250,3 +252,155 @@ async def test_document_fallback_keeps_workspace_scope(monkeypatch):
     assert result.status == "success"
     assert calls
     assert all(call[1:] == ("tenant-a", "workspace-a") for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_rag_agent_keeps_partial_results_and_records_sanitized_lane_failure(monkeypatch):
+    async def fake_search_chunks(
+        self,
+        query,
+        user_id,
+        top_k=6,
+        *,
+        tenant_id=None,
+        workspace_id=None,
+    ):
+        return [
+            ContextChunk(
+                content="报销制度要求员工在费用发生后 30 天内提交申请。",
+                source_type="document",
+                score=0.92,
+                confidence=0.92,
+                metadata={"document_id": "doc-policy", "chunk_index": 1, "title": "报销制度"},
+            )
+        ]
+
+    async def failing_search_llmwiki(*args, **kwargs):
+        raise RuntimeError("credential=super-secret")
+
+    monkeypatch.setattr("plugins.document_plugin.DocumentPlugin.search_chunks", fake_search_chunks)
+    monkeypatch.setattr(
+        "plugins.document_plugin.DocumentPlugin.search_llmwiki", failing_search_llmwiki
+    )
+    monkeypatch.setattr("agents.rag_agent.settings.rag_rerank_enabled", False)
+
+    result = await RagAgent().execute(
+        TaskMessage(
+            task_id="rag-degraded",
+            agent_type="rag",
+            query="报销制度要求什么？",
+            user_id="u1",
+            params={
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "sources": ["documents"],
+                "max_search_queries": 1,
+            },
+        )
+    )
+
+    trace = result.metadata["rag_trace"]["retrieval"]
+    assert result.status == "success"
+    assert result.metadata["chunks"]
+    assert result.metadata["quality"]["retrieval_availability"] == "degraded"
+    assert trace["availability"] == "degraded"
+    assert trace["lanes"]["document"]["succeeded"] == 1
+    assert trace["lanes"]["llmwiki"]["errors"] == 1
+    assert trace["failures"] == [
+        {
+            "lane": "llmwiki",
+            "phase": "primary",
+            "query_variant": 0,
+            "reason": "retrieval_error",
+            "retryable": True,
+            "elapsed_ms": trace["failures"][0]["elapsed_ms"],
+        }
+    ]
+    assert "super-secret" not in str(trace)
+
+
+@pytest.mark.asyncio
+async def test_enterprise_rag_timeout_is_not_reported_as_missing_knowledge(monkeypatch):
+    async def slow_search_knowledge(**kwargs):
+        await asyncio.sleep(0.05)
+        return []
+
+    monkeypatch.setattr("agents.rag_agent.search_knowledge", slow_search_knowledge)
+    monkeypatch.setattr("agents.rag_agent.settings.rag_lane_timeout_seconds", 0.01)
+    monkeypatch.setattr("agents.rag_agent.settings.rag_rerank_enabled", False)
+
+    result = await RagAgent().execute(
+        TaskMessage(
+            task_id="rag-timeout",
+            agent_type="rag",
+            query="公司保密制度是什么？",
+            user_id="u1",
+            params={
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "sources": ["knowledge", "documents"],
+                "knowledge_space_ids": ["space-company"],
+                "enterprise_grounding_required": True,
+                "max_search_queries": 1,
+            },
+        )
+    )
+
+    trace = result.metadata["rag_trace"]["retrieval"]
+    assert result.status == "success"
+    assert result.metadata["sources"] == ["knowledge"]
+    assert result.metadata["chunks"] == []
+    assert result.metadata["quality"]["retrieval_availability"] == "unavailable"
+    assert "检索通道暂时不可用" in result.content
+    assert "未将本次故障视为知识库无内容" in result.content
+    assert "retrieval_unavailable" in result.metadata["quality"]["answerability"]["reasons"]
+    assert trace["availability"] == "unavailable"
+    assert trace["failures"][0]["reason"] == "deadline_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_quality_sufficiency_uses_effective_evidence_threshold(monkeypatch):
+    async def fake_search_chunks(*args, **kwargs):
+        return []
+
+    async def fake_search_llmwiki(*args, **kwargs):
+        return [
+            ContextChunk(
+                content="这是一条与查询有关但证据强度不足的文档摘要。",
+                source_type="llmwiki",
+                score=0.5,
+                confidence=0.5,
+                metadata={
+                    "document_id": "doc-weak",
+                    "chunk_id": "wiki-weak",
+                    "title": "弱证据",
+                    "question": "查询规则",
+                },
+            )
+        ]
+
+    monkeypatch.setattr("plugins.document_plugin.DocumentPlugin.search_chunks", fake_search_chunks)
+    monkeypatch.setattr(
+        "plugins.document_plugin.DocumentPlugin.search_llmwiki", fake_search_llmwiki
+    )
+    monkeypatch.setattr("agents.rag_agent.settings.rag_rerank_enabled", False)
+    monkeypatch.setattr("agents.rag_agent.settings.rag_min_evidence_score", 0.65)
+
+    result = await RagAgent().execute(
+        TaskMessage(
+            task_id="rag-threshold",
+            agent_type="rag",
+            query="查询规则有哪些",
+            user_id="u1",
+            params={
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "sources": ["documents"],
+                "max_search_queries": 1,
+            },
+        )
+    )
+
+    assert result.metadata["rag_query_plan"]["min_score"] == 0.65
+    assert result.metadata["quality"]["avg_score"] < 0.65
+    assert result.metadata["quality"]["sufficient"] is False

@@ -94,7 +94,7 @@ class TestAgentRuntimeV3Alignment:
         from kernel.agent_runtime.manifest import get_manifest
 
         m = get_manifest()
-        assert set(m.bootstrap_agent_types) == {"data", "rag"}
+        assert set(m.bootstrap_agent_types) == {"production", "data", "config", "rag"}
         assert "web" not in m.bootstrap_agent_types
         assert "rules" not in m.bootstrap_agent_types
 

@@ -1,10 +1,14 @@
 image:
   repository: ghcr.io/songjok/opentrace
-  tag: latest
+  tag: "0.1.0"
+  # 生产优先设置 sha256:...；配置后覆盖 tag。
+  digest: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
+revisionHistoryLimit: 5
+progressDeadlineSeconds: 600
 replicaCount:
   api: 2
 workerPools:
@@ -68,8 +72,38 @@ podDisruptionBudget:
   minAvailable: 1
 networkPolicy:
   enabled: true
-  ingressNamespaceSelector: {}
-  observabilityNamespaceSelector: {}
+  ingressNamespaceSelector:
+    matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+  observabilityNamespaceSelector:
+    matchLabels: {kubernetes.io/metadata.name: observability}
+  dns:
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: kube-system}
+    podSelector:
+      matchLabels: {k8s-app: kube-dns}
+  database:
+    port: 5432
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: data}
+    podSelector:
+      matchLabels: {app.kubernetes.io/name: postgresql}
+    cidrs: []
+  redis:
+    port: 6379
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: data}
+    podSelector:
+      matchLabels: {app.kubernetes.io/name: redis}
+    cidrs: []
+  otlp:
+    port: 4317
+    namespaceSelector:
+      matchLabels: {kubernetes.io/metadata.name: observability}
+    podSelector:
+      matchLabels: {app.kubernetes.io/name: opentelemetry-collector}
+    cidrs: []
+  # 模型、对象存储和 Connector 的公网 HTTPS CIDR 必须由平台团队显式准入。
+  externalHttpsRanges: []
 nodeSelector: {}
 tolerations: []
 affinity: {}

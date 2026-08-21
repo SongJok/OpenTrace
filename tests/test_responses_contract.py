@@ -159,11 +159,18 @@ def _approval_response(status: str) -> SimpleNamespace:
     )
 
 
-def _approval(status: str) -> SimpleNamespace:
+def _approval(
+    status: str,
+    *,
+    required_approvals: int = 1,
+    approval_decisions: list[dict] | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         id="approval-1",
         call_id="call-1",
         status=status,
+        required_approvals=required_approvals,
+        approval_decisions=list(approval_decisions or []),
         reason=None,
         resolved_by=None,
         resolved_at=None,
@@ -312,6 +319,111 @@ async def test_pending_approval_transitions_and_requeues_from_requires_action(mo
         approval_id="approval-1",
     )
     db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_destructive_production_approval_requires_two_distinct_approvers(monkeypatch) -> None:
+    response = _approval_response("requires_action")
+    approval = _approval("pending", required_approvals=2)
+    first_db = AsyncMock()
+    first_db.scalar.return_value = approval
+    monkeypatch.setattr(
+        "gateway.api_gateway.routers.response_aux._owned_response",
+        AsyncMock(return_value=response),
+    )
+    append_event = AsyncMock(
+        side_effect=[SimpleNamespace(sequence_number=12), SimpleNamespace(sequence_number=13)]
+    )
+    ensure_outbox = AsyncMock()
+    monkeypatch.setattr("gateway.api_gateway.routers.response_aux.append_event", append_event)
+    monkeypatch.setattr(
+        "gateway.api_gateway.routers.response_aux._ensure_approval_resume_outbox",
+        ensure_outbox,
+    )
+
+    first = await _resolve_response_tool_approval(
+        response_id=response.id,
+        request=_approval_request(),
+        payload={"approved": True},
+        current_user=SimpleNamespace(id="sre-1"),
+        db=first_db,
+        approval_id=approval.id,
+    )
+
+    assert first["status"] == "pending_secondary"
+    assert first["received_approvals"] == 1
+    assert response.status == "requires_action"
+    assert approval.status == "pending_secondary"
+    assert approval.approval_decisions[0]["user_id"] == "sre-1"
+    ensure_outbox.assert_not_awaited()
+
+    tool = SimpleNamespace(status="pending_approval", error_message=None)
+    second_db = AsyncMock()
+    second_db.scalar.side_effect = [approval, tool]
+    second = await _resolve_response_tool_approval(
+        response_id=response.id,
+        request=_approval_request(),
+        payload={"approved": True},
+        current_user=SimpleNamespace(id="sre-2"),
+        db=second_db,
+        approval_id=approval.id,
+    )
+
+    assert second["status"] == "approved"
+    assert second["received_approvals"] == 2
+    assert response.status == "queued"
+    assert approval.status == "approved"
+    assert tool.status == "approved"
+    assert {item["user_id"] for item in approval.approval_decisions} == {"sre-1", "sre-2"}
+    ensure_outbox.assert_awaited_once_with(
+        second_db,
+        response_id=response.id,
+        approval_id=approval.id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_same_approver_cannot_count_twice_for_four_eye_approval(monkeypatch) -> None:
+    response = _approval_response("requires_action")
+    approval = _approval(
+        "pending_secondary",
+        required_approvals=2,
+        approval_decisions=[
+            {
+                "user_id": "sre-1",
+                "approved": True,
+                "reason": None,
+                "decided_at": datetime.now(UTC).isoformat(),
+            }
+        ],
+    )
+    db = AsyncMock()
+    db.scalar.side_effect = [approval, 12]
+    monkeypatch.setattr(
+        "gateway.api_gateway.routers.response_aux._owned_response",
+        AsyncMock(return_value=response),
+    )
+    ensure_outbox = AsyncMock()
+    monkeypatch.setattr(
+        "gateway.api_gateway.routers.response_aux._ensure_approval_resume_outbox",
+        ensure_outbox,
+    )
+
+    result = await _resolve_response_tool_approval(
+        response_id=response.id,
+        request=_approval_request(),
+        payload={"approved": True},
+        current_user=SimpleNamespace(id="sre-1"),
+        db=db,
+        approval_id=approval.id,
+    )
+
+    assert result["status"] == "pending_secondary"
+    assert result["received_approvals"] == 1
+    assert approval.status == "pending_secondary"
+    assert len(approval.approval_decisions) == 1
+    ensure_outbox.assert_not_awaited()
+    db.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

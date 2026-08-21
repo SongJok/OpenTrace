@@ -138,6 +138,8 @@ DataAgent 是 OpenTrace 唯一的企业问数产品与领域概念。SQL 生成�
 - 维度聚合包含 `GROUP BY`；
 - JOIN 使用已验证关系，未验证关系不能自动执行；
 - 敏感字段仅在 SQL 实际引用时触发高风险门禁；
+- `SELECT *` 和 `alias.*` 按实际投影表展开敏感字段，Schema 限定名和表别名归一到同一目录键；
+  `COUNT(*)` 不读取字段明细，不按星号导出误报；
 - 自动添加或收紧 `LIMIT`，并保留截断语义。
 
 ## 执行与结果可靠性
@@ -231,8 +233,9 @@ Responses 的 `IntentPlan` 会在普通能力名之外记录：`information_sour
 不会被强制升级成数据库查询；显式文档证据和实际数据可以组合使用；当调用方禁用工具时仍保留
 信息与证据缺口，但不会偷偷执行能力。恢复后的计划沿用相同结构化意图，避免阶段漂移。
 
-每个 Response 同时维护 `response_evidence_ledger.v1` 五源证据账本，个人记忆、企业大脑、
-公司 Skill、RAG 与问数各自记录来源、版本、权威级别和满足的证据要求。最终答案通过确定性门禁；需要真实
+每个 Response 同时维护 `response_evidence_ledger.v1` 七类受治理来源证据账本，个人记忆、企业
+大脑、公司 Skill、RAG、问数、Production 与 Config 各自记录来源、版本、权威级别和满足的证据
+要求。最终答案通过确定性门禁；需要真实
 业务数字但没有 `executed_result`、需要文档依据但没有已发布引用时，平台会替换不受支持的答案，
 而不是依赖模型自行声明限制。Responses 主路径中的个人记忆只由 `ContextAssembler` 注入，RAG
 默认只检索知识与文档，避免同一记忆被重复读取并错误归类为文档证据。
@@ -240,6 +243,14 @@ Responses 的 `IntentPlan` 会在普通能力名之外记录：`information_sour
 `execute_sql_draft` 在恢复和幂等层仍按副作用工具处理，以阻止自动重试；产品语义标记为
 `governed_read`，审批界面明确说明它不会修改源数据库。普通聊天反馈若关联 DataAgentRun，会在
 完整 user/tenant/workspace 范围校验后同步写入结构化问数反馈和学习状态。
+
+草案处于 `executing` 且超过执行租约窗口时，平台不能假定查询没有发生。候选会进入 `unknown`，
+草案进入 `requires_reconciliation` 并持久化未知候选、原执行时间和核对时间；普通重试和
+`retry_failed` 都不能绕过该状态。界面必须显示“结果待核对”，在核对完成前禁用再次执行，避免
+恢复进程对生产数据库重复发起大查询。
+上述未知结果会递增 `opentrace_data_agent_reconciliation_total`；Responses 工具账本同时记录
+`opentrace_response_reconciliation_total{tool_name="execute_sql_draft"}`，并通过
+`opentrace_response_tool_executions_total` 区分成功、失败、复用和 incomplete。
 
 ## 配置
 

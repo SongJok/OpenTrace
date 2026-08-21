@@ -37,6 +37,13 @@ online_runtime:
       - ResponseApproval
       - ResponseToolExecution
       - ResponseModelCall
+      - EnterpriseConnector
+      - ProductionAsset
+      - ProductionAssetRelation
+      - ProductionEvidence
+      - ProductionConfigPolicy
+      - ProductionConfigSnapshot
+      - ProductionConfigValidationRun
     required_events:
       - response.created
       - response.in_progress
@@ -50,7 +57,7 @@ online_runtime:
   configuration:
     settings_class: infra.config.settings:Settings
     environment_profiles: [development, staging, production]
-    capability_profiles: [core, data, knowledge, data_knowledge]
+    capability_profiles: [core, data, knowledge, data_knowledge, production_intelligence]
     feature_flag_registry: infra.config.flag_registry:KERNEL_FLAG_REGISTRY
 
 

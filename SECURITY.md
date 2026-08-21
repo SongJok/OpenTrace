@@ -32,6 +32,12 @@ status within 14 days. Timelines may vary with severity and reproduction complex
 See `.env.example`, `docs/ENV_PROFILES.md`, and `docs/runbooks/tenant-rls-staging.md` for
 the relevant controls.
 
+Production Intelligence connectors are an additional trust boundary. Keep connectors disabled
+until their operation allowlist, egress target, secret reference, output sanitization, approval
+path, and post-action evidence have been verified. See
+`docs/security/production_intelligence_threat_model.md` for the threat analysis and required
+release evidence.
+
 ## Time-bounded dependency exceptions
 
 Security audit exceptions must be machine-readable in `security/npm-audit-allowlist.json`, name one

@@ -40,6 +40,42 @@ def test_evidence_gate_blocks_unverified_business_number() -> None:
     assert "不能给出或确认业务数字" in content
 
 
+def test_evidence_gate_blocks_missing_company_skill_instead_of_using_model_knowledge() -> None:
+    ledger = ResponseEvidenceLedger.from_context(
+        IntentPlan(
+            goal="解释企业字段",
+            information_sources=(InformationSource.COMPANY_SKILL,),
+            evidence_requirements=(EvidenceRequirement.COMPANY_SKILL_CONTEXT,),
+        ),
+        context_manifest={},
+        memory_ids=[],
+    )
+
+    content, gate = ledger.govern_answer("这个字段表示支付成功。")
+
+    assert gate["status"] == "blocked"
+    assert gate["answer_replaced"] is True
+    assert "不会用模型常识伪造" in content
+
+
+def test_tool_failure_ledger_does_not_persist_raw_exception_text() -> None:
+    ledger = ResponseEvidenceLedger(IntentPlan(goal="检索企业知识"))
+
+    ledger.observe_tool(
+        "rag",
+        {"status": "failed", "error": "postgresql://user:super-secret@db/internal"},
+    )
+
+    assert ledger.failures == [
+        {
+            "source": "rag",
+            "status": "failed",
+            "reason": "governed_source_unavailable",
+        }
+    ]
+    assert "super-secret" not in str(ledger.to_dict())
+
+
 def test_evidence_ledger_accepts_verified_data_execution() -> None:
     ledger = ResponseEvidenceLedger.from_context(
         _intent(

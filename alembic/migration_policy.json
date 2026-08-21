@@ -3,7 +3,7 @@
   "policy_effective_date": "2026-07-24",
   "production_baseline_revision": "20260724_chatgpt_runtime_completion",
   "new_revision_format": "^r[0-9]{4}_[a-z0-9_]+$",
-  "next_sequence": 29,
+  "next_sequence": 34,
   "frozen_migrations": [
     {
       "revision": "20260400_core_baseline",
@@ -485,6 +485,41 @@
       "sha256": "bcca1e741f3f49aa9f3f9c30799945c051b6423b956077f637f8ead6a3b77b24",
       "governed_format": "r-sequence",
       "frozen_on": "2026-08-13"
+    },
+    {
+      "revision": "r0029_production_intelligence_foundation",
+      "file": "alembic/versions/r0029_production_intelligence_foundation.py",
+      "sha256": "4b73d56a20e04b13408939f911028fa7c58cbbbf17919c43dd8a7e4109b81c5b",
+      "governed_format": "r-sequence",
+      "frozen_on": "2026-08-20"
+    },
+    {
+      "revision": "r0030_config_intelligence",
+      "file": "alembic/versions/r0030_config_intelligence.py",
+      "sha256": "beb61b12454cb53f58c4b2097485d42a13ab461346421cdbff7c2803a62d79a7",
+      "governed_format": "r-sequence",
+      "frozen_on": "2026-08-20"
+    },
+    {
+      "revision": "r0031_production_asset_sync_runtime",
+      "file": "alembic/versions/r0031_production_asset_sync_runtime.py",
+      "sha256": "c4a2fdac653570b99792e61176c91a949064a3f60acb4d40ea32e66e12e68f3e",
+      "governed_format": "r-sequence",
+      "frozen_on": "2026-08-20"
+    },
+    {
+      "revision": "r0032_four_eye_production_approvals",
+      "file": "alembic/versions/r0032_four_eye_production_approvals.py",
+      "sha256": "1dc4b112b6ad63e070d0d64d680af85ca551e665601aac628889045932db0ea2",
+      "governed_format": "r-sequence",
+      "frozen_on": "2026-08-20"
+    },
+    {
+      "revision": "r0033_config_intelligence_invariants",
+      "file": "alembic/versions/r0033_config_intelligence_invariants.py",
+      "sha256": "522b0eb23494d3b8d9cf98dde606b7ad73ef77bbb70dbe05fa42723db64f84a1",
+      "governed_format": "r-sequence",
+      "frozen_on": "2026-08-20"
     }
   ],
   "notes": [

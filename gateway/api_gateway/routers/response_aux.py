@@ -21,7 +21,12 @@ from gateway.api_gateway.routers.auth import get_current_user
 from gateway.api_gateway.tenant_middleware import build_tenant_metadata
 from infra.config.settings import settings
 from infra.errors import AppException, ErrorCodes
+from infra.observability.metrics import (
+    RESPONSE_APPROVAL_DECISIONS_TOTAL,
+    RESPONSE_APPROVAL_RESOLUTION_DURATION,
+)
 from infra.responses.repository import TERMINAL_STATUSES, append_event
+from infra.security.identity import is_enterprise_admin
 from infra.storage.data_agent_models import DataAgentFeedback, DataAgentRunRecord
 from infra.storage.database import db_session_dependency as get_db
 from infra.storage.models import (
@@ -37,6 +42,7 @@ from infra.storage.models import (
     User,
 )
 from infra.storage.object_store import attachment_object_key, get_object_store
+from services.production_intelligence.audit import mask_sensitive
 
 router = APIRouter()
 
@@ -370,6 +376,31 @@ async def _owned_response(
     return await db.scalar(statement)
 
 
+async def _workspace_response_for_approver(
+    db: AsyncSession,
+    *,
+    response_id: str,
+    user: User,
+    request: Request,
+) -> ResponseRecord | None:
+    """四眼审批只允许同 Scope 的 SRE/Admin 获取待审批 Response 行。"""
+
+    normalized_role = str(getattr(user, "role", "") or "").strip().lower()
+    if not (is_enterprise_admin(user) or normalized_role == "sre"):
+        return None
+    tenant_id, workspace_id = _scope(request, user)
+    return await db.scalar(
+        select(ResponseRecord)
+        .where(
+            ResponseRecord.id == response_id,
+            ResponseRecord.tenant_id == tenant_id,
+            ResponseRecord.workspace_id == workspace_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
 def _prepare_response_for_approval_resume(response: ResponseRecord) -> None:
     """重新排队审批结果，并保证 Worker 至少还能领取一次。"""
 
@@ -453,6 +484,15 @@ async def _resolve_response_tool_approval(
         request=request,
         for_update=True,
     )
+    secondary_approver = False
+    if response is None:
+        response = await _workspace_response_for_approver(
+            db,
+            response_id=response_id,
+            user=current_user,
+            request=request,
+        )
+        secondary_approver = response is not None
     if response is None:
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="Response 不存在或无权限")
 
@@ -467,6 +507,14 @@ async def _resolve_response_tool_approval(
     if approval is None:
         message = "审批记录不存在" if approval_id is not None else "工具审批记录不存在"
         raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message=message)
+    required_approvals = max(1, min(2, int(getattr(approval, "required_approvals", 1) or 1)))
+    if secondary_approver and required_approvals < 2:
+        raise AppException(ErrorCodes.RESOURCE_NOT_FOUND.code, message="审批记录不存在")
+    decisions = [
+        dict(item)
+        for item in (getattr(approval, "approval_decisions", None) or [])
+        if isinstance(item, dict) and str(item.get("user_id") or "")
+    ]
 
     approved = bool(payload.get("approved", False))
     requested_status = "approved" if approved else "rejected"
@@ -504,10 +552,14 @@ async def _resolve_response_tool_approval(
             "status": approval.status,
             "call_id": approval.call_id,
             "approval_id": approval.id,
+            "required_approvals": required_approvals,
+            "received_approvals": len(
+                {str(item["user_id"]) for item in decisions if item.get("approved") is True}
+            ),
             "starting_after": int(latest_sequence if latest_sequence is not None else -1),
         }
 
-    if approval.status != "pending":
+    if approval.status not in {"pending", "pending_secondary"}:
         _raise_approval_state_conflict(
             response=response,
             approval=approval,
@@ -522,10 +574,82 @@ async def _resolve_response_tool_approval(
             message="Response 当前不在等待审批状态",
         )
 
+    existing_decision = next(
+        (item for item in decisions if str(item.get("user_id")) == current_user.id), None
+    )
+    if existing_decision is not None:
+        if bool(existing_decision.get("approved")) != approved:
+            _raise_approval_state_conflict(
+                response=response,
+                approval=approval,
+                requested_status=requested_status,
+                message="当前审批人已经提交决定，不能更改",
+            )
+        latest_sequence = await db.scalar(
+            select(func.max(ResponseEvent.sequence_number)).where(
+                ResponseEvent.response_id == response_id
+            )
+        )
+        return {
+            "approved": approval.status == "approved",
+            "status": approval.status,
+            "call_id": approval.call_id,
+            "approval_id": approval.id,
+            "required_approvals": required_approvals,
+            "received_approvals": len(
+                {str(item["user_id"]) for item in decisions if item.get("approved") is True}
+            ),
+            "current_user_decision": "approved" if approved else "rejected",
+            "starting_after": int(latest_sequence if latest_sequence is not None else -1),
+        }
+
+    now = datetime.now(UTC)
+    decisions.append(
+        {
+            "user_id": current_user.id,
+            "approved": approved,
+            "reason": None if approved else str(payload.get("reason") or "user rejected tool call"),
+            "decided_at": now.isoformat(),
+        }
+    )
+    approval.approval_decisions = decisions
+    received_approvals = len(
+        {str(item["user_id"]) for item in decisions if item.get("approved") is True}
+    )
+    if approved and received_approvals < required_approvals:
+        approval.status = "pending_secondary"
+        progress_event = await append_event(
+            db,
+            response_id=response_id,
+            event_type="opentrace.approval.progress",
+            payload={
+                "approval_id": approval.id,
+                "call_id": approval.call_id,
+                "status": approval.status,
+                "required_approvals": required_approvals,
+                "received_approvals": received_approvals,
+            },
+        )
+        await db.commit()
+        RESPONSE_APPROVAL_DECISIONS_TOTAL.labels(
+            outcome="pending_secondary",
+            required_approvals=str(required_approvals),
+        ).inc()
+        return {
+            "approved": False,
+            "status": approval.status,
+            "call_id": approval.call_id,
+            "approval_id": approval.id,
+            "required_approvals": required_approvals,
+            "received_approvals": received_approvals,
+            "current_user_decision": "approved",
+            "starting_after": progress_event.sequence_number,
+        }
+
     approval.status = requested_status
     approval.reason = None if approved else str(payload.get("reason") or "user rejected tool call")
     approval.resolved_by = current_user.id
-    approval.resolved_at = datetime.now(UTC)
+    approval.resolved_at = now
     tool = await db.scalar(
         select(ResponseToolExecution).where(
             ResponseToolExecution.response_id == response_id,
@@ -549,6 +673,8 @@ async def _resolve_response_tool_approval(
                 "operation_class",
                 getattr(approval, "side_effect_level", "write"),
             ),
+            "required_approvals": required_approvals,
+            "received_approvals": received_approvals,
         },
     )
     # 批准和拒绝都恢复 Manager；拒绝会作为类型化工具结果进入后续解释。
@@ -559,11 +685,30 @@ async def _resolve_response_tool_approval(
         approval_id=approval.id,
     )
     await db.commit()
+    outcome = "approved" if approved else "rejected"
+    RESPONSE_APPROVAL_DECISIONS_TOTAL.labels(
+        outcome=outcome,
+        required_approvals=str(required_approvals),
+    ).inc()
+    created_at = getattr(approval, "created_at", None)
+    if created_at is not None:
+        normalized_created_at = (
+            created_at.replace(tzinfo=UTC)
+            if created_at.tzinfo is None
+            else created_at.astimezone(UTC)
+        )
+        RESPONSE_APPROVAL_RESOLUTION_DURATION.labels(
+            outcome=outcome,
+            required_approvals=str(required_approvals),
+        ).observe(max(0.0, (now - normalized_created_at).total_seconds()))
     return {
         "approved": approved,
         "status": approval.status,
         "call_id": approval.call_id,
         "approval_id": approval.id,
+        "required_approvals": required_approvals,
+        "received_approvals": received_approvals,
+        "current_user_decision": "approved" if approved else "rejected",
         "starting_after": resolved_event.sequence_number,
     }
 
@@ -611,6 +756,73 @@ async def resolve_response_approval(
         db=db,
         approval_id=approval_id,
     )
+
+
+@router.get("/response-approvals/pending")
+async def list_pending_four_eye_approvals(
+    request: Request,
+    limit: int = 100,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """列出同 Scope 的高风险待复核项，不暴露 Response 正文或原始敏感参数。"""
+
+    normalized_role = str(current_user.role or "").strip().lower()
+    if not (is_enterprise_admin(current_user) or normalized_role == "sre"):
+        raise AppException(ErrorCodes.PERMISSION_DENIED.code, message="当前角色无权复核生产变更")
+    tenant_id, workspace_id = _scope(request, current_user)
+    bounded_limit = max(1, min(int(limit), 200))
+    rows = await db.execute(
+        select(ResponseApproval, ResponseRecord.user_id, ResponseRecord.created_at)
+        .join(ResponseRecord, ResponseRecord.id == ResponseApproval.response_id)
+        .where(
+            ResponseRecord.tenant_id == tenant_id,
+            ResponseRecord.workspace_id == workspace_id,
+            ResponseRecord.status == "requires_action",
+            ResponseApproval.status.in_(("pending", "pending_secondary")),
+            ResponseApproval.required_approvals >= 2,
+        )
+        .order_by(ResponseApproval.created_at)
+        .limit(bounded_limit)
+    )
+    items = []
+    for approval, requested_by, response_created_at in rows.all():
+        decisions = [
+            dict(item)
+            for item in approval.approval_decisions or []
+            if isinstance(item, dict) and str(item.get("user_id") or "")
+        ]
+        current_decision = next(
+            (
+                "approved" if item.get("approved") is True else "rejected"
+                for item in decisions
+                if str(item.get("user_id")) == current_user.id
+            ),
+            None,
+        )
+        items.append(
+            {
+                "id": approval.id,
+                "response_id": approval.response_id,
+                "call_id": approval.call_id,
+                "tool_name": approval.tool_name,
+                "side_effect": approval.side_effect_level,
+                "operation_class": approval.operation_class,
+                "arguments": mask_sensitive(dict(approval.arguments or {})),
+                "status": approval.status,
+                "required_approvals": int(approval.required_approvals or 1),
+                "received_approvals": len(
+                    {str(item["user_id"]) for item in decisions if item.get("approved") is True}
+                ),
+                "current_user_decision": current_decision,
+                "requested_by": requested_by,
+                "response_created_at": (
+                    response_created_at.isoformat() if response_created_at else None
+                ),
+                "created_at": approval.created_at.isoformat() if approval.created_at else None,
+            }
+        )
+    return {"items": items, "limit": bounded_limit}
 
 
 @router.get("/messages/{message_id}/versions")

@@ -1,4 +1,4 @@
-"""Response 级五源证据账本与确定性答案门禁。"""
+"""Response 级受治理证据账本与确定性答案门禁。"""
 
 from __future__ import annotations
 
@@ -23,6 +23,17 @@ _REQUIREMENT_SOURCE = {
     EvidenceRequirement.BUSINESS_RULES: InformationSource.DATA,
     EvidenceRequirement.VALIDATED_SQL: InformationSource.DATA,
     EvidenceRequirement.EXECUTED_RESULT: InformationSource.DATA,
+    EvidenceRequirement.ASSET_CONTEXT: InformationSource.PRODUCTION,
+    EvidenceRequirement.LIVE_OBSERVATION: InformationSource.PRODUCTION,
+    EvidenceRequirement.CROSS_SOURCE_CORROBORATION: InformationSource.PRODUCTION,
+    EvidenceRequirement.CONFIG_VALIDATION: InformationSource.CONFIG,
+    EvidenceRequirement.CONFIG_SCHEMA: InformationSource.CONFIG,
+    EvidenceRequirement.CONFIG_REFERENCES: InformationSource.CONFIG,
+    EvidenceRequirement.CONFIG_BUSINESS_RULES: InformationSource.CONFIG,
+    EvidenceRequirement.CONFIG_HISTORY: InformationSource.CONFIG,
+    EvidenceRequirement.CONFIG_CAPACITY: InformationSource.CONFIG,
+    EvidenceRequirement.CONFIG_CONFLICTS: InformationSource.CONFIG,
+    EvidenceRequirement.CONFIG_DRY_RUN: InformationSource.CONFIG,
 }
 
 
@@ -62,6 +73,7 @@ class ResponseEvidenceLedger:
         self.entries: dict[str, EvidenceLedgerEntry] = {}
         self.failures: list[dict[str, Any]] = []
         self.gate: dict[str, Any] = {}
+        self.satisfied_overrides: set[EvidenceRequirement] = set()
 
     @classmethod
     def from_context(
@@ -183,7 +195,7 @@ class ResponseEvidenceLedger:
                 {
                     "source": tool_name,
                     "status": status,
-                    "error": str(payload.get("error") or result.get("error") or "")[:500],
+                    "reason": "governed_source_unavailable",
                 }
             )
             return
@@ -193,6 +205,94 @@ class ResponseEvidenceLedger:
             self._observe_data_draft(payload)
         elif tool_name == "execute_sql_draft":
             self._observe_data_execution(payload)
+        elif tool_name in {"production", "config"}:
+            self._observe_production_intelligence(tool_name, payload)
+
+    def _observe_production_intelligence(self, tool_name: str, payload: dict[str, Any]) -> None:
+        source = InformationSource.CONFIG if tool_name == "config" else InformationSource.PRODUCTION
+        metadata = dict(payload.get("metadata") or {})
+        critic = dict(metadata.get("critic") or {})
+        critic_passed = critic.get("status") == "pass"
+        if critic_passed:
+            for raw_requirement in critic.get("requirements_satisfied") or []:
+                try:
+                    self.satisfied_overrides.add(EvidenceRequirement(str(raw_requirement)))
+                except ValueError:
+                    continue
+        elif critic.get("status") in {"blocked", "incomplete"}:
+            self.failures.append(
+                {
+                    "source": tool_name,
+                    "status": "evidence_critic_blocked",
+                    "reason": f"production_evidence_{critic.get('status')}",
+                    "gaps": list(critic.get("gaps") or []),
+                    "conflicts": list(critic.get("conflicts") or []),
+                }
+            )
+
+        raw_evidence = payload.get("evidence") or []
+        for index, raw in enumerate(raw_evidence[:100], start=1):
+            if not isinstance(raw, dict):
+                continue
+            evidence_type = str(raw.get("evidence_type") or "").strip()
+            source_ref = str(raw.get("source_ref") or "").strip()
+            if not evidence_type or not source_ref:
+                continue
+            requirements: set[EvidenceRequirement] = set()
+            if critic_passed:
+                for value in raw.get("requirements") or []:
+                    try:
+                        requirements.add(EvidenceRequirement(str(value)))
+                    except ValueError:
+                        continue
+                if evidence_type in {"asset", "asset_graph", "ownership", "dependency"}:
+                    requirements.add(EvidenceRequirement.ASSET_CONTEXT)
+                if (
+                    evidence_type
+                    in {
+                        "metric",
+                        "log",
+                        "trace",
+                        "alert",
+                        "deployment",
+                        "business_record",
+                        "config_snapshot",
+                        "code_change",
+                    }
+                    and source == InformationSource.PRODUCTION
+                ):
+                    requirements.add(EvidenceRequirement.LIVE_OBSERVATION)
+                if evidence_type == "config_validation":
+                    requirements.add(EvidenceRequirement.CONFIG_VALIDATION)
+                if evidence_type == "config_dry_run":
+                    requirements.add(EvidenceRequirement.CONFIG_DRY_RUN)
+            payload_metadata = dict(raw.get("payload") or {})
+            evidence_id = str(raw.get("evidence_id") or source_ref or f"{tool_name}:{index}")
+            self.add(
+                EvidenceLedgerEntry(
+                    source=source,
+                    evidence_id=evidence_id,
+                    evidence_type=evidence_type,
+                    title=str(raw.get("title") or f"{tool_name} 证据 {index}"),
+                    authority=str(raw.get("authority") or "governed_production_source"),
+                    version=(
+                        str(payload_metadata.get("policy_version"))
+                        if payload_metadata.get("policy_version") is not None
+                        else None
+                    ),
+                    citation=source_ref,
+                    requirements=requirements,
+                    metadata={
+                        "source_kind": raw.get("source_kind"),
+                        "connector_id": raw.get("connector_id"),
+                        "asset_id": raw.get("asset_id"),
+                        "environment": raw.get("environment"),
+                        "observed_at": raw.get("observed_at"),
+                        "confidence": raw.get("confidence"),
+                        "critic_status": critic.get("status"),
+                    },
+                )
+            )
 
     def _observe_rag(self, payload: dict[str, Any]) -> None:
         metadata = dict(payload.get("metadata") or {})
@@ -373,21 +473,76 @@ class ResponseEvidenceLedger:
         satisfied = {
             requirement for entry in self.entries.values() for requirement in entry.requirements
         }
+        satisfied.update(self.satisfied_overrides)
         missing = [item for item in required if item not in satisfied]
-        blocking = list(missing)
+        blocking: list[EvidenceRequirement | str] = list(missing)
+        critic_failures = [
+            item for item in self.failures if item.get("status") == "evidence_critic_blocked"
+        ]
+        if critic_failures:
+            blocking.append("evidence_critic_blocked")
         return {
-            "status": "pass" if not missing else "blocked",
+            "status": "pass" if not blocking else "blocked",
             "required": [item.value for item in required],
             "satisfied": [item.value for item in required if item in satisfied],
             "missing": [item.value for item in missing],
-            "blocking": [item.value for item in blocking],
+            "blocking": [
+                item.value if isinstance(item, EvidenceRequirement) else item for item in blocking
+            ],
+            "critic_failures": critic_failures,
         }
 
     def govern_answer(self, content: str) -> tuple[str, dict[str, Any]]:
         assessment = self.assessment()
         missing = set(assessment["missing"])
-        if not missing:
+        if assessment.get("critic_failures"):
+            gaps = [
+                str(gap)
+                for failure in assessment["critic_failures"]
+                for gap in failure.get("gaps") or []
+            ]
+            governed = (
+                "## 结论\n当前生产证据存在冲突、环境不一致或关键缺口，不能给出可靠结论。\n\n"
+                "## 证据\n已取得的证据保留在本次 Response 证据账本中，但未通过 Critic。\n\n"
+                "## 置信度\n低（证据门禁阻断）\n\n"
+                "## 影响\n未执行任何生产或配置写入。\n\n"
+                "## 建议\n补齐或核对：" + ("；".join(dict.fromkeys(gaps)) or "冲突证据")
+            )
+        elif not missing:
             governed = content
+        elif missing.intersection(
+            {
+                EvidenceRequirement.ASSET_CONTEXT.value,
+                EvidenceRequirement.LIVE_OBSERVATION.value,
+                EvidenceRequirement.CROSS_SOURCE_CORROBORATION.value,
+            }
+        ):
+            governed = (
+                "## 结论\n当前没有足够的生产资产或实时观测证据，不能确认生产状态或根因。\n\n"
+                "## 证据\n缺少：" + "、".join(sorted(missing)) + "。\n\n"
+                "## 置信度\n低（证据门禁阻断）\n\n"
+                "## 影响\n未执行任何生产写入。\n\n"
+                "## 建议\n检查资产映射、Connector 权限、目标环境和证据时效后重试。"
+            )
+        elif missing.intersection(
+            {
+                EvidenceRequirement.CONFIG_VALIDATION.value,
+                EvidenceRequirement.CONFIG_SCHEMA.value,
+                EvidenceRequirement.CONFIG_REFERENCES.value,
+                EvidenceRequirement.CONFIG_BUSINESS_RULES.value,
+                EvidenceRequirement.CONFIG_HISTORY.value,
+                EvidenceRequirement.CONFIG_CAPACITY.value,
+                EvidenceRequirement.CONFIG_CONFLICTS.value,
+                EvidenceRequirement.CONFIG_DRY_RUN.value,
+            }
+        ):
+            governed = (
+                "## 结论\n配置尚未通过完整的确定性验证，不能判断其可安全发布。\n\n"
+                "## 证据\n缺少：" + "、".join(sorted(missing)) + "。\n\n"
+                "## 置信度\n低（配置证据门禁阻断）\n\n"
+                "## 影响\n未向配置中心写入或发布配置。\n\n"
+                "## 建议\n发布配置策略、记录可信快照并完成 dry-run 后重新验证。"
+            )
         elif EvidenceRequirement.EXECUTED_RESULT.value in missing:
             governed = (
                 "当前没有取得经过实际执行和结果校验的数据证据，因此不能给出或确认业务数字。"
@@ -403,6 +558,12 @@ class ResponseEvidenceLedger:
             governed = (
                 "当前企业大脑和已发布企业认知中没有找到足以支持结论的内容。"
                 "我不会用通用常识补全公司制度、流程或业务口径；请补充或发布对应企业资料。"
+            )
+        elif EvidenceRequirement.COMPANY_SKILL_CONTEXT.value in missing:
+            governed = (
+                "当前没有命中能支持结论的已发布企业内 Skill。"
+                "我不会用模型常识伪造企业流程、字段语义或业务规则；"
+                "请由管理员上传并发布对应的企业 Skill。"
             )
         elif EvidenceRequirement.PERSONAL_CONTEXT.value in missing:
             governed = (

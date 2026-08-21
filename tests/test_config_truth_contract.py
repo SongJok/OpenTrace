@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 
 import pytest
 
@@ -38,6 +39,19 @@ class TestConfigTruthDefaults:
         assert AppSettings.model_fields["rag_min_evidence_score"].default == pytest.approx(
             0.65, abs=0.01
         )
+
+    def test_rag_lane_timeout_is_bounded_and_documented(self):
+        assert AppSettings.model_fields["rag_lane_timeout_seconds"].default == pytest.approx(5.0)
+        for relative_path in (
+            ".env.example",
+            "docs/CONFIG_TRUTH.md",
+            "docs/FEATURE_FLAG_REGISTRY.md",
+        ):
+            text = (Path(__file__).resolve().parents[1] / relative_path).read_text(encoding="utf-8")
+            assert "RAG_LANE_TIMEOUT_SECONDS" in text
+
+        with pytest.raises(ValueError):
+            Settings(rag_lane_timeout_seconds=0.1)
 
     def test_memory_fabric_primary_only_explicit_profile(self):
         s = Settings(

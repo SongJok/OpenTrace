@@ -8,8 +8,9 @@
 [![Python 3.11–3.12](https://img.shields.io/badge/Python-3.11--3.12-3776AB.svg)](https://www.python.org/)
 
 OpenTrace 是一个可自托管的企业 AgentOS。它以 OpenAI 风格的 Responses API、可恢复
-Agent Loop 和 PostgreSQL 持久化事件为核心，让用户专注于一个提问页面，并提供三类能力：
-RAG 检索、受治理的企业大脑上下文，以及只读 DataAgent。
+Agent Loop 和 PostgreSQL 持久化事件为核心，让用户专注于一个提问页面，并提供四类受治理在线能力：
+Production Intelligence、只读 DataAgent、Config Intelligence 和 RAG。企业大脑、公司 Skill 与个人
+记忆继续作为授权上下文，不是可自由调用的 Agent。
 
 > **项目状态：受控企业 Beta。** 支持范围内的产品主路径可进入受治理租户试点，但尚未达到
 > GA；真实放量仍需通过主链评测，并完成密钥托管、网络隔离、备份恢复、容量评估和组织级安全审查。
@@ -18,6 +19,8 @@ RAG 检索、受治理的企业大脑上下文，以及只读 DataAgent。
 
 - **企业数据与知识联合推理**：在受治理的工作区内接入 MySQL、Doris、ClickHouse 或
   PostgreSQL，并结合已发布知识生成带证据的回答。
+- **有证据的生产智能**：将业务、服务、代码、部署、配置、可观测性、数据和负责人连成
+  资产图，高影响结论必须通过 Evidence 和 Critic 门禁。
 - **持久化而非请求内执行**：API 只提交命令；Worker 通过 Outbox、Redis Streams 和数据库
   租约执行，浏览器断线不会取消任务，SSE 可以按序号恢复。
 - **治理默认开启**：租户、工作区、用户和数据源边界在 API、Agent 与后台任务中
@@ -30,19 +33,21 @@ RAG 检索、受治理的企业大脑上下文，以及只读 DataAgent。
 ## 产品主线
 
 ```text
-提问页
+提问页 / 企业渠道
   └─ IntentPlan → ContextAssembler → Manager loop
-       ├─ 企业大脑：授权的公司上下文
+       ├─ Production：资产图 + 受治理连接器证据
+       ├─ Data：授权数据库 → 校验后的只读 SQL → 证据
+       ├─ Config：策略 + 历史 + 容量 + dry-run 校验
        ├─ RAG：审核发布的知识与引用
-       └─ DataAgent：授权数据库 → 校验后的只读 SQL → 证据
+       └─ 企业大脑 / 公司 Skill / 记忆：授权上下文
 ```
 
 典型使用方式：
 
 1. 管理员配置企业知识、企业大脑画像、权限和可查询的数据库。
 2. 用户进入 `/chat`，在授权工作区范围内提出问题。
-3. Manager loop 只选择 RAG 或 DataAgent；企业大脑由 ContextAssembler 注入，
-   不作为用户可直接调用的工具暴露。
+3. Manager loop 从 Production、Data、Config 和 RAG 中选择最小能力集；企业大脑、公司
+   Skill 和个人记忆由 ContextAssembler 注入。
 
 ## 核心架构
 
@@ -52,7 +57,9 @@ POST /api/v2/responses
   → PostgreSQL Response / Item / Event / Outbox（同一事务）
   → Worker 投递 Redis Streams，并通过数据库租约领取 Response
   → IntentPlan → ContextAssembler → Manager model/tool loop
-  → RAG / 企业大脑上下文 / DataAgent (DataAgent)
+  → Production / Data / Config / RAG + 授权企业上下文
+  → Governed Connector Gateway → MCP / Native / REST / RPC
+  → Evidence Ledger → Fusion → 确定性 Critic
   → PostgreSQL 持久化结果、事件、模型调用与工具账本
   → SSE 按 sequence_number 断点续传
   → 摘要与记忆学习
@@ -69,6 +76,9 @@ PostgreSQL 是在线事实来源，Redis 仅承担投递、唤醒和可选镜像
 | Agent Loop | IntentPlan、最小能力选择、工具循环、专家 Agent、证据合成、步骤上限保护 |
 | 企业数据库 | MySQL、Doris、ClickHouse、PostgreSQL；连接测试、Schema、语义映射、只读 SQL |
 | DataAgent | DataAgent、指标/实体/时间/Join 推理、校验、反思、结果解释和可视化配置 |
+| Production Intelligence | 租户隔离资产图、可观测/代码/部署/业务证据、生产诊断与影响分析 |
+| Config Intelligence | 版本化策略和快照，Schema/引用/业务/历史/容量/冲突/dry-run 校验 |
+| 企业连接器 | 默认停用的 MCP/Native/REST/RPC 目录、操作白名单、Secret 引用、策略、脱敏、超时与审计 |
 | 企业知识库 | 公司/部门/岗位/工作区/个人空间、来源 ACL 同步、审核发布、有效期、密级、治理检索、关系图和引用 |
 | 治理 | 多租户/工作区边界、资源权限、持久化审批、配额与策略接口 |
 | 用户支持 | 我的资料、数据库、个人记忆、任务、Skills 与设置 |
@@ -279,6 +289,7 @@ gateway/          FastAPI 应用与 API routers
 infra/            配置、数据库、Responses、消息总线、安全与观测
 kernel/           当前 Manager Agent Loop、上下文、运行时与数据认知
 agents/           专家 Agent、DataAgent V2、RAG Agent 与 Worker
+connectors/       受治理 MCP/Native 连接器契约、Gateway、Registry 与 SDK
 knowledge/        企业知识编排与检索
 memory/           记忆基础设施与治理
 model/            Model Gateway、provider adapters、embedding、reranker
@@ -296,6 +307,10 @@ tests/            单元、集成与架构合约测试
 ## 文档
 
 - [受控企业 Beta 就绪说明](docs/BETA_READINESS.md)
+- [Production Intelligence 架构](docs/architecture/production_intelligence_platform.md)
+- [Enterprise Connector 开发指南](docs/CONNECTOR_DEVELOPMENT.md)
+- [Production Intelligence 威胁模型](docs/security/production_intelligence_threat_model.md)
+- [Production Intelligence 受控上线](docs/runbooks/production_intelligence_rollout.md)
 - [架构概览](docs/architecture_overview.md)
 - [Responses 切换与回滚](docs/runbooks/chatgpt_cutover.md)
 - [DataAgent](docs/catalog/data_agent.md)

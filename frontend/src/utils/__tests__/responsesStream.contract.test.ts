@@ -46,6 +46,31 @@ describe('Responses API stream compatibility', () => {
     expect(stages).toEqual(['知识库检索'])
   })
 
+  it('projects production governance and evidence gate events into public progress', async () => {
+    const stages: string[] = []
+    const response = new Response(
+      [
+        'data: {"sequence_number":1,"type":"opentrace.information_sources.enforced","data":{"mode":"deny_by_default","selected_sources":["production","config"]}}\n\n',
+        'data: {"sequence_number":2,"type":"opentrace.tool.started","data":{"name":"production","call_id":"call-1"}}\n\n',
+        'data: {"sequence_number":3,"type":"opentrace.tool.completed","data":{"name":"production","status":"completed"}}\n\n',
+        'data: {"sequence_number":4,"type":"opentrace.evidence.gate","data":{"status":"blocked","missing":["live_observation"]}}\n\n',
+        'data: {"sequence_number":5,"type":"response.completed","data":{"content":"已阻断"}}\n\n',
+      ].join(''),
+      { headers: { 'content-type': 'text/event-stream' } },
+    )
+
+    await streamSseResponse(response, {
+      onThinking: (payload) => { stages.push(String(payload.stage || '')) },
+    })
+
+    expect(stages).toEqual([
+      '已执行默认拒绝的信息源策略（选择 2 类来源）',
+      '正在核对生产资产与实时观测',
+      '生产证据已返回，正在执行 Critic 校验',
+      '证据门禁已阻断不可靠结论',
+    ])
+  })
+
   it('treats response.incomplete as a terminal answer with resumable details', async () => {
     const finals: string[] = []
     const response = new Response(

@@ -1,6 +1,7 @@
 """
 Health-check router.
 """
+
 from __future__ import annotations
 
 import time
@@ -15,8 +16,8 @@ from infra.config.orchestrator_label import (
     resolve_orchestrator_label,
 )
 from infra.config.settings import settings
-from infra.storage.database import AsyncSessionLocal
 from infra.observability.runtime_metrics import runtime_metrics_store
+from infra.storage.database import AsyncSessionLocal
 from kernel.cognition.world_model import WorldModel
 
 router = APIRouter()
@@ -30,6 +31,7 @@ class HealthResponse(BaseModel):
     version: str
     uptime_seconds: float
     environment: str
+    release_revision: str
 
 
 class DependencyHealthResponse(BaseModel):
@@ -64,6 +66,7 @@ async def health() -> HealthResponse:
         version="0.1.0",
         uptime_seconds=round(time.time() - START_TIME, 2),
         environment=settings.app_env,
+        release_revision=settings.opentrace_release_revision,
     )
 
 

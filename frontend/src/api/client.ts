@@ -1285,7 +1285,7 @@ export async function apiResolveResponseApproval(
   })
   if (!res.ok) throw new Error(await readApiError(res, '审批失败'))
   const result = await res.json().catch(() => null) as any
-  if (!result || result.error || !['approved', 'rejected'].includes(String(result.status || ''))) {
+  if (!result || result.error || !['pending_secondary', 'approved', 'rejected'].includes(String(result.status || ''))) {
     throw new Error(String(result?.error || '审批失败'))
   }
   if (String(result.status) === 'approved' && result.approved !== true) {

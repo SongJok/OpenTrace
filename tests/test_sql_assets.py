@@ -1161,7 +1161,7 @@ async def test_executing_draft_rejects_concurrent_execution(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_stale_executing_draft_is_recovered_and_retried(monkeypatch) -> None:
+async def test_stale_executing_draft_requires_reconciliation_without_retry(monkeypatch) -> None:
     schema = {"tables": [{"name": "orders"}]}
     draft = _draft(fingerprint=sql_assets.schema_fingerprint(schema))
     draft.status = "executing"
@@ -1186,19 +1186,35 @@ async def test_stale_executing_draft_is_recovered_and_retried(monkeypatch) -> No
     monkeypatch.setattr(sql_assets, "SQLExecutor", MagicMock(return_value=executor))
     db = SimpleNamespace(commit=AsyncMock())
 
-    result = await sql_assets.execute_sql_query_draft(
-        db,
-        draft_id=draft.id,
-        user_id=draft.user_id,
-        tenant_id=draft.tenant_id,
-        workspace_id=draft.workspace_id,
-        candidate_ids=[candidate.id],
-    )
+    with pytest.raises(ValidationException, match="结果未知") as exc_info:
+        await sql_assets.execute_sql_query_draft(
+            db,
+            draft_id=draft.id,
+            user_id=draft.user_id,
+            tenant_id=draft.tenant_id,
+            workspace_id=draft.workspace_id,
+            candidate_ids=[candidate.id],
+        )
 
-    assert result["status"] == "completed"
-    assert result["execution_summary"]["recovery_count"] == 1
-    assert candidate.execution_status == "completed"
-    executor.run_on_dsn.assert_awaited_once()
+    assert exc_info.value.details["requires_reconciliation"] is True
+    assert draft.status == "requires_reconciliation"
+    assert draft.execution_summary["reconciliation_count"] == 1
+    assert draft.execution_summary["unknown_candidate_ids"] == [candidate.id]
+    assert candidate.execution_status == "unknown"
+    executor.run_on_dsn.assert_not_awaited()
+    db.commit.assert_awaited_once()
+
+    with pytest.raises(ValidationException, match="不会自动重试"):
+        await sql_assets.execute_sql_query_draft(
+            db,
+            draft_id=draft.id,
+            user_id=draft.user_id,
+            tenant_id=draft.tenant_id,
+            workspace_id=draft.workspace_id,
+            candidate_ids=[candidate.id],
+            retry_failed=True,
+        )
+    executor.run_on_dsn.assert_not_awaited()
 
 
 @pytest.mark.asyncio

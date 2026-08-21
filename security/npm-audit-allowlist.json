@@ -1,12 +1,4 @@
 {
   "schema_version": 1,
-  "exceptions": [
-    {
-      "id": "GHSA-qwww-vcr4-c8h2",
-      "package": "react-router",
-      "expires_on": "2026-08-15",
-      "reason": "Upstream patch 8.3.0 is not published as of 2026-07-27; OpenTrace uses BrowserRouter and no unstable RSC APIs.",
-      "owner": "frontend-security"
-    }
-  ]
+  "exceptions": []
 }

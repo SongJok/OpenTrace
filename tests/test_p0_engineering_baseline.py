@@ -38,12 +38,21 @@ def test_capability_profiles_are_bounded_and_deterministic() -> None:
 
     annotation = AppSettings.model_fields["capability_profile"].annotation
     profiles = set(annotation.__args__)
-    assert profiles == {"core", "data", "knowledge", "data_knowledge"}
+    assert profiles == {
+        "core",
+        "data",
+        "knowledge",
+        "data_knowledge",
+        "production_intelligence",
+    }
     assert len(profiles) <= 5
     assert agent_types_for_profile("core") == frozenset()
     assert "data" in agent_types_for_profile("data")
     assert "rag" in agent_types_for_profile("knowledge")
     assert agent_types_for_profile("data_knowledge") == frozenset({"data", "rag"})
+    assert agent_types_for_profile("production_intelligence") == frozenset(
+        {"production", "data", "config", "rag"}
+    )
     assert agent_types_for_profile("unknown") == frozenset()
 
 

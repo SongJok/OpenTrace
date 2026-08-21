@@ -1,4 +1,7 @@
 {{- if .Values.ingress.enabled }}
+{{- if and (eq .Values.config.appEnv "production") (empty .Values.ingress.tls) }}
+{{- fail "production 启用 Ingress 时必须配置 ingress.tls" }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

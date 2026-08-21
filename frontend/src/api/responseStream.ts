@@ -24,6 +24,9 @@ export interface ApprovalRequest {
   side_effect: 'write' | 'destructive'
   operation_class?: 'governed_read' | 'write' | 'destructive' | string
   arguments: Record<string, unknown>
+  required_approvals?: number
+  received_approvals?: number
+  current_user_decision?: 'approved' | 'rejected' | null
 }
 
 export interface ResponseStreamEvent {
@@ -43,6 +46,40 @@ export interface ResponseStreamCallbacks {
   onApprovalRequired?: (approvals: ApprovalRequest[]) => void
   onFinalAnswer?: (envelope: TurnMetaEnvelope) => void | Promise<void>
   onError?: (err: any) => void | Promise<void>
+}
+
+const TOOL_PROGRESS: Record<string, { running: string; done: string }> = {
+  production: { running: '正在核对生产资产与实时观测', done: '生产证据已返回，正在执行 Critic 校验' },
+  config: { running: '正在执行配置的确定性分层校验', done: '配置校验完成，正在核对风险与冲突' },
+  data: { running: '正在研究数据口径并生成安全查询草案', done: '数据草案已返回，正在核对治理证据' },
+  execute_sql_draft: { running: '正在执行已批准的只读查询', done: '只读查询完成，正在固化结果证据' },
+  rag: { running: '正在检索已发布企业知识', done: '知识证据已返回，正在核对引用' },
+}
+
+function toolProgress(name: unknown, phase: 'running' | 'done'): string {
+  const toolName = String(name || '')
+  return TOOL_PROGRESS[toolName]?.[phase]
+    || (phase === 'running' ? `正在调用受治理能力：${toolName || '工具'}` : `受治理能力已返回：${toolName || '工具'}`)
+}
+
+function governanceProgress(type: string, data: any): Record<string, unknown> | null {
+  if (type === 'opentrace.information_sources.enforced') {
+    const selected = Array.isArray(data?.selected_sources) ? data.selected_sources.length : 0
+    return { ...data, stage: `已执行默认拒绝的信息源策略${selected ? `（选择 ${selected} 类来源）` : ''}` }
+  }
+  if (type === 'opentrace.information_source.blocked') {
+    return { ...data, stage: '未受治理的输入已被信息源策略阻断' }
+  }
+  if (type === 'opentrace.evidence.gate') {
+    const status = String(data?.status || '')
+    const stage = status === 'pass'
+      ? '证据完整性与 Critic 校验通过'
+      : status === 'blocked'
+        ? '证据门禁已阻断不可靠结论'
+        : '证据仍不完整，回答将明确保留意见'
+    return { ...data, stage }
+  }
+  return null
 }
 
 export type ResponseLifecycleState = 'active' | 'requires_action' | 'terminal'
@@ -183,6 +220,11 @@ export async function streamSseResponse(
           })
           continue
         }
+        const governance = governanceProgress(type, data)
+        if (governance) {
+          callbacks.onThinking?.(governance)
+          continue
+        }
         if (type.startsWith('opentrace.intent.') || type.startsWith('opentrace.context.') || type.startsWith('opentrace.model.') || type.startsWith('opentrace.capabilities.') || type.startsWith('opentrace.rag.') || type === 'opentrace.plan.replanned') {
           callbacks.onThinking?.(data)
           continue
@@ -192,10 +234,19 @@ export async function streamSseResponse(
           continue
         }
         if (type === 'opentrace.tool.started') {
+          callbacks.onThinking?.({ ...data, stage: toolProgress(data?.name || data?.tool_name, 'running') })
           callbacks.onToolCall?.(data)
           continue
         }
-        if (type === 'opentrace.tool.completed' || type === 'opentrace.tool.failed') {
+        if (type === 'opentrace.tool.completed' || type === 'opentrace.tool.failed' || type === 'opentrace.tool.incomplete') {
+          callbacks.onThinking?.({
+            ...data,
+            stage: type.endsWith('.incomplete')
+              ? `外部操作结果未知，已停止重试并进入人工核对：${String(data?.name || data?.tool_name || '工具')}`
+              : type.endsWith('.failed')
+              ? `受治理能力执行失败：${String(data?.name || data?.tool_name || '工具')}`
+              : toolProgress(data?.name || data?.tool_name, 'done'),
+          })
           callbacks.onToolResult?.(data)
           continue
         }

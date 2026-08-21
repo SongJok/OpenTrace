@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
+from collections.abc import Awaitable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -10,6 +12,15 @@ from sqlalchemy import false, or_, select
 
 from agents.base import AgentResult, BaseAgent, TaskMessage
 from infra.config.settings import settings
+from infra.observability.metrics import (
+    RAG_ANCHOR_SCORE,
+    RAG_EVIDENCE_COUNT,
+    RAG_LANE_DURATION,
+    RAG_LANE_REQUESTS_TOTAL,
+    RAG_MAX_SCORE,
+    RAG_RETRIEVAL_DURATION,
+    RAG_RETRIEVAL_TOTAL,
+)
 from infra.storage.database import AsyncSessionLocal
 from infra.storage.models import UserMemory
 from kernel.cognitive_controls import (
@@ -34,6 +45,7 @@ from services.rag_query_planning import (
     lane_weight,
     normalize_rag_evidence,
 )
+from services.rag_retrieval_fusion import fuse_retrieval_hits, reciprocal_rank_fusion
 from services.retrieval_matching import (
     expand_retrieval_terms,
     semantic_relevance_score,
@@ -198,6 +210,47 @@ class RagAgent(BaseAgent):
         super().__init__("rag")
 
     @staticmethod
+    async def _run_retrieval_lane(
+        operation: Awaitable[list[Any]],
+        *,
+        lane: str,
+        query_variant: int,
+        timeout_seconds: float,
+        phase: str = "primary",
+    ) -> tuple[list[Any], dict[str, Any]]:
+        """在独立截止时间内运行一次检索，并返回低敏诊断数据。"""
+
+        started = time.monotonic()
+        status = "success"
+        rows: list[Any] = []
+        try:
+            outcomes = await asyncio.wait_for(
+                asyncio.gather(operation, return_exceptions=True),
+                timeout=timeout_seconds,
+            )
+            result = outcomes[0]
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, Exception) or not isinstance(result, list):
+                status = "error"
+            else:
+                rows = result
+        except TimeoutError:
+            status = "timeout"
+
+        elapsed = time.monotonic() - started
+        RAG_LANE_REQUESTS_TOTAL.labels(lane=lane, status=status).inc()
+        RAG_LANE_DURATION.labels(lane=lane, status=status).observe(elapsed)
+        return rows, {
+            "lane": lane,
+            "phase": phase,
+            "query_variant": query_variant,
+            "status": status,
+            "result_count": len(rows),
+            "elapsed_ms": round(elapsed * 1000),
+        }
+
+    @staticmethod
     def _knowledge_space_ids(params: dict[str, Any]) -> list[str]:
         raw = params.get("knowledge_space_ids")
         if not isinstance(raw, list | tuple | set):
@@ -224,9 +277,9 @@ class RagAgent(BaseAgent):
             entry_id = str(
                 meta.get("chunk_id") or f"{meta.get('document_id')}::wiki::{question[:60]}"
             )
-            if entry_id in existing_ids:
-                continue
-            existing_ids.add(entry_id)
+            first_occurrence = entry_id not in existing_ids
+            if first_occurrence:
+                existing_ids.add(entry_id)
             llmwiki_entries.append(
                 {
                     "source_type": "llmwiki",
@@ -244,17 +297,18 @@ class RagAgent(BaseAgent):
                     "evidence_tier": "factual" if score >= 0.45 else "supporting",
                 }
             )
-            citations.append(
-                {
-                    "id": len(citations) + 1,
-                    "title": f"{title} · {question}",
-                    "url": "",
-                    "snippet": answer[:120],
-                    "document_id": meta.get("document_id"),
-                    "chunk_id": meta.get("chunk_id"),
-                    "source_type": "llmwiki",
-                }
-            )
+            if first_occurrence:
+                citations.append(
+                    {
+                        "id": len(citations) + 1,
+                        "title": f"{title} · {question}",
+                        "url": "",
+                        "snippet": answer[:120],
+                        "document_id": meta.get("document_id"),
+                        "chunk_id": meta.get("chunk_id"),
+                        "source_type": "llmwiki",
+                    }
+                )
         return llmwiki_entries
 
     @staticmethod
@@ -379,7 +433,7 @@ class RagAgent(BaseAgent):
         seen_chunks: set[str],
     ) -> list[dict[str, Any]]:
         vector_chunks: list[dict[str, Any]] = []
-        for idx, c in enumerate(doc_chunks, start=1):
+        for c in doc_chunks:
             meta = c.metadata if isinstance(c.metadata, dict) else {}
             title = str(meta.get("title") or meta.get("document_title") or "Document")
             txt = "".join(
@@ -387,8 +441,7 @@ class RagAgent(BaseAgent):
             ).strip()[:500]
             score = float(getattr(c, "score", 0.0) or 0.0)
             chunk_id = f"{meta.get('document_id')}::{meta.get('chunk_index')}::{txt[:80]}"
-            if chunk_id in seen_chunks:
-                continue
+            first_occurrence = chunk_id not in seen_chunks
 
             title_l = title.lower()
             query_l = query.lower()
@@ -403,12 +456,13 @@ class RagAgent(BaseAgent):
             if score < min_score:
                 continue
 
-            seen_chunks.add(chunk_id)
+            if first_occurrence:
+                seen_chunks.add(chunk_id)
             evidence_tier = "factual" if score >= 0.50 else "supporting"
             vector_chunks.append(
                 {
                     "source_type": "document",
-                    "id": f"doc_{idx}",
+                    "id": chunk_id,
                     "title": title,
                     "text": txt,
                     "score": score,
@@ -418,17 +472,18 @@ class RagAgent(BaseAgent):
                     "evidence_tier": evidence_tier,
                 }
             )
-            citations.append(
-                {
-                    "id": len(citations) + 1,
-                    "title": title,
-                    "url": "",
-                    "snippet": txt[:120],
-                    "chunk_index": meta.get("chunk_index"),
-                    "document_id": meta.get("document_id"),
-                    "source_type": "document",
-                }
-            )
+            if first_occurrence:
+                citations.append(
+                    {
+                        "id": len(citations) + 1,
+                        "title": title,
+                        "url": "",
+                        "snippet": txt[:120],
+                        "chunk_index": meta.get("chunk_index"),
+                        "document_id": meta.get("document_id"),
+                        "source_type": "document",
+                    }
+                )
         return vector_chunks
 
     async def _rerank_evidence(
@@ -476,10 +531,21 @@ class RagAgent(BaseAgent):
             return evidence
 
     async def execute(self, task: TaskMessage) -> AgentResult:
+        retrieval_started = time.monotonic()
+        metric_query_type = "unknown"
+        metric_grounding = "false"
         try:
             raw_query = self._retrieval_query_from_task(task)
             query = self._normalize_query(raw_query)
             if not query:
+                RAG_RETRIEVAL_TOTAL.labels(
+                    state="error",
+                    query_type=metric_query_type,
+                    enterprise_grounding=metric_grounding,
+                ).inc()
+                RAG_RETRIEVAL_DURATION.labels(state="error").observe(
+                    time.monotonic() - retrieval_started
+                )
                 return AgentResult(
                     task_id=task.task_id,
                     agent_type=self.agent_type,
@@ -529,6 +595,7 @@ class RagAgent(BaseAgent):
             enterprise_grounding_required = bool(
                 task.params.get("enterprise_grounding_required", False)
             )
+            metric_grounding = "true" if enterprise_grounding_required else "false"
             has_knowledge_space_scope = "knowledge_space_ids" in task.params
             knowledge_space_ids = self._knowledge_space_ids(task.params)
             if enterprise_grounding_required:
@@ -545,6 +612,7 @@ class RagAgent(BaseAgent):
             # Query type classification for strategy tuning (use rewritten for better matching)
             qtype_info = self._classify_query_type(rewritten_query)
             query_type = qtype_info["query_type"]
+            metric_query_type = query_type
             hints = qtype_info["hints"]
 
             # Base retrieval threshold — adjusted by query type
@@ -596,53 +664,60 @@ class RagAgent(BaseAgent):
             doc_evidence_count = 0
             llmwiki_entries: list[dict[str, Any]] = []
             vector_chunks: list[dict[str, Any]] = []
+            retrieval_attempts: list[dict[str, Any]] = []
+            lane_timeout_seconds = float(settings.rag_lane_timeout_seconds)
 
             if "knowledge" in sources:
+                knowledge_queries = list(rag_plan.query_variants or [rewritten_query])
                 knowledge_results = await asyncio.gather(
                     *[
-                        search_knowledge(
-                            query=search_query,
-                            user_id=user_id,
-                            **retrieval_scope,
-                            **(
-                                {"knowledge_space_ids": knowledge_space_ids}
-                                if has_knowledge_space_scope
-                                else {}
+                        self._run_retrieval_lane(
+                            search_knowledge(
+                                query=search_query,
+                                user_id=user_id,
+                                tenant_id=tenant_id,
+                                workspace_id=workspace_id,
+                                knowledge_space_ids=(
+                                    knowledge_space_ids if has_knowledge_space_scope else None
+                                ),
+                                top_k=max(top_k, 6),
+                                query_type=query_type,
+                                session_id=task.session_id or task.params.get("session_id"),
                             ),
-                            top_k=max(top_k, 6),
-                            query_type=query_type,
-                            session_id=task.session_id or task.params.get("session_id"),
+                            lane="knowledge",
+                            query_variant=query_index,
+                            timeout_seconds=lane_timeout_seconds,
                         )
-                        for search_query in (rag_plan.query_variants or [rewritten_query])
+                        for query_index, search_query in enumerate(knowledge_queries)
                     ],
-                    return_exceptions=True,
                 )
                 seen_knowledge: set[str] = set()
-                for result in knowledge_results:
-                    if isinstance(result, Exception):
-                        continue
+                for search_query, (result, attempt) in zip(knowledge_queries, knowledge_results):
+                    retrieval_attempts.append(attempt)
                     for item in result:
+                        item = dict(item)
                         key = f"{item.get('source_type')}:{item.get('id')}"
-                        if key in seen_knowledge:
-                            continue
-                        seen_knowledge.add(key)
-                        item["matched_query"] = rewritten_query
+                        first_occurrence = key not in seen_knowledge
+                        if first_occurrence:
+                            seen_knowledge.add(key)
+                        item["matched_query"] = search_query
                         evidence.append(item)
-                        citations.append(
-                            {
-                                "id": len(citations) + 1,
-                                "title": item.get("title") or "Knowledge",
-                                "url": "",
-                                "snippet": str(item.get("text") or "")[:160],
-                                "source_type": item.get("source_type", "knowledge"),
-                                "knowledge_page_id": item.get("knowledge_page_id"),
-                                "claim_id": item.get("claim_id"),
-                                "relation_id": item.get("relation_id"),
-                                "source_id": item.get("source_id"),
-                                "source_version_id": item.get("source_version_id"),
-                                "provenance": dict(item.get("provenance") or {}),
-                            }
-                        )
+                        if first_occurrence:
+                            citations.append(
+                                {
+                                    "id": len(citations) + 1,
+                                    "title": item.get("title") or "Knowledge",
+                                    "url": "",
+                                    "snippet": str(item.get("text") or "")[:160],
+                                    "source_type": item.get("source_type", "knowledge"),
+                                    "knowledge_page_id": item.get("knowledge_page_id"),
+                                    "claim_id": item.get("claim_id"),
+                                    "relation_id": item.get("relation_id"),
+                                    "source_id": item.get("source_id"),
+                                    "source_version_id": item.get("source_version_id"),
+                                    "provenance": dict(item.get("provenance") or {}),
+                                }
+                            )
 
             if "documents" in sources:
                 search_queries = list(rag_plan.query_variants or [rewritten_query])
@@ -651,32 +726,45 @@ class RagAgent(BaseAgent):
                 seen_llmwiki_ids: set[str] = set()
 
                 # Run all search queries in parallel (was serial — major latency fix)
-                async def _search_one(sq: str):
-                    doc_chunks, wiki_chunks = await asyncio.gather(
-                        DocumentPlugin().search_chunks(
-                            query=sq,
-                            user_id=user_id,
-                            top_k=max(top_k, 8),
-                            **retrieval_scope,
+                async def _search_one(sq: str, query_index: int):
+                    document_result, wiki_result = await asyncio.gather(
+                        self._run_retrieval_lane(
+                            DocumentPlugin().search_chunks(
+                                query=sq,
+                                user_id=user_id,
+                                top_k=max(top_k, 8),
+                                **retrieval_scope,
+                            ),
+                            lane="document",
+                            query_variant=query_index,
+                            timeout_seconds=lane_timeout_seconds,
                         ),
-                        DocumentPlugin().search_llmwiki(
-                            query=sq,
-                            user_id=user_id,
-                            top_k=effective_llmwiki_top_k,
-                            **retrieval_scope,
+                        self._run_retrieval_lane(
+                            DocumentPlugin().search_llmwiki(
+                                query=sq,
+                                user_id=user_id,
+                                top_k=effective_llmwiki_top_k,
+                                **retrieval_scope,
+                            ),
+                            lane="llmwiki",
+                            query_variant=query_index,
+                            timeout_seconds=lane_timeout_seconds,
                         ),
                     )
-                    return sq, doc_chunks, wiki_chunks
+                    doc_chunks, document_attempt = document_result
+                    wiki_chunks, wiki_attempt = wiki_result
+                    return sq, doc_chunks, wiki_chunks, [document_attempt, wiki_attempt]
 
                 parallel_results = await asyncio.gather(
-                    *[_search_one(sq) for sq in search_queries],
-                    return_exceptions=True,
+                    *[
+                        _search_one(sq, query_index)
+                        for query_index, sq in enumerate(search_queries)
+                    ],
                 )
 
-                for result in parallel_results:
-                    if isinstance(result, Exception):
-                        continue
-                    sq, doc_chunks, wiki_chunks = result
+                for parallel_result in parallel_results:
+                    sq, doc_chunks, wiki_chunks, attempts = parallel_result
+                    retrieval_attempts.extend(attempts)
                     llmwiki_entries.extend(
                         self._build_llmwiki_evidence(
                             query=query,
@@ -719,6 +807,8 @@ class RagAgent(BaseAgent):
                 memory_enabled = False
             if (
                 memory_enabled
+                and tenant_id is not None
+                and workspace_id is not None
                 and (doc_evidence_count == 0 and not llmwiki_entries or is_memory_intent)
                 and ("semantic_memory" in sources or "episodic_memory" in sources)
             ):
@@ -731,63 +821,74 @@ class RagAgent(BaseAgent):
                         (UserMemory.scope_type == "conversation")
                         & (UserMemory.scope_id == conversation_id)
                     )
-                now = datetime.now(UTC)
-                async with AsyncSessionLocal() as db:
-                    q = (
-                        select(UserMemory)
-                        .where(UserMemory.enabled == True)  # noqa: E712
-                        .where(UserMemory.user_id == user_id)
-                        .where(UserMemory.tenant_id == tenant_id)
-                        .where(UserMemory.workspace_id == workspace_id)
-                        .where(UserMemory.status == "active")
-                        .where(UserMemory.expires_at.is_(None) | (UserMemory.expires_at > now))
-                        .where(or_(*(scope_clauses or [false()])))
-                        .order_by(UserMemory.updated_at.desc())
-                        .limit(300)
-                    )
-                    r = await db.execute(q)
-                    constitution = await load_effective_memory_constitution(
-                        db,
-                        tenant_id=tenant_id,
-                        workspace_id=workspace_id,
-                    )
-                    rows = []
-                    quarantined = False
-                    for memory in r.scalars().all():
-                        metadata = parse_memory_metadata(memory.metadata_json)
-                        decision = evaluate_memory_constitution(
-                            memory.content,
-                            constitution=constitution,
-                            kind=memory.kind,
-                            learning_mode=str(metadata.get("learning_mode") or "manual"),
-                            confidence=float(memory.confidence or 0.0),
+
+                async def _load_memory_rows() -> list[Any]:
+                    now = datetime.now(UTC)
+                    async with AsyncSessionLocal() as db:
+                        q = (
+                            select(UserMemory)
+                            .where(UserMemory.enabled == True)  # noqa: E712
+                            .where(UserMemory.user_id == user_id)
+                            .where(UserMemory.tenant_id == tenant_id)
+                            .where(UserMemory.workspace_id == workspace_id)
+                            .where(UserMemory.status == "active")
+                            .where(UserMemory.expires_at.is_(None) | (UserMemory.expires_at > now))
+                            .where(or_(*(scope_clauses or [false()])))
+                            .order_by(UserMemory.updated_at.desc())
+                            .limit(300)
                         )
-                        if decision.decision != "block":
-                            rows.append(memory)
-                            continue
-                        memory.enabled = False
-                        memory.status = "rejected"
-                        metadata["constitution_quarantined"] = {
-                            "version": constitution.version,
-                            "reason": decision.reason_code,
-                            "at": now.isoformat(),
-                        }
-                        memory.metadata_json = json.dumps(metadata, ensure_ascii=False)
-                        add_memory_constitution_audit(
+                        result = await db.execute(q)
+                        constitution = await load_effective_memory_constitution(
                             db,
                             tenant_id=tenant_id,
                             workspace_id=workspace_id,
-                            constitution_version=constitution.version,
-                            decision=decision,
-                            content=memory.content,
-                            source="rag_retrieval",
-                            subject_user_id=user_id,
-                            response_id=str(task.params.get("response_id") or "") or None,
-                            memory_id=memory.id,
                         )
-                        quarantined = True
-                    if quarantined:
-                        await db.commit()
+                        rows: list[Any] = []
+                        quarantined = False
+                        for memory in result.scalars().all():
+                            metadata = parse_memory_metadata(memory.metadata_json)
+                            decision = evaluate_memory_constitution(
+                                memory.content,
+                                constitution=constitution,
+                                kind=memory.kind,
+                                learning_mode=str(metadata.get("learning_mode") or "manual"),
+                                confidence=float(memory.confidence or 0.0),
+                            )
+                            if decision.decision != "block":
+                                rows.append(memory)
+                                continue
+                            memory.enabled = False
+                            memory.status = "rejected"
+                            metadata["constitution_quarantined"] = {
+                                "version": constitution.version,
+                                "reason": decision.reason_code,
+                                "at": now.isoformat(),
+                            }
+                            memory.metadata_json = json.dumps(metadata, ensure_ascii=False)
+                            add_memory_constitution_audit(
+                                db,
+                                tenant_id=tenant_id,
+                                workspace_id=workspace_id,
+                                constitution_version=constitution.version,
+                                decision=decision,
+                                content=memory.content,
+                                source="rag_retrieval",
+                                subject_user_id=user_id,
+                                response_id=str(task.params.get("response_id") or "") or None,
+                                memory_id=memory.id,
+                            )
+                            quarantined = True
+                        if quarantined:
+                            await db.commit()
+                    return rows
+
+                rows, memory_attempt = await self._run_retrieval_lane(
+                    _load_memory_rows(),
+                    lane="memory",
+                    query_variant=0,
+                    timeout_seconds=lane_timeout_seconds,
+                )
+                retrieval_attempts.append(memory_attempt)
 
                 for m in rows:
                     mt = str(m.memory_type or "")
@@ -833,30 +934,37 @@ class RagAgent(BaseAgent):
                     if len(evidence) >= max(top_k * 3, 10):
                         break
 
-            seen = set()
-            deduped: list[dict[str, Any]] = []
+            prepared_evidence: list[dict[str, Any]] = []
             for e in evidence:
+                row = dict(e)
                 source_type_for_weight = str(e.get("source_type") or "document")
                 original_score = float(e.get("score", 0.0) or 0.0)
-                e.setdefault("raw_score", round(original_score, 4))
-                e["lane_weight"] = round(lane_weight(rag_plan, source_type_for_weight), 4)
-                e["score"] = round(min(0.999, original_score * float(e["lane_weight"])), 4)
-                key = f"{e.get('source_type')}::{e.get('id')}::{(e.get('text') or '')[:80]}"
-                if key in seen:
-                    continue
-                seen.add(key)
-                deduped.append(e)
+                row.setdefault("raw_score", round(original_score, 6))
+                row["lane_weight"] = round(lane_weight(rag_plan, source_type_for_weight), 4)
+                prepared_evidence.append(row)
 
             rrf_enabled = bool(getattr(settings, "rag_rrf_fusion_enabled", True))
-            if rrf_enabled and deduped:
-                from services.rag_retrieval_fusion import reciprocal_rank_fusion
+            fusion_k = int(getattr(settings, "rag_rrf_k", 60) or 60)
+            fusion_top_n = max(top_k * 3, 20)
+            fusion_lane_weights = {lane.name: lane.weight for lane in rag_plan.lanes}
 
-                deduped = reciprocal_rank_fusion(
-                    deduped,
-                    k=int(getattr(settings, "rag_rrf_k", 60) or 60),
-                    top_n=max(top_k * 3, 20),
-                    lane_weights={lane.name: lane.weight for lane in rag_plan.lanes},
+            def _fuse(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                if rrf_enabled:
+                    return reciprocal_rank_fusion(
+                        items,
+                        k=fusion_k,
+                        top_n=fusion_top_n,
+                        lane_weights=fusion_lane_weights,
+                    )
+                return fuse_retrieval_hits(
+                    items,
+                    k=fusion_k,
+                    top_n=fusion_top_n,
+                    lane_weights=fusion_lane_weights,
+                    rank_fusion_enabled=False,
                 )
+
+            deduped = _fuse(prepared_evidence)
 
             sorted_chunks = sorted(
                 deduped, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True
@@ -867,10 +975,14 @@ class RagAgent(BaseAgent):
                 reverse=True,
             )[:top_k]
             sorted_llmwiki_entries = sorted(
-                llmwiki_entries, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True
+                [e for e in deduped if e.get("source_type") == "llmwiki"],
+                key=lambda x: float(x.get("score", 0.0) or 0.0),
+                reverse=True,
             )[:llmwiki_top_k]
             sorted_vector_chunks = sorted(
-                vector_chunks, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True
+                [e for e in deduped if e.get("source_type") == "document"],
+                key=lambda x: float(x.get("score", 0.0) or 0.0),
+                reverse=True,
             )[:top_k]
 
             # Neural rerank via qwen3-vl-rerank (when enabled) — rerank deduped evidence
@@ -938,7 +1050,18 @@ class RagAgent(BaseAgent):
                 )
             )
 
-            if not sorted_chunks and query_terms and "documents" in sources:
+            primary_document_available = any(
+                attempt.get("lane") == "document"
+                and attempt.get("phase") == "primary"
+                and attempt.get("status") == "success"
+                for attempt in retrieval_attempts
+            )
+            if (
+                not sorted_chunks
+                and query_terms
+                and "documents" in sources
+                and primary_document_available
+            ):
                 seen_chunks = {
                     f"{item.get('document_id')}::{item.get('chunk_index')}::{str(item.get('text') or '')[:80]}"
                     for item in vector_chunks
@@ -947,22 +1070,25 @@ class RagAgent(BaseAgent):
                 # Run fallback searches in parallel
                 parallel_fallback = await asyncio.gather(
                     *[
-                        DocumentPlugin().search_chunks(
-                            query=sq,
-                            user_id=user_id,
-                            top_k=max(top_k, 8),
-                            tenant_id=tenant_id,
-                            workspace_id=workspace_id,
+                        self._run_retrieval_lane(
+                            DocumentPlugin().search_chunks(
+                                query=sq,
+                                user_id=user_id,
+                                top_k=max(top_k, 8),
+                                tenant_id=tenant_id,
+                                workspace_id=workspace_id,
+                            ),
+                            lane="document",
+                            query_variant=query_index,
+                            timeout_seconds=lane_timeout_seconds,
+                            phase="fallback",
                         )
-                        for sq in fallback_queries
+                        for query_index, sq in enumerate(fallback_queries)
                     ],
-                    return_exceptions=True,
                 )
-                for result in parallel_fallback:
-                    if isinstance(result, Exception):
-                        continue
-                    doc_chunks = result
-                    for idx, c in enumerate(doc_chunks, start=1):
+                for doc_chunks, fallback_attempt in parallel_fallback:
+                    retrieval_attempts.append(fallback_attempt)
+                    for c in doc_chunks:
                         meta = c.metadata if isinstance(c.metadata, dict) else {}
                         title = str(meta.get("title") or meta.get("document_title") or "Document")
                         txt = "".join(
@@ -976,7 +1102,7 @@ class RagAgent(BaseAgent):
                         seen_chunks.add(chunk_id)
                         fallback_chunk = {
                             "source_type": "document",
-                            "id": f"doc_fallback_{idx}",
+                            "id": chunk_id,
                             "title": title,
                             "text": txt,
                             "score": max(float(getattr(c, "score", 0.0) or 0.0), 0.25),
@@ -999,8 +1125,18 @@ class RagAgent(BaseAgent):
                             }
                         )
 
+                fallback_prepared: list[dict[str, Any]] = []
+                for item in evidence:
+                    row = dict(item)
+                    raw_score = float(row.get("raw_score", row.get("score", 0.0)) or 0.0)
+                    row["raw_score"] = round(raw_score, 6)
+                    row["lane_weight"] = round(
+                        lane_weight(rag_plan, str(row.get("source_type") or "document")), 4
+                    )
+                    fallback_prepared.append(row)
+                deduped = _fuse(fallback_prepared)
                 sorted_chunks = sorted(
-                    evidence, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True
+                    deduped, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True
                 )[:top_k]
                 sorted_knowledge_chunks = sorted(
                     [
@@ -1012,7 +1148,9 @@ class RagAgent(BaseAgent):
                     reverse=True,
                 )[:top_k]
                 sorted_vector_chunks = sorted(
-                    vector_chunks, key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True
+                    [e for e in deduped if e.get("source_type") == "document"],
+                    key=lambda x: float(x.get("score", 0.0) or 0.0),
+                    reverse=True,
                 )[:top_k]
                 if not content_parts and sorted_vector_chunks:
                     content_parts = [
@@ -1024,6 +1162,26 @@ class RagAgent(BaseAgent):
                         for i, chunk in enumerate(sorted_vector_chunks[:top_k], start=1)
                     ]
                     content = "\n\n".join(content_parts)
+
+            failed_retrieval_attempts = [
+                attempt
+                for attempt in retrieval_attempts
+                if attempt.get("status") in {"timeout", "error"}
+            ]
+            successful_retrieval_attempts = [
+                attempt for attempt in retrieval_attempts if attempt.get("status") == "success"
+            ]
+            if retrieval_attempts and not successful_retrieval_attempts:
+                retrieval_availability = "unavailable"
+            elif failed_retrieval_attempts:
+                retrieval_availability = "degraded"
+            elif retrieval_attempts:
+                retrieval_availability = "available"
+            else:
+                retrieval_availability = "not_attempted"
+            failed_lanes = sorted(
+                {str(attempt.get("lane") or "unknown") for attempt in failed_retrieval_attempts}
+            )
 
             # Improved confidence: weighted by max_score, avg_score, score spread, source diversity
             if sorted_chunks:
@@ -1117,10 +1275,28 @@ class RagAgent(BaseAgent):
                     sorted_knowledge_chunks = []
                     sorted_vector_chunks = []
                     sorted_llmwiki_entries = []
-                    content = (
-                        f"未在知识库中找到与「{display_query}」直接相关的内容。"
-                        "请补充更具体的问题，或上传相关文档后再试。"
-                    )
+                    if retrieval_availability == "unavailable":
+                        content = (
+                            "知识检索通道暂时不可用，当前无法可靠判断"
+                            f"知识库中是否包含与「{display_query}」相关的内容。"
+                            "请稍后重试；系统未将本次故障视为知识库无内容。"
+                        )
+                        answerability_decision.setdefault("reasons", []).append(
+                            "retrieval_unavailable"
+                        )
+                    elif retrieval_availability == "degraded":
+                        content = (
+                            "部分知识检索通道暂时不可用，其余可用通道未找到"
+                            f"与「{display_query}」直接相关的内容。请稍后重试或补充更具体的问题。"
+                        )
+                        answerability_decision.setdefault("reasons", []).append(
+                            "retrieval_degraded"
+                        )
+                    else:
+                        content = (
+                            f"未在知识库中找到与「{display_query}」直接相关的内容。"
+                            "请补充更具体的问题，或上传相关文档后再试。"
+                        )
                     confidence = min(confidence, 0.2)
                 try:
                     from kernel.agent_runtime.learning_hook import record_agent_learning_signal
@@ -1372,12 +1548,14 @@ class RagAgent(BaseAgent):
                 "max_score": max_score,
                 "top1_top3_gap": top1_top3_gap,
                 "relevance_anchor": anchor_score,
-                "sufficient": avg_score
-                >= float(task.params.get("min_evidence_score", os.getenv("RAG_MIN_SCORE", "0.35"))),
+                "sufficient": avg_score >= min_score,
                 "answerable": answerable,
                 "answerability": answerability_decision,
                 "answerability_state": answerability_decision.get("state"),
                 "gated": gated,
+                "retrieval_availability": retrieval_availability,
+                "degraded": bool(failed_retrieval_attempts),
+                "failed_lanes": failed_lanes,
             }
             rag_trace = build_rag_trace(
                 plan=rag_plan,
@@ -1385,7 +1563,20 @@ class RagAgent(BaseAgent):
                 deduped_count=len(deduped),
                 final_count=len(sorted_chunks),
                 quality=quality_metadata,
+                retrieval_attempts=retrieval_attempts,
             )
+            metric_state = str(answerability_decision.get("state") or "unanswerable")
+            RAG_RETRIEVAL_TOTAL.labels(
+                state=metric_state,
+                query_type=metric_query_type,
+                enterprise_grounding=metric_grounding,
+            ).inc()
+            RAG_RETRIEVAL_DURATION.labels(state=metric_state).observe(
+                time.monotonic() - retrieval_started
+            )
+            RAG_EVIDENCE_COUNT.labels(state=metric_state).observe(len(sorted_chunks))
+            RAG_MAX_SCORE.labels(state=metric_state).observe(float(max_score))
+            RAG_ANCHOR_SCORE.labels(state=metric_state).observe(float(anchor_score))
 
             return AgentResult(
                 task_id=task.task_id,
@@ -1414,6 +1605,14 @@ class RagAgent(BaseAgent):
             )
         except Exception as exc:  # noqa: BLE001
             err = str(exc)
+            RAG_RETRIEVAL_TOTAL.labels(
+                state="error",
+                query_type=metric_query_type,
+                enterprise_grounding=metric_grounding,
+            ).inc()
+            RAG_RETRIEVAL_DURATION.labels(state="error").observe(
+                time.monotonic() - retrieval_started
+            )
             return AgentResult(
                 task_id=task.task_id,
                 agent_type=self.agent_type,

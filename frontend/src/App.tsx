@@ -20,6 +20,7 @@ const KnowledgeCenterPage = lazy(() => import('./pages/KnowledgeCenterPage'))
 const EnterpriseKnowledgePage = lazy(() => import('./pages/EnterpriseKnowledgePage'))
 const SharedConversationPage = lazy(() => import('./pages/SharedConversationPage'))
 const CompanyBrainPage = lazy(() => import('./pages/CompanyBrainPage'))
+const ProductionIntelligencePage = lazy(() => import('./pages/ProductionIntelligencePage'))
 
 function RouteLoading() {
   return (
@@ -92,6 +93,11 @@ function CompanyBrainRoute() {
   return <CompanyBrainPage onBack={() => navigate('/chat')} />
 }
 
+function ProductionIntelligenceRoute() {
+  const navigate = useNavigate()
+  return <ProductionIntelligencePage onBack={() => navigate('/chat')} />
+}
+
 
 export default function App() {
   const token = useAuthStore((s) => s.token)
@@ -137,6 +143,10 @@ export default function App() {
         <Route path="/knowledge-base" element={<AdminProtected><EnterpriseKnowledgeRoute /></AdminProtected>} />
         <Route path="/knowledge" element={<AdminProtected><KnowledgeRoute /></AdminProtected>} />
         <Route path="/permissions" element={<AdminProtected><PermissionsPage /></AdminProtected>} />
+        <Route
+          path="/production-intelligence"
+          element={<AdminProtected><ProductionIntelligenceRoute /></AdminProtected>}
+        />
 
         <Route path="*" element={<Navigate to={token ? '/chat' : '/login'} replace />} />
       </Routes>

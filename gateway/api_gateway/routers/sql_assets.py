@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -490,7 +490,7 @@ async def delete_sql_asset_source(
     source_id: str,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> None:
+) -> Response:
     await _source_or_404(
         db,
         request=request,
@@ -518,6 +518,7 @@ async def delete_sql_asset_source(
         resource_id=source_id,
         payload={"data_source_id": database_id},
     )
+    return Response(status_code=204)
 
 
 @router.get("/databases/{database_id}/sql-drafts")

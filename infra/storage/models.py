@@ -9,6 +9,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -1633,7 +1634,13 @@ class ResponseApproval(Base):
     """Durable pause point for a side-effecting tool call."""
 
     __tablename__ = "response_approvals"
-    __table_args__ = (UniqueConstraint("response_id", "call_id", name="uq_response_approval_call"),)
+    __table_args__ = (
+        UniqueConstraint("response_id", "call_id", name="uq_response_approval_call"),
+        CheckConstraint(
+            "required_approvals BETWEEN 1 AND 2",
+            name="ck_response_approval_required_count",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     response_id: Mapped[str] = mapped_column(
@@ -1645,6 +1652,8 @@ class ResponseApproval(Base):
     operation_class: Mapped[str] = mapped_column(String(32), nullable=False, default="write")
     arguments: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    required_approvals: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    approval_decisions: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     resolved_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -2014,6 +2023,474 @@ class ResourcePermission(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class EnterpriseConnector(Base):
+    """租户工作区内受治理的外部能力连接定义，不保存明文凭据。"""
+
+    __tablename__ = "enterprise_connectors"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "workspace_id",
+            "name",
+            name="uq_enterprise_connector_scope_name",
+        ),
+        Index(
+            "ix_enterprise_connectors_scope_kind_status",
+            "tenant_id",
+            "workspace_id",
+            "connector_kind",
+            "status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    connector_kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    transport: Mapped[str] = mapped_column(String(16), nullable=False, default="native")
+    endpoint: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    secret_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="disabled", index=True)
+    allowed_operations: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    allowed_environments: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    data_classification: Mapped[str] = mapped_column(String(20), nullable=False, default="internal")
+    config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProductionAssetSyncRun(Base):
+    """生产资产源同步的持久租约、游标、幂等与结果事实。"""
+
+    __tablename__ = "production_asset_sync_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "workspace_id",
+            "source_key",
+            "idempotency_key",
+            name="uq_production_asset_sync_idempotency",
+        ),
+        Index(
+            "ix_production_asset_sync_scope_source_status",
+            "tenant_id",
+            "workspace_id",
+            "source_key",
+            "status",
+            "started_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    connector_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("enterprise_connectors.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    input_hash: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    cursor_before: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    cursor_after: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    authoritative: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    lease_owner: Mapped[str] = mapped_column(String(128), nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    stats: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    requested_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProductionAsset(Base):
+    """生产资产图节点；原始日志、指标和 Trace 不在此表内复制。"""
+
+    __tablename__ = "production_assets"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "workspace_id",
+            "asset_type",
+            "external_key",
+            name="uq_production_asset_scope_external_key",
+        ),
+        Index(
+            "ix_production_assets_scope_type_status",
+            "tenant_id",
+            "workspace_id",
+            "asset_type",
+            "status",
+        ),
+        Index(
+            "ix_production_assets_scope_environment",
+            "tenant_id",
+            "workspace_id",
+            "environment",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    asset_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    external_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    environment: Mapped[str] = mapped_column(String(32), nullable=False, default="shared")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active", index=True)
+    criticality: Mapped[str] = mapped_column(String(20), nullable=False, default="medium")
+    classification: Mapped[str] = mapped_column(String(20), nullable=False, default="internal")
+    connector_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("enterprise_connectors.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    source_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_sync_run_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("production_asset_sync_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    attributes: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProductionAssetRelation(Base):
+    """生产资产图的有向关系边。"""
+
+    __tablename__ = "production_asset_relations"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "workspace_id",
+            "source_asset_id",
+            "target_asset_id",
+            "relation_type",
+            name="uq_production_asset_relation_edge",
+        ),
+        Index(
+            "ix_production_asset_relations_scope_source",
+            "tenant_id",
+            "workspace_id",
+            "source_asset_id",
+        ),
+        Index(
+            "ix_production_asset_relations_scope_target",
+            "tenant_id",
+            "workspace_id",
+            "target_asset_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_asset_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("production_assets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    target_asset_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("production_assets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    relation_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    source_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_sync_run_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("production_asset_sync_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    attributes: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProductionEvidence(Base):
+    """可恢复 Response 使用的标准化生产证据投影。"""
+
+    __tablename__ = "production_evidence"
+    __table_args__ = (
+        Index(
+            "ix_production_evidence_scope_response",
+            "tenant_id",
+            "workspace_id",
+            "response_id",
+            "created_at",
+        ),
+        Index(
+            "ix_production_evidence_scope_type",
+            "tenant_id",
+            "workspace_id",
+            "evidence_type",
+            "environment",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    response_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("responses.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    connector_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("enterprise_connectors.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    asset_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("production_assets.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    evidence_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    source_ref: Mapped[str] = mapped_column(String(2048), nullable=False)
+    environment: Mapped[str] = mapped_column(String(32), nullable=False, default="shared")
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    authority: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="external_observation"
+    )
+    permission_class: Mapped[str] = mapped_column(String(20), nullable=False, default="internal")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ProductionConfigPolicy(Base):
+    """配置资产的已版本化确定性校验策略。"""
+
+    __tablename__ = "production_config_policies"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "workspace_id",
+            "asset_id",
+            "version",
+            name="uq_production_config_policy_asset_version",
+        ),
+        Index(
+            "ix_production_config_policies_scope_asset_status",
+            "tenant_id",
+            "workspace_id",
+            "asset_id",
+            "status",
+        ),
+        Index(
+            "uq_production_config_policy_published_asset",
+            "tenant_id",
+            "workspace_id",
+            "asset_id",
+            unique=True,
+            postgresql_where=text("status = 'published'"),
+            sqlite_where=text("status = 'published'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    asset_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("production_assets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft", index=True)
+    schema: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    reference_rules: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    business_rules: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    history_rules: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    capacity_rules: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    conflict_rules: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    dry_run_operation: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    published_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProductionConfigSnapshot(Base):
+    """配置资产的当前、历史或候选快照；内容经过范围隔离和审计。"""
+
+    __tablename__ = "production_config_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "workspace_id",
+            "asset_id",
+            "environment",
+            "version_ref",
+            name="uq_production_config_snapshot_version",
+        ),
+        Index(
+            "ix_production_config_snapshots_scope_asset_environment",
+            "tenant_id",
+            "workspace_id",
+            "asset_id",
+            "environment",
+            "observed_at",
+        ),
+        Index(
+            "uq_production_config_snapshot_current_asset_environment",
+            "tenant_id",
+            "workspace_id",
+            "asset_id",
+            "environment",
+            unique=True,
+            postgresql_where=text("status = 'current'"),
+            sqlite_where=text("status = 'current'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    response_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("responses.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    asset_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("production_assets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    policy_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("production_config_policies.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    environment: Mapped[str] = mapped_column(String(32), nullable=False, default="shared")
+    version_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_ref: Mapped[str] = mapped_column(String(2048), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="current", index=True)
+    content: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    content_hash: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ProductionConfigValidationRun(Base):
+    """一次可恢复 Response 内的配置校验事实与 dry-run 结果。"""
+
+    __tablename__ = "production_config_validation_runs"
+    __table_args__ = (
+        Index(
+            "ix_production_config_validation_scope_response",
+            "tenant_id",
+            "workspace_id",
+            "response_id",
+            "created_at",
+        ),
+        Index(
+            "ix_production_config_validation_scope_asset_status",
+            "tenant_id",
+            "workspace_id",
+            "asset_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workspace_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    response_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("responses.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    asset_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("production_assets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    policy_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("production_config_policies.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    snapshot_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("production_config_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    candidate_hash: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    risk_level: Mapped[str] = mapped_column(String(20), nullable=False, default="low")
+    checks: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    dry_run: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    summary: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_by: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ConversationState(Base):

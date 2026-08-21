@@ -66,6 +66,7 @@ SECRET_SIGNATURES = {
 # 安全过滤单元测试需要模拟 key 形态；这些文件中的匹配不是可用凭据。
 SIGNATURE_FIXTURE_FILES = {
     "tests/test_cognitive_core.py",
+    "tests/test_enterprise_skill_upload.py",
     "tests/test_memory_constitution.py",
 }
 

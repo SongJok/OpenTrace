@@ -23,6 +23,7 @@ import {
   Network,
   CheckCheck,
   X,
+  Boxes,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -334,6 +335,15 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
         </button>
         {role === 'admin' && (
           <button
+            onClick={() => navigate('/production-intelligence')}
+            title="生产智能控制台"
+            className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
+          >
+            <Boxes size={16} />
+          </button>
+        )}
+        {role === 'admin' && (
+          <button
             onClick={() => navigate('/company-brain')}
             title="企业大脑"
             className="flex h-9 w-9 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-raised)] hover:text-[var(--text)]"
@@ -571,6 +581,9 @@ export default function Sidebar({ mobileOpen = false, onMobileClose }: SidebarPr
           <NavButton icon={<Bell size={15} className="cartoon-icon icon-task" />} label={t('nav.tasks')} onClick={() => navigate('/tasks')} />
           <NavButton icon={<Wrench size={15} className="cartoon-icon icon-skills" />} label="Skills" onClick={() => navigate('/skills')} />
           <NavButton icon={<Settings size={15} className="cartoon-icon icon-settings" />} label={t('nav.settings')} onClick={() => navigate('/settings')} />
+          {role === 'admin' && (
+            <NavButton icon={<Boxes size={15} />} label="生产智能" onClick={() => navigate('/production-intelligence')} />
+          )}
           {role === 'admin' && (
             <NavButton icon={<BrainCircuit size={15} />} label="企业大脑" onClick={() => navigate('/company-brain')} />
           )}

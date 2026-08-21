@@ -70,14 +70,14 @@ def test_grounded_five_source_context_resolves_non_material_clarification() -> N
     assert [step.id for step in decision.execution_plan.steps] == ["answer-from-context"]
     assert audit["action"] == "resolved"
     assert audit["reason"] == "grounded_context_available"
-    assert {
+    assert set(audit["available_context_sources"]) == {
         "enterprise_context",
         "company_brain",
         "company_skill",
         "personal_memory",
-        "personal_business_context",
-        "attachments",
-    }.issubset(audit["available_context_sources"])
+    }
+    assert "attachments" not in audit["available_context_sources"]
+    assert "personal_business_context" not in audit["available_context_sources"]
 
 
 def test_missing_document_is_converted_to_read_only_rag_research() -> None:
@@ -212,7 +212,7 @@ def test_attachment_without_a_goal_and_disabled_tools_do_not_bypass_clarificatio
     assert disabled_audit["reason"] == "insufficient_non_material_grounding"
 
 
-def test_planner_grounding_summary_declares_all_already_available_context() -> None:
+def test_planner_grounding_summary_declares_only_five_source_context() -> None:
     prompt = AgentLoop._planning_grounding_context(
         {
             "enterprise_context": {"requires_grounding": True},
@@ -230,8 +230,8 @@ def test_planner_grounding_summary_declares_all_already_available_context() -> N
     assert "企业大脑" in prompt
     assert "2 个公司上传 Skill" in prompt
     assert "3 条" in prompt
-    assert "周期任务" in prompt
-    assert "1 个附件" in prompt
+    assert "周期任务" not in prompt
+    assert "附件内容直接注入" not in prompt
     assert "父链最近对话" in prompt
 
 

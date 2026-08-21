@@ -227,7 +227,15 @@ class AppSettings(BaseSettings):
 
     app_name: str = "opentrace"
     app_env: Literal["development", "staging", "production"] = "development"
-    capability_profile: Literal["core", "data", "knowledge", "data_knowledge"] = "data_knowledge"
+    # 构建系统注入的不可变源码修订，用于运行证据绑定；不得由请求参数覆盖。
+    opentrace_release_revision: str = "unknown"
+    capability_profile: Literal[
+        "core", "data", "knowledge", "data_knowledge", "production_intelligence"
+    ] = "production_intelligence"
+    # 仅加载已安装发行包中显式允许的 `opentrace.connectors` entry point。
+    connector_adapter_entrypoints: str = ""
+    # 内置 MCP Adapter 最多加载一个受信 Secret Resolver entry point。
+    connector_secret_resolver_entrypoint: str = ""
     app_secret_key: str = ""
     app_host: str = "0.0.0.0"
     app_port: int = 14100
@@ -560,6 +568,7 @@ class AppSettings(BaseSettings):
     skillhub_github_timeout_seconds: float = 20.0
     skillhub_github_raw_fallback_enabled: bool = True
     rag_min_evidence_score: float = 0.65
+    rag_lane_timeout_seconds: float = Field(default=5.0, ge=0.5, le=60.0)
     rag_auto_fallback_to_web: bool = False
     rag_rerank_enabled: bool = True
     rag_claim_anchor_enabled: bool = True
@@ -737,6 +746,12 @@ class AppSettings(BaseSettings):
             if item.strip()
         ]
 
+    @property
+    def connector_adapter_entrypoint_list(self) -> list[str]:
+        return [
+            item.strip() for item in self.connector_adapter_entrypoints.split(",") if item.strip()
+        ]
+
 
 class Settings(
     AppSettings,
@@ -856,6 +871,28 @@ class Settings(
         if "*" in origins:
             raise ValueError("origin allowlists must not contain '*'")
         return ",".join(origins)
+
+    @field_validator("connector_adapter_entrypoints")
+    @classmethod
+    def _validate_connector_adapter_entrypoints(cls, value: str) -> str:
+        import re
+
+        names = [item.strip() for item in str(value or "").split(",") if item.strip()]
+        if len(names) != len(set(names)) or any(
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", item) for item in names
+        ):
+            raise ValueError("connector adapter entry point allowlist is invalid")
+        return ",".join(names)
+
+    @field_validator("connector_secret_resolver_entrypoint")
+    @classmethod
+    def _validate_connector_secret_resolver_entrypoint(cls, value: str) -> str:
+        import re
+
+        name = str(value or "").strip()
+        if name and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", name):
+            raise ValueError("connector secret resolver entry point is invalid")
+        return name
 
     @model_validator(mode="after")
     def _require_runtime_secrets_for_managed_envs(self) -> Self:

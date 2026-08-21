@@ -1,23 +1,127 @@
 {{- if .Values.networkPolicy.enabled }}
+{{- if empty .Values.networkPolicy.ingressNamespaceSelector }}{{ fail "networkPolicy.ingressNamespaceSelector 禁止为空，避免全命名空间入口" }}{{- end }}
+{{- if empty .Values.networkPolicy.observabilityNamespaceSelector }}{{ fail "networkPolicy.observabilityNamespaceSelector 禁止为空" }}{{- end }}
+{{- if empty .Values.networkPolicy.dns.namespaceSelector }}{{ fail "networkPolicy.dns.namespaceSelector 禁止为空" }}{{- end }}
+{{- if empty .Values.networkPolicy.dns.podSelector }}{{ fail "networkPolicy.dns.podSelector 禁止为空" }}{{- end }}
+{{- if empty .Values.networkPolicy.database.namespaceSelector }}{{ fail "networkPolicy.database.namespaceSelector 禁止为空" }}{{- end }}
+{{- if empty .Values.networkPolicy.database.podSelector }}{{ fail "networkPolicy.database.podSelector 禁止为空" }}{{- end }}
+{{- if empty .Values.networkPolicy.redis.namespaceSelector }}{{ fail "networkPolicy.redis.namespaceSelector 禁止为空" }}{{- end }}
+{{- if empty .Values.networkPolicy.redis.podSelector }}{{ fail "networkPolicy.redis.podSelector 禁止为空" }}{{- end }}
+{{- if empty .Values.networkPolicy.otlp.namespaceSelector }}{{ fail "networkPolicy.otlp.namespaceSelector 禁止为空" }}{{- end }}
+{{- if empty .Values.networkPolicy.otlp.podSelector }}{{ fail "networkPolicy.otlp.podSelector 禁止为空" }}{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ include "opentrace.fullname" . }}-default-deny
 spec:
-  podSelector: {matchLabels: {app.kubernetes.io/name: {{ include "opentrace.name" . }}}}
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "opentrace.name" . }}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "opentrace.fullname" . }}-allow-governed-traffic
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "opentrace.name" . }}
+      opentrace.io/network-role: runtime
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
         - namespaceSelector:
             {{- toYaml .Values.networkPolicy.ingressNamespaceSelector | nindent 12 }}
-      ports: [{protocol: TCP, port: 14100}]
+      ports:
+        - {protocol: TCP, port: 14100}
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.observabilityNamespaceSelector | nindent 12 }}
+      ports:
+        - {protocol: TCP, port: 14100}
+        - {protocol: TCP, port: 9464}
   egress:
-    - to: [{namespaceSelector: {}}]
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.dns.podSelector | nindent 12 }}
       ports:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
-        - {protocol: TCP, port: 443}
-        - {protocol: TCP, port: 5432}
-        - {protocol: TCP, port: 6379}
-        - {protocol: TCP, port: 4317}
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.database.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.database.podSelector | nindent 12 }}
+      ports:
+        - {protocol: TCP, port: {{ .Values.networkPolicy.database.port }}}
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.redis.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.redis.podSelector | nindent 12 }}
+      ports:
+        - {protocol: TCP, port: {{ .Values.networkPolicy.redis.port }}}
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.otlp.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.otlp.podSelector | nindent 12 }}
+      ports:
+        - {protocol: TCP, port: {{ .Values.networkPolicy.otlp.port }}}
+    {{- range .Values.networkPolicy.database.cidrs }}
+    - to: [{ipBlock: {cidr: {{ . | quote }}}}]
+      ports: [{protocol: TCP, port: {{ $.Values.networkPolicy.database.port }}}]
+    {{- end }}
+    {{- range .Values.networkPolicy.redis.cidrs }}
+    - to: [{ipBlock: {cidr: {{ . | quote }}}}]
+      ports: [{protocol: TCP, port: {{ $.Values.networkPolicy.redis.port }}}]
+    {{- end }}
+    {{- range .Values.networkPolicy.otlp.cidrs }}
+    - to: [{ipBlock: {cidr: {{ . | quote }}}}]
+      ports: [{protocol: TCP, port: {{ $.Values.networkPolicy.otlp.port }}}]
+    {{- end }}
+    {{- range .Values.networkPolicy.externalHttpsRanges }}
+    - to:
+        - ipBlock:
+            cidr: {{ required "networkPolicy.externalHttpsRanges[].cidr 不能为空" .cidr | quote }}
+            {{- with .except }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+      ports: [{protocol: TCP, port: 443}]
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "opentrace.fullname" . }}-allow-migration
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "opentrace.name" . }}
+      opentrace.io/network-role: migration
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.dns.podSelector | nindent 12 }}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.database.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.database.podSelector | nindent 12 }}
+      ports:
+        - {protocol: TCP, port: {{ .Values.networkPolicy.database.port }}}
+    {{- range .Values.networkPolicy.database.cidrs }}
+    - to: [{ipBlock: {cidr: {{ . | quote }}}}]
+      ports: [{protocol: TCP, port: {{ $.Values.networkPolicy.database.port }}}]
+    {{- end }}
 {{- end }}

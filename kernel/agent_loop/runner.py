@@ -14,6 +14,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.config.settings import settings
+from infra.observability.metrics import (
+    RESPONSE_RECONCILIATION_TOTAL,
+    RESPONSE_TOOL_EXECUTIONS_TOTAL,
+)
 from infra.observability.tracer import traced_async
 from infra.storage.models import (
     ResponseApproval,
@@ -46,11 +50,19 @@ from kernel.agent_loop.intent_policy import (
     resolve_intent_clarification,
 )
 from kernel.agent_loop.rag_routing import RagRoutingDecision, resolve_rag_routing
+from kernel.agent_loop.sql_draft_policy import (
+    apply_pending_sql_draft_policy,
+    bind_sql_draft_execution_call,
+    data_answer_projection,
+    pending_action_from_context,
+    pending_sql_draft,
+    recent_user_queries,
+    resolve_sql_draft_execution_request,
+)
 from kernel.agent_loop.write_intent import (
     is_affirmative_follow_up,
     is_contextual_follow_up,
     is_explicit_write_request,
-    is_sql_draft_execution_request,
 )
 from model.llm_adapter.base import LLMMessage
 from model.model_gateway.gateway import LLMRole, capture_model_calls, get_model_gateway
@@ -340,6 +352,15 @@ class AgentLoop:
         self.max_rounds = max(1, max_rounds)
         self.context_assembler = context_assembler or ContextAssembler()
 
+    # 保留已发布的类级契约，实现下沉到独立的 SQL 草案策略模块。
+    _recent_user_queries = staticmethod(recent_user_queries)
+    _pending_action_from_context = staticmethod(pending_action_from_context)
+    _pending_sql_draft = staticmethod(pending_sql_draft)
+    _resolve_sql_draft_execution_request = staticmethod(resolve_sql_draft_execution_request)
+    _apply_pending_sql_draft_policy = staticmethod(apply_pending_sql_draft_policy)
+    _bind_sql_draft_execution_call = staticmethod(bind_sql_draft_execution_call)
+    _data_answer_projection = staticmethod(data_answer_projection)
+
     @traced_async("agent_loop.run")
     async def run(
         self,
@@ -361,6 +382,48 @@ class AgentLoop:
         context = await self.context_assembler.assemble(
             db, response=response, user_query=query, request_payload=payload
         )
+        input_violation = self._five_source_input_violation(
+            attachment_ids=context.attachment_ids,
+            modality_counts=context.modality_counts,
+        )
+        if input_violation is not None:
+            source_policy = self._five_source_policy_manifest(
+                selected_sources=(),
+                blocked_input=input_violation,
+            )
+            context.context_manifest["information_source_policy"] = source_policy
+            response.response_metadata = {
+                **dict(getattr(response, "response_metadata", None) or {}),
+                "information_source_policy": source_policy,
+            }
+            flush = getattr(db, "flush", None)
+            if flush is not None:
+                await flush()
+            content = (
+                "当前回合包含尚未进入受治理信息源的原始附件或媒体。"
+                "为了保证所有事实只来自 RAG、企业大脑、个人记忆、问数和企业内 "
+                "Skills，系统不会直接根据该附件作答。请先将资料发布到知识库，"
+                "待编译和权限校验完成后再通过 RAG 提问。"
+            )
+            await emit(
+                "opentrace.information_source.blocked",
+                {"policy": source_policy, "reason": input_violation["reason"]},
+            )
+            await self._emit_text(emit, content)
+            return AgentLoopResult(
+                status="completed",
+                content=content,
+                model="opentrace-five-source-policy",
+                intent=IntentPlan(goal=query, task_type="source_policy_notice"),
+                metadata={
+                    "model_calls": [],
+                    "model_call_count": 0,
+                    "memory_ids": context.memory_ids,
+                    "attachment_ids": context.attachment_ids,
+                    "context_manifest": context.context_manifest,
+                    "information_source_policy": source_policy,
+                },
+            )
         enterprise_manifest = dict(context.context_manifest.get("enterprise_context") or {})
         enterprise_grounding_required = bool(enterprise_manifest.get("requires_grounding"))
         rag_routing = resolve_rag_routing(
@@ -414,12 +477,22 @@ class AgentLoop:
         client_tool_names = {
             spec.name for spec in parse_tool_specs(list(payload.get("tools") or []))
         }
-        # Tier-1 的 data/rag 必须始终进入语义规划候选；词面发现只负责缩小其它能力，
-        # 不能让“本月复购率”因未出现 Agent 名称而失去企业问数能力。
+        # 四类受控能力始终进入语义规划候选；词面发现只负责缩小其它能力，
+        # 不能让业务表述因未出现 Agent 名称而失去企业能力。
         pinned_names = {
             *client_tool_names,
-            *(spec.name for spec in available_specs if spec.name in {"data", "rag"}),
+            *(
+                spec.name
+                for spec in available_specs
+                if spec.name in {"production", "data", "config", "rag"}
+            ),
         }
+        if re.search(
+            r"回滚|重启|发布配置|应用配置|生产变更|执行修复|执行补偿|rollback|restart",
+            query,
+            re.I,
+        ):
+            pinned_names.add("execute_production_action")
         if pending_action and self._is_affirmative_follow_up(query):
             pinned_names.add(str(pending_action["name"]))
         if sql_draft_request and sql_draft_request.get("status") in {"ready", "clarify"}:
@@ -433,13 +506,6 @@ class AgentLoop:
             catalogue_limit=int(settings.responses_capability_catalog_limit)
         ).discover(discovery_query, available_specs, pinned_names=pinned_names)
         tool_specs = list(discovery.specs)
-        await emit(
-            "opentrace.rag.routing",
-            {
-                **rag_routing.to_dict(),
-                "stage": "知识库检索" if rag_routing.required else "",
-            },
-        )
         await emit(
             "opentrace.capabilities.discovered",
             {
@@ -498,6 +564,32 @@ class AgentLoop:
         )
         context.context_manifest["intent_resolution"] = intent_resolution
         intent = decision.intent
+        if InformationSource.RAG in intent.information_sources and not rag_routing.required:
+            rag_routing = RagRoutingDecision(
+                required=True,
+                query=rag_routing.query,
+                reason="governed_source_default",
+                sources=("knowledge", "documents"),
+            )
+        context.context_manifest["rag_routing"] = rag_routing.to_dict()
+        source_policy = self._five_source_policy_manifest(
+            selected_sources=intent.information_sources,
+        )
+        context.context_manifest["information_source_policy"] = source_policy
+        response.response_metadata = {
+            **dict(getattr(response, "response_metadata", None) or {}),
+            "enterprise_context": enterprise_manifest,
+            "rag_routing": rag_routing.to_dict(),
+            "information_source_policy": source_policy,
+        }
+        await emit(
+            "opentrace.rag.routing",
+            {
+                **rag_routing.to_dict(),
+                "stage": "知识库检索" if rag_routing.required else "",
+            },
+        )
+        await emit("opentrace.information_sources.enforced", source_policy)
         evidence_ledger = ResponseEvidenceLedger.from_context(
             intent,
             context_manifest=context.context_manifest,
@@ -745,7 +837,7 @@ class AgentLoop:
         if (
             str(payload.get("tool_choice") or "auto") != "none"
             and "rag" in spec_by_name
-            and rag_routing.required
+            and InformationSource.RAG in intent.information_sources
         ):
             rag_result = await self._prefetch_knowledge_grounding(
                 db,
@@ -1207,7 +1299,7 @@ class AgentLoop:
                     approval = await self._ensure_approval(
                         db, response=response, call=call, spec=spec
                     )
-                    if approval.status == "pending":
+                    if approval.status in {"pending", "pending_secondary"}:
                         approvals.append(approval)
                         if step:
                             plan_statuses[step.id] = "requires_action"
@@ -1358,7 +1450,16 @@ class AgentLoop:
                                 "tool_name": item.tool_name,
                                 "side_effect": item.side_effect_level,
                                 "operation_class": item.operation_class,
-                                "arguments": item.arguments,
+                                "arguments": _redact_sensitive(item.arguments),
+                                "required_approvals": int(item.required_approvals or 1),
+                                "received_approvals": len(
+                                    {
+                                        str(decision.get("user_id") or "")
+                                        for decision in item.approval_decisions or []
+                                        if isinstance(decision, dict)
+                                        and decision.get("approved") is True
+                                    }
+                                ),
                             }
                             for item in approvals
                         ],
@@ -1827,7 +1928,6 @@ class AgentLoop:
         company = dict(context_manifest.get("company_brain") or {})
         company_skills = dict(context_manifest.get("company_skills") or {})
         enterprise = dict(context_manifest.get("enterprise_context") or {})
-        personal_business = dict(context_manifest.get("personal_business_context") or {})
         memory_count = int(context_manifest.get("memory_count") or 0)
         lines: list[str] = []
         if enterprise.get("requires_grounding"):
@@ -1850,17 +1950,6 @@ class AgentLoop:
             lines.append(
                 f"当前回合已经命中 {memory_count} 条当前用户的受治理个人记忆；"
                 "直接询问命中事实时无需外部能力。"
-            )
-        if personal_business.get("query_matched"):
-            lines.append(
-                "当前回合已经注入当前用户的周期任务、待确认操作和近期成功操作状态；"
-                "状态问题应直接总结这些权威投影，不要要求用户重新描述。"
-            )
-        attachment_count = int(context_manifest.get("attachment_count") or 0)
-        if attachment_count:
-            lines.append(
-                f"当前回合已有 {attachment_count} 个附件内容直接注入；应先总结附件回答，"
-                "不得要求用户再次上传或粘贴同一资料。"
             )
         if conversation_context_available and is_contextual_follow_up(query):
             lines.append(
@@ -1962,341 +2051,6 @@ class AgentLoop:
         return "\n".join(lines)[-8_000:]
 
     @staticmethod
-    def _recent_user_queries(
-        messages: list[dict[str, Any]],
-        *,
-        current_message_count: int,
-        limit: int = 4,
-    ) -> list[str]:
-        history_end = max(1, len(messages) - max(0, current_message_count))
-        queries = [
-            str(message.get("content") or "").strip()
-            for message in messages[1:history_end]
-            if str(message.get("role") or "") == "user"
-            and isinstance(message.get("content"), str)
-            and str(message.get("content") or "").strip()
-        ]
-        return queries[-max(1, limit) :]
-
-    @staticmethod
-    def _pending_action_from_context(
-        messages: list[dict[str, Any]],
-        specs: list[ToolSpec],
-        *,
-        current_message_count: int,
-    ) -> dict[str, Any] | None:
-        history_end = max(1, len(messages) - max(0, current_message_count))
-        history = messages[1:history_end]
-        completed_call_ids = {
-            str(message.get("tool_call_id") or "")
-            for message in history
-            if str(message.get("role") or "") == "tool"
-        }
-        spec_by_name = {spec.name: spec for spec in specs}
-        for message in reversed(history):
-            for call in reversed(list(message.get("tool_calls") or [])):
-                function = dict(call.get("function") or {})
-                name = str(call.get("name") or function.get("name") or "")
-                call_id = str(call.get("call_id") or call.get("id") or "")
-                spec = spec_by_name.get(name)
-                if spec is None or spec.side_effect == SideEffect.READ:
-                    continue
-                if call_id and call_id in completed_call_ids:
-                    continue
-                raw_arguments = call.get("arguments") or function.get("arguments") or {}
-                if isinstance(raw_arguments, str):
-                    try:
-                        raw_arguments = json.loads(raw_arguments)
-                    except (TypeError, ValueError):
-                        raw_arguments = {}
-                return {
-                    "name": name,
-                    "call_id": call_id,
-                    "arguments": dict(raw_arguments) if isinstance(raw_arguments, dict) else {},
-                }
-        return None
-
-    @classmethod
-    async def _pending_sql_draft(
-        cls,
-        db: AsyncSession,
-        *,
-        response: ResponseRecord,
-    ) -> dict[str, Any] | None:
-        """只从当前 Response 父链恢复尚可执行的 DataAgent 草案。"""
-
-        from infra.storage.models import SQLQueryCandidate, SQLQueryDraft
-
-        response_ids: list[str] = []
-        current_id = response.parent_response_id
-        seen: set[str] = set()
-        while current_id and current_id not in seen and len(response_ids) < 64:
-            seen.add(current_id)
-            parent = await db.get(ResponseRecord, current_id)
-            if parent is None or not ContextAssembler._same_response_scope(parent, response):
-                break
-            response_ids.append(parent.id)
-            current_id = parent.parent_response_id
-        if not response_ids:
-            return None
-        draft = await db.scalar(
-            select(SQLQueryDraft)
-            .where(
-                SQLQueryDraft.response_id.in_(response_ids),
-                SQLQueryDraft.conversation_id == response.conversation_id,
-                SQLQueryDraft.user_id == response.user_id,
-                SQLQueryDraft.tenant_id == response.tenant_id,
-                SQLQueryDraft.workspace_id == response.workspace_id,
-                SQLQueryDraft.status.in_(["awaiting_confirmation", "failed", "partially_failed"]),
-            )
-            .order_by(SQLQueryDraft.created_at.desc())
-            .limit(1)
-        )
-        if draft is None:
-            return None
-        candidates = list(
-            (
-                await db.execute(
-                    select(SQLQueryCandidate)
-                    .where(SQLQueryCandidate.draft_id == draft.id)
-                    .order_by(SQLQueryCandidate.position)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        available = [
-            {
-                "id": item.id,
-                "position": int(item.position),
-                "title": item.title,
-                "execution_status": item.execution_status,
-            }
-            for item in candidates
-            if item.execution_status in {"pending", "failed"}
-        ]
-        if not available:
-            return None
-        return {
-            "draft_id": draft.id,
-            "group_type": draft.group_type,
-            "question": draft.question,
-            "candidates": available,
-        }
-
-    @classmethod
-    def _resolve_sql_draft_execution_request(
-        cls,
-        query: str,
-        draft: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        """把用户对已展示候选的选择确定性绑定为持久草案执行参数。"""
-
-        if draft is None or not is_sql_draft_execution_request(query):
-            return None
-        candidates = list(draft.get("candidates") or [])
-        normalized = re.sub(r"\s+", "", query or "").lower()
-        retry_failed = any(marker in normalized for marker in ("重试", "retry"))
-        execute_all = any(
-            marker in normalized
-            for marker in ("全部候选", "所有候选", "执行全部", "全部执行", "allcandidates")
-        )
-        selected_ids = [
-            str(item["id"])
-            for item in candidates
-            if str(item.get("id") or "") and str(item["id"]).lower() in normalized
-        ]
-        if not selected_ids and not execute_all:
-            ordinal_patterns = (
-                (1, ("第一个", "第一条", "候选1", "候选一", "方案1", "方案一")),
-                (2, ("第二个", "第二条", "候选2", "候选二", "方案2", "方案二")),
-                (3, ("第三个", "第三条", "候选3", "候选三", "方案3", "方案三")),
-            )
-            selected_positions = {
-                position
-                for position, markers in ordinal_patterns
-                if any(marker in normalized for marker in markers)
-            }
-            selected_ids = [
-                str(item["id"])
-                for item in candidates
-                if int(item.get("position") or 0) in selected_positions
-            ]
-        eligible = [
-            item
-            for item in candidates
-            if item.get("execution_status") == "pending"
-            or (retry_failed and item.get("execution_status") == "failed")
-        ]
-        eligible_ids = {str(item["id"]) for item in eligible}
-        selected_ids = [item_id for item_id in selected_ids if item_id in eligible_ids]
-        alternative_all_rejected = False
-        if execute_all and str(draft.get("group_type") or "alternative") == "alternative":
-            if len(eligible) == 1:
-                execute_all = False
-                selected_ids = [str(eligible[0]["id"])]
-            else:
-                execute_all = False
-                selected_ids = []
-                alternative_all_rejected = True
-        if str(draft.get("group_type") or "alternative") == "alternative" and len(selected_ids) > 1:
-            selected_ids = []
-        if (
-            not alternative_all_rejected
-            and not execute_all
-            and not selected_ids
-            and len(eligible) == 1
-        ):
-            selected_ids = [str(eligible[0]["id"])]
-        if not execute_all and not selected_ids:
-            options = "；".join(
-                f"候选 {item['position']}（ID：{item['id']}，状态：{item['execution_status']}）"
-                for item in candidates
-            )
-            return {
-                "status": "clarify",
-                "draft_id": draft["draft_id"],
-                "original_question": str(draft.get("question") or ""),
-                "question": (
-                    f"请明确选择一个要执行的 SQL 候选：{options}。"
-                    "备选方案需要分别验证，不能在一次企业问数回答中同时执行。"
-                ),
-            }
-        return {
-            "status": "ready",
-            "draft_id": draft["draft_id"],
-            "original_question": str(draft.get("question") or ""),
-            "arguments": {
-                "draft_id": draft["draft_id"],
-                "candidate_ids": [] if execute_all else selected_ids,
-                "execute_all": execute_all,
-                "retry_failed": retry_failed,
-            },
-        }
-
-    @staticmethod
-    def _apply_pending_sql_draft_policy(
-        decision: PlanningDecision,
-        request: dict[str, Any],
-    ) -> PlanningDecision:
-        intent = decision.intent
-        if request.get("status") == "clarify":
-            clarified = IntentPlan(
-                goal=intent.goal,
-                task_type="data_query_execution",
-                capabilities=(),
-                ambiguity="sql_candidate_selection_required",
-                risk=SideEffect.READ,
-                execution_profile=intent.execution_profile,
-                execution_mode=intent.execution_mode,
-                expected_outputs=("candidate_selection",),
-                clarification_question=str(request.get("question") or "请明确选择 SQL 候选。"),
-                information_sources=(InformationSource.DATA,),
-                freshness_requirement=FreshnessRequirement.CURRENT,
-                evidence_requirements=(
-                    EvidenceRequirement.METRIC_DEFINITION,
-                    EvidenceRequirement.TRUSTED_DATA_SOURCE,
-                    EvidenceRequirement.BUSINESS_RULES,
-                    EvidenceRequirement.VALIDATED_SQL,
-                ),
-                data_stage=DataIntentStage.SELECT_CANDIDATE,
-            )
-            return PlanningDecision(
-                intent=clarified,
-                execution_plan=ExecutionPlan(
-                    goal=decision.execution_plan.goal or intent.goal,
-                    complexity="simple",
-                    steps=(
-                        ExecutionStep(
-                            id="select-sql-candidate",
-                            objective="等待用户明确选择已展示的 SQL 候选",
-                            success_criteria="候选 ID 或执行全部范围明确",
-                        ),
-                    ),
-                    success_criteria=("不在候选范围不明确时执行数据库查询",),
-                    replan_limit=0,
-                ),
-            )
-        executable_intent = IntentPlan(
-            goal=intent.goal,
-            task_type="data_query_execution",
-            capabilities=("execute_sql_draft",),
-            ambiguity=None,
-            risk=SideEffect.WRITE,
-            execution_profile=intent.execution_profile,
-            execution_mode=intent.execution_mode,
-            expected_outputs=("verified_data_answer", "citations"),
-            clarification_question=None,
-            information_sources=(InformationSource.DATA,),
-            freshness_requirement=FreshnessRequirement.CURRENT,
-            evidence_requirements=(
-                EvidenceRequirement.METRIC_DEFINITION,
-                EvidenceRequirement.TRUSTED_DATA_SOURCE,
-                EvidenceRequirement.BUSINESS_RULES,
-                EvidenceRequirement.VALIDATED_SQL,
-                EvidenceRequirement.EXECUTED_RESULT,
-            ),
-            data_stage=DataIntentStage.EXECUTE_AND_VERIFY,
-        )
-        return PlanningDecision(
-            intent=executable_intent,
-            execution_plan=ExecutionPlan(
-                goal=decision.execution_plan.goal or executable_intent.goal,
-                complexity="simple",
-                steps=(
-                    ExecutionStep(
-                        id="execute-governed-sql-draft",
-                        objective="执行用户明确选择且经过治理校验的 SQL 草案候选",
-                        capability="execute_sql_draft",
-                        success_criteria="完成权限、Schema、语义、EXPLAIN 和结果校验并返回带证据答案",
-                    ),
-                ),
-                success_criteria=("数据答案通过结果校验并带可核验引用",),
-                replan_limit=0,
-            ),
-        )
-
-    @staticmethod
-    def _bind_sql_draft_execution_call(
-        call: dict[str, Any],
-        request: dict[str, Any],
-    ) -> dict[str, Any]:
-        if _tool_name(call) != "execute_sql_draft":
-            return call
-        arguments = dict(request.get("arguments") or {})
-        call_id = _call_id(call)
-        return {
-            "id": call_id,
-            "call_id": call_id,
-            "name": "execute_sql_draft",
-            "type": "function",
-            "arguments": arguments,
-            "function": {"name": "execute_sql_draft", "arguments": arguments},
-        }
-
-    @staticmethod
-    def _data_answer_projection(tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
-        """把 DataAgent 已验证答案投影到 Response 元数据，供前端与审计直接消费。"""
-
-        if tool_name != "execute_sql_draft":
-            return {}
-        payload = result.get("result") if isinstance(result.get("result"), dict) else result
-        summary = payload.get("execution_summary") if isinstance(payload, dict) else None
-        if not isinstance(summary, dict):
-            return {}
-        return {
-            "data_agent_run_id": summary.get("data_agent_run_id"),
-            "state": summary.get("state"),
-            "answer": summary.get("answer"),
-            "answer_citations": list(summary.get("answer_citations") or []),
-            "answer_metadata": dict(summary.get("answer_metadata") or {}),
-            "learning": dict(summary.get("learning") or {}),
-            "preflight": dict(summary.get("preflight") or {}),
-            "result_validation": dict(summary.get("result_validation") or {}),
-            "warnings": list(summary.get("warnings") or []),
-        }
-
-    @staticmethod
     async def _emit_text(emit: EventEmitter, content: str) -> None:
         if not content:
             await emit("response.output_text.done", {"text": ""})
@@ -2309,9 +2063,57 @@ class AgentLoop:
         await emit("response.output_text.done", {"text": content})
 
     @staticmethod
+    def _five_source_input_violation(
+        *,
+        attachment_ids: list[str],
+        modality_counts: dict[str, int],
+    ) -> dict[str, Any] | None:
+        """兼容方法名；原始附件和媒体必须先进入 RAG，不能成为额外事实源。"""
+
+        media_count = sum(
+            max(0, int(modality_counts.get(kind) or 0)) for kind in ("image", "audio", "video")
+        )
+        if not attachment_ids and media_count == 0:
+            return None
+        return {
+            "reason": "raw_attachment_not_governed",
+            "attachment_count": len(attachment_ids),
+            "media_count": media_count,
+        }
+
+    @staticmethod
+    def _five_source_policy_manifest(
+        *,
+        selected_sources: tuple[InformationSource, ...],
+        blocked_input: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """返回可持久化的企业受治理来源闭世策略快照。"""
+
+        return {
+            "version": "enterprise-governed-sources.v2",
+            "mode": "deny_by_default",
+            "allowed_sources": [source.value for source in InformationSource],
+            "selected_sources": [source.value for source in selected_sources],
+            "allowed_online_tools": [
+                "production",
+                "data",
+                "config",
+                "rag",
+                "execute_sql_draft",
+                "execute_production_action",
+            ],
+            "model_knowledge_allowed": False,
+            "web_allowed": False,
+            "external_connectors_allowed": True,
+            "external_connector_policy": "catalogued_via_governed_gateway_and_critic",
+            "raw_attachment_evidence_allowed": False,
+            "blocked_input": dict(blocked_input or {}),
+        }
+
+    @staticmethod
     def _available_tool_specs(payload: dict[str, Any]) -> list[ToolSpec]:
         """返回产品允许的能力目录；企业大脑与个人记忆由上下文注入。"""
-        allowed_capabilities = {"data", "rag"}
+        allowed_capabilities = {"production", "data", "config", "rag"}
         from agents.bootstrap import is_builtin_agent_enabled
         from kernel.runtime.capability import capability_registry
 
@@ -2372,8 +2174,10 @@ class AgentLoop:
                 ),
             )
         from kernel.agent_loop.data_tools import governed_sql_execution_spec
+        from kernel.agent_loop.production_tools import governed_production_action_spec
 
         by_name["execute_sql_draft"] = governed_sql_execution_spec()
+        by_name["execute_production_action"] = governed_production_action_spec()
         return list(by_name.values())
 
     async def _plan_turn(
@@ -2900,7 +2704,12 @@ class AgentLoop:
             "只有互斥候选必须由用户选择、关键目标/范围确实缺失、来源冲突、权限不足，或写入/"
             "破坏性操作不安全时才给出一个 clarification_question。"
             "同时判断最终答案需要哪些受治理信息来源：personal_memory、company_brain、"
-            "company_skill、rag、data；个人记忆、企业大脑和公司 Skill 由上下文注入，不是工具。"
+            "company_skill、rag、data、production、config；个人记忆、企业大脑和公司 Skill "
+            "由上下文注入，不是工具。production 用于资产图、日志/APM、代码、发布和业务系统的"
+            "只读生产证据；config 用于按已发布策略校验配置和执行只读 dry-run。"
+            "只有 Production Agent 返回 action_catalog 且用户明确要求执行时，才可原样引用其中的"
+            "action_ref 调用 execute_production_action；该工具必须暂停等待持久审批，绝不能自行"
+            "构造动作编号、连接器、环境、资产或执行参数。"
             "company_skill 用于已发布的业务流程、表结构、字段语义和代码规则；rag 用于已发布知识"
             "或文档证据，data 用于"
             "需要实际企业数据计算的业务问题，两者可以组合。不要用 data 回答纯指标释义，也不要用"
@@ -2961,7 +2770,6 @@ class AgentLoop:
                 select(ResponseToolExecution).where(
                     ResponseToolExecution.response_id == response.id,
                     ResponseToolExecution.call_id == approval.call_id,
-                    ResponseToolExecution.status == "completed",
                 )
             )
             call = {
@@ -2971,11 +2779,17 @@ class AgentLoop:
             }
             if approval.status == "rejected":
                 result = {"status": "rejected", "reason": approval.reason or "user_rejected"}
-            elif existing is None:
+            elif existing is None or existing.status == "pending_approval":
                 if approval.tool_name == "execute_sql_draft":
                     from kernel.agent_loop.data_tools import governed_sql_execution_spec
 
                     spec = governed_sql_execution_spec()
+                elif approval.tool_name == "execute_production_action":
+                    from kernel.agent_loop.production_tools import (
+                        governed_production_action_spec,
+                    )
+
+                    spec = governed_production_action_spec()
                 else:
                     spec = ToolSpec(
                         name=approval.tool_name,
@@ -3158,6 +2972,13 @@ class AgentLoop:
             side_effect_level=spec.side_effect.value,
             operation_class=spec.operation_class or spec.side_effect.value,
             arguments=_tool_args(call),
+            required_approvals=(
+                2
+                if spec.name == "execute_production_action"
+                and spec.side_effect == SideEffect.DESTRUCTIVE
+                else 1
+            ),
+            approval_decisions=[],
         )
         db.add(row)
         existing_ledger = await db.scalar(
@@ -3220,6 +3041,23 @@ class AgentLoop:
             )
             if ledger and ledger.status == "completed":
                 results[index] = dict(ledger.result or {})
+                RESPONSE_TOOL_EXECUTIONS_TOTAL.labels(
+                    tool_name=spec.name,
+                    status="reused",
+                    side_effect_level=spec.side_effect.value,
+                ).inc()
+                continue
+            if (
+                ledger
+                and spec.side_effect != SideEffect.READ
+                and ledger.status in {"failed", "incomplete"}
+            ):
+                results[index] = dict(ledger.result or {})
+                RESPONSE_TOOL_EXECUTIONS_TOTAL.labels(
+                    tool_name=spec.name,
+                    status="terminal_reused",
+                    side_effect_level=spec.side_effect.value,
+                ).inc()
                 continue
             if ledger and ledger.status == "running" and spec.side_effect != SideEffect.READ:
                 unknown = {
@@ -3232,6 +3070,12 @@ class AgentLoop:
                 ledger.error_message = (
                     "外部操作已发起但结果未知；为避免重复副作用，系统不会自动重试。"
                 )
+                RESPONSE_RECONCILIATION_TOTAL.labels(tool_name=spec.name).inc()
+                RESPONSE_TOOL_EXECUTIONS_TOTAL.labels(
+                    tool_name=spec.name,
+                    status="incomplete",
+                    side_effect_level=spec.side_effect.value,
+                ).inc()
                 results[index] = unknown
                 await emit(
                     "opentrace.tool.incomplete",
@@ -3277,10 +3121,19 @@ class AgentLoop:
             )
             raw = _redact_sensitive(raw)
             status = str(raw.get("status") or "failed")
-            ledger.status = "completed" if status in {"completed", "success"} else "failed"
+            ledger.status = (
+                "completed"
+                if status in {"completed", "success"}
+                else "incomplete" if status == "incomplete" else "failed"
+            )
             ledger.result = raw
             ledger.error_message = str(raw.get("error") or "") or None
             ledger.completed_at = datetime.now(UTC)
+            RESPONSE_TOOL_EXECUTIONS_TOTAL.labels(
+                tool_name=spec.name,
+                status=ledger.status,
+                side_effect_level=spec.side_effect.value,
+            ).inc()
             db.add(
                 ResponseItem(
                     id=f"item_{uuid.uuid4().hex}",
@@ -3296,12 +3149,12 @@ class AgentLoop:
                     },
                 )
             )
+            event_type = {
+                "completed": "opentrace.tool.completed",
+                "incomplete": "opentrace.tool.incomplete",
+            }.get(ledger.status, "opentrace.tool.failed")
             await emit(
-                (
-                    "opentrace.tool.completed"
-                    if ledger.status == "completed"
-                    else "opentrace.tool.failed"
-                ),
+                event_type,
                 {
                     "call_id": _call_id(call),
                     "name": spec.name,
@@ -3322,19 +3175,58 @@ class AgentLoop:
         call: dict[str, Any],
         spec: ToolSpec,
     ) -> dict[str, Any]:
+        async def invoke_side_effect(operation: Awaitable[dict[str, Any]]) -> dict[str, Any]:
+            try:
+                outcomes = await asyncio.wait_for(
+                    asyncio.gather(operation, return_exceptions=True),
+                    timeout=spec.timeout_seconds,
+                )
+            except TimeoutError:
+                return {
+                    "status": "incomplete",
+                    "error": "side_effect_outcome_unknown",
+                    "requires_reconciliation": True,
+                }
+            outcome = outcomes[0]
+            if isinstance(outcome, asyncio.CancelledError):
+                raise outcome
+            if isinstance(outcome, TimeoutError):
+                return {
+                    "status": "incomplete",
+                    "error": "side_effect_outcome_unknown",
+                    "requires_reconciliation": True,
+                }
+            if isinstance(outcome, Exception):
+                return {
+                    "status": "incomplete",
+                    "error": f"side_effect_outcome_unknown:{type(outcome).__name__}",
+                    "requires_reconciliation": True,
+                }
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
         if spec.name == "execute_sql_draft":
             from kernel.agent_loop.data_tools import execute_governed_sql_draft
 
-            try:
-                return await asyncio.wait_for(
-                    execute_governed_sql_draft(
-                        response=response,
-                        arguments=_tool_args(call),
-                    ),
-                    timeout=spec.timeout_seconds,
+            return await invoke_side_effect(
+                execute_governed_sql_draft(
+                    response=response,
+                    arguments=_tool_args(call),
                 )
-            except Exception as exc:  # noqa: BLE001 - 统一转换为工具失败契约
-                return {"status": "failed", "error": str(exc)}
+            )
+
+        if spec.name == "execute_production_action":
+            from kernel.agent_loop.production_tools import (
+                execute_governed_production_action,
+            )
+
+            return await invoke_side_effect(
+                execute_governed_production_action(
+                    response=response,
+                    arguments=_tool_args(call),
+                )
+            )
 
         from kernel.runtime.capability import capability_registry
         from kernel.tools.function_calling.executor import get_tool_executor
@@ -3437,7 +3329,7 @@ class AgentLoop:
         hydrated["tenant_id"] = response.tenant_id
         hydrated["workspace_id"] = response.workspace_id
 
-        if agent_name not in {"data", "rag"}:
+        if agent_name not in {"production", "data", "config", "rag"}:
             return hydrated, None
 
         async with AsyncSessionLocal() as scope_db:
@@ -3450,6 +3342,21 @@ class AgentLoop:
             )
             if session is None:
                 return hydrated, {"error": "conversation_scope_mismatch"}
+            if agent_name in {"production", "config"}:
+                for untrusted_key in (
+                    "connector_id",
+                    "operation",
+                    "asset_id",
+                    "policy_id",
+                    "role",
+                    "is_superuser",
+                    "approved",
+                    "environment",
+                ):
+                    hydrated.pop(untrusted_key, None)
+                hydrated["conversation_id"] = response.conversation_id
+                hydrated["response_id"] = response.id
+                return hydrated, None
             if agent_name == "rag":
                 hydrated.pop("space_id", None)
                 hydrated.pop("knowledge_space_ids", None)

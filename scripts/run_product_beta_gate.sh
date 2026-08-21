@@ -6,6 +6,8 @@ cd "$PROJECT_DIR"
 
 MODE="${1:---contract}"
 RESULTS_DIR="${ENTERPRISE_EVAL_RESULTS_DIR:-}"
+CAPACITY_REPORT="${ENTERPRISE_CAPACITY_REPORT:-}"
+RELEASE_SUBJECT=""
 
 case "$MODE" in
   --contract)
@@ -15,6 +17,15 @@ case "$MODE" in
       echo "产品 Beta 放量门禁需要 ENTERPRISE_EVAL_RESULTS_DIR（真实 Responses 主链结果）。"
       exit 2
     fi
+    if [ -z "$CAPACITY_REPORT" ]; then
+      echo "产品 Beta 放量门禁需要 ENTERPRISE_CAPACITY_REPORT（真实端到端容量证据）。"
+      exit 2
+    fi
+    if [ -n "$(git status --porcelain)" ]; then
+      echo "产品 Beta 放量门禁拒绝未提交工作区；容量证据必须绑定确定的候选提交。"
+      exit 2
+    fi
+    RELEASE_SUBJECT="$(git rev-parse HEAD)"
     ;;
   *)
     echo "Usage: bash scripts/run_product_beta_gate.sh [--contract|--release]"
@@ -37,13 +48,16 @@ if [ "$HEADS" != "1" ]; then
 fi
 
 if [ "$MODE" = "--release" ]; then
+  python scripts/load_responses.py \
+    --verify-report "$CAPACITY_REPORT" \
+    --release-subject "$RELEASE_SUBJECT"
   python scripts/run_enterprise_evals.py \
     --require-results \
     --results-dir "$RESULTS_DIR" \
     --minimum-pass-rate 1.0
 else
-  python scripts/run_enterprise_evals.py --minimum-pass-rate 1.0 >/dev/null
-  echo "合同模式使用 fixture 验证评测器；真实租户放量仍必须执行 --release。"
+  python scripts/run_enterprise_evals.py --validate-contracts >/dev/null
+  echo "合同模式只验证评测数据结构；真实租户放量仍必须执行 --release。"
 fi
 
 (

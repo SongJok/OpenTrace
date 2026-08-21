@@ -101,6 +101,96 @@ def test_sql_guard_rejects_unqualified_unknown_column() -> None:
     assert any(issue.code == "column_scope" for issue in report.errors)
 
 
+def test_sql_guard_expands_projection_star_for_schema_qualified_sensitive_table() -> None:
+    from data_agent.contracts import LogicalQueryPlan
+
+    request = QueryRequest(
+        question="导出用户",
+        scope=_scope(),
+        mode=ExecutionMode.EXECUTE_AND_ANSWER,
+        confirmed=True,
+    )
+    evidence = EvidenceBundle(
+        dialect="postgres",
+        table_columns={"public.users": ["id", "email"]},
+        items=[
+            EvidenceItem(
+                type=EvidenceType.COLUMN_PROFILE,
+                source_id="profile-public-users-email",
+                sensitive=True,
+                payload={"table": "public.users", "column": "email", "sensitive": True},
+            )
+        ],
+    )
+    plan = LogicalQueryPlan(question=request.question, required_tables=["public.users"])
+
+    report = SQLGuard().validate(
+        "SELECT u.* FROM public.users AS u",
+        request=request,
+        plan=plan,
+        evidence=evidence,
+    )
+    decision = ExecutionPolicy().decide(request, plan, report, evidence)
+
+    assert any(issue.code == "select_star" for issue in report.issues)
+    assert any(issue.code == "sensitive_column" for issue in report.issues)
+    assert decision.allowed is False
+    assert decision.risk_level == "high"
+
+
+def test_sql_guard_resolves_schema_qualified_sensitive_column_through_alias() -> None:
+    from data_agent.contracts import LogicalQueryPlan
+
+    request = QueryRequest(question="查询用户邮箱", scope=_scope())
+    evidence = EvidenceBundle(
+        dialect="postgres",
+        table_columns={"public.users": ["id", "email"]},
+        items=[
+            EvidenceItem(
+                type=EvidenceType.SCHEMA,
+                source_id="schema-public-users-email",
+                payload={"table": "public.users", "column": "email", "sensitive": True},
+            )
+        ],
+    )
+    report = SQLGuard().validate(
+        "SELECT u.email FROM public.users AS u",
+        request=request,
+        plan=LogicalQueryPlan(question=request.question, required_tables=["public.users"]),
+        evidence=evidence,
+    )
+
+    assert any(issue.code == "sensitive_column" for issue in report.issues)
+
+
+def test_sql_guard_does_not_treat_count_star_as_sensitive_projection() -> None:
+    from data_agent.contracts import LogicalQueryPlan
+
+    request = QueryRequest(question="统计用户数", scope=_scope())
+    evidence = EvidenceBundle(
+        dialect="postgres",
+        table_columns={"public.users": ["id", "email"]},
+        items=[
+            EvidenceItem(
+                type=EvidenceType.COLUMN_PROFILE,
+                source_id="profile-public-users-email",
+                sensitive=True,
+                payload={"table": "public.users", "column": "email", "sensitive": True},
+            )
+        ],
+    )
+    report = SQLGuard().validate(
+        "SELECT COUNT(*) AS user_count FROM public.users",
+        request=request,
+        plan=LogicalQueryPlan(question=request.question, required_tables=["public.users"]),
+        evidence=evidence,
+    )
+
+    codes = {issue.code for issue in report.issues}
+    assert "select_star" not in codes
+    assert "sensitive_column" not in codes
+
+
 def test_sql_guard_blocks_unverified_join_even_without_catalog_relationships() -> None:
     request = QueryRequest(question="查询用户订单", scope=_scope())
     from data_agent.contracts import LogicalQueryPlan
