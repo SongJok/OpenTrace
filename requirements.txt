@@ -4,72 +4,72 @@
 # ==============================================================================
 
 # Web framework
-fastapi>=0.111.0
-uvicorn[standard]>=0.29.0
-httpx>=0.27.0
-websockets>=12.0
-python-multipart>=0.0.9
+fastapi>=0.141.1
+uvicorn[standard]>=0.52.3
+httpx>=0.28.1
+websockets>=17.0.1
+python-multipart>=0.0.32
 openpyxl>=3.1.5
-python-docx>=1.1.2
+python-docx>=1.2.0
 python-pptx>=1.0.2
-pypdf>=6.15.0
+pypdf>=6.16.1
 
 # Database
-sqlalchemy[asyncio]>=2.0.30
-asyncpg>=0.29.0
-aiomysql>=0.2.0
-alembic>=1.13.1
-psycopg2-binary>=2.9.9
-pgvector>=0.2.5
+sqlalchemy[asyncio]>=2.0.52
+asyncpg>=0.31.0
+aiomysql>=0.3.2
+alembic>=1.19.1
+psycopg2-binary>=2.9.12
+pgvector>=0.5.0
 clickhouse-sqlalchemy>=0.3.2
-asynch>=0.2.5,<0.4
+asynch>=0.4.0,<0.5
 
 # Redis
-redis[hiredis]>=5.0.4
+redis[hiredis]>=8.1.0
 
 # LLM / AI
-openai>=1.30.0
-python-dateutil>=2.9.0
-dashscope>=1.22.1
-tiktoken>=0.7.0
-tenacity>=8.3.0
+openai>=3.2.0
+python-dateutil>=2.9.0.post0
+dashscope>=1.27.0
+tiktoken>=0.14.0
+tenacity>=9.1.4
 mcp>=2.0.0,<3.0.0
-jsonschema>=4.23.0,<5.0.0
+jsonschema>=4.26.0,<5.0.0
 
 # Auth / Security
-PyJWT[crypto]>=2.9.0
+PyJWT[crypto]>=2.13.0
 cryptography>=50.0.0
 passlib[bcrypt]>=1.7.4
-bcrypt>=3.2.0,<4.0.0
-python-dotenv>=1.0.1
+bcrypt>=5.0.0,<6.0.0
+python-dotenv>=1.2.3
 
 # Serialization
-pydantic>=2.7.0
-pydantic-settings>=2.2.1
-orjson>=3.10.3
+pydantic>=2.13.4
+pydantic-settings>=2.15.0
+orjson>=3.12.0
 
 # Observability / Tracing (OpenTelemetry)
-opentelemetry-api>=1.24.0
-opentelemetry-sdk>=1.24.0
-opentelemetry-instrumentation-fastapi>=0.45b0
-opentelemetry-instrumentation-sqlalchemy>=0.45b0
-opentelemetry-instrumentation-redis>=0.45b0
-opentelemetry-instrumentation-httpx>=0.45b0
-opentelemetry-exporter-otlp-proto-grpc>=1.24.0
-prometheus-client>=0.20.0
+opentelemetry-api>=1.44.0
+opentelemetry-sdk>=1.44.0
+opentelemetry-instrumentation-fastapi>=0.65b0
+opentelemetry-instrumentation-sqlalchemy>=0.65b0
+opentelemetry-instrumentation-redis>=0.65b0
+opentelemetry-instrumentation-httpx>=0.65b0
+opentelemetry-exporter-otlp-proto-grpc>=1.44.0
+prometheus-client>=0.26.0
 
 # Email
-aiosmtplib>=3.0.1
-jinja2>=3.1.4
+aiosmtplib>=5.1.2
+jinja2>=3.1.6
 
 # Utilities
-anyio>=4.4.0
-structlog>=24.2.0
-rich>=13.7.1
-click>=8.1.7
-PyYAML>=6.0.1
-networkx>=3.3
-numpy>=1.26.4
-sqlglot>=25.0.0
-matplotlib>=3.8.0
-plotly>=5.22.0
+anyio>=4.14.2
+structlog>=26.1.0
+rich>=15.0.0
+click>=8.4.2
+PyYAML>=6.0.3
+networkx>=3.6.1
+numpy>=2.4.6
+sqlglot>=30.17.0
+matplotlib>=3.11.1
+plotly>=6.9.0
